@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use shrimpman_protocol::{RouteResolver, RouteTable, RouteTableBuildError};
 use thiserror::Error;
 
-use crate::{Command, version::ClientVersion};
+use crate::{Command, envelope::ClientVersion};
 
 use registration::SignHandlerDecoder;
 

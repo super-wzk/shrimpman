@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use shrimpman_protocol::RouteSelector;
 
-use crate::version::ClientVersion;
+use crate::envelope::ClientVersion;
 
 #[cfg_attr(
     not(test),

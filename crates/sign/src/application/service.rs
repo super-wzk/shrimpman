@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 use super::{ConnectionError, InternalError, SignContext};
 use crate::{
-    command::SignCommandDecoder,
+    envelope::SignCommandDecoder,
     router::{SignRouter, SignRouterBuildError},
 };
 

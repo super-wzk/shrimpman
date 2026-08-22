@@ -3,12 +3,11 @@
 #![warn(unreachable_pub)]
 
 mod application;
-mod command;
+mod envelope;
 mod router;
-mod version;
 
 pub use application::{ConnectionError, InternalError, SignContext, SignService};
-pub use command::{Command, CommandDecodeError};
+pub use envelope::{Command, CommandDecodeError};
 pub use router::{SignRouteError, SignRouterBuildError};
 
 #[cfg(test)]
@@ -19,7 +18,7 @@ mod tests {
     use futures_util::{StreamExt, stream};
     use shrimpman_protocol::{CommandPacketDecoder, DispatchMode, PacketStream};
 
-    use crate::{command::SignCommandDecoder, router::SignRouter};
+    use crate::{envelope::SignCommandDecoder, router::SignRouter};
 
     #[tokio::test]
     async fn decodes_handlers_selected_by_registered_commands() {
