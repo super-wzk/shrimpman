@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use shrimpman_protocol::{RouteResolver, RouteTable, RouteTableBuildError};
 use thiserror::Error;
 
-use crate::{ClientVersion, Command};
+use crate::{Command, version::ClientVersion};
 
 use registration::SignHandlerDecoder;
 
@@ -36,13 +36,14 @@ pub enum SignRouteError {
 }
 
 /// Resolves Sign commands to their registered packet decoders.
-pub struct SignRouter {
+#[derive(Clone, Copy)]
+pub(crate) struct SignRouter {
     routes: &'static Routes,
 }
 
 impl SignRouter {
     /// Builds the shared route table from distributed packet registrations.
-    pub fn new() -> Result<Self, SignRouterBuildError> {
+    pub(crate) fn new() -> Result<Self, SignRouterBuildError> {
         static ROUTES: OnceLock<Routes> = OnceLock::new();
 
         let routes = if let Some(routes) = ROUTES.get() {

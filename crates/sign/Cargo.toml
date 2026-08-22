@@ -8,11 +8,13 @@ automod = "1"
 async-trait = "0.1"
 binrw = "0.15"
 bytes = "1"
+futures-util = { version = "0.3", features = ["sink"] }
 inventory = "0.3"
 shrimpman-common = { path = "../common" }
 shrimpman-protocol = { path = "../protocol" }
+shrimpman-transport = { path = "../transport" }
 thiserror = "2"
+tokio = { version = "1", features = ["io-util"] }
 
 [dev-dependencies]
-futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt"] }

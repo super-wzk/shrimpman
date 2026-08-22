@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use shrimpman_protocol::RouteSelector;
 
-use crate::ClientVersion;
+use crate::version::ClientVersion;
 
 #[cfg_attr(
     not(test),
@@ -44,15 +44,11 @@ impl RouteSelector for VersionSelector {
     }
 
     fn is_empty(&self) -> bool {
-        !(0..=999)
-            .map(ClientVersion::new)
-            .any(|version| self.matches(&version))
+        !ClientVersion::values().any(|version| self.matches(&version))
     }
 
     fn conflict(&self, other: &Self) -> Option<Self::Conflict> {
-        (0..=999)
-            .map(ClientVersion::new)
-            .find(|version| self.matches(version) && other.matches(version))
+        ClientVersion::values().find(|version| self.matches(version) && other.matches(version))
     }
 }
 

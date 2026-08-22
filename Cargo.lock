@@ -213,6 +213,7 @@ dependencies = [
  "inventory",
  "shrimpman-common",
  "shrimpman-protocol",
+ "shrimpman-transport",
  "thiserror",
  "tokio",
 ]

@@ -1,5 +1,34 @@
+use shrimpman_protocol::{CommandPacketDecodeError, DispatchError, PacketError};
+use shrimpman_transport::TransportError;
 use thiserror::Error;
+
+use crate::{CommandDecodeError, SignRouteError};
 
 /// An internal failure while handling a Sign packet.
 #[derive(Debug, Error)]
 pub enum InternalError {}
+
+/// A failure while serving one Sign connection.
+#[derive(Debug, Error)]
+pub enum ConnectionError {
+    #[error("failed to read Sign connection initialization: {0}")]
+    Initialization(#[source] std::io::Error),
+
+    #[error("Sign connection closed before sending a request")]
+    UnexpectedEof,
+
+    #[error("failed to receive Sign request: {0}")]
+    Receive(
+        #[source]
+        PacketError<
+            TransportError,
+            CommandPacketDecodeError<CommandDecodeError, SignRouteError, binrw::Error>,
+        >,
+    ),
+
+    #[error("failed to dispatch Sign request: {0}")]
+    Dispatch(#[source] DispatchError<InternalError>),
+
+    #[error("failed to send Sign response: {0}")]
+    Send(#[source] PacketError<TransportError, binrw::Error>),
+}

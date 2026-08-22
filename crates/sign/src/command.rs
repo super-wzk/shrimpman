@@ -5,7 +5,7 @@ use bytes::Bytes;
 use shrimpman_protocol::{CommandDecoder, DecodedCommand};
 use thiserror::Error;
 
-use crate::ClientVersion;
+use crate::version::ClientVersion;
 
 /// A textual command used by the Sign service.
 #[derive(Debug, Clone)]
@@ -45,7 +45,7 @@ pub enum CommandDecodeError {
 }
 
 /// Decodes the command and client version prefix of a Sign packet.
-pub struct SignCommandDecoder;
+pub(crate) struct SignCommandDecoder;
 
 impl CommandDecoder for SignCommandDecoder {
     type Command = Command;
@@ -60,20 +60,11 @@ impl CommandDecoder for SignCommandDecoder {
         let mut encoded = NullString::read_options(payload, Endian::Big, ())
             .map_err(|source| CommandDecodeError::Binary { position, source })?
             .0;
-        let Some(version_offset) = encoded.len().checked_sub(3) else {
+        let Some(version_offset) = encoded.len().checked_sub(ClientVersion::ENCODED_LEN) else {
             return Err(CommandDecodeError::MissingVersion { position });
         };
-        let version = &encoded[version_offset..];
-
-        if !version.iter().all(u8::is_ascii_digit) {
-            return Err(CommandDecodeError::InvalidVersion { position });
-        }
-
-        let version = ClientVersion::new(
-            u16::from(version[0] - b'0') * 100
-                + u16::from(version[1] - b'0') * 10
-                + u16::from(version[2] - b'0'),
-        );
+        let version = ClientVersion::parse(&encoded[version_offset..])
+            .ok_or(CommandDecodeError::InvalidVersion { position })?;
         encoded.truncate(version_offset);
         let command = String::from_utf8(encoded)
             .map_err(|source| CommandDecodeError::InvalidEncoding { position, source })?;
@@ -104,13 +95,15 @@ mod tests {
     #[test]
     fn separates_command_and_version() {
         for (input, expected_command, expected_version) in [
-            (b"SIGN:041\0".as_slice(), "SIGN:", *b"041"),
-            (b"DELETE:100\0".as_slice(), "DELETE:", *b"100"),
+            (b"SIGN:000\0".as_slice(), "SIGN:", 0),
+            (b"SIGN:041\0".as_slice(), "SIGN:", 41),
+            (b"DELETE:100\0".as_slice(), "DELETE:", 100),
+            (b"DELETE:999\0".as_slice(), "DELETE:", 999),
         ] {
             let (command, version) = decode(input).unwrap().into_parts();
 
             assert_eq!(command.as_str(), expected_command);
-            assert_eq!(version.digits(), expected_version);
+            assert_eq!(version.number(), expected_version);
         }
     }
 
@@ -120,6 +113,7 @@ mod tests {
             b"SI\0".as_slice(),
             b"SIGN:04x\0".as_slice(),
             b"SIGN041\0".as_slice(),
+            b"SIGN:1000\0".as_slice(),
         ] {
             assert!(decode(input).is_err());
         }

@@ -1,4 +1,4 @@
-//! Sign service command decoding, routing, and packet handling.
+//! Sign service connection handling, command decoding, and routing.
 
 #![warn(unreachable_pub)]
 
@@ -7,10 +7,9 @@ mod command;
 mod router;
 mod version;
 
-pub use application::{InternalError, SignContext};
-pub use command::{Command, CommandDecodeError, SignCommandDecoder};
-pub use router::{SignRouteError, SignRouter, SignRouterBuildError};
-pub use version::ClientVersion;
+pub use application::{ConnectionError, InternalError, SignContext, SignService};
+pub use command::{Command, CommandDecodeError};
+pub use router::{SignRouteError, SignRouterBuildError};
 
 #[cfg(test)]
 mod tests {
@@ -20,7 +19,7 @@ mod tests {
     use futures_util::{StreamExt, stream};
     use shrimpman_protocol::{CommandPacketDecoder, DispatchMode, PacketStream};
 
-    use super::*;
+    use crate::{command::SignCommandDecoder, router::SignRouter};
 
     #[tokio::test]
     async fn decodes_handlers_selected_by_registered_commands() {
@@ -32,7 +31,7 @@ mod tests {
             let decoded = packets.next().await.unwrap().unwrap();
 
             assert_eq!(decoded.command().as_str(), command);
-            assert_eq!(decoded.metadata().digits(), *b"041");
+            assert_eq!(decoded.metadata().number(), 41);
             assert_eq!(decoded.packet().mode(), DispatchMode::Ordered);
         }
     }
