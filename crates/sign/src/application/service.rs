@@ -2,7 +2,7 @@ use std::{collections::VecDeque, num::NonZeroUsize};
 
 use futures_util::{SinkExt, StreamExt};
 use shrimpman_protocol::{BinrwOutbound, CommandPacketDecoder, Dispatcher, PacketStream};
-use shrimpman_transport::{MhfConnection, TransportConfig};
+use shrimpman_transport::MhfConnection;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 use super::{ConnectionError, InternalError, SignContext};
@@ -20,19 +20,14 @@ type SignPacketStream<Io> =
 pub struct SignService {
     context: SignContext,
     router: SignRouter,
-    transport_config: TransportConfig,
 }
 
 impl SignService {
     /// Builds the service and validates all distributed packet registrations.
-    pub fn new(
-        context: SignContext,
-        transport_config: TransportConfig,
-    ) -> Result<Self, SignRouterBuildError> {
+    pub fn new(context: SignContext) -> Result<Self, SignRouterBuildError> {
         Ok(Self {
             context,
             router: SignRouter::new()?,
-            transport_config,
         })
     }
 
@@ -50,7 +45,7 @@ impl SignService {
             .await
             .map_err(ConnectionError::Initialization)?;
 
-        SignSession::new(io, self.context.clone(), self.router, self.transport_config)
+        SignSession::new(io, self.context.clone(), self.router)
             .run()
             .await
     }
@@ -64,13 +59,8 @@ struct SignSession<Io> {
 }
 
 impl<Io> SignSession<Io> {
-    fn new(
-        io: Io,
-        context: SignContext,
-        router: SignRouter,
-        transport_config: TransportConfig,
-    ) -> Self {
-        let connection = MhfConnection::new(io, transport_config);
+    fn new(io: Io, context: SignContext, router: SignRouter) -> Self {
+        let connection = MhfConnection::new(io);
         let decoder = CommandPacketDecoder::new(SignCommandDecoder, router);
 
         Self {
@@ -176,11 +166,11 @@ mod tests {
     #[tokio::test]
     async fn drains_queued_responses_and_closes_the_connection() {
         let (mut client_io, server_io) = duplex(4096);
-        let service = SignService::new(SignContext, TransportConfig::default()).unwrap();
+        let service = SignService::new(SignContext).unwrap();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; INITIALIZATION_LEN]).await.unwrap();
-        let mut client = MhfConnection::new(client_io, TransportConfig::default());
+        let mut client = MhfConnection::new(client_io);
         client
             .send(Bytes::from_static(b"TEST:041\0\x07"))
             .await
@@ -201,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_connections_without_a_complete_initialization() {
         let (mut client_io, server_io) = duplex(64);
-        let service = SignService::new(SignContext, TransportConfig::default()).unwrap();
+        let service = SignService::new(SignContext).unwrap();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; 7]).await.unwrap();

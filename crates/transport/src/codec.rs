@@ -5,22 +5,10 @@ use crate::{
     DecodeStep,
     crypto::{DecryptState, EncryptState},
     error::TransportError,
-    frame::{CryptHeader, EncryptedFrame, FrameCodec, FrameSizeMode},
+    frame::{CryptHeader, EncryptedFrame, FrameCodec},
 };
 
-/// Configuration for the common encrypted MHF transport.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TransportConfig {
-    pub frame_size_mode: FrameSizeMode,
-}
-
-impl TransportConfig {
-    pub const fn new(frame_size_mode: FrameSizeMode) -> Self {
-        Self { frame_size_mode }
-    }
-}
-
-/// Stateful codec shared by sign, entrance, and channel connections.
+/// Stateful codec for the encrypted MHF transport format.
 ///
 /// The codec handles only the common encrypted transport envelope. The
 /// returned bytes remain opaque to this crate and are decoded by a service
@@ -34,14 +22,6 @@ pub(crate) struct MhfTransportCodec {
 }
 
 impl MhfTransportCodec {
-    pub(crate) fn new(config: TransportConfig) -> Self {
-        Self {
-            frame: FrameCodec::new(config.frame_size_mode),
-            inbound: DecryptState::default(),
-            outbound: EncryptState::default(),
-        }
-    }
-
     fn decode_frame(&mut self, input: &[u8]) -> Result<DecodeStep<Vec<u8>>, TransportError> {
         let (frame, consumed) = match self.frame.decode(input)? {
             DecodeStep::NeedMore { needed } => {
@@ -70,7 +50,6 @@ impl MhfTransportCodec {
         let encrypted = next_outbound.encrypt(payload);
         let body_len = encrypted.data.len();
         let header = CryptHeader::for_body(
-            self.frame.mode(),
             body_len,
             encrypted.key_rotation_delta,
             encrypted.packet_number,
@@ -119,11 +98,8 @@ mod tests {
     use bytes::{Bytes, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
-    use super::{MhfTransportCodec, TransportConfig};
-    use crate::{
-        error::TransportError,
-        frame::{CryptHeader, FrameSizeMode},
-    };
+    use super::MhfTransportCodec;
+    use crate::{error::TransportError, frame::CryptHeader};
 
     #[test]
     fn round_trips_multiple_packets_and_preserves_stream_boundaries() {
@@ -186,10 +162,9 @@ mod tests {
     }
 
     #[test]
-    fn extended_mode_round_trips_payloads_larger_than_u16() {
-        let config = TransportConfig::new(FrameSizeMode::Extended);
-        let mut sender = MhfTransportCodec::new(config);
-        let mut receiver = MhfTransportCodec::new(config);
+    fn round_trips_payloads_larger_than_u16() {
+        let mut sender = MhfTransportCodec::default();
+        let mut receiver = MhfTransportCodec::default();
         let payload = vec![0xa5; usize::from(u16::MAX) + 17];
         let mut frame = BytesMut::new();
 
@@ -204,18 +179,14 @@ mod tests {
 
     #[test]
     fn unrepresentable_payloads_leave_output_unchanged() {
-        let config = TransportConfig::new(FrameSizeMode::Legacy);
-        let mut codec = MhfTransportCodec::new(config);
+        let mut codec = MhfTransportCodec::default();
         let mut output = BytesMut::from(&[0xaa][..]);
-        let payload_len = FrameSizeMode::Legacy.max_body_len() + 1;
+        let payload_len = 0x10_0000;
         let payload = Bytes::from(vec![0; payload_len]);
 
         assert!(matches!(
             codec.encode(payload, &mut output),
-            Err(TransportError::BodyLengthNotRepresentable {
-                len,
-                mode: FrameSizeMode::Legacy,
-            }) if len == payload_len
+            Err(TransportError::BodyLengthNotRepresentable { len }) if len == payload_len
         ));
         assert_eq!(output.as_ref(), &[0xaa]);
     }

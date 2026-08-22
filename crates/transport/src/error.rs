@@ -2,7 +2,7 @@ use std::io;
 
 use thiserror::Error;
 
-use crate::frame::{FrameSizeMode, PacketChecksums};
+use crate::frame::PacketChecksums;
 
 /// Errors produced while reading, framing, or encrypting transport payloads.
 #[derive(Debug, Error)]
@@ -16,8 +16,8 @@ pub enum TransportError {
     #[error("invalid frame pf0 value: {0:#04x}")]
     InvalidPf0(u8),
 
-    #[error("frame body length {len} cannot be represented in {mode:?} mode")]
-    BodyLengthNotRepresentable { len: usize, mode: FrameSizeMode },
+    #[error("frame body length {len} cannot be represented by the frame header")]
+    BodyLengthNotRepresentable { len: usize },
 
     #[error("frame header declares {declared} body bytes but contains {actual}")]
     BodyLengthMismatch { declared: usize, actual: usize },

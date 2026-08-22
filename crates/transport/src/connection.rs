@@ -8,10 +8,7 @@ use futures_util::{Sink, Stream};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
-use crate::{
-    TransportError,
-    codec::{MhfTransportCodec, TransportConfig},
-};
+use crate::{TransportError, codec::MhfTransportCodec};
 
 /// An asynchronous MHF connection over an arbitrary byte stream.
 ///
@@ -22,9 +19,9 @@ pub struct MhfConnection<Io> {
 }
 
 impl<Io> MhfConnection<Io> {
-    pub fn new(io: Io, config: TransportConfig) -> Self {
+    pub fn new(io: Io) -> Self {
         Self {
-            framed: Framed::new(io, MhfTransportCodec::new(config)),
+            framed: Framed::new(io, MhfTransportCodec::default()),
         }
     }
 }
@@ -84,13 +81,11 @@ mod tests {
     use tokio::io::duplex;
 
     use super::MhfConnection;
-    use crate::TransportConfig;
-
     #[tokio::test]
     async fn exchanges_multiple_payloads_bidirectionally() {
         let (client_io, server_io) = duplex(4096);
-        let mut client = MhfConnection::new(client_io, TransportConfig::default());
-        let mut server = MhfConnection::new(server_io, TransportConfig::default());
+        let mut client = MhfConnection::new(client_io);
+        let mut server = MhfConnection::new(server_io);
 
         client.send(Bytes::from_static(b"first")).await.unwrap();
         client.send(Bytes::from_static(b"second")).await.unwrap();

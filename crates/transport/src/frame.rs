@@ -4,40 +4,6 @@ use crate::{DecodeStep, TransportError};
 
 const CRYPT_HEADER_LEN: usize = 14;
 
-/// Selects the body-length encoding used by the client generation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum FrameSizeMode {
-    Legacy,
-    #[default]
-    Extended,
-}
-
-impl FrameSizeMode {
-    pub const LEGACY_MAX_BODY_LEN: usize = u16::MAX as usize;
-    pub const EXTENDED_MAX_BODY_LEN: usize = 0x0f_ffff;
-
-    pub const fn max_body_len(self) -> usize {
-        match self {
-            Self::Legacy => Self::LEGACY_MAX_BODY_LEN,
-            Self::Extended => Self::EXTENDED_MAX_BODY_LEN,
-        }
-    }
-
-    fn encode_body_len(self, len: usize) -> Result<(u8, u16), TransportError> {
-        if len > self.max_body_len() {
-            return Err(TransportError::BodyLengthNotRepresentable { len, mode: self });
-        }
-
-        match self {
-            Self::Legacy => Ok((0x03, len as u16)),
-            Self::Extended => {
-                let pf0 = (((len >> 12) & 0xf3) | 0x03) as u8;
-                Ok((pf0, len as u16))
-            }
-        }
-    }
-}
-
 /// The three integrity checks carried by a transport frame header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
 #[brw(big)]
@@ -67,19 +33,24 @@ pub(crate) struct CryptHeader {
 
 impl CryptHeader {
     pub(crate) const ENCODED_LEN: usize = CRYPT_HEADER_LEN;
+    const MAX_BODY_LEN: usize = 0x0f_ffff;
 
-    fn body_len(self, mode: FrameSizeMode) -> Result<usize, TransportError> {
-        match mode {
-            FrameSizeMode::Legacy => Ok(usize::from(self.data_size)),
-            FrameSizeMode::Extended => {
-                let extension = self
-                    .pf0
-                    .checked_sub(0x03)
-                    .ok_or(TransportError::InvalidPf0(self.pf0))?;
+    fn body_len(self) -> Result<usize, TransportError> {
+        let extension = self
+            .pf0
+            .checked_sub(0x03)
+            .ok_or(TransportError::InvalidPf0(self.pf0))?;
 
-                Ok(usize::from(self.data_size) + usize::from(extension) * 0x1000)
-            }
+        Ok(usize::from(self.data_size) + usize::from(extension) * 0x1000)
+    }
+
+    fn encode_body_len(len: usize) -> Result<(u8, u16), TransportError> {
+        if len > Self::MAX_BODY_LEN {
+            return Err(TransportError::BodyLengthNotRepresentable { len });
         }
+
+        let pf0 = (((len >> 12) & 0xf3) | 0x03) as u8;
+        Ok((pf0, len as u16))
     }
 
     pub(crate) const fn key_rotation_delta(self) -> u8 {
@@ -91,14 +62,13 @@ impl CryptHeader {
     }
 
     pub(crate) fn for_body(
-        mode: FrameSizeMode,
         body_len: usize,
         key_rotation_delta: u8,
         packet_number: u16,
         previous_combined_check: u16,
         checksums: PacketChecksums,
     ) -> Result<Self, TransportError> {
-        let (pf0, data_size) = mode.encode_body_len(body_len)?;
+        let (pf0, data_size) = Self::encode_body_len(body_len)?;
 
         Ok(Self {
             pf0,
@@ -129,21 +99,11 @@ impl EncryptedFrame {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct FrameCodec {
-    mode: FrameSizeMode,
-}
+pub(crate) struct FrameCodec;
 
 impl FrameCodec {
-    pub(crate) fn new(mode: FrameSizeMode) -> Self {
-        Self { mode }
-    }
-
-    pub(crate) const fn mode(&self) -> FrameSizeMode {
-        self.mode
-    }
-
     pub(crate) fn validate_outbound_len(&self, len: usize) -> Result<(), TransportError> {
-        self.mode.encode_body_len(len).map(|_| ())
+        CryptHeader::encode_body_len(len).map(|_| ())
     }
 
     pub(crate) fn decode(
@@ -158,13 +118,10 @@ impl FrameCodec {
 
         let mut reader = Cursor::new(&input[..CRYPT_HEADER_LEN]);
         let header = CryptHeader::read_be(&mut reader)?;
-        let body_len = header.body_len(self.mode)?;
+        let body_len = header.body_len()?;
 
-        if body_len > self.mode.max_body_len() {
-            return Err(TransportError::BodyLengthNotRepresentable {
-                len: body_len,
-                mode: self.mode,
-            });
+        if body_len > CryptHeader::MAX_BODY_LEN {
+            return Err(TransportError::BodyLengthNotRepresentable { len: body_len });
         }
 
         let frame_len = CRYPT_HEADER_LEN + body_len;
@@ -186,7 +143,7 @@ impl FrameCodec {
         frame: &EncryptedFrame,
         output: &mut Vec<u8>,
     ) -> Result<(), TransportError> {
-        let declared = frame.header.body_len(self.mode)?;
+        let declared = frame.header.body_len()?;
         let actual = frame.body.len();
 
         if declared != actual {
@@ -207,8 +164,8 @@ impl FrameCodec {
 mod tests {
     use super::*;
 
-    fn header_for_len(mode: FrameSizeMode, len: usize) -> CryptHeader {
-        CryptHeader::for_body(mode, len, 3, 7, 11, PacketChecksums::new(13, 17, 19)).unwrap()
+    fn header_for_len(len: usize) -> CryptHeader {
+        CryptHeader::for_body(len, 3, 7, 11, PacketChecksums::new(13, 17, 19)).unwrap()
     }
 
     #[test]
@@ -233,16 +190,16 @@ mod tests {
     }
 
     #[test]
-    fn extended_lengths_round_trip_at_boundaries() {
+    fn body_lengths_round_trip_at_boundaries() {
         for len in [0, 0x0fff, 0x1000, 0xffff, 0x1_0000, 0xa_1234, 0xf_ffff] {
-            let header = header_for_len(FrameSizeMode::Extended, len);
-            assert_eq!(header.body_len(FrameSizeMode::Extended).unwrap(), len);
+            let header = header_for_len(len);
+            assert_eq!(header.body_len().unwrap(), len);
         }
     }
 
     #[test]
     fn decoder_reports_total_bytes_needed_for_partial_frames() {
-        let codec = FrameCodec::new(FrameSizeMode::Extended);
+        let codec = FrameCodec;
         assert_eq!(
             codec.decode(&[0; 5]).unwrap(),
             DecodeStep::NeedMore {
@@ -251,7 +208,7 @@ mod tests {
         );
 
         let frame = EncryptedFrame {
-            header: header_for_len(FrameSizeMode::Extended, 4),
+            header: header_for_len(4),
             body: vec![1, 2, 3, 4],
         };
         let mut encoded = Vec::new();
@@ -267,9 +224,9 @@ mod tests {
 
     #[test]
     fn decoder_consumes_only_one_frame() {
-        let codec = FrameCodec::new(FrameSizeMode::Legacy);
+        let codec = FrameCodec;
         let frame = EncryptedFrame {
-            header: header_for_len(FrameSizeMode::Legacy, 3),
+            header: header_for_len(3),
             body: vec![1, 2, 3],
         };
         let mut encoded = Vec::new();

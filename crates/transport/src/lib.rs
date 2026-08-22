@@ -1,4 +1,4 @@
-//! Common encrypted transport used by shrimpman services.
+//! Common encrypted MHF transport used by shrimpman services.
 
 #![warn(unreachable_pub)]
 
@@ -20,7 +20,6 @@ mod crypto;
 mod error;
 mod frame;
 
-pub use codec::TransportConfig;
 pub use connection::MhfConnection;
 pub use error::TransportError;
-pub use frame::{FrameSizeMode, PacketChecksums};
+pub use frame::PacketChecksums;
