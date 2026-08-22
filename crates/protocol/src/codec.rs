@@ -228,7 +228,7 @@ mod tests {
         type Target = BytePacketDecoder;
         type Error = Infallible;
 
-        fn resolve(&self, _command: &u8, _qualifier: &()) -> Result<Self::Target, Self::Error> {
+        fn resolve(&self, _key: &u8, _metadata: &()) -> Result<Self::Target, Self::Error> {
             Ok(BytePacketDecoder)
         }
     }
@@ -263,7 +263,7 @@ mod tests {
         type Target = BinrwHandlerDecoder<u8, Infallible>;
         type Error = Infallible;
 
-        fn resolve(&self, _command: &u8, _qualifier: &()) -> Result<Self::Target, Self::Error> {
+        fn resolve(&self, _key: &u8, _metadata: &()) -> Result<Self::Target, Self::Error> {
             Ok(BinrwHandlerDecoder::big_endian(&ADD_HANDLER))
         }
     }

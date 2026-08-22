@@ -2,19 +2,15 @@ use std::{borrow::Borrow, collections::HashMap, hash::Hash};
 
 use thiserror::Error;
 
-/// Resolves a command and its envelope qualifier without decoding the body.
-pub trait RouteResolver<Command, Qualifier> {
+/// Resolves a route target from a key and its associated metadata.
+pub trait RouteResolver<Key, Metadata> {
     type Target;
     type Error;
 
-    fn resolve(
-        &self,
-        command: &Command,
-        qualifier: &Qualifier,
-    ) -> Result<Self::Target, Self::Error>;
+    fn resolve(&self, key: &Key, metadata: &Metadata) -> Result<Self::Target, Self::Error>;
 }
 
-/// Selects a route using metadata carried by a packet envelope.
+/// Determines whether a route applies to a metadata value.
 pub trait RouteSelector {
     type Metadata;
     type Priority: Ord;
