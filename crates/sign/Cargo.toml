@@ -1,15 +1,18 @@
 [package]
-name = "shrimpman-transport"
+name = "shrimpman-sign"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+automod = "1"
+async-trait = "0.1"
 binrw = "0.15"
 bytes = "1"
-futures-util = { version = "0.3", features = ["sink"] }
+inventory = "0.3"
+shrimpman-common = { path = "../common" }
+shrimpman-protocol = { path = "../protocol" }
 thiserror = "2"
-tokio = { version = "1", features = ["io-util"] }
-tokio-util = { version = "0.7", features = ["codec"] }
 
 [dev-dependencies]
+futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt"] }

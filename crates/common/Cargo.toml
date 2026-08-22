@@ -1,0 +1,8 @@
+[package]
+name = "shrimpman-common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+encoding_rs = "0.8"
+thiserror = "2"

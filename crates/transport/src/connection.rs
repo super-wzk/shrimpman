@@ -1,5 +1,10 @@
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, Stream};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
@@ -24,31 +29,58 @@ impl<Io> MhfConnection<Io> {
     }
 }
 
-impl<Io> MhfConnection<Io>
+impl<Io> Stream for MhfConnection<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + Unpin,
 {
-    /// Receives and decrypts the next MHF transport payload.
-    ///
-    /// Returns `None` after a clean end of stream.
-    pub async fn recv(&mut self) -> Result<Option<Bytes>, TransportError> {
-        self.framed.next().await.transpose()
+    type Item = Result<Bytes, TransportError>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.framed).poll_next(context)
+    }
+}
+
+impl<Io> Sink<Bytes> for MhfConnection<Io>
+where
+    Io: AsyncWrite + Unpin,
+{
+    type Error = TransportError;
+
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.framed).poll_ready(context)
     }
 
-    /// Encrypts, queues, and flushes one MHF transport payload.
-    pub async fn send(&mut self, payload: Bytes) -> Result<(), TransportError> {
-        self.framed.send(payload).await
+    fn start_send(self: Pin<&mut Self>, payload: Bytes) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        Pin::new(&mut this.framed).start_send(payload)
     }
 
-    /// Flushes pending output and closes the underlying byte stream.
-    pub async fn close(mut self) -> Result<(), TransportError> {
-        self.framed.close().await
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.framed).poll_flush(context)
+    }
+
+    fn poll_close(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.framed).poll_close(context)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use futures_util::{SinkExt, StreamExt};
     use tokio::io::duplex;
 
     use super::MhfConnection;
@@ -63,22 +95,13 @@ mod tests {
         client.send(Bytes::from_static(b"first")).await.unwrap();
         client.send(Bytes::from_static(b"second")).await.unwrap();
 
-        assert_eq!(
-            server.recv().await.unwrap(),
-            Some(Bytes::from_static(b"first"))
-        );
-        assert_eq!(
-            server.recv().await.unwrap(),
-            Some(Bytes::from_static(b"second"))
-        );
+        assert_eq!(server.next().await.unwrap().unwrap(), b"first"[..]);
+        assert_eq!(server.next().await.unwrap().unwrap(), b"second"[..]);
 
         server.send(Bytes::from_static(b"response")).await.unwrap();
-        assert_eq!(
-            client.recv().await.unwrap(),
-            Some(Bytes::from_static(b"response"))
-        );
+        assert_eq!(client.next().await.unwrap().unwrap(), b"response"[..]);
 
         client.close().await.unwrap();
-        assert_eq!(server.recv().await.unwrap(), None);
+        assert!(server.next().await.is_none());
     }
 }

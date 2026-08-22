@@ -1,15 +1,15 @@
 [package]
-name = "shrimpman-transport"
+name = "shrimpman-protocol"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+async-trait = "0.1"
 binrw = "0.15"
 bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 thiserror = "2"
-tokio = { version = "1", features = ["io-util"] }
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
