@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use jiff::SignedDuration;
 use shrimpman_persistence::{
-    AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignSessionRepository,
+    AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignInNoticeRepository,
+    SignSessionRepository,
 };
 
 /// Dependencies shared by every Sign connection.
@@ -13,6 +14,7 @@ pub struct SignServiceContext {
     characters: CharacterRepository,
     mezeporta_festivals: MezeportaFestivalRepository,
     sign_sessions: SignSessionRepository,
+    sign_in_notices: SignInNoticeRepository,
 }
 
 impl SignServiceContext {
@@ -24,6 +26,7 @@ impl SignServiceContext {
         characters: CharacterRepository,
         mezeporta_festivals: MezeportaFestivalRepository,
         sign_sessions: SignSessionRepository,
+        sign_in_notices: SignInNoticeRepository,
     ) -> Self {
         Self {
             auto_sign_up,
@@ -32,6 +35,7 @@ impl SignServiceContext {
             characters,
             mezeporta_festivals,
             sign_sessions,
+            sign_in_notices,
         }
     }
 
@@ -59,6 +63,10 @@ impl SignServiceContext {
         &self.sign_sessions
     }
 
+    pub(crate) fn sign_in_notices(&self) -> &SignInNoticeRepository {
+        &self.sign_in_notices
+    }
+
     #[cfg(test)]
     pub(crate) async fn for_test(auto_sign_up: bool) -> Self {
         let mut builder = toasty::Db::builder();
@@ -73,6 +81,7 @@ impl SignServiceContext {
             CharacterRepository::new(&db),
             MezeportaFestivalRepository::new(&db),
             SignSessionRepository::new(&db),
+            SignInNoticeRepository::new(&db),
         )
     }
 }

@@ -14,6 +14,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         database.character_repository(),
         database.mezeporta_festival_repository(),
         database.sign_session_repository(),
+        database.sign_in_notice_repository(),
     );
     let service = SignService::new(context)?;
     let server = SignServer::bind(sign.server, service).await?;

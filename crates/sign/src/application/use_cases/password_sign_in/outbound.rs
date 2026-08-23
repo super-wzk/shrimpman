@@ -11,6 +11,7 @@ use shrimpman_domain::{
     character::{Character, CharacterId, CharacterSignInHistory, Gender, WeaponType},
     mezeporta::MezeportaFestival,
     session::SignSessionId,
+    sign_in_notice::SignInNotice,
 };
 
 use super::SESSION_TOKEN_LEN;
@@ -52,8 +53,8 @@ pub(super) struct SignInSuccess {
     patch_servers: Vec<PrefixedCString<u8>>,
     entrance_servers: Vec<PrefixedCString<u8>>,
     characters: Vec<SignCharacter>,
-    friends: CountedVec<U8OrU16Length, RelatedCharacter>,
-    guildmates: CountedVec<U8OrU16Length, RelatedCharacter>,
+    friends: CountedVec<U8OrU16Length, CharacterRelationEntry>,
+    guildmates: CountedVec<U8OrU16Length, CharacterRelationEntry>,
     notices: CountedVec<u8, LoginNotice>,
     #[bw(map = |id: &Option<CharacterId>| (*id).map(u32::from).unwrap_or_default())]
     last_character_id: Option<CharacterId>,
@@ -87,22 +88,22 @@ struct LoginNotice {
     content: PrefixedCString<u16>,
 }
 
-impl TryFrom<String> for LoginNotice {
+impl TryFrom<SignInNotice> for LoginNotice {
     type Error = InternalError;
 
-    fn try_from(content: String) -> Result<Self, Self::Error> {
+    fn try_from(notice: SignInNotice) -> Result<Self, Self::Error> {
         Ok(Self {
-            content: PrefixedCString::new(encode_shift_jis(&content)?)?,
+            content: PrefixedCString::new(encode_shift_jis(&notice.content)?)?,
         })
     }
 }
 
 #[derive(BinWrite)]
-struct RelatedCharacter {
+struct CharacterRelationEntry {
     #[bw(map = |id: &CharacterId| u32::from(*id))]
-    owner_character_id: CharacterId,
+    source_character_id: CharacterId,
     #[bw(map = |id: &CharacterId| u32::from(*id))]
-    character_id: CharacterId,
+    related_character_id: CharacterId,
     name: PrefixedCString<u8>,
 }
 
@@ -138,6 +139,7 @@ impl SignInSuccess {
         character_sign_in_history: &CharacterSignInHistory,
         return_expires_at: Timestamp,
         festival: Option<MezeportaFestival>,
+        notices: Vec<SignInNotice>,
     ) -> Result<Self, InternalError> {
         let issued_at = Timestamp::from(session.timestamp);
 
@@ -156,7 +158,11 @@ impl SignInSuccess {
                 .collect::<Result<_, _>>()?,
             friends: Vec::new().into(),
             guildmates: Vec::new().into(),
-            notices: Vec::new().into(),
+            notices: notices
+                .into_iter()
+                .map(LoginNotice::try_from)
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
             last_character_id: character_sign_in_history.last_character_id(),
             rights,
             return_expires_at: return_expires_at.into(),
@@ -236,6 +242,8 @@ impl TryFrom<(Character, Timestamp)> for SignCharacter {
 #[cfg(test)]
 mod tests {
     use binrw::io::Cursor;
+    use jiff::SignedDuration;
+    use shrimpman_domain::TimeRange;
 
     use super::*;
 
@@ -244,8 +252,8 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
 
         CountedVec::<u8, LoginNotice>::new(vec![
-            LoginNotice::try_from("first".to_owned()).unwrap(),
-            LoginNotice::try_from("second".to_owned()).unwrap(),
+            LoginNotice::try_from(notice("first")).unwrap(),
+            LoginNotice::try_from(notice("second")).unwrap(),
         ])
         .write_be(&mut output)
         .unwrap();
@@ -260,7 +268,7 @@ mod tests {
     fn encodes_login_notice_content_as_shift_jis() {
         let mut output = Cursor::new(Vec::new());
 
-        LoginNotice::try_from("テスト".to_owned())
+        LoginNotice::try_from(notice("テスト"))
             .unwrap()
             .write_be(&mut output)
             .unwrap();
@@ -296,6 +304,7 @@ mod tests {
             &character_sign_in_history,
             timestamp,
             None,
+            Vec::new(),
         )
         .unwrap();
         let mut output = Cursor::new(Vec::new());
@@ -320,5 +329,15 @@ mod tests {
             .unwrap();
         let cap_link_offset = filter_offset + EMPTY_TEXT_FILTER.len();
         assert_eq!(&output[cap_link_offset..cap_link_offset + 9], &[0; 9]);
+    }
+
+    fn notice(content: &str) -> SignInNotice {
+        let starts_at = Timestamp::new(1_800_000_000, 0).unwrap();
+        SignInNotice {
+            id: 1,
+            content: content.to_owned(),
+            period: TimeRange::from_duration(starts_at, SignedDuration::from_hours(1)),
+            priority: 0,
+        }
     }
 }

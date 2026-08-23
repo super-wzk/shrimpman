@@ -17,6 +17,8 @@ use super::{
 };
 use crate::{InternalError, SignSessionContext};
 
+const MAX_SIGN_IN_NOTICES: usize = u8::MAX as usize;
+
 pub(super) struct PasswordSignInHandler;
 
 #[async_trait::async_trait]
@@ -79,6 +81,10 @@ async fn password_sign_in(
 
     let character_sign_in_history = service.characters().sign_in_history(&characters).await?;
     let festival = service.mezeporta_festivals().find_active_at(now).await?;
+    let notices = service
+        .sign_in_notices()
+        .list_active_at(now, MAX_SIGN_IN_NOTICES)
+        .await?;
     let token = generate_session_token();
     let session_id = service
         .sign_sessions()
@@ -96,6 +102,7 @@ async fn password_sign_in(
         &character_sign_in_history,
         return_period.expires_at(),
         festival,
+        notices,
     )?;
 
     Ok(PasswordSignInResponse::Success(response))

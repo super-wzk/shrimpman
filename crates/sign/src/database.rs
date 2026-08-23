@@ -1,5 +1,6 @@
 use shrimpman_persistence::{
-    AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignSessionRepository,
+    AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignInNoticeRepository,
+    SignSessionRepository,
 };
 use toasty::Db;
 
@@ -40,5 +41,10 @@ impl SignDatabase {
     /// Creates the Sign-session repository used by Sign.
     pub fn sign_session_repository(&self) -> SignSessionRepository {
         SignSessionRepository::new(&self.db)
+    }
+
+    /// Creates the Sign-in notice repository used by Sign.
+    pub fn sign_in_notice_repository(&self) -> SignInNoticeRepository {
+        SignInNoticeRepository::new(&self.db)
     }
 }

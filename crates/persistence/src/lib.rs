@@ -6,6 +6,7 @@ mod account;
 mod character;
 mod config;
 mod mezeporta;
+mod sign_in_notice;
 mod sign_session;
 mod time_range;
 
@@ -13,6 +14,7 @@ pub use account::AccountRepository;
 pub use character::CharacterRepository;
 pub use config::MigrationConfig;
 pub use mezeporta::MezeportaFestivalRepository;
+pub use sign_in_notice::SignInNoticeRepository;
 pub use sign_session::SignSessionRepository;
 
 /// Returns the complete persistent model graph.
