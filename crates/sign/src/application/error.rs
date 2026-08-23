@@ -11,11 +11,11 @@ pub enum InternalError {
     #[error("Sign database operation failed: {0}")]
     Database(#[from] toasty::Error),
 
-    #[error("bcrypt operation failed: {0}")]
-    Bcrypt(#[from] bcrypt::BcryptError),
+    #[error("password hashing operation failed: {0}")]
+    PasswordHash(#[from] argon2::password_hash::Error),
 
-    #[error("bcrypt task failed: {0}")]
-    BcryptTask(#[from] tokio::task::JoinError),
+    #[error("password hashing task failed: {0}")]
+    PasswordHashTask(#[from] tokio::task::JoinError),
 
     #[error("failed to encode a Sign string: {0}")]
     StringEncoding(#[from] ShiftJisEncodeError),

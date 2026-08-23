@@ -1,3 +1,9 @@
+use argon2::{
+    Argon2,
+    password_hash::{
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
+    },
+};
 use jiff::Timestamp;
 use rand::{RngExt, distr::Alphanumeric};
 use sha2::{Digest, Sha256};
@@ -10,8 +16,6 @@ use super::{
     outbound::{IssuedSignSession, PasswordSignInResponse, SignInSuccess},
 };
 use crate::{InternalError, SignSessionContext};
-
-const BCRYPT_MAX_PASSWORD_LEN: usize = 71;
 
 pub(super) struct PasswordSignInHandler;
 
@@ -42,7 +46,7 @@ async fn password_sign_in(
         None => (inbound.username.as_str(), false),
     };
 
-    if username.is_empty() || inbound.password.len() > BCRYPT_MAX_PASSWORD_LEN {
+    if username.is_empty() {
         return Ok(PasswordSignInResponse::IllegalInput);
     }
 
@@ -107,14 +111,22 @@ fn hash_session_token(token: &[u8; SESSION_TOKEN_LEN]) -> Vec<u8> {
 
 async fn hash_password(password: String) -> Result<String, InternalError> {
     Ok(tokio::task::spawn_blocking(move || {
-        bcrypt::non_truncating_hash(password, bcrypt::DEFAULT_COST)
+        let salt = SaltString::generate(OsRng);
+        Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
     })
     .await??)
 }
 
 async fn verify_password(password: String, password_hash: String) -> Result<bool, InternalError> {
     Ok(tokio::task::spawn_blocking(move || {
-        bcrypt::non_truncating_verify(password, &password_hash)
+        let password_hash = PasswordHash::new(&password_hash)?;
+        match Argon2::default().verify_password(password.as_bytes(), &password_hash) {
+            Ok(()) => Ok(true),
+            Err(argon2::password_hash::Error::Password) => Ok(false),
+            Err(error) => Err(error),
+        }
     })
     .await??)
 }
@@ -137,23 +149,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_a_password_exceeding_the_bcrypt_limit() {
-        let response = password_sign_in(
-            SignSessionContext::new(Arc::new(SignServiceContext::for_test().await)),
-            request("a".repeat(BCRYPT_MAX_PASSWORD_LEN + 1)),
-        )
-        .await
-        .unwrap();
-
-        assert!(matches!(response, PasswordSignInResponse::IllegalInput));
-    }
-
-    #[tokio::test]
     async fn creates_an_account_reuses_its_character_and_rejects_a_wrong_password() {
         let service = Arc::new(SignServiceContext::for_test().await);
+        let password = "a".repeat(128);
         let first = password_sign_in(
             SignSessionContext::new(Arc::clone(&service)),
-            request("secret"),
+            request(password.clone()),
         )
         .await
         .unwrap();
@@ -165,7 +166,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(account.password_hash, "secret");
+        assert!(account.password_hash.starts_with("$argon2id$v=19$"));
         assert_eq!(
             account.rights.bits(),
             CourseRights::HUNTER_LIFE
@@ -177,7 +178,7 @@ mod tests {
 
         let second = password_sign_in(
             SignSessionContext::new(Arc::clone(&service)),
-            request("secret"),
+            request(password),
         )
         .await
         .unwrap();

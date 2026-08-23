@@ -5,8 +5,8 @@ edition.workspace = true
 
 [dependencies]
 automod = "1"
+argon2 = { version = "0.5", features = ["std"] }
 async-trait = "0.1"
-bcrypt = "0.19"
 binrw = "0.15"
 bytes = "1"
 config = { version = "0.15", default-features = false, features = ["toml"] }
@@ -15,7 +15,7 @@ inventory = "0.3"
 jiff = "0.2"
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 shrimpman-common = { path = "../common" }
 shrimpman-config = { path = "../config" }
 shrimpman-domain = { path = "../domain" }
