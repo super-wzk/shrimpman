@@ -4,6 +4,7 @@
 
 mod application;
 mod config;
+mod database;
 mod envelope;
 mod router;
 mod server;
@@ -11,7 +12,8 @@ mod server;
 pub use application::{
     ConnectionError, InternalError, SignService, SignServiceContext, SignSessionContext,
 };
-pub use config::{SignConfig, SignServerConfig};
+pub use config::{SignConfig, SignDatabaseConfig, SignServerConfig, SignSessionConfig};
+pub use database::SignDatabase;
 pub use envelope::{Command, CommandDecodeError};
 pub use router::{SignRouteError, SignRouterBuildError};
 pub use server::SignServer;

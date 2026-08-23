@@ -198,7 +198,7 @@ mod tests {
         let decoder = routes.resolve("SIGN:", &V041).copied().unwrap();
         let mut payload = Cursor::new(Bytes::from_static(&[7]));
         let handler = decoder.decode(&V041, &mut payload).unwrap();
-        let outbounds = handler.handle(session_context()).await.unwrap();
+        let outbounds = handler.handle(session_context().await).await.unwrap();
 
         assert_eq!(
             outbounds.into_iter().next().unwrap().encode().unwrap(),
@@ -208,7 +208,7 @@ mod tests {
         let decoder = routes.resolve("SIGN:", &V100).copied().unwrap();
         let mut payload = Cursor::new(Bytes::from_static(&[8]));
         let handler = decoder.decode(&V100, &mut payload).unwrap();
-        let outbounds = handler.handle(session_context()).await.unwrap();
+        let outbounds = handler.handle(session_context().await).await.unwrap();
 
         assert_eq!(
             outbounds.into_iter().next().unwrap().encode().unwrap(),
@@ -250,7 +250,7 @@ mod tests {
         decoder.decode(&version, &mut payload).unwrap().mode()
     }
 
-    fn session_context() -> SignSessionContext {
-        SignSessionContext::new(Arc::new(SignServiceContext))
+    async fn session_context() -> SignSessionContext {
+        SignSessionContext::new(Arc::new(SignServiceContext::for_test().await))
     }
 }

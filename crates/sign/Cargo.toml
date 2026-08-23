@@ -6,15 +6,23 @@ edition.workspace = true
 [dependencies]
 automod = "1"
 async-trait = "0.1"
+bcrypt = "0.19"
 binrw = "0.15"
 bytes = "1"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 futures-util = { version = "0.3", features = ["sink"] }
 inventory = "0.3"
+jiff = "0.2"
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 shrimpman-common = { path = "../common" }
+shrimpman-config = { path = "../config" }
+shrimpman-domain = { path = "../domain" }
+shrimpman-persistence = { path = "../persistence" }
 shrimpman-protocol = { path = "../protocol" }
 shrimpman-transport = { path = "../transport" }
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
+toasty = { version = "0.10", features = ["sqlite"] }
 tracing = "0.1"

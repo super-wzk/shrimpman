@@ -1,12 +1,21 @@
 use std::error::Error;
 
-use shrimpman_sign::{SignConfig, SignServer, SignService, SignServiceContext};
+use jiff::SignedDuration;
+use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = load_config()?;
-    let service = SignService::new(SignServiceContext)?;
-    let server = SignServer::bind(config.server, service).await?;
+    let sign = load_config()?;
+    let database = SignDatabase::connect(&sign.database).await?;
+    let context = SignServiceContext::new(
+        SignedDuration::from_secs(i64::from(sign.session.ttl_secs)),
+        database.account_repository(),
+        database.character_repository(),
+        database.mezeporta_festival_repository(),
+        database.sign_session_repository(),
+    );
+    let service = SignService::new(context)?;
+    let server = SignServer::bind(sign.server, service).await?;
 
     server.run(shutdown_signal()).await?;
 
@@ -14,10 +23,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn load_config() -> Result<SignConfig, config::ConfigError> {
-    let config = config::Config::builder()
-        .add_source(config::File::new("config.toml", config::FileFormat::Toml))
-        .add_source(config::Environment::with_prefix("SHRIMPMAN").separator("__"))
-        .build()?;
+    let config = shrimpman_config::load()?;
 
     SignConfig::try_from(&config)
 }

@@ -166,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn drains_queued_responses_and_closes_the_connection() {
         let (mut client_io, server_io) = duplex(4096);
-        let service = SignService::new(SignServiceContext).unwrap();
+        let service = SignService::new(SignServiceContext::for_test().await).unwrap();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; INITIALIZATION_LEN]).await.unwrap();
@@ -191,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_connections_without_a_complete_initialization() {
         let (mut client_io, server_io) = duplex(64);
-        let service = SignService::new(SignServiceContext).unwrap();
+        let service = SignService::new(SignServiceContext::for_test().await).unwrap();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; 7]).await.unwrap();

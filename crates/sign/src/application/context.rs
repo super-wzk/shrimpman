@@ -1,7 +1,73 @@
 use std::sync::Arc;
 
+use jiff::SignedDuration;
+use shrimpman_persistence::{
+    AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignSessionRepository,
+};
+
 /// Dependencies shared by every Sign connection.
-pub struct SignServiceContext;
+pub struct SignServiceContext {
+    session_ttl: SignedDuration,
+    accounts: AccountRepository,
+    characters: CharacterRepository,
+    mezeporta_festivals: MezeportaFestivalRepository,
+    sign_sessions: SignSessionRepository,
+}
+
+impl SignServiceContext {
+    /// Creates a service context from explicitly assembled dependencies.
+    pub fn new(
+        session_ttl: SignedDuration,
+        accounts: AccountRepository,
+        characters: CharacterRepository,
+        mezeporta_festivals: MezeportaFestivalRepository,
+        sign_sessions: SignSessionRepository,
+    ) -> Self {
+        Self {
+            session_ttl,
+            accounts,
+            characters,
+            mezeporta_festivals,
+            sign_sessions,
+        }
+    }
+
+    pub(crate) const fn session_ttl(&self) -> SignedDuration {
+        self.session_ttl
+    }
+
+    pub(crate) fn accounts(&self) -> &AccountRepository {
+        &self.accounts
+    }
+
+    pub(crate) fn characters(&self) -> &CharacterRepository {
+        &self.characters
+    }
+
+    pub(crate) fn mezeporta_festivals(&self) -> &MezeportaFestivalRepository {
+        &self.mezeporta_festivals
+    }
+
+    pub(crate) fn sign_sessions(&self) -> &SignSessionRepository {
+        &self.sign_sessions
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn for_test() -> Self {
+        let mut builder = toasty::Db::builder();
+        builder.models(shrimpman_persistence::models());
+        let db = builder.connect("sqlite::memory:").await.unwrap();
+        db.push_schema().await.unwrap();
+
+        Self::new(
+            SignedDuration::from_mins(5),
+            AccountRepository::new(&db),
+            CharacterRepository::new(&db),
+            MezeportaFestivalRepository::new(&db),
+            SignSessionRepository::new(&db),
+        )
+    }
+}
 
 /// State and dependencies belonging to one Sign connection.
 pub struct SignSessionContext {

@@ -1,0 +1,9 @@
+[package]
+name = "shrimpman-domain"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bitflags = "2"
+derive_more = { version = "2", features = ["from", "into"] }
+jiff = "0.2"

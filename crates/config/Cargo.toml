@@ -1,0 +1,7 @@
+[package]
+name = "shrimpman-config"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+config = { version = "0.15", default-features = false, features = ["toml"] }

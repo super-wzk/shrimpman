@@ -1,0 +1,382 @@
+version = 1
+
+[schema]
+
+[[schema.tables]]
+id = 0
+name = "characters"
+primary_key = { columns = [{ table = 0, index = 0 }], index = { table = 0, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 0 }
+name = "id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 1 }
+name = "account_id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 2 }
+name = "gender"
+ty = "String"
+storage_ty = { Enum = { name = "gender", variants = [{ name = "male" }, { name = "female" }] } }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 3 }
+name = "savedata"
+ty = "Bytes"
+storage_ty = "Blob"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 4 }
+name = "name"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 0, index = 5 }
+name = "description"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 0, index = 6 }
+name = "gr"
+ty = "U16"
+storage_ty = { UnsignedInteger = 2 }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 7 }
+name = "hr"
+ty = "U16"
+storage_ty = { UnsignedInteger = 2 }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 8 }
+name = "weapon_type"
+ty = "String"
+storage_ty = { Enum = { name = "weapon_type", variants = [{ name = "sword_and_shield" }, { name = "heavy_bowgun" }, { name = "hammer" }, { name = "great_sword" }, { name = "lance" }, { name = "light_bowgun" }, { name = "long_sword" }, { name = "dual_blades" }, { name = "hunting_horn" }, { name = "gunlance" }, { name = "bow" }, { name = "tonfa" }, { name = "switch_axe" }, { name = "magnet_spike" }] } }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 9 }
+name = "deleted_at"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.indices]]
+id = { table = 0, index = 0 }
+name = "index_characters_by_id"
+on = 0
+columns = [{ column = { table = 0, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 0, index = 1 }
+name = "index_characters_by_account_id"
+on = 0
+columns = [{ column = { table = 0, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 1
+name = "accounts"
+primary_key = { columns = [{ table = 1, index = 0 }], index = { table = 1, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 1, index = 0 }
+name = "id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 1 }
+name = "username"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 1, index = 2 }
+name = "password_hash"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 1, index = 3 }
+name = "rights"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.indices]]
+id = { table = 1, index = 0 }
+name = "index_accounts_by_id"
+on = 1
+columns = [{ column = { table = 1, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 1, index = 1 }
+name = "index_accounts_by_username"
+on = 1
+columns = [{ column = { table = 1, index = 1 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables]]
+id = 2
+name = "account_sign_in_records"
+primary_key = { columns = [{ table = 2, index = 0 }], index = { table = 2, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 0 }
+name = "id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 2, index = 1 }
+name = "account_id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 2 }
+name = "signed_in_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.indices]]
+id = { table = 2, index = 0 }
+name = "index_account_sign_in_records_by_id"
+on = 2
+columns = [{ column = { table = 2, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 2, index = 1 }
+name = "index_account_sign_in_records_by_account_id_and_signed_in_at_and_id"
+on = 2
+columns = [{ column = { table = 2, index = 1 }, op = "Eq", scope = "Partition" }, { column = { table = 2, index = 2 }, op = "Eq", scope = "Local" }, { column = { table = 2, index = 0 }, op = "Eq", scope = "Local" }]
+
+[[schema.tables]]
+id = 3
+name = "account_return_periods"
+primary_key = { columns = [{ table = 3, index = 0 }], index = { table = 3, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 3, index = 0 }
+name = "id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 1 }
+name = "account_id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.columns]]
+id = { table = 3, index = 2 }
+name = "period_starts_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 3, index = 3 }
+name = "period_expires_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.indices]]
+id = { table = 3, index = 0 }
+name = "index_account_return_periods_by_id"
+on = 3
+columns = [{ column = { table = 3, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 3, index = 1 }
+name = "index_account_return_periods_by_account_id_and_id"
+on = 3
+columns = [{ column = { table = 3, index = 1 }, op = "Eq", scope = "Partition" }, { column = { table = 3, index = 0 }, op = "Eq", scope = "Local" }]
+
+[[schema.tables]]
+id = 4
+name = "sign_sessions"
+primary_key = { columns = [{ table = 4, index = 0 }], index = { table = 4, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 0 }
+name = "id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 4, index = 1 }
+name = "account_id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 2 }
+name = "token_hash"
+ty = "Bytes"
+storage_ty = "Blob"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 3 }
+name = "validity_starts_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 4 }
+name = "validity_expires_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.indices]]
+id = { table = 4, index = 0 }
+name = "index_sign_sessions_by_id"
+on = 4
+columns = [{ column = { table = 4, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 4, index = 1 }
+name = "index_sign_sessions_by_account_id"
+on = 4
+columns = [{ column = { table = 4, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 5
+name = "character_sign_in_records"
+primary_key = { columns = [{ table = 5, index = 0 }], index = { table = 5, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 0 }
+name = "id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 1 }
+name = "character_id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 2 }
+name = "signed_in_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.indices]]
+id = { table = 5, index = 0 }
+name = "index_character_sign_in_records_by_id"
+on = 5
+columns = [{ column = { table = 5, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 5, index = 1 }
+name = "index_character_sign_in_records_by_character_id_and_signed_in_at_and_id"
+on = 5
+columns = [{ column = { table = 5, index = 1 }, op = "Eq", scope = "Partition" }, { column = { table = 5, index = 2 }, op = "Eq", scope = "Local" }, { column = { table = 5, index = 0 }, op = "Eq", scope = "Local" }]
+
+[[schema.tables]]
+id = 6
+name = "mezeporta_festival_stalls"
+primary_key = { columns = [{ table = 6, index = 0 }, { table = 6, index = 1 }], index = { table = 6, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 0 }
+name = "festival_id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 1 }
+name = "position"
+ty = "U8"
+storage_ty = { UnsignedInteger = 1 }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 2 }
+name = "stall"
+ty = "String"
+storage_ty = { Enum = { name = "stored_mezeporta_stall", variants = [{ name = "tokotoko_partnya" }, { name = "unknown3" }, { name = "volpakkun_together" }, { name = "unknown5" }, { name = "unknown6" }, { name = "unknown7" }, { name = "unknown8" }, { name = "unknown9" }, { name = "unknown10" }] } }
+
+[[schema.tables.indices]]
+id = { table = 6, index = 0 }
+name = "index_mezeporta_festival_stalls_by_festival_id_and_position"
+on = 6
+columns = [{ column = { table = 6, index = 0 }, op = "Eq", scope = "Partition" }, { column = { table = 6, index = 1 }, op = "Eq", scope = "Local" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 6, index = 1 }
+name = "index_mezeporta_festival_stalls_by_festival_id_and_stall"
+on = 6
+columns = [{ column = { table = 6, index = 0 }, op = "Eq", scope = "Partition" }, { column = { table = 6, index = 2 }, op = "Eq", scope = "Local" }]
+unique = true
+
+[[schema.tables]]
+id = 7
+name = "mezeporta_festivals"
+primary_key = { columns = [{ table = 7, index = 0 }], index = { table = 7, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 0 }
+name = "id"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 1 }
+name = "period_starts_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 7, index = 2 }
+name = "period_expires_at"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 7, index = 3 }
+name = "solo_ticket_allowance"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 4 }
+name = "group_ticket_allowance"
+ty = "U32"
+storage_ty = { UnsignedInteger = 4 }
+
+[[schema.tables.indices]]
+id = { table = 7, index = 0 }
+name = "index_mezeporta_festivals_by_id"
+on = 7
+columns = [{ column = { table = 7, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true

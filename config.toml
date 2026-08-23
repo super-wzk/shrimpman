@@ -1,3 +1,12 @@
+[migration]
+database_url = "sqlite://shrimpman.sqlite3"
+
+[sign.database]
+url = "sqlite://shrimpman.sqlite3"
+
+[sign.session]
+ttl_secs = 300
+
 [sign.server]
 listen_addr = "0.0.0.0:53312"
 shutdown_timeout_secs = 5
