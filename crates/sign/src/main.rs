@@ -8,6 +8,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sign = load_config()?;
     let database = SignDatabase::connect(&sign.database).await?;
     let context = SignServiceContext::new(
+        sign.auto_sign_up,
         SignedDuration::from_secs(i64::from(sign.session.ttl_secs)),
         database.account_repository(),
         database.character_repository(),

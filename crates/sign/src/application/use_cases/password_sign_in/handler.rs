@@ -58,13 +58,14 @@ async fn password_sign_in(
             }
             account
         }
-        None => {
+        None if service.auto_sign_up() => {
             let password_hash = hash_password(inbound.password).await?;
             service
                 .accounts()
                 .create(username.to_owned(), password_hash)
                 .await?
         }
+        None => return Ok(PasswordSignInResponse::WrongPassword),
     };
 
     let rights = account.rights;
@@ -149,8 +150,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_an_unknown_account_when_auto_sign_up_is_disabled() {
+        let service = Arc::new(SignServiceContext::for_test(false).await);
+        let response = password_sign_in(
+            SignSessionContext::new(Arc::clone(&service)),
+            request("secret"),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(response, PasswordSignInResponse::WrongPassword));
+        assert!(
+            service
+                .accounts()
+                .find_by_username("alice")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn creates_an_account_reuses_its_character_and_rejects_a_wrong_password() {
-        let service = Arc::new(SignServiceContext::for_test().await);
+        let service = Arc::new(SignServiceContext::for_test(true).await);
         let password = "a".repeat(128);
         let first = password_sign_in(
             SignSessionContext::new(Arc::clone(&service)),

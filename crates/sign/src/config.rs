@@ -11,6 +11,8 @@ const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SignConfig {
+    /// Whether a successful sign-in may create a missing account.
+    pub auto_sign_up: bool,
     /// Persistent storage configuration.
     pub database: SignDatabaseConfig,
     /// Sign session configuration.
@@ -85,6 +87,8 @@ mod tests {
     #[test]
     fn reads_the_sign_section() {
         let config = ::config::Config::builder()
+            .set_override("sign.auto_sign_up", true)
+            .unwrap()
             .set_override("sign.server.listen_addr", "127.0.0.1:60000")
             .unwrap()
             .set_override("sign.session.ttl_secs", 600)
@@ -95,6 +99,7 @@ mod tests {
         assert_eq!(
             SignConfig::try_from(&config).unwrap(),
             SignConfig {
+                auto_sign_up: true,
                 database: SignDatabaseConfig::default(),
                 session: SignSessionConfig { ttl_secs: 600 },
                 server: SignServerConfig {

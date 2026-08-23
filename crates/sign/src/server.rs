@@ -123,7 +123,7 @@ mod tests {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             shutdown_timeout_secs: 0,
         };
-        let service = SignService::new(SignServiceContext::for_test().await).unwrap();
+        let service = SignService::new(SignServiceContext::for_test(true).await).unwrap();
         let server = SignServer::bind(config, service).await.unwrap();
         let local_addr = server.local_addr().unwrap();
 

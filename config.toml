@@ -1,6 +1,9 @@
 [migration]
 database_url = "sqlite://shrimpman.sqlite3"
 
+[sign]
+auto_sign_up = false
+
 [sign.database]
 url = "sqlite://shrimpman.sqlite3"
 
