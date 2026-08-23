@@ -102,14 +102,14 @@ fn build_routes(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, sync::Arc};
 
     use binrw::{BinRead, BinWrite};
     use bytes::Bytes;
     use shrimpman_protocol::{DispatchMode, EncodePayload, Handler, PacketDecoder};
 
     use super::*;
-    use crate::{InternalError, SignContext};
+    use crate::{InternalError, SignServiceContext, SignSessionContext};
 
     const COMMANDS: &[&str] = &["SIGN:"];
     const V041: ClientVersion = ClientVersion::new(41);
@@ -130,16 +130,14 @@ mod tests {
     struct ModernOutbound(u8);
 
     #[async_trait::async_trait]
-    impl Handler<SignContext> for LegacyHandler {
+    impl Handler<SignSessionContext> for LegacyHandler {
         type Inbound = Versioned;
         type Outbound = LegacyOutbound;
         type Error = InternalError;
 
-        const MODE: DispatchMode = DispatchMode::Ordered;
-
         async fn handle(
             &self,
-            _context: SignContext,
+            _context: SignSessionContext,
             inbound: Self::Inbound,
         ) -> Result<Vec<Self::Outbound>, Self::Error> {
             Ok(vec![LegacyOutbound(inbound.0)])
@@ -147,7 +145,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Handler<SignContext> for ModernHandler {
+    impl Handler<SignSessionContext> for ModernHandler {
         type Inbound = Versioned;
         type Outbound = ModernOutbound;
         type Error = InternalError;
@@ -156,7 +154,7 @@ mod tests {
 
         async fn handle(
             &self,
-            _context: SignContext,
+            _context: SignSessionContext,
             inbound: Self::Inbound,
         ) -> Result<Vec<Self::Outbound>, Self::Error> {
             Ok(vec![ModernOutbound(inbound.0)])
@@ -200,7 +198,7 @@ mod tests {
         let decoder = routes.resolve("SIGN:", &V041).copied().unwrap();
         let mut payload = Cursor::new(Bytes::from_static(&[7]));
         let handler = decoder.decode(&V041, &mut payload).unwrap();
-        let outbounds = handler.handle(SignContext).await.unwrap();
+        let outbounds = handler.handle(session_context()).await.unwrap();
 
         assert_eq!(
             outbounds.into_iter().next().unwrap().encode().unwrap(),
@@ -210,7 +208,7 @@ mod tests {
         let decoder = routes.resolve("SIGN:", &V100).copied().unwrap();
         let mut payload = Cursor::new(Bytes::from_static(&[8]));
         let handler = decoder.decode(&V100, &mut payload).unwrap();
-        let outbounds = handler.handle(SignContext).await.unwrap();
+        let outbounds = handler.handle(session_context()).await.unwrap();
 
         assert_eq!(
             outbounds.into_iter().next().unwrap().encode().unwrap(),
@@ -250,5 +248,9 @@ mod tests {
         let mut payload = Cursor::new(Bytes::from_static(&[7]));
 
         decoder.decode(&version, &mut payload).unwrap().mode()
+    }
+
+    fn session_context() -> SignSessionContext {
+        SignSessionContext::new(Arc::new(SignServiceContext))
     }
 }

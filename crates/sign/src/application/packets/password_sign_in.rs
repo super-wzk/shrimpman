@@ -1,9 +1,9 @@
 use binrw::{BinWrite, NullString, binread};
 use shrimpman_common::encoding::decode_shift_jis;
-use shrimpman_protocol::{DispatchMode, Handler};
+use shrimpman_protocol::Handler;
 
 use crate::{
-    InternalError, SignContext,
+    InternalError, SignSessionContext,
     router::{SignPacketRegistration, VersionSelector},
 };
 
@@ -30,16 +30,14 @@ struct PasswordSignInResponse;
 struct PasswordSignInHandler;
 
 #[async_trait::async_trait]
-impl Handler<SignContext> for PasswordSignInHandler {
+impl Handler<SignSessionContext> for PasswordSignInHandler {
     type Inbound = PasswordSignIn;
     type Outbound = PasswordSignInResponse;
     type Error = InternalError;
 
-    const MODE: DispatchMode = DispatchMode::Ordered;
-
     async fn handle(
         &self,
-        _context: SignContext,
+        _context: SignSessionContext,
         _inbound: Self::Inbound,
     ) -> Result<Vec<Self::Outbound>, Self::Error> {
         unimplemented!()

@@ -3,6 +3,6 @@ mod error;
 mod packets;
 mod service;
 
-pub use context::SignContext;
+pub use context::{SignServiceContext, SignSessionContext};
 pub use error::{ConnectionError, InternalError};
 pub use service::SignService;

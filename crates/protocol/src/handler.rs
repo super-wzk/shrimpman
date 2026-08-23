@@ -29,7 +29,7 @@ where
     type Outbound: Send + 'static;
     type Error: Send + 'static;
 
-    const MODE: DispatchMode;
+    const MODE: DispatchMode = DispatchMode::Ordered;
 
     async fn handle(
         &self,
@@ -205,8 +205,6 @@ mod tests {
         type Inbound = Number;
         type Outbound = u8;
         type Error = std::convert::Infallible;
-
-        const MODE: DispatchMode = DispatchMode::Ordered;
 
         async fn handle(
             &self,

@@ -1,11 +1,11 @@
-use std::{collections::VecDeque, num::NonZeroUsize};
+use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
 use futures_util::{SinkExt, StreamExt};
 use shrimpman_protocol::{BinrwOutbound, CommandPacketDecoder, Dispatcher, PacketStream};
 use shrimpman_transport::MhfConnection;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
-use super::{ConnectionError, InternalError, SignContext};
+use super::{ConnectionError, InternalError, SignServiceContext, SignSessionContext};
 use crate::{
     envelope::SignCommandDecoder,
     router::{SignRouter, SignRouterBuildError},
@@ -18,15 +18,15 @@ type SignPacketStream<Io> =
 
 /// Serves the Sign protocol over accepted connections.
 pub struct SignService {
-    context: SignContext,
+    context: Arc<SignServiceContext>,
     router: SignRouter,
 }
 
 impl SignService {
     /// Builds the service and validates all distributed packet registrations.
-    pub fn new(context: SignContext) -> Result<Self, SignRouterBuildError> {
+    pub fn new(context: SignServiceContext) -> Result<Self, SignRouterBuildError> {
         Ok(Self {
-            context,
+            context: Arc::new(context),
             router: SignRouter::new()?,
         })
     }
@@ -45,21 +45,21 @@ impl SignService {
             .await
             .map_err(ConnectionError::Initialization)?;
 
-        SignSession::new(io, self.context.clone(), self.router)
-            .run()
-            .await
+        let context = SignSessionContext::new(Arc::clone(&self.context));
+
+        SignSession::new(io, context, self.router).run().await
     }
 }
 
 struct SignSession<Io> {
-    context: SignContext,
+    context: SignSessionContext,
     packets: SignPacketStream<Io>,
     dispatcher: Dispatcher<BinrwOutbound, InternalError>,
     outbound_queue: VecDeque<BinrwOutbound>,
 }
 
 impl<Io> SignSession<Io> {
-    fn new(io: Io, context: SignContext, router: SignRouter) -> Self {
+    fn new(io: Io, context: SignSessionContext, router: SignRouter) -> Self {
         let connection = MhfConnection::new(io);
         let decoder = CommandPacketDecoder::new(SignCommandDecoder, router);
 
@@ -136,7 +136,7 @@ mod tests {
     struct TestHandler;
 
     #[async_trait::async_trait]
-    impl Handler<SignContext> for TestHandler {
+    impl Handler<SignSessionContext> for TestHandler {
         type Inbound = TestRequest;
         type Outbound = TestResponse;
         type Error = InternalError;
@@ -145,7 +145,7 @@ mod tests {
 
         async fn handle(
             &self,
-            _context: SignContext,
+            _context: SignSessionContext,
             inbound: Self::Inbound,
         ) -> Result<Vec<Self::Outbound>, Self::Error> {
             Ok(vec![
@@ -166,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn drains_queued_responses_and_closes_the_connection() {
         let (mut client_io, server_io) = duplex(4096);
-        let service = SignService::new(SignContext).unwrap();
+        let service = SignService::new(SignServiceContext).unwrap();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; INITIALIZATION_LEN]).await.unwrap();
@@ -191,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_connections_without_a_complete_initialization() {
         let (mut client_io, server_io) = duplex(64);
-        let service = SignService::new(SignContext).unwrap();
+        let service = SignService::new(SignServiceContext).unwrap();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; 7]).await.unwrap();

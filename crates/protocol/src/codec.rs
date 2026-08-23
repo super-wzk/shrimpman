@@ -186,7 +186,7 @@ mod tests {
     use super::*;
     use binrw::BinRead;
 
-    use crate::{BinrwHandlerDecoder, DispatchMode, Dispatcher, EncodePayload, Handler};
+    use crate::{BinrwHandlerDecoder, Dispatcher, EncodePayload, Handler};
 
     struct ByteCommandDecoder;
 
@@ -245,8 +245,6 @@ mod tests {
         type Inbound = Add;
         type Outbound = u8;
         type Error = Infallible;
-
-        const MODE: DispatchMode = DispatchMode::Ordered;
 
         async fn handle(
             &self,

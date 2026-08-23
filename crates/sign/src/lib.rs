@@ -3,12 +3,18 @@
 #![warn(unreachable_pub)]
 
 mod application;
+mod config;
 mod envelope;
 mod router;
+mod server;
 
-pub use application::{ConnectionError, InternalError, SignContext, SignService};
+pub use application::{
+    ConnectionError, InternalError, SignService, SignServiceContext, SignSessionContext,
+};
+pub use config::{SignConfig, SignServerConfig};
 pub use envelope::{Command, CommandDecodeError};
 pub use router::{SignRouteError, SignRouterBuildError};
+pub use server::SignServer;
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,3 @@
+[sign.server]
+listen_addr = "0.0.0.0:53312"
+shutdown_timeout_secs = 5

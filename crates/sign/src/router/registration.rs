@@ -1,11 +1,11 @@
 use binrw::{BinRead, BinWrite};
 use shrimpman_protocol::{BinrwHandlerDecoder, Handler};
 
-use crate::{InternalError, SignContext};
+use crate::{InternalError, SignSessionContext};
 
 use super::VersionSelector;
 
-pub(super) type SignHandlerDecoder = BinrwHandlerDecoder<SignContext, InternalError>;
+pub(super) type SignHandlerDecoder = BinrwHandlerDecoder<SignSessionContext, InternalError>;
 
 pub(crate) struct SignPacketRegistration {
     pub(super) commands: &'static [&'static str],
@@ -18,7 +18,7 @@ impl SignPacketRegistration {
         commands: &'static [&'static str],
         versions: VersionSelector,
         handler: &'static impl Handler<
-            SignContext,
+            SignSessionContext,
             Error = InternalError,
             Inbound: for<'args> BinRead<Args<'args> = ()>,
             Outbound: for<'args> BinWrite<Args<'args> = ()>,
