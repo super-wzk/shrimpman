@@ -1,10 +1,10 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use serde::Deserialize;
 
 const DEFAULT_PORT: u16 = 53_312;
-const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
-const DEFAULT_SESSION_TTL_SECS: u32 = 5 * 60;
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
 
 /// Configuration for the Sign service.
@@ -41,14 +41,15 @@ impl Default for SignDatabaseConfig {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SignSessionConfig {
-    /// Lifetime of a Sign session in seconds.
-    pub ttl_secs: u32,
+    /// Lifetime of a Sign session.
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
+    pub ttl: Duration,
 }
 
 impl Default for SignSessionConfig {
     fn default() -> Self {
         Self {
-            ttl_secs: DEFAULT_SESSION_TTL_SECS,
+            ttl: DEFAULT_SESSION_TTL,
         }
     }
 }
@@ -59,15 +60,16 @@ impl Default for SignSessionConfig {
 pub struct SignServerConfig {
     /// Address on which the Sign TCP listener accepts connections.
     pub listen_addr: SocketAddr,
-    /// Seconds to wait for active connections before canceling them.
-    pub shutdown_timeout_secs: u64,
+    /// Time to wait for active connections before canceling them.
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
+    pub shutdown_timeout: Duration,
 }
 
 impl Default for SignServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
-            shutdown_timeout_secs: DEFAULT_SHUTDOWN_TIMEOUT_SECS,
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
 }
@@ -91,7 +93,9 @@ mod tests {
             .unwrap()
             .set_override("sign.server.listen_addr", "127.0.0.1:60000")
             .unwrap()
-            .set_override("sign.session.ttl_secs", 600)
+            .set_override("sign.server.shutdown_timeout", "250ms")
+            .unwrap()
+            .set_override("sign.session.ttl", "10m")
             .unwrap()
             .build()
             .unwrap();
@@ -101,10 +105,12 @@ mod tests {
             SignConfig {
                 auto_sign_up: true,
                 database: SignDatabaseConfig::default(),
-                session: SignSessionConfig { ttl_secs: 600 },
+                session: SignSessionConfig {
+                    ttl: Duration::from_secs(10 * 60),
+                },
                 server: SignServerConfig {
                     listen_addr: "127.0.0.1:60000".parse().unwrap(),
-                    shutdown_timeout_secs: 5,
+                    shutdown_timeout: Duration::from_millis(250),
                 },
             }
         );

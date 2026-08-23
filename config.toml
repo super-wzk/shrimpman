@@ -8,8 +8,8 @@ auto_sign_up = false
 url = "sqlite://shrimpman.sqlite3"
 
 [sign.session]
-ttl_secs = 300
+ttl = "5m"
 
 [sign.server]
 listen_addr = "0.0.0.0:53312"
-shutdown_timeout_secs = 5
+shutdown_timeout = "5s"

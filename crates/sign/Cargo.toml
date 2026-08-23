@@ -12,7 +12,7 @@ bytes = "1"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 futures-util = { version = "0.3", features = ["sink"] }
 inventory = "0.3"
-jiff = "0.2"
+jiff = { version = "0.2", features = ["serde"] }
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"

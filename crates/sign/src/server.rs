@@ -22,7 +22,7 @@ impl SignServer {
         Ok(Self {
             listener,
             service: Arc::new(service),
-            shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
+            shutdown_timeout: config.shutdown_timeout,
         })
     }
 
@@ -121,7 +121,7 @@ mod tests {
     async fn binds_the_configured_listener() {
         let config = SignServerConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
-            shutdown_timeout_secs: 0,
+            shutdown_timeout: Duration::ZERO,
         };
         let service = SignService::new(SignServiceContext::for_test(true).await).unwrap();
         let server = SignServer::bind(config, service).await.unwrap();
