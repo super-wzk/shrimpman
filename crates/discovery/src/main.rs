@@ -1,32 +1,15 @@
 use std::error::Error;
 
-use jiff::SignedDuration;
-use shrimpman_discovery::client::DiscoveryClient;
-use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext};
+use shrimpman_discovery::server::{DiscoveryConfig, DiscoveryServer};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let sign = load_config()?;
-    let database = SignDatabase::connect(&sign.database).await?;
-    let discovery = DiscoveryClient::connect(sign.discovery)?;
-    let context = SignServiceContext::new(
-        sign.auto_sign_up,
-        SignedDuration::try_from(sign.session.ttl)?,
-        discovery,
-        database.repositories(),
-    );
-    let service = SignService::new(context)?;
-    let server = SignServer::bind(sign.server, service).await?;
+    let config = shrimpman_config::load()?;
+    let discovery = DiscoveryConfig::try_from(&config)?;
+    let server = DiscoveryServer::bind(discovery.server).await?;
 
     server.run(shutdown_signal()).await?;
-
     Ok(())
-}
-
-fn load_config() -> Result<SignConfig, config::ConfigError> {
-    let config = shrimpman_config::load()?;
-
-    SignConfig::try_from(&config)
 }
 
 async fn shutdown_signal() {

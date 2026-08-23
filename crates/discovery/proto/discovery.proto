@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package shrimpman.discovery.v1;
+
+service Discovery {
+  rpc Register(stream RegistrationCommand) returns (stream RegistrationEvent);
+  rpc Watch(WatchRequest) returns (stream ServiceSnapshot);
+}
+
+message RegistrationCommand {
+  oneof command {
+    PublishedServiceInstance publish = 1;
+    ServiceInstanceId withdraw = 2;
+  }
+}
+
+message PublishedServiceInstance {
+  uint64 revision = 1;
+  ServiceInstance instance = 2;
+}
+
+message RegistrationEvent {
+  oneof event {
+    RegistrationPublished published = 1;
+    RegistrationWithdrawn withdrawn = 2;
+    RegistrationRejected rejected = 3;
+  }
+}
+
+message RegistrationPublished {
+  bytes instance_id = 1;
+  uint64 revision = 2;
+}
+
+message RegistrationWithdrawn {
+  bytes instance_id = 1;
+}
+
+message RegistrationRejected {
+  bytes instance_id = 1;
+  string reason = 2;
+}
+
+message ServiceInstanceId {
+  bytes value = 1;
+}
+
+message ServiceInstance {
+  bytes id = 1;
+  string service = 2;
+  ServiceState state = 3;
+  // JSON owned by the publishing service. Discovery does not interpret its schema.
+  bytes metadata = 4;
+}
+
+enum ServiceState {
+  SERVICE_STATE_UNSPECIFIED = 0;
+  SERVICE_STATE_STARTING = 1;
+  SERVICE_STATE_READY = 2;
+  SERVICE_STATE_DRAINING = 3;
+}
+
+message WatchRequest {
+  // An empty list subscribes to every service.
+  repeated string services = 1;
+}
+
+message ServiceSnapshot {
+  repeated ServiceInstance instances = 1;
+}

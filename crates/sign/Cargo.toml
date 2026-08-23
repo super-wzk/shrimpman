@@ -19,6 +19,7 @@ sha2 = "0.11"
 shrimpman-common = { path = "../common" }
 shrimpman-config = { path = "../config" }
 shrimpman-domain = { path = "../domain" }
+shrimpman-discovery = { path = "../discovery" }
 shrimpman-persistence = { path = "../persistence" }
 shrimpman-protocol = { path = "../protocol" }
 shrimpman-transport = { path = "../transport" }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use jiff::SignedDuration;
+use shrimpman_discovery::client::DiscoveryClient;
 use shrimpman_persistence::{
     AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignInNoticeRepository,
     SignSessionRepository,
@@ -10,6 +11,12 @@ use shrimpman_persistence::{
 pub struct SignServiceContext {
     auto_sign_up: bool,
     session_ttl: SignedDuration,
+    _discovery: DiscoveryClient,
+    repositories: SignRepositories,
+}
+
+/// Persistent repositories used by Sign application services.
+pub struct SignRepositories {
     accounts: AccountRepository,
     characters: CharacterRepository,
     mezeporta_festivals: MezeportaFestivalRepository,
@@ -17,11 +24,8 @@ pub struct SignServiceContext {
     sign_in_notices: SignInNoticeRepository,
 }
 
-impl SignServiceContext {
-    /// Creates a service context from explicitly assembled dependencies.
+impl SignRepositories {
     pub fn new(
-        auto_sign_up: bool,
-        session_ttl: SignedDuration,
         accounts: AccountRepository,
         characters: CharacterRepository,
         mezeporta_festivals: MezeportaFestivalRepository,
@@ -29,13 +33,28 @@ impl SignServiceContext {
         sign_in_notices: SignInNoticeRepository,
     ) -> Self {
         Self {
-            auto_sign_up,
-            session_ttl,
             accounts,
             characters,
             mezeporta_festivals,
             sign_sessions,
             sign_in_notices,
+        }
+    }
+}
+
+impl SignServiceContext {
+    /// Creates a service context from explicitly assembled dependencies.
+    pub fn new(
+        auto_sign_up: bool,
+        session_ttl: SignedDuration,
+        discovery: DiscoveryClient,
+        repositories: SignRepositories,
+    ) -> Self {
+        Self {
+            auto_sign_up,
+            session_ttl,
+            _discovery: discovery,
+            repositories,
         }
     }
 
@@ -48,23 +67,23 @@ impl SignServiceContext {
     }
 
     pub(crate) fn accounts(&self) -> &AccountRepository {
-        &self.accounts
+        &self.repositories.accounts
     }
 
     pub(crate) fn characters(&self) -> &CharacterRepository {
-        &self.characters
+        &self.repositories.characters
     }
 
     pub(crate) fn mezeporta_festivals(&self) -> &MezeportaFestivalRepository {
-        &self.mezeporta_festivals
+        &self.repositories.mezeporta_festivals
     }
 
     pub(crate) fn sign_sessions(&self) -> &SignSessionRepository {
-        &self.sign_sessions
+        &self.repositories.sign_sessions
     }
 
     pub(crate) fn sign_in_notices(&self) -> &SignInNoticeRepository {
-        &self.sign_in_notices
+        &self.repositories.sign_in_notices
     }
 
     #[cfg(test)]
@@ -77,11 +96,14 @@ impl SignServiceContext {
         Self::new(
             auto_sign_up,
             SignedDuration::from_mins(5),
-            AccountRepository::new(&db),
-            CharacterRepository::new(&db),
-            MezeportaFestivalRepository::new(&db),
-            SignSessionRepository::new(&db),
-            SignInNoticeRepository::new(&db),
+            DiscoveryClient::connect(Default::default()).unwrap(),
+            SignRepositories::new(
+                AccountRepository::new(&db),
+                CharacterRepository::new(&db),
+                MezeportaFestivalRepository::new(&db),
+                SignSessionRepository::new(&db),
+                SignInNoticeRepository::new(&db),
+            ),
         )
     }
 }

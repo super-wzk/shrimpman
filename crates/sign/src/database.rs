@@ -4,7 +4,7 @@ use shrimpman_persistence::{
 };
 use toasty::Db;
 
-use crate::SignDatabaseConfig;
+use crate::{SignDatabaseConfig, SignRepositories};
 
 /// Sign-owned Toasty database handle.
 #[derive(Debug, Clone)]
@@ -23,28 +23,14 @@ impl SignDatabase {
         })
     }
 
-    /// Creates the account repository used by Sign.
-    pub fn account_repository(&self) -> AccountRepository {
-        AccountRepository::new(&self.db)
-    }
-
-    /// Creates the character repository used by Sign.
-    pub fn character_repository(&self) -> CharacterRepository {
-        CharacterRepository::new(&self.db)
-    }
-
-    /// Creates the Mezeporta Festival repository used by Sign.
-    pub fn mezeporta_festival_repository(&self) -> MezeportaFestivalRepository {
-        MezeportaFestivalRepository::new(&self.db)
-    }
-
-    /// Creates the Sign-session repository used by Sign.
-    pub fn sign_session_repository(&self) -> SignSessionRepository {
-        SignSessionRepository::new(&self.db)
-    }
-
-    /// Creates the Sign-in notice repository used by Sign.
-    pub fn sign_in_notice_repository(&self) -> SignInNoticeRepository {
-        SignInNoticeRepository::new(&self.db)
+    /// Creates the repositories used by Sign application services.
+    pub fn repositories(&self) -> SignRepositories {
+        SignRepositories::new(
+            AccountRepository::new(&self.db),
+            CharacterRepository::new(&self.db),
+            MezeportaFestivalRepository::new(&self.db),
+            SignSessionRepository::new(&self.db),
+            SignInNoticeRepository::new(&self.db),
+        )
     }
 }

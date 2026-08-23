@@ -10,9 +10,12 @@ mod router;
 mod server;
 
 pub use application::{
-    ConnectionError, InternalError, SignService, SignServiceContext, SignSessionContext,
+    ConnectionError, InternalError, SignRepositories, SignService, SignServiceContext,
+    SignSessionContext,
 };
-pub use config::{SignConfig, SignDatabaseConfig, SignServerConfig, SignSessionConfig};
+pub use config::{
+    DiscoveryClientConfig, SignConfig, SignDatabaseConfig, SignServerConfig, SignSessionConfig,
+};
 pub use database::SignDatabase;
 pub use envelope::{Command, CommandDecodeError};
 pub use router::{SignRouteError, SignRouterBuildError};

@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use serde::Deserialize;
+pub use shrimpman_discovery::client::DiscoveryClientConfig;
 
 const DEFAULT_PORT: u16 = 53_312;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -15,6 +16,8 @@ pub struct SignConfig {
     pub auto_sign_up: bool,
     /// Persistent storage configuration.
     pub database: SignDatabaseConfig,
+    /// Service registration and discovery client configuration.
+    pub discovery: DiscoveryClientConfig,
     /// Sign session configuration.
     pub session: SignSessionConfig,
     /// TCP server configuration.
@@ -91,6 +94,10 @@ mod tests {
         let config = ::config::Config::builder()
             .set_override("sign.auto_sign_up", true)
             .unwrap()
+            .set_override("sign.discovery.endpoint", "discovery.internal:7279")
+            .unwrap()
+            .set_override("sign.discovery.reconnect_delay", "500ms")
+            .unwrap()
             .set_override("sign.server.listen_addr", "127.0.0.1:60000")
             .unwrap()
             .set_override("sign.server.shutdown_timeout", "250ms")
@@ -105,6 +112,10 @@ mod tests {
             SignConfig {
                 auto_sign_up: true,
                 database: SignDatabaseConfig::default(),
+                discovery: DiscoveryClientConfig {
+                    endpoint: "discovery.internal:7279".to_owned(),
+                    reconnect_delay: Duration::from_millis(500),
+                },
                 session: SignSessionConfig {
                     ttl: Duration::from_secs(10 * 60),
                 },
