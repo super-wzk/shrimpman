@@ -1,5 +1,5 @@
 use shrimpman_common::{binary::FixedCStringLengthError, encoding::ShiftJisEncodeError};
-use shrimpman_protocol::{CommandPacketDecodeError, DispatchError, PacketError};
+use shrimpman_protocol::{CommandPacketDecodeError, DispatchError, OutboundSendError, PacketError};
 use shrimpman_transport::TransportError;
 use thiserror::Error;
 
@@ -28,6 +28,9 @@ pub enum InternalError {
 
     #[error("failed to encode a fixed-width Sign C string: {0}")]
     FixedCString(#[from] FixedCStringLengthError),
+
+    #[error("failed to send a Sign packet: {0}")]
+    Outbound(#[from] OutboundSendError),
 }
 
 /// A failure while serving one Sign connection.

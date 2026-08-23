@@ -181,12 +181,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, io::Read, num::NonZeroUsize};
+    use std::{convert::Infallible, io::Read, num::NonZeroUsize, sync::mpsc};
 
     use super::*;
     use binrw::BinRead;
+    use futures_util::{pin_mut, sink};
 
-    use crate::{BinrwHandlerDecoder, Dispatcher, EncodePayload, Handler};
+    use crate::{
+        BinrwHandlerDecoder, BinrwOutboundSender, Dispatcher, EncodePayload, Handler,
+        outbound_channel,
+    };
 
     struct ByteCommandDecoder;
 
@@ -241,17 +245,21 @@ mod tests {
     static ADD_HANDLER: AddHandler = AddHandler { offset: 1 };
 
     #[async_trait::async_trait]
-    impl Handler<u8> for AddHandler {
+    impl Handler<u8, BinrwOutboundSender> for AddHandler {
         type Inbound = Add;
-        type Outbound = u8;
         type Error = Infallible;
 
         async fn handle(
             &self,
             context: u8,
             inbound: Self::Inbound,
-        ) -> Result<Vec<Self::Outbound>, Self::Error> {
-            Ok(vec![inbound.0 + context + self.offset])
+            outbound: BinrwOutboundSender,
+        ) -> Result<(), Self::Error> {
+            outbound
+                .send(inbound.0 + context + self.offset)
+                .await
+                .unwrap();
+            Ok(())
         }
     }
 
@@ -289,17 +297,19 @@ mod tests {
         };
         let (_, _, handler) = decoded.into_parts();
         let mut dispatcher = Dispatcher::new(NonZeroUsize::new(1).unwrap());
+        let (outbound, receiver) = outbound_channel(NonZeroUsize::MIN);
 
-        let outbounds = dispatcher
-            .dispatch_erased(handler, 8)
-            .await
-            .unwrap()
-            .unwrap();
+        dispatcher.dispatch(handler, 8, outbound).await.unwrap();
+        let (capture, captured) = mpsc::channel();
+        let sink = sink::unfold(capture, |capture, outbound| async move {
+            assert!(capture.send(outbound).is_ok());
+            Ok::<_, Infallible>(capture)
+        });
+        pin_mut!(sink);
+        receiver.forward_to(sink).await.unwrap();
+        let outbound = captured.recv().unwrap();
 
-        assert_eq!(
-            outbounds.into_iter().next().unwrap().encode().unwrap(),
-            Bytes::from_static(&[51])
-        );
+        assert_eq!(outbound.encode().unwrap(), Bytes::from_static(&[51]));
     }
 
     #[test]

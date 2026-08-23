@@ -1,7 +1,7 @@
-use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc};
 
-use futures_util::{SinkExt, StreamExt};
-use shrimpman_protocol::{BinrwOutbound, CommandPacketDecoder, Dispatcher, PacketStream};
+use futures_util::StreamExt;
+use shrimpman_protocol::{CommandPacketDecoder, Dispatcher, PacketStream, outbound_channel};
 use shrimpman_transport::MhfConnection;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
@@ -54,8 +54,7 @@ impl SignService {
 struct SignSession<Io> {
     context: SignSessionContext,
     packets: SignPacketStream<Io>,
-    dispatcher: Dispatcher<BinrwOutbound, InternalError>,
-    outbound_queue: VecDeque<BinrwOutbound>,
+    dispatcher: Dispatcher<InternalError>,
 }
 
 impl<Io> SignSession<Io> {
@@ -67,7 +66,6 @@ impl<Io> SignSession<Io> {
             context,
             packets: PacketStream::new(connection, decoder),
             dispatcher: Dispatcher::new(NonZeroUsize::MIN),
-            outbound_queue: VecDeque::new(),
         }
     }
 }
@@ -76,44 +74,37 @@ impl<Io> SignSession<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    async fn run(mut self) -> Result<(), ConnectionError> {
-        let decoded = self
-            .packets
+    async fn run(self) -> Result<(), ConnectionError> {
+        let Self {
+            context,
+            mut packets,
+            mut dispatcher,
+        } = self;
+        let decoded = packets
             .next()
             .await
             .ok_or(ConnectionError::UnexpectedEof)?
             .map_err(ConnectionError::Receive)?;
         let (_, _, handler) = decoded.into_parts();
+        let (outbound, receiver) = outbound_channel(NonZeroUsize::MIN);
 
-        if let Some(responses) = self
-            .dispatcher
-            .dispatch_erased(handler, self.context)
-            .await
-            .map_err(ConnectionError::Dispatch)?
-        {
-            self.outbound_queue.extend(responses);
-        }
-
-        while !self.dispatcher.is_idle() {
-            let responses = self
-                .dispatcher
-                .next()
+        let dispatch = async move {
+            dispatcher
+                .dispatch(handler, context, outbound)
                 .await
-                .expect("a non-idle dispatcher has pending output")
                 .map_err(ConnectionError::Dispatch)?;
-            self.outbound_queue.extend(responses);
-        }
+            dispatcher.finish().await.map_err(ConnectionError::Dispatch)
+        };
 
-        while let Some(response) = self.outbound_queue.pop_front() {
-            self.packets
-                .feed(response)
+        let writer = async move {
+            receiver
+                .forward_to(packets)
                 .await
-                .map_err(ConnectionError::Send)?;
-        }
+                .map_err(ConnectionError::Send)
+        };
+        tokio::try_join!(dispatch, writer)?;
 
-        SinkExt::<BinrwOutbound>::close(&mut self.packets)
-            .await
-            .map_err(ConnectionError::Send)
+        Ok(())
     }
 }
 
@@ -121,8 +112,12 @@ where
 mod tests {
     use binrw::{BinRead, BinWrite};
     use bytes::Bytes;
-    use shrimpman_protocol::{DispatchMode, Handler};
-    use tokio::io::{AsyncWriteExt, duplex};
+    use futures_util::SinkExt;
+    use shrimpman_protocol::{BinrwOutboundSender, DispatchMode, Handler};
+    use tokio::{
+        io::{AsyncWriteExt, duplex},
+        sync::Notify,
+    };
 
     use super::*;
     use crate::router::{SignPacketRegistration, VersionSelector};
@@ -134,11 +129,11 @@ mod tests {
     struct TestResponse(u8);
 
     struct TestHandler;
+    static CONTINUE_TEST_HANDLER: Notify = Notify::const_new();
 
     #[async_trait::async_trait]
-    impl Handler<SignSessionContext> for TestHandler {
+    impl Handler<SignSessionContext, BinrwOutboundSender> for TestHandler {
         type Inbound = TestRequest;
-        type Outbound = TestResponse;
         type Error = InternalError;
 
         const MODE: DispatchMode = DispatchMode::Concurrent;
@@ -147,11 +142,12 @@ mod tests {
             &self,
             _context: SignSessionContext,
             inbound: Self::Inbound,
-        ) -> Result<Vec<Self::Outbound>, Self::Error> {
-            Ok(vec![
-                TestResponse(inbound.0 + 1),
-                TestResponse(inbound.0 + 2),
-            ])
+            outbound: BinrwOutboundSender,
+        ) -> Result<(), Self::Error> {
+            outbound.send_and_flush(TestResponse(inbound.0 + 1)).await?;
+            CONTINUE_TEST_HANDLER.notified().await;
+            outbound.send(TestResponse(inbound.0 + 2)).await?;
+            Ok(())
         }
     }
 
@@ -164,7 +160,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drains_queued_responses_and_closes_the_connection() {
+    async fn flushes_then_drains_responses_before_closing_the_connection() {
         let (mut client_io, server_io) = duplex(4096);
         let service = SignService::new(SignServiceContext::for_test().await).unwrap();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
@@ -180,6 +176,7 @@ mod tests {
             client.next().await.unwrap().unwrap(),
             Bytes::from_static(&[8])
         );
+        CONTINUE_TEST_HANDLER.notify_one();
         assert_eq!(
             client.next().await.unwrap().unwrap(),
             Bytes::from_static(&[9])

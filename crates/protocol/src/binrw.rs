@@ -3,73 +3,22 @@ use std::{any::Any, io::Cursor};
 use ::binrw::{BinRead, BinResult, BinWrite, Endian};
 use bytes::Bytes;
 
-use crate::{EncodePayload, ErasedHandler, ErasedPacket, Handler, PacketDecoder};
-
-type DecodeFn = fn(Endian, &mut Cursor<Bytes>) -> BinResult<ErasedPacket>;
+use crate::{
+    EncodePayload, ErasedHandler, Handler, OutboundSendError, OutboundSender, PacketDecoder,
+};
 
 type HandlerRef = &'static (dyn Any + Send + Sync);
 
-type DecodeHandlerFn<Context, Error> =
-    fn(
-        Endian,
-        HandlerRef,
-        &mut Cursor<Bytes>,
-    ) -> BinResult<Box<dyn ErasedHandler<Context, BinrwOutbound, Error>>>;
+type BinrwErasedHandler<Context, Error> =
+    dyn ErasedHandler<Context, OutboundSender<BinrwOutbound>, Error>;
+
+type DecodeHandlerFn<Context, Error> = fn(
+    Endian,
+    HandlerRef,
+    &mut Cursor<Bytes>,
+) -> BinResult<Box<BinrwErasedHandler<Context, Error>>>;
 
 type EncodeFn = fn(&(dyn Any + Send), Endian) -> BinResult<Bytes>;
-
-/// Adapts a [`BinRead`] packet type to the service-independent packet decoder.
-#[derive(Clone, Copy)]
-pub struct BinrwPacketDecoder {
-    endian: Endian,
-    decode: DecodeFn,
-}
-
-impl BinrwPacketDecoder {
-    const fn new<Packet>(endian: Endian) -> Self
-    where
-        Packet: for<'args> BinRead<Args<'args> = ()> + Send + 'static,
-    {
-        Self {
-            endian,
-            decode: decode::<Packet>,
-        }
-    }
-
-    pub const fn big_endian<Packet>() -> Self
-    where
-        Packet: for<'args> BinRead<Args<'args> = ()> + Send + 'static,
-    {
-        Self::new::<Packet>(Endian::Big)
-    }
-
-    pub const fn little_endian<Packet>() -> Self
-    where
-        Packet: for<'args> BinRead<Args<'args> = ()> + Send + 'static,
-    {
-        Self::new::<Packet>(Endian::Little)
-    }
-}
-
-impl<Metadata> PacketDecoder<Metadata> for BinrwPacketDecoder {
-    type Output = ErasedPacket;
-    type Error = ::binrw::Error;
-
-    fn decode(
-        &self,
-        _metadata: &Metadata,
-        payload: &mut Cursor<Bytes>,
-    ) -> Result<Self::Output, Self::Error> {
-        (self.decode)(self.endian, payload)
-    }
-}
-
-fn decode<Packet>(endian: Endian, payload: &mut Cursor<Bytes>) -> BinResult<ErasedPacket>
-where
-    Packet: for<'args> BinRead<Args<'args> = ()> + Send + 'static,
-{
-    Packet::read_options(payload, endian, ()).map(ErasedPacket::new)
-}
 
 /// A type-erased outbound value that retains its [`BinWrite`] encoder.
 pub struct BinrwOutbound {
@@ -88,6 +37,42 @@ impl BinrwOutbound {
             endian,
             encode: encode_outbound::<Outbound>,
         }
+    }
+}
+
+/// Sends strongly typed [`BinWrite`] values through a connection's outbox.
+#[derive(Clone)]
+pub struct BinrwOutboundSender {
+    sender: OutboundSender<BinrwOutbound>,
+    endian: Endian,
+}
+
+impl BinrwOutboundSender {
+    fn new(sender: OutboundSender<BinrwOutbound>, endian: Endian) -> Self {
+        Self { sender, endian }
+    }
+
+    /// Enqueues an outbound value without waiting for a transport flush.
+    pub async fn send<Outbound>(&self, outbound: Outbound) -> Result<(), OutboundSendError>
+    where
+        Outbound: for<'args> BinWrite<Args<'args> = ()> + Send + 'static,
+    {
+        self.sender
+            .send(BinrwOutbound::new(outbound, self.endian))
+            .await
+    }
+
+    /// Enqueues an outbound value and waits for the transport to flush it.
+    pub async fn send_and_flush<Outbound>(
+        &self,
+        outbound: Outbound,
+    ) -> Result<(), OutboundSendError>
+    where
+        Outbound: for<'args> BinWrite<Args<'args> = ()> + Send + 'static,
+    {
+        self.sender
+            .send_and_flush(BinrwOutbound::new(outbound, self.endian))
+            .await
     }
 }
 
@@ -146,9 +131,8 @@ where
 {
     const fn new<H>(endian: Endian, handler: &'static H) -> Self
     where
-        H: Handler<Context, Error = Error>,
+        H: Handler<Context, BinrwOutboundSender, Error = Error>,
         H::Inbound: for<'args> BinRead<Args<'args> = ()>,
-        H::Outbound: for<'args> BinWrite<Args<'args> = ()>,
     {
         Self {
             endian,
@@ -160,9 +144,9 @@ where
     pub const fn big_endian(
         handler: &'static impl Handler<
             Context,
+            BinrwOutboundSender,
             Error = Error,
             Inbound: for<'args> BinRead<Args<'args> = ()>,
-            Outbound: for<'args> BinWrite<Args<'args> = ()>,
         >,
     ) -> Self {
         Self::new(Endian::Big, handler)
@@ -171,9 +155,9 @@ where
     pub const fn little_endian(
         handler: &'static impl Handler<
             Context,
+            BinrwOutboundSender,
             Error = Error,
             Inbound: for<'args> BinRead<Args<'args> = ()>,
-            Outbound: for<'args> BinWrite<Args<'args> = ()>,
         >,
     ) -> Self {
         Self::new(Endian::Little, handler)
@@ -185,7 +169,7 @@ where
     Context: Send + 'static,
     Error: Send + 'static,
 {
-    type Output = Box<dyn ErasedHandler<Context, BinrwOutbound, Error>>;
+    type Output = Box<BinrwErasedHandler<Context, Error>>;
     type Error = ::binrw::Error;
 
     fn decode(
@@ -200,7 +184,7 @@ where
 struct BinrwBoundHandler<Context, H>
 where
     Context: Send + 'static,
-    H: Handler<Context>,
+    H: Handler<Context, BinrwOutboundSender>,
 {
     inbound: H::Inbound,
     endian: Endian,
@@ -208,28 +192,29 @@ where
 }
 
 #[async_trait::async_trait]
-impl<Context, Error, H> ErasedHandler<Context, BinrwOutbound, Error>
+impl<Context, Error, H> ErasedHandler<Context, OutboundSender<BinrwOutbound>, Error>
     for BinrwBoundHandler<Context, H>
 where
     Context: Send + 'static,
     Error: Send + 'static,
-    H: Handler<Context, Error = Error>,
-    H::Outbound: for<'args> BinWrite<Args<'args> = ()>,
+    H: Handler<Context, BinrwOutboundSender, Error = Error>,
 {
     fn mode(&self) -> crate::DispatchMode {
         H::MODE
     }
 
-    async fn handle(self: Box<Self>, context: Context) -> Result<Vec<BinrwOutbound>, Error> {
+    async fn handle(
+        self: Box<Self>,
+        context: Context,
+        outbound: OutboundSender<BinrwOutbound>,
+    ) -> Result<(), Error> {
         self.handler
-            .handle(context, self.inbound)
+            .handle(
+                context,
+                self.inbound,
+                BinrwOutboundSender::new(outbound, self.endian),
+            )
             .await
-            .map(|outbounds| {
-                outbounds
-                    .into_iter()
-                    .map(|outbound| BinrwOutbound::new(outbound, self.endian))
-                    .collect()
-            })
     }
 }
 
@@ -237,13 +222,12 @@ fn decode_handler<Context, Error, H>(
     endian: Endian,
     handler: HandlerRef,
     payload: &mut Cursor<Bytes>,
-) -> BinResult<Box<dyn ErasedHandler<Context, BinrwOutbound, Error>>>
+) -> BinResult<Box<BinrwErasedHandler<Context, Error>>>
 where
     Context: Send + 'static,
     Error: Send + 'static,
-    H: Handler<Context, Error = Error>,
+    H: Handler<Context, BinrwOutboundSender, Error = Error>,
     H::Inbound: for<'args> BinRead<Args<'args> = ()>,
-    H::Outbound: for<'args> BinWrite<Args<'args> = ()>,
 {
     let inbound = H::Inbound::read_options(payload, endian, ())?;
     let handler = handler
@@ -254,27 +238,4 @@ where
         endian,
         handler,
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use ::binrw::BinRead;
-
-    use super::*;
-
-    #[derive(BinRead)]
-    struct Word(u16);
-
-    #[test]
-    fn applies_the_selected_endian() {
-        for (decoder, expected) in [
-            (BinrwPacketDecoder::big_endian::<Word>(), 0x0102),
-            (BinrwPacketDecoder::little_endian::<Word>(), 0x0201),
-        ] {
-            let mut payload = Cursor::new(Bytes::from_static(&[1, 2]));
-            let packet = decoder.decode(&(), &mut payload).unwrap();
-
-            assert_eq!(packet.downcast_ref::<Word>().unwrap().0, expected);
-        }
-    }
 }
