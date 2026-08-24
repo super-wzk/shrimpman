@@ -7,6 +7,7 @@ const DEFAULT_PORT: u16 = 53_312;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
+const DEFAULT_LOG_FILTER: &str = "warn,shrimpman_sign=info,shrimpman_discovery=info";
 
 /// Configuration for the Sign service.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -18,6 +19,8 @@ pub struct SignConfig {
     pub database: SignDatabaseConfig,
     /// Service registration and discovery client configuration.
     pub discovery: DiscoveryClientConfig,
+    /// Structured logging configuration for the Sign process.
+    pub logging: SignLoggingConfig,
     /// Sign session configuration.
     pub session: SignSessionConfig,
     /// TCP server configuration.
@@ -36,6 +39,22 @@ impl Default for SignDatabaseConfig {
     fn default() -> Self {
         Self {
             url: DEFAULT_DATABASE_URL.to_owned(),
+        }
+    }
+}
+
+/// Filtering configuration for structured Sign process logs.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SignLoggingConfig {
+    /// Comma-separated [`tracing_subscriber::EnvFilter`] directives.
+    pub filter: String,
+}
+
+impl Default for SignLoggingConfig {
+    fn default() -> Self {
+        Self {
+            filter: DEFAULT_LOG_FILTER.to_owned(),
         }
     }
 }
@@ -106,6 +125,11 @@ mod tests {
             .unwrap()
             .set_override("sign.discovery.reconnect_delay", "500ms")
             .unwrap()
+            .set_override(
+                "sign.logging.filter",
+                "warn,shrimpman_sign=debug,shrimpman_discovery=info",
+            )
+            .unwrap()
             .set_override("sign.server.listen_addr", "127.0.0.1:60000")
             .unwrap()
             .set_override("sign.server.advertise_addr", "127.0.0.1:60001")
@@ -126,6 +150,9 @@ mod tests {
                     endpoints: vec!["http://etcd.internal:2379".to_owned()],
                     lease_ttl: Duration::from_secs(30),
                     reconnect_delay: Duration::from_millis(500),
+                },
+                logging: SignLoggingConfig {
+                    filter: "warn,shrimpman_sign=debug,shrimpman_discovery=info".to_owned(),
                 },
                 session: SignSessionConfig {
                     ttl: Duration::from_secs(10 * 60),

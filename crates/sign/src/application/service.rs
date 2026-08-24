@@ -1,9 +1,10 @@
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc, time::Instant};
 
 use futures_util::StreamExt;
 use shrimpman_protocol::{CommandPacketDecoder, Dispatcher, PacketStream, outbound_channel};
 use shrimpman_transport::MhfConnection;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tracing::Instrument;
 
 use super::{ConnectionError, InternalError, SignServiceContext, SignSessionContext};
 use crate::{
@@ -85,7 +86,7 @@ where
             .await
             .ok_or(ConnectionError::UnexpectedEof)?
             .map_err(ConnectionError::Receive)?;
-        let (_, _, handler) = decoded.into_parts();
+        let (command, version, handler) = decoded.into_parts();
         let (outbound, receiver) = outbound_channel(NonZeroUsize::MIN);
 
         let dispatch = async move {
@@ -102,9 +103,23 @@ where
                 .await
                 .map_err(ConnectionError::Send)
         };
-        tokio::try_join!(dispatch, writer)?;
-
-        Ok(())
+        let span = tracing::info_span!(
+            "sign_request",
+            command = command.as_str(),
+            client_version = version.number()
+        );
+        async move {
+            let started_at = Instant::now();
+            tracing::info!("Processing Sign request");
+            tokio::try_join!(dispatch, writer)?;
+            tracing::info!(
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Completed Sign request"
+            );
+            Ok(())
+        }
+        .instrument(span)
+        .await
     }
 }
 

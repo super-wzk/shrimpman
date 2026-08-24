@@ -12,6 +12,9 @@ endpoints = ["http://127.0.0.1:2379"]
 lease_ttl = "15s"
 reconnect_delay = "1s"
 
+[sign.logging]
+filter = "warn,shrimpman_sign=info,shrimpman_discovery=info"
+
 [sign.session]
 ttl = "5m"
 

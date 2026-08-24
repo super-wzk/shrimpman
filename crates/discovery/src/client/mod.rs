@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use crate::{
     DiscoverySnapshot, InvalidServiceName, ServiceInstance, ServiceInstanceId, ServiceName,
@@ -109,6 +109,12 @@ async fn run(
     snapshot: watch::Sender<Option<Arc<DiscoverySnapshot>>>,
 ) {
     let mut registrations = BTreeMap::<ServiceInstanceId, ServiceInstance>::new();
+    info!(
+        endpoint_count = config.endpoints.len(),
+        lease_ttl_seconds = lease_ttl,
+        reconnect_delay = ?config.reconnect_delay,
+        "Starting discovery client"
+    );
 
     loop {
         match Client::connect(&config.endpoints, None).await {
@@ -122,22 +128,32 @@ async fn run(
                 )
                 .await
                 {
-                    Ok(()) => return,
+                    Ok(()) => break,
                     Err(error) => {
-                        warn!(%error, "lost the etcd connection");
+                        warn!(
+                            %error,
+                            reconnect_delay = ?config.reconnect_delay,
+                            "Lost the etcd connection; reconnecting"
+                        );
                     }
                 }
             }
             Err(error) => {
-                warn!(%error, "failed to connect to etcd");
+                warn!(
+                    %error,
+                    reconnect_delay = ?config.reconnect_delay,
+                    "Failed to connect to etcd; retrying"
+                );
             }
         }
 
         snapshot.send_replace(None);
         if !wait_to_reconnect(config.reconnect_delay, &mut commands, &mut registrations).await {
-            return;
+            break;
         }
     }
+
+    info!("Discovery client stopped");
 }
 
 async fn serve_connection(
@@ -176,6 +192,12 @@ async fn serve_connection(
     if !first_watch.created() {
         return Err(ConnectionError::WatchNotCreated);
     }
+    info!(
+        lease_id,
+        revision,
+        published_instances = registrations.len(),
+        "Connected to etcd and synchronized service discovery"
+    );
 
     let keep_alive_interval = Duration::from_secs((lease_ttl / 3).max(1) as u64);
     let mut keep_alive = tokio::time::interval(keep_alive_interval);
@@ -207,10 +229,21 @@ async fn serve_connection(
                         client.delete(instance_key(&previous), None).await?;
                     }
                     put_instance(client, lease_id, &instance).await?;
+                    info!(
+                        instance_id = ?instance.id,
+                        service = instance.service.as_str(),
+                        advertise_addr = instance.advertise_addr.as_deref(),
+                        "Published service instance"
+                    );
                 }
                 Some(ClientCommand::Withdraw(id)) => {
                     if let Some(instance) = registrations.remove(&id) {
                         client.delete(instance_key(&instance), None).await?;
+                        info!(
+                            instance_id = ?instance.id,
+                            service = instance.service.as_str(),
+                            "Withdrew service instance"
+                        );
                     }
                 }
                 None => {
@@ -230,15 +263,22 @@ async fn refresh_snapshot(
         .get(SERVICE_KEY_PREFIX, Some(GetOptions::new().with_prefix()))
         .await?;
     let revision = response.header().map_or(0, |header| header.revision());
-    let instances = response.kvs().iter().filter_map(|entry| {
-        match decode_instance(entry.key(), entry.value()) {
+    let instances: Vec<_> = response
+        .kvs()
+        .iter()
+        .filter_map(|entry| match decode_instance(entry.key(), entry.value()) {
             Ok(instance) => Some(instance),
             Err(error) => {
                 warn!(%error, "ignored invalid etcd service registration");
                 None
             }
-        }
-    });
+        })
+        .collect();
+    debug!(
+        revision,
+        instance_count = instances.len(),
+        "Refreshed service discovery snapshot"
+    );
     snapshot.send_replace(Some(Arc::new(DiscoverySnapshot::from_instances(instances))));
 
     Ok(revision)

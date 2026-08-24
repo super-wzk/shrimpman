@@ -6,13 +6,27 @@ use shrimpman_discovery::{
     selector::RoundRobinSelector,
 };
 use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext};
+use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: ServiceName = ServiceName::from_static("sign");
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let sign = load_config()?;
+    init_tracing(&sign.logging.filter)?;
+    info!("Starting Sign service");
+
+    info!(
+        auto_sign_up = sign.auto_sign_up,
+        listen_addr = %sign.server.listen_addr,
+        advertise_addr = %sign.server.advertise_addr,
+        "Loaded Sign configuration"
+    );
+
     let database = SignDatabase::connect(&sign.database).await?;
+    info!("Connected to Sign database");
+
     let discovery = DiscoveryClient::connect(sign.discovery)?;
     let context = SignServiceContext::new(
         sign.auto_sign_up,
@@ -24,6 +38,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let service = SignService::new(context)?;
     let advertise_addr = sign.server.advertise_addr.clone();
     let server = SignServer::bind(sign.server, service).await?;
+    let listen_addr = server.local_addr()?;
+    info!(%listen_addr, %advertise_addr, "Sign server is ready");
+
     let instance_id = ServiceInstanceId::new();
     discovery.publish(ServiceInstance::new(
         instance_id,
@@ -34,8 +51,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?)?;
 
     server.run(shutdown_signal()).await?;
+    info!("Sign server stopped");
+
     discovery.withdraw(instance_id)?;
 
+    Ok(())
+}
+
+fn init_tracing(config_filter: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let filter = match std::env::var(EnvFilter::DEFAULT_ENV) {
+        Ok(filter) => filter,
+        Err(std::env::VarError::NotPresent) => config_filter.to_owned(),
+        Err(error) => return Err(error.into()),
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_new(filter)?)
+        .try_init()?;
     Ok(())
 }
 
@@ -63,23 +94,25 @@ async fn shutdown_signal() {
         let mut terminate = match signal(SignalKind::terminate()) {
             Ok(terminate) => terminate,
             Err(error) => {
-                eprintln!("failed to listen for SIGTERM: {error}");
+                error!(%error, "Failed to listen for SIGTERM");
                 return;
             }
         };
 
         tokio::select! {
             result = tokio::signal::ctrl_c() => {
-                if let Err(error) = result {
-                    eprintln!("failed to listen for Ctrl-C: {error}");
+                match result {
+                    Ok(()) => info!("Received Ctrl-C; shutting down"),
+                    Err(error) => error!(%error, "Failed to listen for Ctrl-C"),
                 }
             }
-            _ = terminate.recv() => {}
+            _ = terminate.recv() => info!("Received SIGTERM; shutting down"),
         }
     }
 
     #[cfg(not(unix))]
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("failed to listen for Ctrl-C: {error}");
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => info!("Received Ctrl-C; shutting down"),
+        Err(error) => error!(%error, "Failed to listen for Ctrl-C"),
     }
 }

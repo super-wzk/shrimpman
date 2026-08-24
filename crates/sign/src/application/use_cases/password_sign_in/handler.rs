@@ -50,6 +50,7 @@ async fn password_sign_in(
     };
 
     if username.is_empty() {
+        tracing::info!("Rejected password sign-in with an empty username");
         return Ok(PasswordSignInResponse::IllegalInput);
     }
 
@@ -57,18 +58,24 @@ async fn password_sign_in(
     let account = match service.accounts().find_by_username(username).await? {
         Some(account) => {
             if !verify_password(inbound.password, account.password_hash.clone()).await? {
+                tracing::info!("Rejected password sign-in with invalid credentials");
                 return Ok(PasswordSignInResponse::WrongPassword);
             }
             account
         }
         None if service.auto_sign_up() => {
             let password_hash = hash_password(inbound.password).await?;
-            service
+            let account = service
                 .accounts()
                 .create(username.to_owned(), password_hash)
-                .await?
+                .await?;
+            tracing::info!(account_id = ?account.id, "Created account during sign-in");
+            account
         }
-        None => return Ok(PasswordSignInResponse::WrongPassword),
+        None => {
+            tracing::info!("Rejected password sign-in with invalid credentials");
+            return Ok(PasswordSignInResponse::WrongPassword);
+        }
     };
 
     let rights = account.rights;
@@ -86,11 +93,16 @@ async fn password_sign_in(
         .entrance_selector()
         .select(&entrance_instances)
         .and_then(|instance| instance.advertise_addr.as_deref());
+    if entrance_server.is_none() {
+        tracing::warn!("No Entrance service instance is available for sign-in");
+    }
     let notices = service
         .sign_in_notices()
         .list_active_at(now, MAX_SIGN_IN_NOTICES)
         .await?;
     let festival = service.mezeporta_festivals().find_active_at(now).await?;
+    let character_count = characters.len();
+    let notice_count = notices.len();
 
     let token = generate_session_token();
     let session_id = service
@@ -113,6 +125,14 @@ async fn password_sign_in(
     .with_entrance_server(entrance_server)?
     .with_notices(notices)?
     .with_festival(festival);
+
+    tracing::info!(
+        account_id = ?account.id,
+        character_count,
+        notice_count,
+        created_character = should_create_character,
+        "Password sign-in succeeded"
+    );
 
     Ok(PasswordSignInResponse::Success(response))
 }

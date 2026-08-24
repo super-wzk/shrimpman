@@ -14,7 +14,8 @@ pub use application::{
     SignSessionContext,
 };
 pub use config::{
-    DiscoveryClientConfig, SignConfig, SignDatabaseConfig, SignServerConfig, SignSessionConfig,
+    DiscoveryClientConfig, SignConfig, SignDatabaseConfig, SignLoggingConfig, SignServerConfig,
+    SignSessionConfig,
 };
 pub use database::SignDatabase;
 pub use envelope::{Command, CommandDecodeError};

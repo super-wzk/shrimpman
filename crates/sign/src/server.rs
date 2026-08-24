@@ -4,6 +4,7 @@ use tokio::{
     net::TcpListener,
     task::{JoinError, JoinSet},
 };
+use tracing::Instrument;
 
 use crate::{SignServerConfig, SignService};
 
@@ -51,7 +52,13 @@ impl SignServer {
             tokio::select! {
                 biased;
 
-                _ = &mut shutdown => break Ok(()),
+                _ = &mut shutdown => {
+                    tracing::info!(
+                        active_connections = sessions.len(),
+                        "Stopping Sign server"
+                    );
+                    break Ok(());
+                }
                 Some(result) = sessions.join_next(), if !sessions.is_empty() => {
                     report_join_error(result);
                 }
@@ -61,12 +68,18 @@ impl SignServer {
                         Err(error) => break Err(error),
                     };
                     let service = Arc::clone(&service);
+                    let span = tracing::info_span!("sign_connection", %peer_addr);
 
-                    sessions.spawn(async move {
-                        if let Err(error) = service.serve_connection(io).await {
-                            tracing::warn!(%peer_addr, %error, "Sign connection failed");
+                    sessions.spawn(
+                        async move {
+                            tracing::debug!("Accepted Sign connection");
+                            match service.serve_connection(io).await {
+                                Ok(()) => tracing::debug!("Closed Sign connection"),
+                                Err(error) => tracing::warn!(%error, "Sign connection failed"),
+                            }
                         }
-                    });
+                        .instrument(span),
+                    );
                 }
             }
         };
@@ -89,6 +102,11 @@ async fn drain_sessions(mut sessions: JoinSet<()>, timeout: Duration) {
         return;
     }
 
+    tracing::info!(
+        active_connections = sessions.len(),
+        ?timeout,
+        "Waiting for active Sign connections"
+    );
     let completed = tokio::time::timeout(timeout, async {
         while let Some(result) = sessions.join_next().await {
             report_join_error(result);
@@ -100,6 +118,8 @@ async fn drain_sessions(mut sessions: JoinSet<()>, timeout: Duration) {
         let remaining = sessions.len();
         tracing::warn!(remaining, "Sign shutdown timed out; canceling connections");
         sessions.shutdown().await;
+    } else {
+        tracing::info!("All active Sign connections completed");
     }
 }
 

@@ -46,13 +46,29 @@ async fn delete_character(
         .authenticate(session_id, &token_hash, now)
         .await?
     else {
+        tracing::info!(
+            ?session_id,
+            ?character_id,
+            "Rejected character deletion with an invalid session"
+        );
         return Ok(false);
     };
 
-    Ok(service
+    let deleted = service
         .characters()
         .delete_for_account(account_id, character_id, now)
-        .await?)
+        .await?;
+    if deleted {
+        tracing::info!(?account_id, ?character_id, "Deleted character");
+    } else {
+        tracing::info!(
+            ?account_id,
+            ?character_id,
+            "Character deletion did not match an active owned character"
+        );
+    }
+
+    Ok(deleted)
 }
 
 #[cfg(test)]
