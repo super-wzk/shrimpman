@@ -1,6 +1,6 @@
 use shrimpman_domain::{
-    account::Account,
-    character::{Character, CharacterSignInHistory},
+    account::{Account, AccountId},
+    character::{Character, CharacterId, CharacterSignInHistory},
 };
 use toasty::Db;
 
@@ -38,6 +38,43 @@ impl CharacterRepository {
             .await?;
 
         Ok(character.into())
+    }
+
+    /// Deletes an active character only when it belongs to the given account.
+    ///
+    /// Characters without savedata are removed entirely. Initialized
+    /// characters are retained and marked as deleted.
+    pub async fn delete_for_account(
+        &self,
+        account_id: AccountId,
+        character_id: CharacterId,
+        deleted_at: jiff::Timestamp,
+    ) -> toasty::Result<bool> {
+        let mut db = self.db.clone();
+        let account_id = u32::from(account_id);
+        let character_id = u32::from(character_id);
+        let character = toasty::query!(
+            CharacterRow FILTER .id == #character_id AND .account_id == #account_id
+        )
+        .filter(CharacterRow::fields().deleted_at().is_none())
+        .first()
+        .exec(&mut db)
+        .await?;
+        let Some(mut character) = character else {
+            return Ok(false);
+        };
+
+        if character.savedata.is_none() {
+            character.delete().exec(&mut db).await?;
+        } else {
+            toasty::update!(character {
+                deleted_at: Some(deleted_at),
+            })
+            .exec(&mut db)
+            .await?;
+        }
+
+        Ok(true)
     }
 
     pub async fn sign_in_history(
@@ -94,6 +131,18 @@ mod tests {
     use super::*;
     use crate::AccountRepository;
 
+    async fn fixture() -> (Db, Account, CharacterRepository, Character) {
+        let db = crate::test_database().await;
+        let account = AccountRepository::new(&db)
+            .create("alice".to_owned(), "hash".to_owned())
+            .await
+            .unwrap();
+        let repository = CharacterRepository::new(&db);
+        let character = repository.create_new(&account).await.unwrap();
+
+        (db, account, repository, character)
+    }
+
     #[tokio::test]
     async fn loads_latest_sign_ins_in_one_batch() {
         let db = crate::test_database().await;
@@ -135,5 +184,73 @@ mod tests {
         assert_eq!(history.last_sign_in_at(first_character_id), Some(latest));
         assert_eq!(history.last_sign_in_at(second_character_id), Some(later));
         assert_eq!(history.last_character_id(), Some(first_character_id));
+    }
+
+    #[tokio::test]
+    async fn hard_deletes_an_uninitialized_character() {
+        let (db, account, repository, character) = fixture().await;
+
+        assert!(
+            repository
+                .delete_for_account(account.id, character.id, Timestamp::now())
+                .await
+                .unwrap()
+        );
+
+        let mut db = db.clone();
+        assert!(
+            CharacterRow::filter_by_id(u32::from(character.id))
+                .exec(&mut db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn soft_deletes_an_initialized_character() {
+        let (db, account, repository, character) = fixture().await;
+        let character_id = character.id;
+        let deleted_at = Timestamp::new(1_800_000_000, 0).unwrap();
+        let mut db = db.clone();
+        let mut row = CharacterRow::get_by_id(&mut db, u32::from(character_id))
+            .await
+            .unwrap();
+        row.update()
+            .savedata(Some(vec![1]))
+            .exec(&mut db)
+            .await
+            .unwrap();
+
+        assert!(
+            repository
+                .delete_for_account(account.id, character_id, deleted_at)
+                .await
+                .unwrap()
+        );
+
+        let row = CharacterRow::get_by_id(&mut db, u32::from(character_id))
+            .await
+            .unwrap();
+        assert_eq!(row.deleted_at, Some(deleted_at));
+        assert!(repository.list_active(&account).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refuses_to_delete_another_accounts_character() {
+        let (db, owner, repository, character) = fixture().await;
+        let accounts = AccountRepository::new(&db);
+        let other = accounts
+            .create("bob".to_owned(), "hash".to_owned())
+            .await
+            .unwrap();
+
+        assert!(
+            !repository
+                .delete_for_account(other.id, character.id, Timestamp::now())
+                .await
+                .unwrap()
+        );
+        assert_eq!(repository.list_active(&owner).await.unwrap().len(), 1);
     }
 }

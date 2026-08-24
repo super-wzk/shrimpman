@@ -1,15 +1,14 @@
 mod handler;
 mod inbound;
-mod outbound;
 
-use handler::PasswordSignInHandler;
+use handler::DeleteCharacterHandler;
 
 use crate::router::{SignPacketRegistration, VersionSelector};
 
 inventory::submit! {
     SignPacketRegistration::new(
-        &["SIGN:", "DSGN:", "DLTSKEYSIGN:"],
+        &["DELETE:"],
         VersionSelector::Any,
-        &PasswordSignInHandler,
+        &DeleteCharacterHandler,
     )
 }

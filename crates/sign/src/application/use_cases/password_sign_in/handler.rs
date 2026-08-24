@@ -3,17 +3,20 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use jiff::Timestamp;
-use rand::{RngExt, distr::Alphanumeric};
-use sha2::{Digest, Sha256};
 use shrimpman_domain::{TimeRange, character::Character};
 use shrimpman_protocol::{BinrwOutboundSender, Handler};
 
 use super::{
-    SESSION_TOKEN_LEN,
     inbound::PasswordSignIn,
     outbound::{IssuedSignSession, PasswordSignInResponse, SignInSuccess},
 };
-use crate::{application::service_names, InternalError, SignSessionContext};
+use crate::{
+    application::{
+        service_names,
+        session_token::{generate_session_token, hash_session_token},
+    },
+    InternalError, SignSessionContext,
+};
 
 const MAX_SIGN_IN_NOTICES: usize = u8::MAX as usize;
 
@@ -114,15 +117,6 @@ async fn password_sign_in(
     Ok(PasswordSignInResponse::Success(response))
 }
 
-fn generate_session_token() -> [u8; SESSION_TOKEN_LEN] {
-    let mut rng = rand::rng();
-    std::array::from_fn(|_| rng.sample(Alphanumeric))
-}
-
-fn hash_session_token(token: &[u8; SESSION_TOKEN_LEN]) -> Vec<u8> {
-    Sha256::digest(token).to_vec()
-}
-
 async fn hash_password(password: String) -> Result<String, InternalError> {
     Ok(tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(OsRng);
@@ -153,14 +147,6 @@ mod tests {
 
     use super::*;
     use crate::SignServiceContext;
-
-    #[test]
-    fn generates_and_hashes_a_session_token() {
-        let token = generate_session_token();
-
-        assert!(token.iter().all(u8::is_ascii_alphanumeric));
-        assert_eq!(hash_session_token(&token).len(), 32);
-    }
 
     #[tokio::test]
     async fn rejects_an_unknown_account_when_auto_sign_up_is_disabled() {

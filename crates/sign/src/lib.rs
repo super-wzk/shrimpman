@@ -47,6 +47,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn decodes_the_registered_character_deletion() {
+        let mut payload = b"DELETE:041\0".to_vec();
+        payload.extend_from_slice(b"0123456789ABCDEF\0");
+        payload.extend_from_slice(&42_u32.to_be_bytes());
+        payload.extend_from_slice(&7_u32.to_be_bytes());
+        let transport = stream::iter([Ok::<_, Infallible>(Bytes::from(payload))]);
+        let decoder = CommandPacketDecoder::new(SignCommandDecoder, SignRouter::new().unwrap());
+        let mut packets = PacketStream::new(transport, decoder);
+        let decoded = packets.next().await.unwrap().unwrap();
+
+        assert_eq!(decoded.command().as_str(), "DELETE:");
+        assert_eq!(decoded.metadata().number(), 41);
+        assert_eq!(decoded.packet().mode(), DispatchMode::Ordered);
+    }
+
+    #[tokio::test]
     async fn reports_a_later_unknown_command_after_yielding_the_first() {
         let valid = b"SIGN:041\0alice\0secret\0\0";
         let unknown = b"OTHER:041\0";

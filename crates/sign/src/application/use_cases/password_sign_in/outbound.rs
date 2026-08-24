@@ -14,8 +14,7 @@ use shrimpman_domain::{
     sign_in_notice::SignInNotice,
 };
 
-use super::SESSION_TOKEN_LEN;
-use crate::InternalError;
+use crate::{InternalError, application::session_token::SESSION_TOKEN_LEN};
 
 const CHARACTER_NAME_LEN: usize = 16;
 const CHARACTER_DESCRIPTION_LEN: usize = 32;
