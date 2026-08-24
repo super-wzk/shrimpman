@@ -4,7 +4,6 @@ use crate::{EntranceSessionContext, InternalError};
 
 pub(super) struct ListWorldsHandler;
 
-#[async_trait::async_trait]
 impl Handler<EntranceSessionContext, BinrwOutboundSender> for ListWorldsHandler {
     type Inbound = ();
     type Error = InternalError;

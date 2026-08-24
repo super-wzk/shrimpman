@@ -11,7 +11,6 @@ const DELETE_SUCCESS: u8 = 1;
 
 pub(super) struct DeleteCharacterHandler;
 
-#[async_trait::async_trait]
 impl Handler<SignSessionContext, BinrwOutboundSender> for DeleteCharacterHandler {
     type Inbound = DeleteCharacter;
     type Error = InternalError;

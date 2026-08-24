@@ -147,7 +147,6 @@ mod tests {
     struct TestHandler;
     static CONTINUE_TEST_HANDLER: Notify = Notify::const_new();
 
-    #[async_trait::async_trait]
     impl Handler<SignSessionContext, BinrwOutboundSender> for TestHandler {
         type Inbound = TestRequest;
         type Error = InternalError;

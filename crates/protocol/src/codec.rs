@@ -244,7 +244,6 @@ mod tests {
     }
     static ADD_HANDLER: AddHandler = AddHandler { offset: 1 };
 
-    #[async_trait::async_trait]
     impl Handler<u8, BinrwOutboundSender> for AddHandler {
         type Inbound = Add;
         type Error = Infallible;

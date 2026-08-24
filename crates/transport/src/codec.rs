@@ -33,7 +33,7 @@ impl MhfTransportCodec {
         // Only commit cipher state after all integrity checks succeed.
         let (header, body) = frame.into_parts();
         let mut next_inbound = self.inbound;
-        let payload = next_inbound.decrypt(header, &body)?;
+        let payload = next_inbound.decrypt(header, body)?;
         self.inbound = next_inbound;
 
         Ok(DecodeStep::Complete {

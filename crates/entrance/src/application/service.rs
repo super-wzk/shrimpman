@@ -143,7 +143,6 @@ mod tests {
     struct TestHandler;
     static RECEIVED_VALUE: AtomicU8 = AtomicU8::new(0);
 
-    #[async_trait::async_trait]
     impl Handler<EntranceSessionContext, BinrwOutboundSender> for TestHandler {
         type Inbound = TestRequest;
         type Error = InternalError;

@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-async-trait = "0.1"
 binrw = "0.15"
 bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }

@@ -1,6 +1,5 @@
-use std::{future::Future, num::NonZeroUsize};
+use std::{future::Future, num::NonZeroUsize, pin::Pin};
 
-use async_trait::async_trait;
 use thiserror::Error;
 use tokio::task::{JoinError, JoinSet};
 
@@ -13,7 +12,6 @@ pub enum DispatchMode {
 }
 
 /// Handles one strongly typed inbound value using an explicit outbound channel.
-#[async_trait]
 pub trait Handler<Context, Sender>: Sized + Send + Sync + 'static
 where
     Context: Send + 'static,
@@ -24,16 +22,15 @@ where
 
     const MODE: DispatchMode = DispatchMode::Ordered;
 
-    async fn handle(
+    fn handle(
         &self,
         context: Context,
         inbound: Self::Inbound,
         outbound: Sender,
-    ) -> Result<(), Self::Error>;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
 /// An object-safe handler used after a concrete handler type has been erased.
-#[async_trait]
 pub trait ErasedHandler<Context, Sender, Error>: Send + 'static
 where
     Context: Send + 'static,
@@ -42,7 +39,11 @@ where
 {
     fn mode(&self) -> DispatchMode;
 
-    async fn handle(self: Box<Self>, context: Context, outbound: Sender) -> Result<(), Error>;
+    fn handle(
+        self: Box<Self>,
+        context: Context,
+        outbound: Sender,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 }
 
 /// An error returned by a handler or its concurrent task.
@@ -151,7 +152,6 @@ mod tests {
     }
     static ADD_HANDLER: AddHandler = AddHandler { offset: 1 };
 
-    #[async_trait::async_trait]
     impl Handler<u8, UnboundedSender<u8>> for AddHandler {
         type Inbound = Number;
         type Error = std::convert::Infallible;
@@ -183,7 +183,6 @@ mod tests {
     struct MultiplyHandler;
     static MULTIPLY_HANDLER: MultiplyHandler = MultiplyHandler;
 
-    #[async_trait::async_trait]
     impl Handler<u8, UnboundedSender<u8>> for MultiplyHandler {
         type Inbound = Number;
         type Error = std::convert::Infallible;

@@ -3561,7 +3561,6 @@ dependencies = [
 name = "shrimpman-entrance"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "automod",
  "binrw",
  "bytes",
@@ -3599,7 +3598,6 @@ dependencies = [
 name = "shrimpman-protocol"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "binrw",
  "bytes",
  "futures-util",
@@ -3612,7 +3610,6 @@ name = "shrimpman-sign"
 version = "0.1.0"
 dependencies = [
  "argon2",
- "async-trait",
  "automod",
  "binrw",
  "bytes",

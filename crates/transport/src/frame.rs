@@ -81,19 +81,19 @@ impl CryptHeader {
     }
 }
 
-/// A complete transport frame before body decryption.
+/// A complete transport frame with an owned or borrowed encrypted body.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EncryptedFrame {
+pub(crate) struct EncryptedFrame<Body> {
     header: CryptHeader,
-    body: Vec<u8>,
+    body: Body,
 }
 
-impl EncryptedFrame {
-    pub(crate) fn new(header: CryptHeader, body: Vec<u8>) -> Self {
+impl<Body> EncryptedFrame<Body> {
+    pub(crate) fn new(header: CryptHeader, body: Body) -> Self {
         Self { header, body }
     }
 
-    pub(crate) fn into_parts(self) -> (CryptHeader, Vec<u8>) {
+    pub(crate) fn into_parts(self) -> (CryptHeader, Body) {
         (self.header, self.body)
     }
 }
@@ -106,10 +106,10 @@ impl FrameCodec {
         CryptHeader::encode_body_len(len).map(|_| ())
     }
 
-    pub(crate) fn decode(
+    pub(crate) fn decode<'input>(
         &self,
-        input: &[u8],
-    ) -> Result<DecodeStep<EncryptedFrame>, TransportError> {
+        input: &'input [u8],
+    ) -> Result<DecodeStep<EncryptedFrame<&'input [u8]>>, TransportError> {
         if input.len() < CRYPT_HEADER_LEN {
             return Ok(DecodeStep::NeedMore {
                 needed: CRYPT_HEADER_LEN,
@@ -132,7 +132,7 @@ impl FrameCodec {
         Ok(DecodeStep::Complete {
             value: EncryptedFrame {
                 header,
-                body: input[CRYPT_HEADER_LEN..frame_len].to_vec(),
+                body: &input[CRYPT_HEADER_LEN..frame_len],
             },
             consumed: frame_len,
         })
@@ -140,7 +140,7 @@ impl FrameCodec {
 
     pub(crate) fn encode(
         &self,
-        frame: &EncryptedFrame,
+        frame: &EncryptedFrame<Vec<u8>>,
         output: &mut Vec<u8>,
     ) -> Result<(), TransportError> {
         let declared = frame.header.body_len()?;
@@ -237,7 +237,8 @@ mod tests {
             panic!("expected a complete frame");
         };
 
-        assert_eq!(value, frame);
+        assert_eq!(value.header, frame.header);
+        assert_eq!(value.body, frame.body.as_slice());
         assert_eq!(consumed, CRYPT_HEADER_LEN + 3);
     }
 }

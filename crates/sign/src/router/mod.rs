@@ -123,7 +123,6 @@ mod tests {
     static LEGACY_HANDLER: LegacyHandler = LegacyHandler;
     static MODERN_HANDLER: ModernHandler = ModernHandler;
 
-    #[async_trait::async_trait]
     impl Handler<SignSessionContext, BinrwOutboundSender> for LegacyHandler {
         type Inbound = Versioned;
         type Error = InternalError;
@@ -138,7 +137,6 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl Handler<SignSessionContext, BinrwOutboundSender> for ModernHandler {
         type Inbound = Versioned;
         type Error = InternalError;

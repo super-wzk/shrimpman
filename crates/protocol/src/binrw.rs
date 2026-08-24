@@ -1,4 +1,4 @@
-use std::{any::Any, io::Cursor};
+use std::{any::Any, future::Future, io::Cursor, pin::Pin};
 
 use ::binrw::{BinRead, BinResult, BinWrite, Endian};
 use bytes::Bytes;
@@ -191,7 +191,6 @@ where
     handler: &'static H,
 }
 
-#[async_trait::async_trait]
 impl<Context, Error, H> ErasedHandler<Context, OutboundSender<BinrwOutbound>, Error>
     for BinrwBoundHandler<Context, H>
 where
@@ -203,18 +202,18 @@ where
         H::MODE
     }
 
-    async fn handle(
+    fn handle(
         self: Box<Self>,
         context: Context,
         outbound: OutboundSender<BinrwOutbound>,
-    ) -> Result<(), Error> {
-        self.handler
-            .handle(
-                context,
-                self.inbound,
-                BinrwOutboundSender::new(outbound, self.endian),
-            )
-            .await
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>> {
+        let Self {
+            inbound,
+            endian,
+            handler,
+        } = *self;
+
+        Box::pin(handler.handle(context, inbound, BinrwOutboundSender::new(outbound, endian)))
     }
 }
 

@@ -102,7 +102,6 @@ mod tests {
     struct FirstHandler;
     static FIRST_HANDLER: FirstHandler = FirstHandler;
 
-    #[async_trait::async_trait]
     impl Handler<EntranceSessionContext, BinrwOutboundSender> for FirstHandler {
         type Inbound = Request;
         type Error = InternalError;

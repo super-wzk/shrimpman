@@ -22,7 +22,6 @@ const MAX_SIGN_IN_NOTICES: usize = u8::MAX as usize;
 
 pub(super) struct PasswordSignInHandler;
 
-#[async_trait::async_trait]
 impl Handler<SignSessionContext, BinrwOutboundSender> for PasswordSignInHandler {
     type Inbound = PasswordSignIn;
     type Error = InternalError;
