@@ -1,8 +1,6 @@
 use argon2::{
     Argon2,
-    password_hash::{
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
-    },
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use jiff::Timestamp;
 use rand::{RngExt, distr::Alphanumeric};
@@ -15,7 +13,7 @@ use super::{
     inbound::PasswordSignIn,
     outbound::{IssuedSignSession, PasswordSignInResponse, SignInSuccess},
 };
-use crate::{InternalError, SignSessionContext};
+use crate::{application::service_names, InternalError, SignSessionContext};
 
 const MAX_SIGN_IN_NOTICES: usize = u8::MAX as usize;
 
@@ -80,11 +78,17 @@ async fn password_sign_in(
     }
 
     let character_sign_in_history = service.characters().sign_in_history(&characters).await?;
-    let festival = service.mezeporta_festivals().find_active_at(now).await?;
+    let entrance_instances = service.discovery().instances(&service_names::ENTRANCE);
+    let entrance_server = service
+        .entrance_selector()
+        .select(&entrance_instances)
+        .and_then(|instance| instance.advertise_addr.as_deref());
     let notices = service
         .sign_in_notices()
         .list_active_at(now, MAX_SIGN_IN_NOTICES)
         .await?;
+    let festival = service.mezeporta_festivals().find_active_at(now).await?;
+
     let token = generate_session_token();
     let session_id = service
         .sign_sessions()
@@ -95,15 +99,17 @@ async fn password_sign_in(
         )
         .await?;
     let return_period = service.accounts().record_sign_in(&account, now).await?;
+
     let response = SignInSuccess::new(
         IssuedSignSession::new(session_id, token, now),
         rights,
         characters,
         &character_sign_in_history,
         return_period.expires_at(),
-        festival,
-        notices,
-    )?;
+    )?
+    .with_entrance_server(entrance_server)?
+    .with_notices(notices)?
+    .with_festival(festival);
 
     Ok(PasswordSignInResponse::Success(response))
 }
@@ -216,12 +222,9 @@ mod tests {
         let characters = service.characters().list_active(&account).await.unwrap();
         assert_eq!(characters.len(), 1);
 
-        let wrong_password = password_sign_in(
-            SignSessionContext::new(service),
-            request("wrong"),
-        )
-        .await
-        .unwrap();
+        let wrong_password = password_sign_in(SignSessionContext::new(service), request("wrong"))
+            .await
+            .unwrap();
 
         assert!(matches!(
             wrong_password,

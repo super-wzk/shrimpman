@@ -4,6 +4,7 @@
 
 pub mod client;
 mod model;
+pub mod selector;
 mod snapshot;
 
 pub use model::{

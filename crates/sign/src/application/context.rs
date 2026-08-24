@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use jiff::SignedDuration;
-use shrimpman_discovery::client::DiscoveryClient;
+#[cfg(test)]
+use shrimpman_discovery::selector::RoundRobinSelector;
+use shrimpman_discovery::{client::DiscoveryClient, selector::Selector};
 use shrimpman_persistence::{
     AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignInNoticeRepository,
     SignSessionRepository,
@@ -11,7 +13,8 @@ use shrimpman_persistence::{
 pub struct SignServiceContext {
     auto_sign_up: bool,
     session_ttl: SignedDuration,
-    _discovery: DiscoveryClient,
+    discovery: DiscoveryClient,
+    entrance_selector: Box<dyn Selector>,
     repositories: SignRepositories,
 }
 
@@ -48,12 +51,14 @@ impl SignServiceContext {
         auto_sign_up: bool,
         session_ttl: SignedDuration,
         discovery: DiscoveryClient,
+        entrance_selector: impl Selector + 'static,
         repositories: SignRepositories,
     ) -> Self {
         Self {
             auto_sign_up,
             session_ttl,
-            _discovery: discovery,
+            discovery,
+            entrance_selector: Box::new(entrance_selector),
             repositories,
         }
     }
@@ -64,6 +69,14 @@ impl SignServiceContext {
 
     pub(crate) const fn session_ttl(&self) -> SignedDuration {
         self.session_ttl
+    }
+
+    pub(crate) const fn discovery(&self) -> &DiscoveryClient {
+        &self.discovery
+    }
+
+    pub(crate) fn entrance_selector(&self) -> &dyn Selector {
+        self.entrance_selector.as_ref()
     }
 
     pub(crate) fn accounts(&self) -> &AccountRepository {
@@ -97,6 +110,7 @@ impl SignServiceContext {
             auto_sign_up,
             SignedDuration::from_mins(5),
             DiscoveryClient::connect(Default::default()).unwrap(),
+            RoundRobinSelector::new(),
             SignRepositories::new(
                 AccountRepository::new(&db),
                 CharacterRepository::new(&db),

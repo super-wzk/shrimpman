@@ -1,4 +1,4 @@
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -8,25 +8,51 @@ use uuid::Uuid;
 
 /// A validated service identifier used as a discovery key.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ServiceName(String);
+pub struct ServiceName(Cow<'static, str>);
 
 impl ServiceName {
     /// Creates a service name containing lowercase ASCII letters, digits, or hyphens.
     pub fn new(value: impl Into<String>) -> Result<Self, InvalidServiceName> {
         let value = value.into();
-        if value.is_empty()
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        {
+        if !Self::is_valid(&value) {
             return Err(InvalidServiceName);
         }
 
-        Ok(Self(value))
+        Ok(Self(Cow::Owned(value)))
+    }
+
+    /// Creates a statically known service name, failing compilation if it is invalid in a const.
+    pub const fn from_static(value: &'static str) -> Self {
+        assert!(
+            Self::is_valid(value),
+            "service names must contain only lowercase ASCII letters, digits, or hyphens"
+        );
+        Self(Cow::Borrowed(value))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    const fn is_valid(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+
+        let mut index = 0;
+        while index < bytes.len() {
+            if !Self::is_valid_byte(bytes[index]) {
+                return false;
+            }
+            index += 1;
+        }
+
+        true
+    }
+
+    const fn is_valid_byte(byte: u8) -> bool {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
     }
 }
 
@@ -46,7 +72,7 @@ impl TryFrom<String> for ServiceName {
 
 impl From<ServiceName> for String {
     fn from(value: ServiceName) -> Self {
-        value.0
+        value.0.into_owned()
     }
 }
 
@@ -83,7 +109,6 @@ impl Default for ServiceInstanceId {
 /// Lifecycle state advertised by a service instance.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ServiceState {
-    Starting,
     Ready,
     Draining,
 }
@@ -134,8 +159,11 @@ impl ServiceInstance {
 mod tests {
     use super::*;
 
+    const ENTRANCE_SERVICE: ServiceName = ServiceName::from_static("entrance");
+
     #[test]
     fn validates_service_names() {
+        assert_eq!(ENTRANCE_SERVICE.as_str(), "entrance");
         assert_eq!(
             ServiceName::new("entrance-2").unwrap().as_str(),
             "entrance-2"

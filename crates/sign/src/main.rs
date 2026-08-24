@@ -3,8 +3,11 @@ use std::error::Error;
 use jiff::SignedDuration;
 use shrimpman_discovery::{
     ServiceInstance, ServiceInstanceId, ServiceName, ServiceState, client::DiscoveryClient,
+    selector::RoundRobinSelector,
 };
 use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext};
+
+const SERVICE_NAME: ServiceName = ServiceName::from_static("sign");
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -15,6 +18,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         sign.auto_sign_up,
         SignedDuration::try_from(sign.session.ttl)?,
         discovery.clone(),
+        RoundRobinSelector::new(),
         database.repositories(),
     );
     let service = SignService::new(context)?;
@@ -23,7 +27,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let instance_id = ServiceInstanceId::new();
     discovery.publish(ServiceInstance::new(
         instance_id,
-        ServiceName::new("sign")?,
+        SERVICE_NAME,
         ServiceState::Ready,
         Some(advertise_addr),
         (),

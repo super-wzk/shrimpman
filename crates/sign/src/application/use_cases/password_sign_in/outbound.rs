@@ -138,8 +138,6 @@ impl SignInSuccess {
         characters: Vec<Character>,
         character_sign_in_history: &CharacterSignInHistory,
         return_expires_at: Timestamp,
-        festival: Option<MezeportaFestival>,
-        notices: Vec<SignInNotice>,
     ) -> Result<Self, InternalError> {
         let issued_at = Timestamp::from(session.timestamp);
 
@@ -158,19 +156,44 @@ impl SignInSuccess {
                 .collect::<Result<_, _>>()?,
             friends: Vec::new().into(),
             guildmates: Vec::new().into(),
-            notices: notices
-                .into_iter()
-                .map(LoginNotice::try_from)
-                .collect::<Result<Vec<_>, _>>()?
-                .into(),
+            notices: Vec::new().into(),
             last_character_id: character_sign_in_history.last_character_id(),
             rights,
             return_expires_at: return_expires_at.into(),
-            festival: festival.map_or_else(
-                SignInMezeportaFestival::disabled,
-                SignInMezeportaFestival::from,
-            ),
+            festival: SignInMezeportaFestival::disabled(),
         })
+    }
+
+    pub(super) fn with_entrance_server(
+        mut self,
+        address: Option<&str>,
+    ) -> Result<Self, InternalError> {
+        self.entrance_servers = address
+            .map(|address| PrefixedCString::new(address.as_bytes().to_vec()))
+            .transpose()?
+            .into_iter()
+            .collect();
+        Ok(self)
+    }
+
+    pub(super) fn with_notices(
+        mut self,
+        notices: Vec<SignInNotice>,
+    ) -> Result<Self, InternalError> {
+        self.notices = notices
+            .into_iter()
+            .map(LoginNotice::try_from)
+            .collect::<Result<Vec<_>, _>>()?
+            .into();
+        Ok(self)
+    }
+
+    pub(super) fn with_festival(mut self, festival: Option<MezeportaFestival>) -> Self {
+        self.festival = festival.map_or_else(
+            SignInMezeportaFestival::disabled,
+            SignInMezeportaFestival::from,
+        );
+        self
     }
 }
 
@@ -303,9 +326,9 @@ mod tests {
             }],
             &character_sign_in_history,
             timestamp,
-            None,
-            Vec::new(),
         )
+        .unwrap()
+        .with_entrance_server(Some("127.0.0.1:53310"))
         .unwrap();
         let mut output = Cursor::new(Vec::new());
 
@@ -314,14 +337,20 @@ mod tests {
             .unwrap();
         let output = output.into_inner();
 
-        assert_eq!(&output[..4], &[1, 0, 0, 1]);
+        assert_eq!(&output[..4], &[1, 0, 1, 1]);
         assert_eq!(&output[4..8], &7_u32.to_be_bytes());
         assert_eq!(&output[8..24], b"0123456789ABCDEF");
         assert_eq!(
             &output[24..28],
             &u32::try_from(timestamp_seconds).unwrap().to_be_bytes()
         );
-        assert_eq!(&output[28..32], &3_u32.to_be_bytes());
+        let entrance_server = b"\x10127.0.0.1:53310\0";
+        assert_eq!(&output[28..28 + entrance_server.len()], entrance_server);
+        let character_offset = 28 + entrance_server.len();
+        assert_eq!(
+            &output[character_offset..character_offset + 4],
+            &3_u32.to_be_bytes()
+        );
         assert!(output.windows(6).any(|window| window == b"hunter"));
         let filter_offset = output
             .windows(EMPTY_TEXT_FILTER.len())
