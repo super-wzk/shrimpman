@@ -7,7 +7,6 @@ edition.workspace = true
 anyhow = "1"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 jiff = "0.2"
-shrimpman-config = { path = "../config" }
 shrimpman-domain = { path = "../domain" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

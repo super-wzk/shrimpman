@@ -7,13 +7,6 @@ pub struct MigrationConfig {
     pub database_url: String,
 }
 
-impl MigrationConfig {
-    /// Loads the migration section through the shared configuration loader.
-    pub fn load() -> Result<Self, config::ConfigError> {
-        Self::try_from(&shrimpman_config::load()?)
-    }
-}
-
 impl TryFrom<&config::Config> for MigrationConfig {
     type Error = config::ConfigError;
 

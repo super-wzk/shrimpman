@@ -17,7 +17,6 @@ rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 shrimpman-common = { path = "../common" }
-shrimpman-config = { path = "../config" }
 shrimpman-domain = { path = "../domain" }
 shrimpman-discovery = { path = "../discovery" }
 shrimpman-persistence = { path = "../persistence" }

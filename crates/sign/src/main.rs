@@ -24,7 +24,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn load_config() -> Result<SignConfig, config::ConfigError> {
-    let config = shrimpman_config::load()?;
+    let config = config::Config::builder()
+        .add_source(config::File::new("config.toml", config::FileFormat::Toml))
+        .add_source(
+            config::Environment::with_prefix("SHRIMPMAN")
+                .separator("__")
+                .try_parsing(true)
+                .list_separator(",")
+                .with_list_parse_key("sign.discovery.endpoints"),
+        )
+        .build()?;
 
     SignConfig::try_from(&config)
 }
