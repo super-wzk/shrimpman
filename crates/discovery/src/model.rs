@@ -1,11 +1,9 @@
 use std::borrow::Borrow;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
-
-use crate::ServiceState;
 
 /// A validated service identifier used as a discovery key.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -70,8 +68,8 @@ impl ServiceInstanceId {
         self.0
     }
 
-    pub(crate) fn from_bytes(value: &[u8]) -> Result<Self, uuid::Error> {
-        Uuid::from_slice(value).map(Self)
+    pub(crate) const fn from_uuid(value: Uuid) -> Self {
+        Self(value)
     }
 }
 
@@ -79,6 +77,14 @@ impl Default for ServiceInstanceId {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Lifecycle state advertised by a service instance.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ServiceState {
+    Starting,
+    Ready,
+    Draining,
 }
 
 /// A service advertisement whose metadata is opaque to Discovery.

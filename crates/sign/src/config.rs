@@ -94,7 +94,12 @@ mod tests {
         let config = ::config::Config::builder()
             .set_override("sign.auto_sign_up", true)
             .unwrap()
-            .set_override("sign.discovery.endpoint", "discovery.internal:7279")
+            .set_override(
+                "sign.discovery.endpoints",
+                vec!["http://etcd.internal:2379"],
+            )
+            .unwrap()
+            .set_override("sign.discovery.lease_ttl", "30s")
             .unwrap()
             .set_override("sign.discovery.reconnect_delay", "500ms")
             .unwrap()
@@ -113,7 +118,8 @@ mod tests {
                 auto_sign_up: true,
                 database: SignDatabaseConfig::default(),
                 discovery: DiscoveryClientConfig {
-                    endpoint: "discovery.internal:7279".to_owned(),
+                    endpoints: vec!["http://etcd.internal:2379".to_owned()],
+                    lease_ttl: Duration::from_secs(30),
                     reconnect_delay: Duration::from_millis(500),
                 },
                 session: SignSessionConfig {

@@ -4,24 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow = "1"
-chitchat = "0.13"
-config = { version = "0.15", default-features = false }
+etcd-client = "0.19"
 jiff = { version = "0.2", features = ["serde"] }
-prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shrimpman-config = { path = "../config" }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = { version = "0.1", features = ["net"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tonic = "0.14"
-tonic-prost = "0.14"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v7"] }
-
-[build-dependencies]
-prost-build = "0.14"
-protoc-bin-vendored = "3"
-tonic-prost-build = "0.14"

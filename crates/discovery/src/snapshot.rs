@@ -36,10 +36,4 @@ impl DiscoverySnapshot {
             .cloned()
             .unwrap_or_else(|| Arc::from([]))
     }
-
-    pub(crate) fn all_instances(&self) -> impl Iterator<Item = &ServiceInstance> {
-        self.services
-            .values()
-            .flat_map(|instances| instances.iter())
-    }
 }

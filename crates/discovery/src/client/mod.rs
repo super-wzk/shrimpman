@@ -1,22 +1,21 @@
 mod config;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, str, sync::Arc, time::Duration};
 
 pub use config::DiscoveryClientConfig;
+use etcd_client::{Client, GetOptions, PutOptions, WatchOptions};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::{Channel, Endpoint};
 use tracing::warn;
 
 use crate::{
-    DiscoverySnapshot, ServiceInstance, ServiceInstanceId, ServiceName,
-    api::{
-        self, RegistrationCommand, discovery_client::DiscoveryClient as GrpcDiscoveryClient,
-        registration_command::Command as GrpcCommand, registration_event::Event as GrpcEvent,
-    },
-    grpc::{MAX_MESSAGE_SIZE, decode_service_instance, encode_service_instance},
+    DiscoverySnapshot, InvalidServiceName, ServiceInstance, ServiceInstanceId, ServiceName,
+    ServiceState,
 };
+
+const SERVICE_KEY_PREFIX: &str = "/shrimpman/services/";
 
 /// Cloneable handle used by a business service to publish and discover instances.
 #[derive(Clone)]
@@ -26,17 +25,24 @@ pub struct DiscoveryClient {
 }
 
 impl DiscoveryClient {
-    /// Starts a reconnecting Discovery API client on the current Tokio runtime.
+    /// Starts a reconnecting etcd client on the current Tokio runtime.
     pub fn connect(config: DiscoveryClientConfig) -> Result<Self, DiscoveryClientError> {
-        let endpoint = grpc_endpoint(&config.endpoint)?;
+        let lease_ttl = lease_ttl_seconds(config.lease_ttl)?;
+        if config.endpoints.is_empty()
+            || config
+                .endpoints
+                .iter()
+                .any(|endpoint| endpoint.trim().is_empty())
+        {
+            return Err(DiscoveryClientError::InvalidEndpoints);
+        }
+        if config.reconnect_delay.is_zero() {
+            return Err(DiscoveryClientError::InvalidReconnectDelay);
+        }
+
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (snapshot_tx, snapshot_rx) = watch::channel(None);
-        tokio::spawn(run(
-            endpoint,
-            config.reconnect_delay,
-            command_rx,
-            snapshot_tx,
-        ));
+        tokio::spawn(run(config, lease_ttl, command_rx, snapshot_tx));
 
         Ok(Self {
             commands: command_tx,
@@ -46,10 +52,8 @@ impl DiscoveryClient {
 
     /// Publishes or replaces this process's current advertisement.
     pub fn publish(&self, instance: ServiceInstance) -> Result<(), DiscoveryClientError> {
-        let id = instance.id;
-        let instance = encode_service_instance(&instance)?;
         self.commands
-            .send(ClientCommand::Publish { id, instance })
+            .send(ClientCommand::Publish(instance))
             .map_err(|_| DiscoveryClientError::Stopped)
     }
 
@@ -78,199 +82,187 @@ impl DiscoveryClient {
     }
 }
 
-/// Failure to create or send a command to a Discovery client.
+/// Failure to configure or send a command to a Discovery client.
 #[derive(Debug, Error)]
 pub enum DiscoveryClientError {
-    #[error("invalid Discovery endpoint: {0}")]
-    InvalidEndpoint(#[from] tonic::transport::Error),
-    #[error("failed to encode service metadata: {0}")]
-    Metadata(#[from] serde_json::Error),
+    #[error("at least one non-empty etcd endpoint is required")]
+    InvalidEndpoints,
+    #[error("the Discovery lease TTL must be a positive whole number of seconds")]
+    InvalidLeaseTtl,
+    #[error("the Discovery reconnect delay must be positive")]
+    InvalidReconnectDelay,
     #[error("discovery client has stopped")]
     Stopped,
 }
 
 #[derive(Debug)]
 enum ClientCommand {
-    Publish {
-        id: ServiceInstanceId,
-        instance: api::ServiceInstance,
-    },
+    Publish(ServiceInstance),
     Withdraw(ServiceInstanceId),
 }
 
 async fn run(
-    endpoint: Endpoint,
-    reconnect_delay: std::time::Duration,
+    config: DiscoveryClientConfig,
+    lease_ttl: i64,
     mut commands: mpsc::UnboundedReceiver<ClientCommand>,
     snapshot: watch::Sender<Option<Arc<DiscoverySnapshot>>>,
 ) {
-    let mut registrations = BTreeMap::<ServiceInstanceId, api::PublishedServiceInstance>::new();
+    let mut registrations = BTreeMap::<ServiceInstanceId, ServiceInstance>::new();
 
     loop {
-        let channel = loop {
-            tokio::select! {
-                connection = endpoint.connect() => match connection {
-                    Ok(channel) => break channel,
+        match Client::connect(&config.endpoints, None).await {
+            Ok(mut client) => {
+                match serve_connection(
+                    &mut client,
+                    lease_ttl,
+                    &mut commands,
+                    &mut registrations,
+                    &snapshot,
+                )
+                .await
+                {
+                    Ok(()) => return,
                     Err(error) => {
-                        warn!(endpoint = %endpoint.uri(), %error, "failed to connect to Discovery");
-                        if !wait_to_reconnect(
-                            reconnect_delay,
-                            &mut commands,
-                            &mut registrations,
-                        ).await {
-                            return;
-                        }
+                        warn!(%error, "lost the etcd connection");
                     }
-                },
-                command = commands.recv() => match command {
-                    Some(command) => {
-                        apply_command(command, &mut registrations);
-                    }
-                    None => return,
                 }
             }
-        };
-
-        if !run_connection(channel, &mut commands, &mut registrations, &snapshot).await {
-            return;
+            Err(error) => {
+                warn!(%error, "failed to connect to etcd");
+            }
         }
-        snapshot.send_replace(None);
 
-        if !wait_to_reconnect(reconnect_delay, &mut commands, &mut registrations).await {
+        snapshot.send_replace(None);
+        if !wait_to_reconnect(config.reconnect_delay, &mut commands, &mut registrations).await {
             return;
         }
     }
 }
 
-async fn run_connection(
-    channel: Channel,
+async fn serve_connection(
+    client: &mut Client,
+    lease_ttl: i64,
     commands: &mut mpsc::UnboundedReceiver<ClientCommand>,
-    registrations: &mut BTreeMap<ServiceInstanceId, api::PublishedServiceInstance>,
+    registrations: &mut BTreeMap<ServiceInstanceId, ServiceInstance>,
     snapshot: &watch::Sender<Option<Arc<DiscoverySnapshot>>>,
-) -> bool {
-    let mut registration_client = GrpcDiscoveryClient::new(channel.clone())
-        .max_decoding_message_size(MAX_MESSAGE_SIZE)
-        .max_encoding_message_size(MAX_MESSAGE_SIZE);
-    let mut snapshot_client = GrpcDiscoveryClient::new(channel)
-        .max_decoding_message_size(MAX_MESSAGE_SIZE)
-        .max_encoding_message_size(MAX_MESSAGE_SIZE);
-    let (registration_tx, registration_rx) = mpsc::channel(32);
-    let mut registration_events = match registration_client
-        .register(ReceiverStream::new(registration_rx))
-        .await
-    {
-        Ok(response) => response.into_inner(),
-        Err(error) => {
-            warn!(%error, "failed to open Discovery registration stream");
-            return true;
-        }
-    };
-    let mut snapshots = match snapshot_client
-        .watch(api::WatchRequest {
-            services: Vec::new(),
-        })
-        .await
-    {
-        Ok(response) => response.into_inner(),
-        Err(error) => {
-            warn!(%error, "failed to open Discovery snapshot stream");
-            return true;
-        }
-    };
+) -> Result<(), ConnectionError> {
+    let lease_id = client.lease_grant(lease_ttl, None).await?.id();
+    let (mut lease_keeper, mut lease_responses) = client.lease_keep_alive(lease_id).await?;
 
-    for registration in registrations.values() {
-        if registration_tx
-            .send(publish_command(registration))
-            .await
-            .is_err()
-        {
-            return true;
-        }
+    for instance in registrations.values() {
+        put_instance(client, lease_id, instance).await?;
     }
+
+    let revision = refresh_snapshot(client, snapshot).await?;
+    let start_revision = revision
+        .checked_add(1)
+        .ok_or(ConnectionError::RevisionOverflow)?;
+    let mut watches = client
+        .watch(
+            SERVICE_KEY_PREFIX,
+            Some(
+                WatchOptions::new()
+                    .with_prefix()
+                    .with_start_revision(start_revision),
+            ),
+        )
+        .await?;
+    let first_watch = watches
+        .message()
+        .await?
+        .ok_or(ConnectionError::WatchClosed)?;
+    validate_watch(&first_watch)?;
+    if !first_watch.created() {
+        return Err(ConnectionError::WatchNotCreated);
+    }
+
+    let keep_alive_interval = Duration::from_secs((lease_ttl / 3).max(1) as u64);
+    let mut keep_alive = tokio::time::interval(keep_alive_interval);
+    keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
-            message = snapshots.message() => match message {
-                Ok(Some(message)) => {
-                    let instances = message.instances
-                        .iter()
-                        .map(decode_service_instance)
-                        .collect::<Result<Vec<_>, _>>();
-                    match instances {
-                        Ok(instances) => {
-                            snapshot.send_replace(Some(Arc::new(
-                                DiscoverySnapshot::from_instances(instances),
-                            )));
-                        }
-                        Err(error) => {
-                            warn!(%error, "received an invalid Discovery snapshot");
-                            return true;
-                        }
-                    }
+            _ = keep_alive.tick() => {
+                lease_keeper.keep_alive().await?;
+            }
+            response = lease_responses.message() => {
+                let response = response?.ok_or(ConnectionError::LeaseClosed)?;
+                if response.ttl() <= 0 {
+                    return Err(ConnectionError::LeaseExpired);
                 }
-                Ok(None) | Err(_) => return true,
-            },
-            event = registration_events.message() => match event {
-                Ok(Some(event)) => report_registration_event(event),
-                Ok(None) | Err(_) => return true,
-            },
+            }
+            response = watches.message() => {
+                let response = response?.ok_or(ConnectionError::WatchClosed)?;
+                validate_watch(&response)?;
+                if !response.events().is_empty() {
+                    refresh_snapshot(client, snapshot).await?;
+                }
+            }
             command = commands.recv() => match command {
-                Some(command) => {
-                    let message = apply_command(command, registrations);
-                    if registration_tx.send(message).await.is_err() {
-                        return true;
+                Some(ClientCommand::Publish(instance)) => {
+                    if let Some(previous) = registrations.insert(instance.id, instance.clone())
+                        && previous.service != instance.service
+                    {
+                        client.delete(instance_key(&previous), None).await?;
+                    }
+                    put_instance(client, lease_id, &instance).await?;
+                }
+                Some(ClientCommand::Withdraw(id)) => {
+                    if let Some(instance) = registrations.remove(&id) {
+                        client.delete(instance_key(&instance), None).await?;
                     }
                 }
-                None => return false,
-            },
-        }
-    }
-}
-
-fn apply_command(
-    command: ClientCommand,
-    registrations: &mut BTreeMap<ServiceInstanceId, api::PublishedServiceInstance>,
-) -> RegistrationCommand {
-    match command {
-        ClientCommand::Publish { id, instance } => {
-            let revision = registrations
-                .get(&id)
-                .map_or(1, |registration| registration.revision + 1);
-            let registration = api::PublishedServiceInstance {
-                revision,
-                instance: Some(instance),
-            };
-            let command = publish_command(&registration);
-            registrations.insert(id, registration);
-            command
-        }
-        ClientCommand::Withdraw(id) => {
-            registrations.remove(&id);
-            RegistrationCommand {
-                command: Some(GrpcCommand::Withdraw(api::ServiceInstanceId {
-                    value: id.as_uuid().as_bytes().to_vec(),
-                })),
+                None => {
+                    let _ = client.lease_revoke(lease_id).await;
+                    return Ok(());
+                }
             }
         }
     }
 }
 
-fn publish_command(registration: &api::PublishedServiceInstance) -> RegistrationCommand {
-    RegistrationCommand {
-        command: Some(GrpcCommand::Publish(registration.clone())),
-    }
+async fn refresh_snapshot(
+    client: &mut Client,
+    snapshot: &watch::Sender<Option<Arc<DiscoverySnapshot>>>,
+) -> Result<i64, ConnectionError> {
+    let response = client
+        .get(SERVICE_KEY_PREFIX, Some(GetOptions::new().with_prefix()))
+        .await?;
+    let revision = response.header().map_or(0, |header| header.revision());
+    let instances = response.kvs().iter().filter_map(|entry| {
+        match decode_instance(entry.key(), entry.value()) {
+            Ok(instance) => Some(instance),
+            Err(error) => {
+                warn!(%error, "ignored invalid etcd service registration");
+                None
+            }
+        }
+    });
+    snapshot.send_replace(Some(Arc::new(DiscoverySnapshot::from_instances(instances))));
+
+    Ok(revision)
 }
 
-fn report_registration_event(event: api::RegistrationEvent) {
-    if let Some(GrpcEvent::Rejected(rejected)) = event.event {
-        warn!(reason = %rejected.reason, "Discovery rejected a registration command");
-    }
+async fn put_instance(
+    client: &mut Client,
+    lease_id: i64,
+    instance: &ServiceInstance,
+) -> Result<(), ConnectionError> {
+    let value = encode_instance(instance)?;
+    client
+        .put(
+            instance_key(instance),
+            value,
+            Some(PutOptions::new().with_lease(lease_id)),
+        )
+        .await?;
+    Ok(())
 }
 
 async fn wait_to_reconnect(
-    delay: std::time::Duration,
+    delay: Duration,
     commands: &mut mpsc::UnboundedReceiver<ClientCommand>,
-    registrations: &mut BTreeMap<ServiceInstanceId, api::PublishedServiceInstance>,
+    registrations: &mut BTreeMap<ServiceInstanceId, ServiceInstance>,
 ) -> bool {
     let sleep = tokio::time::sleep(delay);
     tokio::pin!(sleep);
@@ -279,8 +271,11 @@ async fn wait_to_reconnect(
         tokio::select! {
             () = &mut sleep => return true,
             command = commands.recv() => match command {
-                Some(command) => {
-                    apply_command(command, registrations);
+                Some(ClientCommand::Publish(instance)) => {
+                    registrations.insert(instance.id, instance);
+                }
+                Some(ClientCommand::Withdraw(id)) => {
+                    registrations.remove(&id);
                 }
                 None => return false,
             }
@@ -288,13 +283,95 @@ async fn wait_to_reconnect(
     }
 }
 
-fn grpc_endpoint(endpoint: &str) -> Result<Endpoint, tonic::transport::Error> {
-    let uri = if endpoint.contains("://") {
-        endpoint.to_owned()
-    } else {
-        format!("http://{endpoint}")
-    };
-    Endpoint::from_shared(uri)
+fn lease_ttl_seconds(ttl: Duration) -> Result<i64, DiscoveryClientError> {
+    if ttl.is_zero() || ttl.subsec_nanos() != 0 {
+        return Err(DiscoveryClientError::InvalidLeaseTtl);
+    }
+
+    i64::try_from(ttl.as_secs()).map_err(|_| DiscoveryClientError::InvalidLeaseTtl)
+}
+
+fn instance_key(instance: &ServiceInstance) -> String {
+    format!(
+        "{SERVICE_KEY_PREFIX}{}/{}",
+        instance.service.as_str(),
+        instance.id.as_uuid()
+    )
+}
+
+fn encode_instance(instance: &ServiceInstance) -> serde_json::Result<Vec<u8>> {
+    serde_json::to_vec(&StoredServiceInstance {
+        state: instance.state,
+        metadata: &instance.metadata,
+    })
+}
+
+fn decode_instance(key: &[u8], value: &[u8]) -> Result<ServiceInstance, StoredInstanceError> {
+    let key = str::from_utf8(key)?;
+    let path = key
+        .strip_prefix(SERVICE_KEY_PREFIX)
+        .ok_or(StoredInstanceError::Key)?;
+    let (service, id) = path.split_once('/').ok_or(StoredInstanceError::Key)?;
+    if id.contains('/') {
+        return Err(StoredInstanceError::Key);
+    }
+
+    let stored = serde_json::from_slice::<StoredServiceInstance<Value>>(value)?;
+    Ok(ServiceInstance {
+        id: ServiceInstanceId::from_uuid(uuid::Uuid::parse_str(id)?),
+        service: ServiceName::new(service)?,
+        state: stored.state,
+        metadata: stored.metadata,
+    })
+}
+
+fn validate_watch(response: &etcd_client::WatchResponse) -> Result<(), ConnectionError> {
+    if response.canceled() {
+        return Err(ConnectionError::WatchCanceled(
+            response.cancel_reason().to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize)]
+struct StoredServiceInstance<Metadata> {
+    state: ServiceState,
+    metadata: Metadata,
+}
+
+#[derive(Debug, Error)]
+enum ConnectionError {
+    #[error(transparent)]
+    Etcd(#[from] etcd_client::Error),
+    #[error("failed to encode a service registration: {0}")]
+    Encode(#[from] serde_json::Error),
+    #[error("etcd lease keep-alive stream closed")]
+    LeaseClosed,
+    #[error("etcd lease expired")]
+    LeaseExpired,
+    #[error("etcd watch stream closed")]
+    WatchClosed,
+    #[error("etcd did not acknowledge the service watch")]
+    WatchNotCreated,
+    #[error("etcd canceled the service watch: {0}")]
+    WatchCanceled(String),
+    #[error("etcd revision overflowed")]
+    RevisionOverflow,
+}
+
+#[derive(Debug, Error)]
+enum StoredInstanceError {
+    #[error("invalid service registration key")]
+    Key,
+    #[error("service registration key is not UTF-8: {0}")]
+    Utf8(#[from] str::Utf8Error),
+    #[error(transparent)]
+    ServiceName(#[from] InvalidServiceName),
+    #[error("invalid service instance ID: {0}")]
+    Id(#[from] uuid::Error),
+    #[error("invalid service registration value: {0}")]
+    Value(#[from] serde_json::Error),
 }
 
 #[cfg(test)]
@@ -302,53 +379,43 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::ServiceState;
 
     #[test]
-    fn keeps_only_the_latest_local_registration() {
-        let id = ServiceInstanceId::new();
-        let mut registrations = BTreeMap::new();
-
-        apply_command(
-            ClientCommand::Publish {
-                id,
-                instance: grpc_instance(id, ServiceState::Starting),
-            },
-            &mut registrations,
+    fn validates_client_configuration() {
+        assert!(
+            DiscoveryClient::connect(DiscoveryClientConfig {
+                endpoints: Vec::new(),
+                ..DiscoveryClientConfig::default()
+            })
+            .is_err()
         );
-        let message = apply_command(
-            ClientCommand::Publish {
-                id,
-                instance: grpc_instance(id, ServiceState::Ready),
-            },
-            &mut registrations,
+        assert!(
+            DiscoveryClient::connect(DiscoveryClientConfig {
+                lease_ttl: Duration::from_millis(500),
+                ..DiscoveryClientConfig::default()
+            })
+            .is_err()
         );
-
-        let Some(GrpcCommand::Publish(registration)) = message.command else {
-            panic!("expected publication");
-        };
-        assert_eq!(registration.revision, 2);
-        assert_eq!(
-            registration.instance.unwrap().state,
-            api::ServiceState::Ready as i32
+        assert!(
+            DiscoveryClient::connect(DiscoveryClientConfig {
+                reconnect_delay: Duration::ZERO,
+                ..DiscoveryClientConfig::default()
+            })
+            .is_err()
         );
-        assert_eq!(registrations.len(), 1);
     }
 
     #[test]
-    fn accepts_endpoints_without_an_explicit_scheme() {
-        let endpoint = grpc_endpoint("127.0.0.1:7279").unwrap();
-
-        assert_eq!(endpoint.uri().scheme_str(), Some("http"));
-    }
-
-    fn grpc_instance(id: ServiceInstanceId, state: ServiceState) -> api::ServiceInstance {
-        encode_service_instance(&ServiceInstance {
-            id,
+    fn round_trips_etcd_registration() {
+        let instance = ServiceInstance {
+            id: ServiceInstanceId::new(),
             service: ServiceName::new("entrance").unwrap(),
-            state,
-            metadata: json!({}),
-        })
-        .unwrap()
+            state: ServiceState::Ready,
+            metadata: json!({ "endpoint": "127.0.0.1:53310" }),
+        };
+        let key = instance_key(&instance);
+        let value = encode_instance(&instance).unwrap();
+
+        assert_eq!(decode_instance(key.as_bytes(), &value).unwrap(), instance);
     }
 }

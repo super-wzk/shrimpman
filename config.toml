@@ -1,16 +1,6 @@
 [migration]
 database_url = "sqlite://shrimpman.sqlite3"
 
-[discovery.server]
-api_listen_addr = "127.0.0.1:7279"
-cluster_id = "shrimpman"
-node_id = "discovery-1"
-listen_addr = "127.0.0.1:7280"
-advertise_addr = "127.0.0.1:7280"
-seed_nodes = []
-gossip_interval = "1s"
-shutdown_timeout = "5s"
-
 [sign]
 auto_sign_up = false
 
@@ -18,7 +8,8 @@ auto_sign_up = false
 url = "sqlite://shrimpman.sqlite3"
 
 [sign.discovery]
-endpoint = "127.0.0.1:7279"
+endpoints = ["http://127.0.0.1:2379"]
+lease_ttl = "15s"
 reconnect_delay = "1s"
 
 [sign.session]
