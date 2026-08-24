@@ -60,21 +60,20 @@ pub struct OutboundReceiver<Outbound> {
 }
 
 impl<Outbound> OutboundReceiver<Outbound> {
-    /// Forwards every queued value and closes the sink when all senders close.
-    pub async fn forward_to<SinkType>(mut self, mut sink: SinkType) -> Result<(), SinkType::Error>
+    /// Forwards and flushes every queued value until all senders close.
+    pub async fn forward_to<SinkType>(mut self, sink: &mut SinkType) -> Result<(), SinkType::Error>
     where
         SinkType: Sink<Outbound> + Unpin,
     {
-        while let Some(pending) = self.receiver.recv().await {
-            if let Some(flush) = pending.flush {
-                sink.send(pending.outbound).await?;
+        while let Some(PendingOutbound { outbound, flush }) = self.receiver.recv().await {
+            sink.send(outbound).await?;
+
+            if let Some(flush) = flush {
                 let _ = flush.send(());
-            } else {
-                sink.feed(pending.outbound).await?;
             }
         }
 
-        sink.close().await
+        Ok(())
     }
 }
 
@@ -90,7 +89,50 @@ pub struct OutboundSendError;
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        convert::Infallible,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
     use super::*;
+
+    #[derive(Default)]
+    struct LifecycleSink {
+        flushes: usize,
+        closes: usize,
+    }
+
+    impl Sink<u8> for LifecycleSink {
+        type Error = Infallible;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, _value: u8) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().flushes += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().closes += 1;
+            Poll::Ready(Ok(()))
+        }
+    }
 
     #[tokio::test]
     async fn queued_send_returns_before_delivery() {
@@ -114,5 +156,18 @@ mod tests {
 
         pending.flush.unwrap().send(()).unwrap();
         send.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn forwarding_flushes_values_without_closing_the_sink() {
+        let (sender, receiver) = outbound_channel(NonZeroUsize::MIN);
+        sender.send(7).await.unwrap();
+        drop(sender);
+        let mut sink = LifecycleSink::default();
+
+        receiver.forward_to(&mut sink).await.unwrap();
+
+        assert_eq!(sink.flushes, 1);
+        assert_eq!(sink.closes, 0);
     }
 }

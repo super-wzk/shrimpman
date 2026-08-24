@@ -306,7 +306,7 @@ mod tests {
             Ok::<_, Infallible>(capture)
         });
         pin_mut!(sink);
-        receiver.forward_to(sink).await.unwrap();
+        receiver.forward_to(&mut sink).await.unwrap();
         let outbound = captured.recv().unwrap();
 
         assert_eq!(outbound.encode().unwrap(), Bytes::from_static(&[51]));

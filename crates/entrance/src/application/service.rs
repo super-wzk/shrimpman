@@ -6,35 +6,35 @@ use shrimpman_transport::MhfConnection;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::Instrument;
 
-use super::{ConnectionError, InternalError, SignServiceContext, SignSessionContext};
+use super::{ConnectionError, EntranceServiceContext, EntranceSessionContext, InternalError};
 use crate::{
-    envelope::SignCommandDecoder,
-    router::{SignRouter, SignRouterBuildError},
+    envelope::EntranceCommandDecoder,
+    router::{EntranceRouter, EntranceRouterBuildError},
 };
 
 const INITIALIZATION_LEN: usize = 8;
 
-type SignPacketStream<Io> =
-    PacketStream<MhfConnection<Io>, CommandPacketDecoder<SignCommandDecoder, SignRouter>>;
+type EntrancePacketStream<Io> =
+    PacketStream<MhfConnection<Io>, CommandPacketDecoder<EntranceCommandDecoder, EntranceRouter>>;
 
-/// Serves the Sign protocol over accepted connections.
-pub struct SignService {
-    context: Arc<SignServiceContext>,
-    router: SignRouter,
+/// Serves the Entrance protocol over accepted connections.
+pub struct EntranceService {
+    context: Arc<EntranceServiceContext>,
+    router: EntranceRouter,
 }
 
-impl SignService {
+impl EntranceService {
     /// Builds the service and validates all distributed packet registrations.
-    pub fn new(context: SignServiceContext) -> Result<Self, SignRouterBuildError> {
+    pub fn new(context: EntranceServiceContext) -> Result<Self, EntranceRouterBuildError> {
         Ok(Self {
             context: Arc::new(context),
-            router: SignRouter::new()?,
+            router: EntranceRouter::new()?,
         })
     }
 
-    /// Runs the complete Sign exchange for one accepted byte stream.
+    /// Runs the complete Entrance exchange for one accepted byte stream.
     ///
-    /// Sign connections carry one request. The service consumes the raw
+    /// Entrance connections carry one request. The service consumes the raw
     /// initialization prelude, dispatches that request, sends every response
     /// in order, and closes the encrypted connection.
     pub async fn serve_connection<Io>(&self, mut io: Io) -> Result<(), ConnectionError>
@@ -46,22 +46,22 @@ impl SignService {
             .await
             .map_err(ConnectionError::Initialization)?;
 
-        let context = SignSessionContext::new(Arc::clone(&self.context));
+        let context = EntranceSessionContext::new(Arc::clone(&self.context));
 
-        SignSession::new(io, context, self.router).run().await
+        EntranceSession::new(io, context, self.router).run().await
     }
 }
 
-struct SignSession<Io> {
-    context: SignSessionContext,
-    packets: SignPacketStream<Io>,
+struct EntranceSession<Io> {
+    context: EntranceSessionContext,
+    packets: EntrancePacketStream<Io>,
     dispatcher: Dispatcher<InternalError>,
 }
 
-impl<Io> SignSession<Io> {
-    fn new(io: Io, context: SignSessionContext, router: SignRouter) -> Self {
+impl<Io> EntranceSession<Io> {
+    fn new(io: Io, context: EntranceSessionContext, router: EntranceRouter) -> Self {
         let connection = MhfConnection::new(io);
-        let decoder = CommandPacketDecoder::new(SignCommandDecoder, router);
+        let decoder = CommandPacketDecoder::new(EntranceCommandDecoder, router);
 
         Self {
             context,
@@ -71,7 +71,7 @@ impl<Io> SignSession<Io> {
     }
 }
 
-impl<Io> SignSession<Io>
+impl<Io> EntranceSession<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
@@ -86,7 +86,7 @@ where
             .await
             .ok_or(ConnectionError::UnexpectedEof)?
             .map_err(ConnectionError::Receive)?;
-        let (command, version, handler) = decoded.into_parts();
+        let (command, (), handler) = decoded.into_parts();
         let (outbound, receiver) = outbound_channel(NonZeroUsize::MIN);
 
         let dispatch = async move {
@@ -104,18 +104,14 @@ where
                 .map_err(ConnectionError::Send)?;
             packets.close().await.map_err(ConnectionError::Close)
         };
-        let span = tracing::info_span!(
-            "sign_request",
-            command = command.as_str(),
-            client_version = version.number()
-        );
+        let span = tracing::info_span!("entrance_request", command = command.as_str());
         async move {
             let started_at = Instant::now();
-            tracing::info!("Processing Sign request");
+            tracing::info!("Processing Entrance request");
             tokio::try_join!(dispatch, writer)?;
             tracing::info!(
                 elapsed_ms = started_at.elapsed().as_millis(),
-                "Completed Sign request"
+                "Completed Entrance request"
             );
             Ok(())
         }
@@ -126,17 +122,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
     use binrw::{BinRead, BinWrite};
     use bytes::Bytes;
     use futures_util::SinkExt;
-    use shrimpman_protocol::{BinrwOutboundSender, DispatchMode, Handler};
-    use tokio::{
-        io::{AsyncWriteExt, duplex},
-        sync::Notify,
-    };
+    use shrimpman_discovery::client::DiscoveryClient;
+    use shrimpman_protocol::{BinrwOutboundSender, Handler};
+    use tokio::io::{AsyncWriteExt, duplex};
 
     use super::*;
-    use crate::router::{SignPacketRegistration, VersionSelector};
+    use crate::router::EntrancePacketRegistration;
 
     #[derive(BinRead)]
     struct TestRequest(u8);
@@ -145,46 +141,50 @@ mod tests {
     struct TestResponse(u8);
 
     struct TestHandler;
-    static CONTINUE_TEST_HANDLER: Notify = Notify::const_new();
+    static RECEIVED_VALUE: AtomicU8 = AtomicU8::new(0);
 
     #[async_trait::async_trait]
-    impl Handler<SignSessionContext, BinrwOutboundSender> for TestHandler {
+    impl Handler<EntranceSessionContext, BinrwOutboundSender> for TestHandler {
         type Inbound = TestRequest;
         type Error = InternalError;
 
-        const MODE: DispatchMode = DispatchMode::Concurrent;
-
         async fn handle(
             &self,
-            _context: SignSessionContext,
+            _context: EntranceSessionContext,
             inbound: Self::Inbound,
             outbound: BinrwOutboundSender,
         ) -> Result<(), Self::Error> {
-            outbound.send_and_flush(TestResponse(inbound.0 + 1)).await?;
-            CONTINUE_TEST_HANDLER.notified().await;
-            outbound.send(TestResponse(inbound.0 + 2)).await?;
+            RECEIVED_VALUE.store(inbound.0, Ordering::Relaxed);
+            outbound.send(TestResponse(inbound.0 + 1)).await?;
             Ok(())
         }
     }
 
     inventory::submit! {
-        SignPacketRegistration::new(
-            &["TEST:"],
-            VersionSelector::Any,
+        EntrancePacketRegistration::new(
+            &["TEST-SERVICE"],
             &TestHandler,
         )
     }
 
+    fn service() -> EntranceService {
+        EntranceService::new(EntranceServiceContext::new(
+            DiscoveryClient::connect(Default::default()).unwrap(),
+        ))
+        .unwrap()
+    }
+
     #[tokio::test]
-    async fn flushes_then_drains_responses_before_closing_the_connection() {
+    async fn dispatches_a_null_terminated_command_then_closes_the_connection() {
+        RECEIVED_VALUE.store(0, Ordering::Relaxed);
         let (mut client_io, server_io) = duplex(4096);
-        let service = SignService::new(SignServiceContext::for_test(true).await).unwrap();
+        let service = service();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; INITIALIZATION_LEN]).await.unwrap();
         let mut client = MhfConnection::new(client_io);
         client
-            .send(Bytes::from_static(b"TEST:041\0\x07"))
+            .send(Bytes::from_static(b"TEST-SERVICE\0\x07"))
             .await
             .unwrap();
 
@@ -192,19 +192,15 @@ mod tests {
             client.next().await.unwrap().unwrap(),
             Bytes::from_static(&[8])
         );
-        CONTINUE_TEST_HANDLER.notify_one();
-        assert_eq!(
-            client.next().await.unwrap().unwrap(),
-            Bytes::from_static(&[9])
-        );
         assert!(client.next().await.is_none());
         server.await.unwrap().unwrap();
+        assert_eq!(RECEIVED_VALUE.load(Ordering::Relaxed), 7);
     }
 
     #[tokio::test]
     async fn rejects_connections_without_a_complete_initialization() {
         let (mut client_io, server_io) = duplex(64);
-        let service = SignService::new(SignServiceContext::for_test(true).await).unwrap();
+        let service = service();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; 7]).await.unwrap();

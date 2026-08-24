@@ -3558,6 +3558,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "shrimpman-entrance"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "automod",
+ "binrw",
+ "bytes",
+ "config",
+ "futures-util",
+ "inventory",
+ "jiff",
+ "serde",
+ "shrimpman-common",
+ "shrimpman-discovery",
+ "shrimpman-domain",
+ "shrimpman-protocol",
+ "shrimpman-transport",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "shrimpman-persistence"
 version = "0.1.0"
 dependencies = [

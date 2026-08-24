@@ -1,6 +1,19 @@
 [migration]
 database_url = "sqlite://shrimpman.sqlite3"
 
+[entrance.discovery]
+endpoints = ["http://127.0.0.1:2379"]
+lease_ttl = "15s"
+reconnect_delay = "1s"
+
+[entrance.logging]
+filter = "warn,shrimpman_entrance=info,shrimpman_discovery=info"
+
+[entrance.server]
+listen_addr = "0.0.0.0:53310"
+advertise_addr = "127.0.0.1:53310"
+shutdown_timeout = "5s"
+
 [sign]
 auto_sign_up = false
 

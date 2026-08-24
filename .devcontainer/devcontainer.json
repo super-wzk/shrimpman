@@ -21,11 +21,16 @@
   ],
   "forwardPorts": [
     "etcd:2379",
+    53310,
     53312
   ],
   "portsAttributes": {
     "etcd:2379": {
       "label": "etcd",
+      "requireLocalPort": true
+    },
+    "53310": {
+      "label": "Entrance Server",
       "requireLocalPort": true
     },
     "53312": {

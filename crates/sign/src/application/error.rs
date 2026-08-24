@@ -56,4 +56,7 @@ pub enum ConnectionError {
 
     #[error("failed to send Sign response: {0}")]
     Send(#[source] PacketError<TransportError, binrw::Error>),
+
+    #[error("failed to close Sign connection: {0}")]
+    Close(#[source] TransportError),
 }

@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures_util::{Sink, Stream};
+use futures_util::{Sink, SinkExt, Stream};
 use thiserror::Error;
 
 /// The result of decoding at most one service item from a transport payload.
@@ -69,6 +69,14 @@ impl<Transport, Decoder> PacketStream<Transport, Decoder> {
             current_payload: None,
             terminated: false,
         }
+    }
+
+    /// Flushes and closes the underlying payload transport.
+    pub async fn close(&mut self) -> Result<(), <Transport as Sink<Bytes>>::Error>
+    where
+        Transport: Sink<Bytes> + Unpin,
+    {
+        SinkExt::<Bytes>::close(&mut self.transport).await
     }
 }
 
@@ -264,6 +272,17 @@ mod tests {
         let mut packets = PacketStream::new(sink::drain(), decoder);
 
         packets.send(Byte(7)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closes_the_transport_without_an_outbound_packet_type() {
+        let transport = sink::drain::<Bytes>();
+        let decoder = ByteDecoder {
+            decode_count: Rc::new(Cell::new(0)),
+        };
+        let mut packets = PacketStream::new(transport, decoder);
+
+        packets.close().await.unwrap();
     }
 
     struct StalledDecoder;

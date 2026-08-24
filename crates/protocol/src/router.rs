@@ -25,6 +25,26 @@ pub trait RouteSelector {
     fn conflict(&self, other: &Self) -> Option<Self::Conflict>;
 }
 
+impl RouteSelector for () {
+    type Metadata = ();
+    type Priority = ();
+    type Conflict = ();
+
+    fn matches(&self, _metadata: &Self::Metadata) -> bool {
+        true
+    }
+
+    fn priority(&self) -> Self::Priority {}
+
+    fn is_empty(&self) -> bool {
+        false
+    }
+
+    fn conflict(&self, _other: &Self) -> Option<Self::Conflict> {
+        Some(())
+    }
+}
+
 /// An invalid route table.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum RouteTableBuildError<Key, Conflict> {
@@ -150,6 +170,30 @@ mod tests {
         assert_eq!(routes.resolve("SIGN:", &41), Some(&"exact"));
         assert_eq!(routes.resolve("SIGN:", &42), Some(&"fallback"));
         assert_eq!(routes.resolve("OTHER:", &41), None);
+    }
+
+    #[test]
+    fn resolves_a_route_without_metadata() {
+        let routes = RouteTable::build([("COMMAND", (), "handler")]).unwrap();
+
+        assert_eq!(routes.resolve("COMMAND", &()), Some(&"handler"));
+        assert_eq!(routes.resolve("OTHER", &()), None);
+    }
+
+    #[test]
+    fn rejects_duplicate_routes_without_metadata() {
+        let result = RouteTable::build([("COMMAND", (), 1), ("COMMAND", (), 2)]);
+        let Err(error) = result else {
+            panic!("duplicate unit routes were accepted")
+        };
+
+        assert_eq!(
+            error,
+            RouteTableBuildError::Conflict {
+                key: "COMMAND",
+                conflict: (),
+            }
+        );
     }
 
     #[test]
