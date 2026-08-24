@@ -13,13 +13,11 @@ services:
 
   etcd:
     image: gcr.io/etcd-development/etcd:v3.6.14
-    ports:
-      - "127.0.0.1:2379:2379"
     command:
       - /usr/local/bin/etcd
       - --data-dir=/etcd-data
       - --listen-client-urls=http://0.0.0.0:2379
-      - --advertise-client-urls=http://127.0.0.1:2379
+      - --advertise-client-urls=http://etcd:2379
     volumes:
       - etcd-data:/etcd-data
 

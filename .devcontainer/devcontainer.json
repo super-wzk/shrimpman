@@ -19,6 +19,20 @@
       "type": "volume"
     }
   ],
+  "forwardPorts": [
+    "etcd:2379",
+    53312
+  ],
+  "portsAttributes": {
+    "etcd:2379": {
+      "label": "etcd",
+      "requireLocalPort": true
+    },
+    "53312": {
+      "label": "Sign Server",
+      "requireLocalPort": true
+    }
+  },
   "customizations": {
     "jetbrains": {
       "backend": "RustRover"
@@ -36,8 +50,6 @@
         "stkb.rewrap",
         "vscode-icons-team.vscode-icons",
         "redhat.vscode-yaml",
-        "bajdzis.vscode-database",
-        "IBM.output-colorizer",
         "intellsmi.comment-translate",
         "isudox.vscode-jetbrains-keybindings",
         "nefrob.vscode-just-syntax"
