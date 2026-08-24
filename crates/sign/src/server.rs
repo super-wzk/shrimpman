@@ -121,14 +121,16 @@ mod tests {
     async fn binds_the_configured_listener() {
         let config = SignServerConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
+            advertise_addr: "127.0.0.1:53312".to_owned(),
             shutdown_timeout: Duration::ZERO,
         };
+        let listen_addr = config.listen_addr;
         let service = SignService::new(SignServiceContext::for_test(true).await).unwrap();
         let server = SignServer::bind(config, service).await.unwrap();
         let local_addr = server.local_addr().unwrap();
 
-        assert_eq!(local_addr.ip(), config.listen_addr.ip());
-        assert_ne!(local_addr.port(), 0);
+        assert_eq!(local_addr.ip(), listen_addr.ip());
+        assert_ne!(local_addr.port(), listen_addr.port());
         server.run(future::ready(())).await.unwrap();
     }
 

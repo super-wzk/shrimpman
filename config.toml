@@ -17,4 +17,5 @@ ttl = "5m"
 
 [sign.server]
 listen_addr = "0.0.0.0:53312"
+advertise_addr = "127.0.0.1:53312"
 shutdown_timeout = "5s"

@@ -39,7 +39,8 @@
         "bajdzis.vscode-database",
         "IBM.output-colorizer",
         "intellsmi.comment-translate",
-        "isudox.vscode-jetbrains-keybindings"
+        "isudox.vscode-jetbrains-keybindings",
+        "nefrob.vscode-just-syntax"
         // "mohsen1.prettify-json", // Prettify JSON data
         // "zxh404.vscode-proto3", // Supports Proto syntax
         // "jrebocho.vscode-random", // Generates random values

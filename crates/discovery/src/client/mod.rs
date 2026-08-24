@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, str, sync::Arc, time::Duration};
 
 pub use config::DiscoveryClientConfig;
 use etcd_client::{Client, GetOptions, PutOptions, WatchOptions};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -302,6 +303,8 @@ fn instance_key(instance: &ServiceInstance) -> String {
 fn encode_instance(instance: &ServiceInstance) -> serde_json::Result<Vec<u8>> {
     serde_json::to_vec(&StoredServiceInstance {
         state: instance.state,
+        advertise_addr: instance.advertise_addr.clone(),
+        registered_at: instance.registered_at,
         metadata: &instance.metadata,
     })
 }
@@ -321,6 +324,8 @@ fn decode_instance(key: &[u8], value: &[u8]) -> Result<ServiceInstance, StoredIn
         id: ServiceInstanceId::from_uuid(uuid::Uuid::parse_str(id)?),
         service: ServiceName::new(service)?,
         state: stored.state,
+        advertise_addr: stored.advertise_addr,
+        registered_at: stored.registered_at,
         metadata: stored.metadata,
     })
 }
@@ -337,6 +342,9 @@ fn validate_watch(response: &etcd_client::WatchResponse) -> Result<(), Connectio
 #[derive(Deserialize, Serialize)]
 struct StoredServiceInstance<Metadata> {
     state: ServiceState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    advertise_addr: Option<String>,
+    registered_at: Timestamp,
     metadata: Metadata,
 }
 
@@ -411,6 +419,8 @@ mod tests {
             id: ServiceInstanceId::new(),
             service: ServiceName::new("entrance").unwrap(),
             state: ServiceState::Ready,
+            advertise_addr: Some("entrance.internal:53310".to_owned()),
+            registered_at: Timestamp::new(1_700_000_000, 0).unwrap(),
             metadata: json!({ "endpoint": "127.0.0.1:53310" }),
         };
         let key = instance_key(&instance);

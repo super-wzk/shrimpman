@@ -58,11 +58,13 @@ impl Default for SignSessionConfig {
 }
 
 /// TCP listener configuration for the Sign server.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SignServerConfig {
     /// Address on which the Sign TCP listener accepts connections.
     pub listen_addr: SocketAddr,
+    /// Address advertised to other services through Discovery.
+    pub advertise_addr: String,
     /// Time to wait for active connections before canceling them.
     #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
     pub shutdown_timeout: Duration,
@@ -72,6 +74,7 @@ impl Default for SignServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
+            advertise_addr: format!("127.0.0.1:{DEFAULT_PORT}"),
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
@@ -105,6 +108,8 @@ mod tests {
             .unwrap()
             .set_override("sign.server.listen_addr", "127.0.0.1:60000")
             .unwrap()
+            .set_override("sign.server.advertise_addr", "127.0.0.1:60001")
+            .unwrap()
             .set_override("sign.server.shutdown_timeout", "250ms")
             .unwrap()
             .set_override("sign.session.ttl", "10m")
@@ -127,6 +132,7 @@ mod tests {
                 },
                 server: SignServerConfig {
                     listen_addr: "127.0.0.1:60000".parse().unwrap(),
+                    advertise_addr: "127.0.0.1:60001".to_owned(),
                     shutdown_timeout: Duration::from_millis(250),
                 },
             }

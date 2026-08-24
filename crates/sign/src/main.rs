@@ -1,7 +1,9 @@
 use std::error::Error;
 
 use jiff::SignedDuration;
-use shrimpman_discovery::client::DiscoveryClient;
+use shrimpman_discovery::{
+    ServiceInstance, ServiceInstanceId, ServiceName, ServiceState, client::DiscoveryClient,
+};
 use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext};
 
 #[tokio::main]
@@ -12,13 +14,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let context = SignServiceContext::new(
         sign.auto_sign_up,
         SignedDuration::try_from(sign.session.ttl)?,
-        discovery,
+        discovery.clone(),
         database.repositories(),
     );
     let service = SignService::new(context)?;
+    let advertise_addr = sign.server.advertise_addr.clone();
     let server = SignServer::bind(sign.server, service).await?;
+    let instance_id = ServiceInstanceId::new();
+    discovery.publish(ServiceInstance::new(
+        instance_id,
+        ServiceName::new("sign")?,
+        ServiceState::Ready,
+        Some(advertise_addr),
+        (),
+    )?)?;
 
     server.run(shutdown_signal()).await?;
+    discovery.withdraw(instance_id)?;
 
     Ok(())
 }
@@ -28,6 +40,7 @@ fn load_config() -> Result<SignConfig, config::ConfigError> {
         .add_source(config::File::new("config.toml", config::FileFormat::Toml))
         .add_source(
             config::Environment::with_prefix("SHRIMPMAN")
+                .prefix_separator("_")
                 .separator("__")
                 .try_parsing(true)
                 .list_separator(",")

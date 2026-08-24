@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
@@ -93,6 +94,8 @@ pub struct ServiceInstance {
     pub id: ServiceInstanceId,
     pub service: ServiceName,
     pub state: ServiceState,
+    pub advertise_addr: Option<String>,
+    pub registered_at: Timestamp,
     pub metadata: Value,
 }
 
@@ -102,6 +105,7 @@ impl ServiceInstance {
         id: ServiceInstanceId,
         service: ServiceName,
         state: ServiceState,
+        advertise_addr: Option<String>,
         metadata: Metadata,
     ) -> serde_json::Result<Self>
     where
@@ -111,6 +115,8 @@ impl ServiceInstance {
             id,
             service,
             state,
+            advertise_addr,
+            registered_at: Timestamp::now(),
             metadata: serde_json::to_value(metadata)?,
         })
     }
@@ -144,23 +150,28 @@ mod tests {
     fn round_trips_typed_metadata() {
         #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
         struct Metadata {
-            advertise_addr: String,
+            region: String,
         }
 
         let instance = ServiceInstance::new(
             ServiceInstanceId::new(),
             ServiceName::new("entrance").unwrap(),
             ServiceState::Ready,
+            Some("entrance.example.com:53310".to_owned()),
             Metadata {
-                advertise_addr: "entrance.example.com:53310".to_owned(),
+                region: "ap-east-1".to_owned(),
             },
         )
         .unwrap();
 
         assert_eq!(
+            instance.advertise_addr.as_deref(),
+            Some("entrance.example.com:53310")
+        );
+        assert_eq!(
             instance.decode_metadata::<Metadata>().unwrap(),
             Metadata {
-                advertise_addr: "entrance.example.com:53310".to_owned(),
+                region: "ap-east-1".to_owned(),
             }
         );
     }
