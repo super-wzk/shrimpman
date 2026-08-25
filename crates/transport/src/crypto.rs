@@ -1,3 +1,5 @@
+use bytes::BufMut;
+
 use crate::{
     error::TransportError,
     frame::{CryptHeader, PacketChecksums},
@@ -56,63 +58,13 @@ const SHARED_KEY: [u8; 256] = [
     0x51, 0x11, 0x14, 0x18, 0x07, 0x63, 0xB1, 0x34, 0x3D, 0xB8, 0x60, 0x13, 0xC2, 0xE8, 0x13, 0x82,
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CryptoOutput {
-    data: Vec<u8>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CryptoResult {
     combined_check: u16,
     checksums: PacketChecksums,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Direction {
-    Encrypt,
-    Decrypt,
-}
-
-fn crypt(data: &[u8], rotation_key: u32, direction: Direction) -> CryptoOutput {
-    let truncated_key = (((rotation_key >> 1) % 999_983) & 0xff) as u8;
-    let mut derived_key = (data.len() as u32).wrapping_mul(u32::from(truncated_key) + 1);
-    let mut shared_index = 1_u8;
-    let mut accumulator0 = 0_u32;
-    let mut accumulator1 = 0_u32;
-    let mut accumulator2 = 0_u32;
-    let mut output = Vec::with_capacity(data.len());
-
-    match direction {
-        Direction::Encrypt => {
-            for (index, &plain) in data.iter().enumerate() {
-                let key_index = ((derived_key >> 10) ^ u32::from(plain)) as u8;
-                derived_key = derived_key.wrapping_mul(1277).wrapping_add(1277);
-                let key_byte = ENCRYPT_KEY[usize::from(key_index)];
-
-                accumulator2 = accumulator2
-                    .wrapping_add(u32::from(shared_index).wrapping_mul(u32::from(plain)));
-                accumulator1 = accumulator1.wrapping_add(u32::from(key_index));
-                accumulator0 = accumulator0.wrapping_add(u32::from(key_byte) << (index & 7));
-
-                output.push(SHARED_KEY[usize::from(shared_index)] ^ key_byte);
-                shared_index = plain;
-            }
-        }
-        Direction::Decrypt => {
-            for (index, &encrypted) in data.iter().enumerate() {
-                let previous_shared_index = shared_index;
-                let key_index = encrypted ^ SHARED_KEY[usize::from(shared_index)];
-                let key_byte = DECRYPT_KEY[usize::from(key_index)];
-                shared_index = ((derived_key >> 10) ^ u32::from(key_byte)) as u8;
-
-                accumulator0 = accumulator0.wrapping_add(u32::from(key_index) << (index & 7));
-                accumulator1 = accumulator1.wrapping_add(u32::from(key_byte));
-                accumulator2 = accumulator2.wrapping_add(
-                    u32::from(previous_shared_index).wrapping_mul(u32::from(shared_index)),
-                );
-
-                output.push(shared_index);
-                derived_key = derived_key.wrapping_mul(1277).wrapping_add(1277);
-            }
-        }
-    }
-
+fn crypto_result(accumulator0: u32, accumulator1: u32, accumulator2: u32) -> CryptoResult {
     let combined_check = accumulator1
         .wrapping_add(accumulator0 >> 1)
         .wrapping_add(accumulator2 >> 2) as u16;
@@ -122,11 +74,62 @@ fn crypt(data: &[u8], rotation_key: u32, direction: Direction) -> CryptoOutput {
         (accumulator2 ^ (accumulator2 >> 16)) as u16,
     );
 
-    CryptoOutput {
-        data: output,
+    CryptoResult {
         combined_check,
         checksums,
     }
+}
+
+fn encrypt_into(data: &[u8], rotation_key: u32, output: &mut impl BufMut) -> CryptoResult {
+    let truncated_key = (((rotation_key >> 1) % 999_983) & 0xff) as u8;
+    let mut derived_key = (data.len() as u32).wrapping_mul(u32::from(truncated_key) + 1);
+    let mut shared_index = 1_u8;
+    let mut accumulator0 = 0_u32;
+    let mut accumulator1 = 0_u32;
+    let mut accumulator2 = 0_u32;
+
+    for (index, &plain) in data.iter().enumerate() {
+        let key_index = ((derived_key >> 10) ^ u32::from(plain)) as u8;
+        derived_key = derived_key.wrapping_mul(1277).wrapping_add(1277);
+        let key_byte = ENCRYPT_KEY[usize::from(key_index)];
+
+        accumulator2 =
+            accumulator2.wrapping_add(u32::from(shared_index).wrapping_mul(u32::from(plain)));
+        accumulator1 = accumulator1.wrapping_add(u32::from(key_index));
+        accumulator0 = accumulator0.wrapping_add(u32::from(key_byte) << (index & 7));
+
+        output.put_u8(SHARED_KEY[usize::from(shared_index)] ^ key_byte);
+        shared_index = plain;
+    }
+
+    crypto_result(accumulator0, accumulator1, accumulator2)
+}
+
+fn decrypt_in_place(data: &mut [u8], rotation_key: u32) -> CryptoResult {
+    let truncated_key = (((rotation_key >> 1) % 999_983) & 0xff) as u8;
+    let mut derived_key = (data.len() as u32).wrapping_mul(u32::from(truncated_key) + 1);
+    let mut shared_index = 1_u8;
+    let mut accumulator0 = 0_u32;
+    let mut accumulator1 = 0_u32;
+    let mut accumulator2 = 0_u32;
+
+    for (index, byte) in data.iter_mut().enumerate() {
+        let encrypted = *byte;
+        let previous_shared_index = shared_index;
+        let key_index = encrypted ^ SHARED_KEY[usize::from(shared_index)];
+        let key_byte = DECRYPT_KEY[usize::from(key_index)];
+        shared_index = ((derived_key >> 10) ^ u32::from(key_byte)) as u8;
+
+        accumulator0 = accumulator0.wrapping_add(u32::from(key_index) << (index & 7));
+        accumulator1 = accumulator1.wrapping_add(u32::from(key_byte));
+        accumulator2 = accumulator2
+            .wrapping_add(u32::from(previous_shared_index).wrapping_mul(u32::from(shared_index)));
+
+        *byte = shared_index;
+        derived_key = derived_key.wrapping_mul(1277).wrapping_add(1277);
+    }
+
+    crypto_result(accumulator0, accumulator1, accumulator2)
 }
 
 const fn rotate_key(rotation_key: u32, delta: u8) -> u32 {
@@ -153,13 +156,13 @@ impl Default for DecryptState {
 }
 
 impl DecryptState {
-    pub(crate) fn decrypt(
+    pub(crate) fn decrypt_in_place(
         &mut self,
         header: CryptHeader,
-        body: &[u8],
-    ) -> Result<Vec<u8>, TransportError> {
+        body: &mut [u8],
+    ) -> Result<(), TransportError> {
         let next_key = rotate_key(self.rotation_key, header.key_rotation_delta());
-        let decrypted = crypt(body, next_key, Direction::Decrypt);
+        let decrypted = decrypt_in_place(body, next_key);
         let expected = header.checksums();
 
         if decrypted.checksums != expected {
@@ -171,7 +174,7 @@ impl DecryptState {
 
         self.rotation_key = next_key;
         self.previous_combined_check = decrypted.combined_check;
-        Ok(decrypted.data)
+        Ok(())
     }
 }
 
@@ -193,11 +196,14 @@ impl Default for EncryptState {
 }
 
 impl EncryptState {
-    pub(crate) fn encrypt(&mut self, payload: &[u8]) -> EncryptedBody {
+    pub(crate) fn encrypt_into(
+        &mut self,
+        payload: &[u8],
+        output: &mut impl BufMut,
+    ) -> EncryptedBodyMetadata {
         let rotation_key = rotate_key(self.rotation_key, OUTBOUND_ROTATION_DELTA);
-        let encrypted = crypt(payload, rotation_key, Direction::Encrypt);
-        let body = EncryptedBody {
-            data: encrypted.data,
+        let encrypted = encrypt_into(payload, rotation_key, output);
+        let metadata = EncryptedBodyMetadata {
             key_rotation_delta: OUTBOUND_ROTATION_DELTA,
             packet_number: self.next_packet_number,
             previous_combined_check: self.previous_combined_check,
@@ -207,12 +213,11 @@ impl EncryptState {
         self.rotation_key = rotation_key;
         self.next_packet_number = self.next_packet_number.wrapping_add(1);
         self.previous_combined_check = encrypted.combined_check;
-        body
+        metadata
     }
 }
 
-pub(crate) struct EncryptedBody {
-    pub(crate) data: Vec<u8>,
+pub(crate) struct EncryptedBodyMetadata {
     pub(crate) key_rotation_delta: u8,
     pub(crate) packet_number: u16,
     pub(crate) previous_combined_check: u16,
@@ -255,8 +260,9 @@ mod tests {
     #[test]
     fn matches_reference_encryption_vectors() {
         for vector in VECTORS {
-            let output = crypt(PLAIN, vector.key, Direction::Encrypt);
-            assert_eq!(output.data, vector.encrypted);
+            let mut encrypted = Vec::with_capacity(PLAIN.len());
+            let output = encrypt_into(PLAIN, vector.key, &mut encrypted);
+            assert_eq!(encrypted.as_slice(), vector.encrypted);
             assert_eq!(output.combined_check, vector.combined_check);
             assert_eq!(output.checksums, vector.checksums);
         }
@@ -265,8 +271,9 @@ mod tests {
     #[test]
     fn matches_reference_decryption_vectors() {
         for vector in VECTORS {
-            let output = crypt(&vector.encrypted, vector.key, Direction::Decrypt);
-            assert_eq!(output.data, PLAIN);
+            let mut decrypted = vector.encrypted;
+            let output = decrypt_in_place(&mut decrypted, vector.key);
+            assert_eq!(decrypted.as_slice(), PLAIN);
             assert_eq!(output.combined_check, vector.combined_check);
             assert_eq!(output.checksums, vector.checksums);
         }
@@ -275,9 +282,10 @@ mod tests {
     #[test]
     fn chains_packet_numbers_and_previous_checks() {
         let mut state = EncryptState::default();
+        let mut encrypted = Vec::new();
 
-        let first = state.encrypt(b"one");
-        let second = state.encrypt(b"two");
+        let first = state.encrypt_into(b"one", &mut encrypted);
+        let second = state.encrypt_into(b"two", &mut encrypted);
 
         assert_eq!(first.packet_number, 0);
         assert_eq!(first.previous_combined_check, 0);

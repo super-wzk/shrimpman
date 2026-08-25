@@ -89,10 +89,6 @@ pub(crate) struct EncryptedFrame<Body> {
 }
 
 impl<Body> EncryptedFrame<Body> {
-    pub(crate) fn new(header: CryptHeader, body: Body) -> Self {
-        Self { header, body }
-    }
-
     pub(crate) fn into_parts(self) -> (CryptHeader, Body) {
         (self.header, self.body)
     }
@@ -138,24 +134,24 @@ impl FrameCodec {
         })
     }
 
-    pub(crate) fn encode(
+    pub(crate) fn encode_header(
         &self,
-        frame: &EncryptedFrame<Vec<u8>>,
-        output: &mut Vec<u8>,
+        header: CryptHeader,
+        body_len: usize,
+        output: &mut [u8; CRYPT_HEADER_LEN],
     ) -> Result<(), TransportError> {
-        let declared = frame.header.body_len()?;
-        let actual = frame.body.len();
+        let declared = header.body_len()?;
 
-        if declared != actual {
-            return Err(TransportError::BodyLengthMismatch { declared, actual });
+        if declared != body_len {
+            return Err(TransportError::BodyLengthMismatch {
+                declared,
+                actual: body_len,
+            });
         }
-        self.validate_outbound_len(actual)?;
+        self.validate_outbound_len(body_len)?;
 
-        let mut writer = Cursor::new(Vec::with_capacity(CRYPT_HEADER_LEN + actual));
-        frame.header.write_be(&mut writer)?;
-        let mut encoded = writer.into_inner();
-        encoded.extend_from_slice(&frame.body);
-        output.extend_from_slice(&encoded);
+        let mut writer = Cursor::new(&mut output[..]);
+        header.write_be(&mut writer)?;
         Ok(())
     }
 }
@@ -166,6 +162,16 @@ mod tests {
 
     fn header_for_len(len: usize) -> CryptHeader {
         CryptHeader::for_body(len, 3, 7, 11, PacketChecksums::new(13, 17, 19)).unwrap()
+    }
+
+    fn encode_frame(codec: &FrameCodec, frame: &EncryptedFrame<Vec<u8>>) -> Vec<u8> {
+        let mut encoded = vec![0; CRYPT_HEADER_LEN + frame.body.len()];
+        let (header, body) = encoded.split_at_mut(CRYPT_HEADER_LEN);
+        body.copy_from_slice(&frame.body);
+        codec
+            .encode_header(frame.header, frame.body.len(), header.try_into().unwrap())
+            .unwrap();
+        encoded
     }
 
     #[test]
@@ -184,9 +190,9 @@ mod tests {
         assert_eq!(header.previous_combined_check, 2);
         assert_eq!(header.checksums, PacketChecksums::new(3, 4, 5));
 
-        let mut writer = Cursor::new(Vec::new());
-        header.write_be(&mut writer).unwrap();
-        assert_eq!(writer.into_inner(), bytes);
+        let mut encoded = [0; CRYPT_HEADER_LEN];
+        FrameCodec.encode_header(header, 10, &mut encoded).unwrap();
+        assert_eq!(encoded, bytes);
     }
 
     #[test]
@@ -211,8 +217,7 @@ mod tests {
             header: header_for_len(4),
             body: vec![1, 2, 3, 4],
         };
-        let mut encoded = Vec::new();
-        codec.encode(&frame, &mut encoded).unwrap();
+        let encoded = encode_frame(&codec, &frame);
 
         assert_eq!(
             codec.decode(&encoded[..CRYPT_HEADER_LEN + 2]).unwrap(),
@@ -229,8 +234,7 @@ mod tests {
             header: header_for_len(3),
             body: vec![1, 2, 3],
         };
-        let mut encoded = Vec::new();
-        codec.encode(&frame, &mut encoded).unwrap();
+        let mut encoded = encode_frame(&codec, &frame);
         encoded.extend_from_slice(&[9, 9]);
 
         let DecodeStep::Complete { value, consumed } = codec.decode(&encoded).unwrap() else {

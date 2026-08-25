@@ -5,7 +5,7 @@ use crate::{
     DecodeStep,
     crypto::{DecryptState, EncryptState},
     error::TransportError,
-    frame::{CryptHeader, EncryptedFrame, FrameCodec},
+    frame::{CryptHeader, FrameCodec},
 };
 
 /// Stateful codec for the encrypted MHF transport format.
@@ -21,65 +21,29 @@ pub(crate) struct MhfTransportCodec {
     outbound: EncryptState,
 }
 
-impl MhfTransportCodec {
-    fn decode_frame(&mut self, input: &[u8]) -> Result<DecodeStep<Vec<u8>>, TransportError> {
-        let (frame, consumed) = match self.frame.decode(input)? {
-            DecodeStep::NeedMore { needed } => {
-                return Ok(DecodeStep::NeedMore { needed });
-            }
-            DecodeStep::Complete { value, consumed } => (value, consumed),
-        };
-
-        // Only commit cipher state after all integrity checks succeed.
-        let (header, body) = frame.into_parts();
-        let mut next_inbound = self.inbound;
-        let payload = next_inbound.decrypt(header, body)?;
-        self.inbound = next_inbound;
-
-        Ok(DecodeStep::Complete {
-            value: payload,
-            consumed,
-        })
-    }
-
-    fn encode_frame(&mut self, payload: &[u8]) -> Result<Vec<u8>, TransportError> {
-        self.frame.validate_outbound_len(payload.len())?;
-
-        // Only commit cipher state after the complete frame is encoded.
-        let mut next_outbound = self.outbound;
-        let encrypted = next_outbound.encrypt(payload);
-        let body_len = encrypted.data.len();
-        let header = CryptHeader::for_body(
-            body_len,
-            encrypted.key_rotation_delta,
-            encrypted.packet_number,
-            encrypted.previous_combined_check,
-            encrypted.checksums,
-        )?;
-        let frame = EncryptedFrame::new(header, encrypted.data);
-        let mut encoded = Vec::with_capacity(CryptHeader::ENCODED_LEN + body_len);
-        self.frame.encode(&frame, &mut encoded)?;
-
-        self.outbound = next_outbound;
-        Ok(encoded)
-    }
-}
-
 impl Decoder for MhfTransportCodec {
     type Item = Bytes;
     type Error = TransportError;
 
     fn decode(&mut self, source: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.decode_frame(source.as_ref())? {
+        let (header, consumed) = match self.frame.decode(source.as_ref())? {
             DecodeStep::NeedMore { needed } => {
                 source.reserve(needed.saturating_sub(source.len()));
-                Ok(None)
+                return Ok(None);
             }
             DecodeStep::Complete { value, consumed } => {
-                source.advance(consumed);
-                Ok(Some(value.into()))
+                let (header, _) = value.into_parts();
+                (header, consumed)
             }
-        }
+        };
+
+        let mut body = source.split_to(consumed);
+        body.advance(CryptHeader::ENCODED_LEN);
+
+        // A checksum error is terminal for the frame, but cipher state remains
+        // unchanged because decrypt_in_place commits it only after validation.
+        self.inbound.decrypt_in_place(header, body.as_mut())?;
+        Ok(Some(body.freeze()))
     }
 }
 
@@ -87,8 +51,41 @@ impl Encoder<Bytes> for MhfTransportCodec {
     type Error = TransportError;
 
     fn encode(&mut self, payload: Bytes, destination: &mut BytesMut) -> Result<(), Self::Error> {
-        let frame = self.encode_frame(payload.as_ref())?;
-        destination.extend_from_slice(&frame);
+        let body_len = payload.len();
+        self.frame.validate_outbound_len(body_len)?;
+
+        let frame_start = destination.len();
+        destination.reserve(CryptHeader::ENCODED_LEN + body_len);
+        destination.resize(frame_start + CryptHeader::ENCODED_LEN, 0);
+
+        // Encrypt directly in the final transport buffer. Both destination and
+        // cipher state are rolled back if header construction ever fails.
+        let mut next_outbound = self.outbound;
+        let encoded = (|| {
+            let encrypted = next_outbound.encrypt_into(payload.as_ref(), destination);
+            let header = CryptHeader::for_body(
+                body_len,
+                encrypted.key_rotation_delta,
+                encrypted.packet_number,
+                encrypted.previous_combined_check,
+                encrypted.checksums,
+            )?;
+            let header_end = frame_start + CryptHeader::ENCODED_LEN;
+            self.frame.encode_header(
+                header,
+                body_len,
+                (&mut destination[frame_start..header_end])
+                    .try_into()
+                    .expect("header output has the fixed transport header length"),
+            )
+        })();
+
+        if let Err(error) = encoded {
+            destination.truncate(frame_start);
+            return Err(error);
+        }
+
+        self.outbound = next_outbound;
         Ok(())
     }
 }
@@ -140,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn checksum_failures_do_not_advance_cipher_state() {
+    fn checksum_failures_consume_the_frame_without_advancing_cipher_state() {
         let mut sender = MhfTransportCodec::default();
         let mut receiver = MhfTransportCodec::default();
         let mut frame = BytesMut::new();
@@ -150,15 +147,31 @@ mod tests {
 
         let mut corrupted = frame.clone();
         corrupted[CryptHeader::ENCODED_LEN] ^= 0xff;
-        let original = corrupted.clone();
         assert!(matches!(
             receiver.decode(&mut corrupted),
             Err(TransportError::ChecksumMismatch { .. })
         ));
-        assert_eq!(corrupted, original);
+        assert!(corrupted.is_empty());
 
         let value = receiver.decode(&mut frame).unwrap().unwrap();
         assert_eq!(value.as_ref(), b"payload");
+    }
+
+    #[test]
+    fn successful_decryption_reuses_the_inbound_body_storage() {
+        let mut sender = MhfTransportCodec::default();
+        let mut receiver = MhfTransportCodec::default();
+        let mut frame = BytesMut::new();
+        sender
+            .encode(Bytes::from_static(b"payload"), &mut frame)
+            .unwrap();
+        let body_ptr = frame[CryptHeader::ENCODED_LEN..].as_ptr();
+
+        let value = receiver.decode(&mut frame).unwrap().unwrap();
+
+        assert_eq!(value.as_ref(), b"payload");
+        assert_eq!(value.as_ptr(), body_ptr);
+        assert!(frame.is_empty());
     }
 
     #[test]
@@ -189,5 +202,24 @@ mod tests {
             Err(TransportError::BodyLengthNotRepresentable { len }) if len == payload_len
         ));
         assert_eq!(output.as_ref(), &[0xaa]);
+    }
+
+    #[test]
+    fn writes_frames_into_the_existing_destination_allocation() {
+        let mut sender = MhfTransportCodec::default();
+        let mut receiver = MhfTransportCodec::default();
+        let payload = Bytes::from_static(b"payload");
+        let mut output = BytesMut::with_capacity(1 + CryptHeader::ENCODED_LEN + payload.len());
+        output.extend_from_slice(&[0xaa]);
+        let allocation = output.as_ptr();
+
+        sender.encode(payload, &mut output).unwrap();
+
+        assert_eq!(output.as_ptr(), allocation);
+        assert_eq!(output[0], 0xaa);
+        let mut frame = output.split_off(1);
+        let decoded = receiver.decode(&mut frame).unwrap().unwrap();
+        assert_eq!(decoded.as_ref(), b"payload");
+        assert!(frame.is_empty());
     }
 }
