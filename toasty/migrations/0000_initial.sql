@@ -51,16 +51,16 @@ CREATE UNIQUE INDEX "index_mezeporta_festa_stalls_by_festa_id_and_stall" ON "mez
 CREATE TABLE "account_return_periods" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     "account_id" INTEGER NOT NULL,
-    "period_starts_at" TEXT NOT NULL,
-    "period_expires_at" TEXT NOT NULL
+    "starts_at" TEXT NOT NULL,
+    "expires_at" TEXT NOT NULL
 );
 -- #[toasty::breakpoint]
 CREATE INDEX "index_account_return_periods_by_account_id_and_id" ON "account_return_periods" ("account_id", "id");
 -- #[toasty::breakpoint]
 CREATE TABLE "mezeporta_festas" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "period_starts_at" TEXT NOT NULL,
-    "period_expires_at" TEXT NOT NULL,
+    "starts_at" TEXT NOT NULL,
+    "expires_at" TEXT NOT NULL,
     "solo_ticket_allowance" INTEGER NOT NULL,
     "group_ticket_allowance" INTEGER NOT NULL
 );

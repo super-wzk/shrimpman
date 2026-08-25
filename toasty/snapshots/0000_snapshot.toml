@@ -187,13 +187,13 @@ storage_ty = { UnsignedInteger = 4 }
 
 [[schema.tables.columns]]
 id = { table = 3, index = 2 }
-name = "period_starts_at"
+name = "starts_at"
 ty = "String"
 storage_ty = "Text"
 
 [[schema.tables.columns]]
 id = { table = 3, index = 3 }
-name = "period_expires_at"
+name = "expires_at"
 ty = "String"
 storage_ty = "Text"
 
@@ -351,13 +351,13 @@ auto_increment = true
 
 [[schema.tables.columns]]
 id = { table = 7, index = 1 }
-name = "period_starts_at"
+name = "starts_at"
 ty = "String"
 storage_ty = "Text"
 
 [[schema.tables.columns]]
 id = { table = 7, index = 2 }
-name = "period_expires_at"
+name = "expires_at"
 ty = "String"
 storage_ty = "Text"
 

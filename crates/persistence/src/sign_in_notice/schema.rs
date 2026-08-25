@@ -10,10 +10,8 @@ pub(crate) struct SignInNoticeRow {
 
     pub(super) content: String,
 
-    #[column("period_starts_at")]
     pub(super) starts_at: Timestamp,
 
-    #[column("period_expires_at")]
     pub(super) expires_at: Timestamp,
 
     #[default(0)]

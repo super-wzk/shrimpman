@@ -9,10 +9,8 @@ pub(crate) struct MezeportaFestaRow {
     #[auto]
     pub(super) id: u32,
 
-    #[column("period_starts_at")]
     pub(super) starts_at: Timestamp,
 
-    #[column("period_expires_at")]
     pub(super) expires_at: Timestamp,
 
     pub(super) solo_ticket_allowance: u32,

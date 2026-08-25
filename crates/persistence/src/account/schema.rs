@@ -62,9 +62,7 @@ pub(crate) struct AccountReturnPeriodRow {
     #[belongs_to]
     account: toasty::Deferred<AccountRow>,
 
-    #[column("period_starts_at")]
     pub(super) starts_at: Timestamp,
 
-    #[column("period_expires_at")]
     pub(super) expires_at: Timestamp,
 }
