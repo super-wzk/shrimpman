@@ -99,7 +99,7 @@ async fn password_sign_in(
         .sign_in_notices()
         .list_active_at(now, MAX_SIGN_IN_NOTICES)
         .await?;
-    let festival = service.mezeporta_festivals().find_active_at(now).await?;
+    let festa = service.mezeporta_festas().find_active_at(now).await?;
     let character_count = characters.len();
     let notice_count = notices.len();
 
@@ -123,7 +123,7 @@ async fn password_sign_in(
     )?
     .with_entrance_server(entrance_server)?
     .with_notices(notices)?
-    .with_festival(festival);
+    .with_festa(festa);
 
     tracing::info!(
         account_id = ?account.id,

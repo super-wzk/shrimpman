@@ -301,12 +301,12 @@ columns = [{ column = { table = 5, index = 1 }, op = "Eq", scope = "Partition" }
 
 [[schema.tables]]
 id = 6
-name = "mezeporta_festival_stalls"
+name = "mezeporta_festa_stalls"
 primary_key = { columns = [{ table = 6, index = 0 }, { table = 6, index = 1 }], index = { table = 6, index = 0 } }
 
 [[schema.tables.columns]]
 id = { table = 6, index = 0 }
-name = "festival_id"
+name = "festa_id"
 ty = "U32"
 storage_ty = { UnsignedInteger = 4 }
 
@@ -324,7 +324,7 @@ storage_ty = { Enum = { name = "stored_mezeporta_stall", variants = [{ name = "t
 
 [[schema.tables.indices]]
 id = { table = 6, index = 0 }
-name = "index_mezeporta_festival_stalls_by_festival_id_and_position"
+name = "index_mezeporta_festa_stalls_by_festa_id_and_position"
 on = 6
 columns = [{ column = { table = 6, index = 0 }, op = "Eq", scope = "Partition" }, { column = { table = 6, index = 1 }, op = "Eq", scope = "Local" }]
 unique = true
@@ -332,14 +332,14 @@ primary_key = true
 
 [[schema.tables.indices]]
 id = { table = 6, index = 1 }
-name = "index_mezeporta_festival_stalls_by_festival_id_and_stall"
+name = "index_mezeporta_festa_stalls_by_festa_id_and_stall"
 on = 6
 columns = [{ column = { table = 6, index = 0 }, op = "Eq", scope = "Partition" }, { column = { table = 6, index = 2 }, op = "Eq", scope = "Local" }]
 unique = true
 
 [[schema.tables]]
 id = 7
-name = "mezeporta_festivals"
+name = "mezeporta_festas"
 primary_key = { columns = [{ table = 7, index = 0 }], index = { table = 7, index = 0 } }
 
 [[schema.tables.columns]]
@@ -375,7 +375,7 @@ storage_ty = { UnsignedInteger = 4 }
 
 [[schema.tables.indices]]
 id = { table = 7, index = 0 }
-name = "index_mezeporta_festivals_by_id"
+name = "index_mezeporta_festas_by_id"
 on = 7
 columns = [{ column = { table = 7, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true

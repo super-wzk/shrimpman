@@ -1,3 +1,3 @@
 mod model;
 
-pub use model::{MezeportaFestival, MezeportaStall};
+pub use model::{MezeportaFesta, MezeportaStall};

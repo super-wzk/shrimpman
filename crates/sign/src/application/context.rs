@@ -5,7 +5,7 @@ use jiff::SignedDuration;
 use shrimpman_discovery::selector::RoundRobinSelector;
 use shrimpman_discovery::{client::DiscoveryClient, selector::Selector};
 use shrimpman_persistence::{
-    AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignInNoticeRepository,
+    AccountRepository, CharacterRepository, MezeportaFestaRepository, SignInNoticeRepository,
     SignSessionRepository,
 };
 
@@ -22,7 +22,7 @@ pub struct SignServiceContext {
 pub struct SignRepositories {
     accounts: AccountRepository,
     characters: CharacterRepository,
-    mezeporta_festivals: MezeportaFestivalRepository,
+    mezeporta_festas: MezeportaFestaRepository,
     sign_sessions: SignSessionRepository,
     sign_in_notices: SignInNoticeRepository,
 }
@@ -31,14 +31,14 @@ impl SignRepositories {
     pub fn new(
         accounts: AccountRepository,
         characters: CharacterRepository,
-        mezeporta_festivals: MezeportaFestivalRepository,
+        mezeporta_festas: MezeportaFestaRepository,
         sign_sessions: SignSessionRepository,
         sign_in_notices: SignInNoticeRepository,
     ) -> Self {
         Self {
             accounts,
             characters,
-            mezeporta_festivals,
+            mezeporta_festas,
             sign_sessions,
             sign_in_notices,
         }
@@ -87,8 +87,8 @@ impl SignServiceContext {
         &self.repositories.characters
     }
 
-    pub(crate) fn mezeporta_festivals(&self) -> &MezeportaFestivalRepository {
-        &self.repositories.mezeporta_festivals
+    pub(crate) fn mezeporta_festas(&self) -> &MezeportaFestaRepository {
+        &self.repositories.mezeporta_festas
     }
 
     pub(crate) fn sign_sessions(&self) -> &SignSessionRepository {
@@ -114,7 +114,7 @@ impl SignServiceContext {
             SignRepositories::new(
                 AccountRepository::new(&db),
                 CharacterRepository::new(&db),
-                MezeportaFestivalRepository::new(&db),
+                MezeportaFestaRepository::new(&db),
                 SignSessionRepository::new(&db),
                 SignInNoticeRepository::new(&db),
             ),

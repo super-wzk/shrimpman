@@ -5,6 +5,7 @@
 mod application;
 mod bin8;
 mod config;
+mod entrance_list;
 mod envelope;
 mod router;
 mod server;

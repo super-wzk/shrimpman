@@ -39,14 +39,14 @@ CREATE TABLE "account_sign_in_records" (
 -- #[toasty::breakpoint]
 CREATE INDEX "index_account_sign_in_records_by_account_id_and_signed_in_at_and_id" ON "account_sign_in_records" ("account_id", "signed_in_at", "id");
 -- #[toasty::breakpoint]
-CREATE TABLE "mezeporta_festival_stalls" (
-    "festival_id" INTEGER NOT NULL,
+CREATE TABLE "mezeporta_festa_stalls" (
+    "festa_id" INTEGER NOT NULL,
     "position" INTEGER NOT NULL,
     "stall" TEXT NOT NULL CHECK ("stall" IN ('tokotoko_partnya', 'unknown3', 'volpakkun_together', 'unknown5', 'unknown6', 'unknown7', 'unknown8', 'unknown9', 'unknown10')),
-    PRIMARY KEY ("festival_id", "position")
+    PRIMARY KEY ("festa_id", "position")
 );
 -- #[toasty::breakpoint]
-CREATE UNIQUE INDEX "index_mezeporta_festival_stalls_by_festival_id_and_stall" ON "mezeporta_festival_stalls" ("festival_id", "stall");
+CREATE UNIQUE INDEX "index_mezeporta_festa_stalls_by_festa_id_and_stall" ON "mezeporta_festa_stalls" ("festa_id", "stall");
 -- #[toasty::breakpoint]
 CREATE TABLE "account_return_periods" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +57,7 @@ CREATE TABLE "account_return_periods" (
 -- #[toasty::breakpoint]
 CREATE INDEX "index_account_return_periods_by_account_id_and_id" ON "account_return_periods" ("account_id", "id");
 -- #[toasty::breakpoint]
-CREATE TABLE "mezeporta_festivals" (
+CREATE TABLE "mezeporta_festas" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     "period_starts_at" TEXT NOT NULL,
     "period_expires_at" TEXT NOT NULL,

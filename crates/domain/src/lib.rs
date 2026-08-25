@@ -8,5 +8,6 @@ pub mod mezeporta;
 pub mod session;
 pub mod sign_in_notice;
 mod time_range;
+pub mod world;
 
 pub use time_range::TimeRange;

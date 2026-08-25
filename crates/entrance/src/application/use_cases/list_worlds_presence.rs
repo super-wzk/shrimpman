@@ -1,5 +1,6 @@
 mod handler;
 mod inbound;
+mod outbound;
 
 use handler::ListWorldsPresenceHandler;
 

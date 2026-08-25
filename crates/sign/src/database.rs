@@ -1,5 +1,5 @@
 use shrimpman_persistence::{
-    AccountRepository, CharacterRepository, MezeportaFestivalRepository, SignInNoticeRepository,
+    AccountRepository, CharacterRepository, MezeportaFestaRepository, SignInNoticeRepository,
     SignSessionRepository,
 };
 use toasty::Db;
@@ -28,7 +28,7 @@ impl SignDatabase {
         SignRepositories::new(
             AccountRepository::new(&self.db),
             CharacterRepository::new(&self.db),
-            MezeportaFestivalRepository::new(&self.db),
+            MezeportaFestaRepository::new(&self.db),
             SignSessionRepository::new(&self.db),
             SignInNoticeRepository::new(&self.db),
         )

@@ -1,7 +1,7 @@
 use crate::TimeRange;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MezeportaFestival {
+pub struct MezeportaFesta {
     pub id: u32,
     pub period: TimeRange,
     pub solo_ticket_allowance: u32,

@@ -1,16 +1,16 @@
 use jiff::Timestamp;
-use shrimpman_domain::{TimeRange, mezeporta::MezeportaFestival};
+use shrimpman_domain::{TimeRange, mezeporta::MezeportaFesta};
 use toasty::Db;
 
-use super::{MezeportaFestivalRow, MezeportaFestivalStallRow};
+use super::{MezeportaFestaRow, MezeportaFestaStallRow};
 
-/// Toasty-backed Mezeporta Festival persistence.
+/// Toasty-backed Mezeporta Festa persistence.
 #[derive(Debug, Clone)]
-pub struct MezeportaFestivalRepository {
+pub struct MezeportaFestaRepository {
     db: Db,
 }
 
-impl MezeportaFestivalRepository {
+impl MezeportaFestaRepository {
     /// Creates the repository from an already connected database.
     pub fn new(db: &Db) -> Self {
         Self { db: db.clone() }
@@ -19,33 +19,33 @@ impl MezeportaFestivalRepository {
     pub async fn find_active_at(
         &self,
         timestamp: Timestamp,
-    ) -> toasty::Result<Option<MezeportaFestival>> {
+    ) -> toasty::Result<Option<MezeportaFesta>> {
         let mut db = self.db.clone();
-        let Some(festival) = toasty::query!(
-            MezeportaFestivalRow FILTER
+        let Some(festa) = toasty::query!(
+            MezeportaFestaRow FILTER
                 .starts_at <= #timestamp
                 AND .expires_at >= #timestamp
         )
-        .order_by(MezeportaFestivalRow::fields().starts_at().desc())
-        .order_by(MezeportaFestivalRow::fields().id().desc())
+        .order_by(MezeportaFestaRow::fields().starts_at().desc())
+        .order_by(MezeportaFestaRow::fields().id().desc())
         .first()
         .exec(&mut db)
         .await?
         else {
             return Ok(None);
         };
-        let period = TimeRange::new(festival.starts_at, festival.expires_at);
-        let stalls = festival
+        let period = TimeRange::new(festa.starts_at, festa.expires_at);
+        let stalls = festa
             .stalls()
-            .order_by(MezeportaFestivalStallRow::fields().position().asc())
+            .order_by(MezeportaFestaStallRow::fields().position().asc())
             .exec(&mut db)
             .await?;
 
-        Ok(Some(MezeportaFestival {
-            id: festival.id,
+        Ok(Some(MezeportaFesta {
+            id: festa.id,
             period,
-            solo_ticket_allowance: festival.solo_ticket_allowance,
-            group_ticket_allowance: festival.group_ticket_allowance,
+            solo_ticket_allowance: festa.solo_ticket_allowance,
+            group_ticket_allowance: festa.group_ticket_allowance,
             stalls: stalls.into_iter().map(|stall| stall.stall.into()).collect(),
         }))
     }
@@ -60,14 +60,14 @@ mod tests {
     use crate::mezeporta::StoredMezeportaStall;
 
     #[tokio::test]
-    async fn loads_the_active_festival_with_ordered_stalls() {
+    async fn loads_the_active_festa_with_ordered_stalls() {
         let db = crate::test_database().await;
         let now = Timestamp::new(1_800_000_000, 0).unwrap();
         let period = TimeRange::from_duration(now, SignedDuration::from_hours(1));
         let mut connection = db.clone();
         let starts_at = period.starts_at();
         let expires_at = period.expires_at();
-        let festival = toasty::create!(MezeportaFestivalRow {
+        let festa = toasty::create!(MezeportaFestaRow {
             starts_at,
             expires_at,
             solo_ticket_allowance: 5,
@@ -81,8 +81,8 @@ mod tests {
             (1, StoredMezeportaStall::VolpakkunTogether),
             (0, StoredMezeportaStall::Unknown3),
         ] {
-            toasty::create!(MezeportaFestivalStallRow {
-                festival_id: festival.id,
+            toasty::create!(MezeportaFestaStallRow {
+                festa_id: festa.id,
                 position,
                 stall,
             })
@@ -91,13 +91,13 @@ mod tests {
             .unwrap();
         }
 
-        let loaded = MezeportaFestivalRepository::new(&db)
+        let loaded = MezeportaFestaRepository::new(&db)
             .find_active_at(now)
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(loaded.id, festival.id);
+        assert_eq!(loaded.id, festa.id);
         assert_eq!(loaded.period, period);
         assert_eq!(loaded.solo_ticket_allowance, 5);
         assert_eq!(loaded.group_ticket_allowance, 1);

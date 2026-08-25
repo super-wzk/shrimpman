@@ -9,7 +9,7 @@ use shrimpman_common::{
 use shrimpman_domain::{
     account::CourseRights,
     character::{Character, CharacterId, CharacterSignInHistory, Gender, WeaponType},
-    mezeporta::MezeportaFestival,
+    mezeporta::MezeportaFesta,
     session::SignSessionId,
     sign_in_notice::SignInNotice,
 };
@@ -53,7 +53,7 @@ pub(super) struct SignInSuccess {
     entrance_servers: Vec<PrefixedCString<u8>>,
     characters: Vec<SignCharacter>,
     friends: CountedVec<U8OrU16Length, CharacterRelationEntry>,
-    guildmates: CountedVec<U8OrU16Length, CharacterRelationEntry>,
+    guild_members: CountedVec<U8OrU16Length, CharacterRelationEntry>,
     notices: CountedVec<u8, LoginNotice>,
     #[bw(map = |id: &Option<CharacterId>| (*id).map(u32::from).unwrap_or_default())]
     last_character_id: Option<CharacterId>,
@@ -67,11 +67,11 @@ pub(super) struct SignInSuccess {
     return_expires_at: UnixTimestamp32,
     #[bw(calc = 0_u32)]
     unknown: u32,
-    festival: SignInMezeportaFestival,
+    festa: SignInMezeportaFesta,
 }
 
 #[derive(BinWrite)]
-struct SignInMezeportaFestival {
+struct SignInMezeportaFesta {
     id: u32,
     starts_at: UnixTimestamp32,
     ends_at: UnixTimestamp32,
@@ -154,12 +154,12 @@ impl SignInSuccess {
                 })
                 .collect::<Result<_, _>>()?,
             friends: Vec::new().into(),
-            guildmates: Vec::new().into(),
+            guild_members: Vec::new().into(),
             notices: Vec::new().into(),
             last_character_id: character_sign_in_history.last_character_id(),
             rights,
             return_expires_at: return_expires_at.into(),
-            festival: SignInMezeportaFestival::disabled(),
+            festa: SignInMezeportaFesta::disabled(),
         })
     }
 
@@ -187,11 +187,8 @@ impl SignInSuccess {
         Ok(self)
     }
 
-    pub(super) fn with_festival(mut self, festival: Option<MezeportaFestival>) -> Self {
-        self.festival = festival.map_or_else(
-            SignInMezeportaFestival::disabled,
-            SignInMezeportaFestival::from,
-        );
+    pub(super) fn with_festa(mut self, festa: Option<MezeportaFesta>) -> Self {
+        self.festa = festa.map_or_else(SignInMezeportaFesta::disabled, SignInMezeportaFesta::from);
         self
     }
 }
@@ -210,18 +207,18 @@ impl IssuedSignSession {
     }
 }
 
-impl From<MezeportaFestival> for SignInMezeportaFestival {
-    fn from(festival: MezeportaFestival) -> Self {
+impl From<MezeportaFesta> for SignInMezeportaFesta {
+    fn from(festa: MezeportaFesta) -> Self {
         Self {
-            id: festival.id,
-            starts_at: festival.period.starts_at().into(),
-            ends_at: festival.period.expires_at().into(),
+            id: festa.id,
+            starts_at: festa.period.starts_at().into(),
+            ends_at: festa.period.expires_at().into(),
             tickets: vec![
-                festival.solo_ticket_allowance,
-                festival.group_ticket_allowance,
+                festa.solo_ticket_allowance,
+                festa.group_ticket_allowance,
             ]
             .into(),
-            stalls: festival
+            stalls: festa
                 .stalls
                 .into_iter()
                 .map(|stall| stall as u8)
@@ -231,7 +228,7 @@ impl From<MezeportaFestival> for SignInMezeportaFestival {
     }
 }
 
-impl SignInMezeportaFestival {
+impl SignInMezeportaFesta {
     fn disabled() -> Self {
         Self {
             id: 0,

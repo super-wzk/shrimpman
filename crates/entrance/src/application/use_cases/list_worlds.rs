@@ -1,4 +1,5 @@
 mod handler;
+pub(super) mod outbound;
 
 use handler::ListWorldsHandler;
 

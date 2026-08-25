@@ -1,5 +1,9 @@
 # Shrimpman
 
+## Documentation
+
+- [Domain language](docs/domain-language.md)
+
 ## Build prerequisites
 
 The Protocol Buffers compiler (`protoc`) must be available on `PATH` before

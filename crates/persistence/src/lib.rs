@@ -12,7 +12,7 @@ mod sign_session;
 pub use account::AccountRepository;
 pub use character::CharacterRepository;
 pub use config::MigrationConfig;
-pub use mezeporta::MezeportaFestivalRepository;
+pub use mezeporta::MezeportaFestaRepository;
 pub use sign_in_notice::SignInNoticeRepository;
 pub use sign_session::SignSessionRepository;
 
