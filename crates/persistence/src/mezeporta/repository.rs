@@ -21,18 +21,20 @@ impl MezeportaFestivalRepository {
         timestamp: Timestamp,
     ) -> toasty::Result<Option<MezeportaFestival>> {
         let mut db = self.db.clone();
-        // Toasty 0.10 cannot serialize SQLite predicates or ordering over Timestamp fields.
-        let festivals = MezeportaFestivalRow::all().exec(&mut db).await?;
-        let Some((festival, period)) = festivals
-            .into_iter()
-            .filter_map(|festival| {
-                let period: TimeRange = festival.period.into();
-                period.contains(timestamp).then_some((festival, period))
-            })
-            .max_by_key(|(festival, period)| (period.starts_at(), festival.id))
+        let Some(festival) = toasty::query!(
+            MezeportaFestivalRow FILTER
+                .starts_at <= #timestamp
+                AND .expires_at >= #timestamp
+        )
+        .order_by(MezeportaFestivalRow::fields().starts_at().desc())
+        .order_by(MezeportaFestivalRow::fields().id().desc())
+        .first()
+        .exec(&mut db)
+        .await?
         else {
             return Ok(None);
         };
+        let period = TimeRange::new(festival.starts_at, festival.expires_at);
         let stalls = festival
             .stalls()
             .order_by(MezeportaFestivalStallRow::fields().position().asc())
@@ -55,7 +57,7 @@ mod tests {
     use shrimpman_domain::{TimeRange, mezeporta::MezeportaStall};
 
     use super::*;
-    use crate::{mezeporta::StoredMezeportaStall, time_range::StoredTimeRange};
+    use crate::mezeporta::StoredMezeportaStall;
 
     #[tokio::test]
     async fn loads_the_active_festival_with_ordered_stalls() {
@@ -63,8 +65,11 @@ mod tests {
         let now = Timestamp::new(1_800_000_000, 0).unwrap();
         let period = TimeRange::from_duration(now, SignedDuration::from_hours(1));
         let mut connection = db.clone();
+        let starts_at = period.starts_at();
+        let expires_at = period.expires_at();
         let festival = toasty::create!(MezeportaFestivalRow {
-            period: StoredTimeRange::from(period),
+            starts_at,
+            expires_at,
             solo_ticket_allowance: 5,
             group_ticket_allowance: 1,
         })

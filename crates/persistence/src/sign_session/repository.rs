@@ -7,7 +7,6 @@ use shrimpman_domain::{
 use toasty::Db;
 
 use super::SignSessionRow;
-use crate::time_range::StoredTimeRange;
 
 /// Toasty-backed Sign session persistence.
 #[derive(Debug, Clone)]
@@ -29,11 +28,13 @@ impl SignSessionRepository {
     ) -> toasty::Result<SignSessionId> {
         let mut db = self.db.clone();
         let account_id = u32::from(account.id);
-        let validity = StoredTimeRange::from(validity);
+        let starts_at = validity.starts_at();
+        let expires_at = validity.expires_at();
         let session = toasty::create!(SignSessionRow {
             account_id,
             token_hash,
-            validity,
+            starts_at,
+            expires_at,
         })
         .exec(&mut db)
         .await?;
@@ -54,15 +55,14 @@ impl SignSessionRepository {
             SignSessionRow FILTER
                 .id == #id
                 AND .token_hash == #token_hash
+                AND .starts_at <= #authenticated_at
+                AND .expires_at >= #authenticated_at
         )
         .first()
         .exec(&mut db)
         .await?;
 
-        // Toasty 0.10 cannot serialize SQLite predicates over Timestamp fields.
-        Ok(session
-            .filter(|session| TimeRange::from(session.validity).contains(authenticated_at))
-            .map(|session| AccountId::from(session.account_id)))
+        Ok(session.map(|session| AccountId::from(session.account_id)))
     }
 }
 

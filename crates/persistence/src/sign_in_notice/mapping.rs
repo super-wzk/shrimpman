@@ -1,4 +1,4 @@
-use shrimpman_domain::sign_in_notice::SignInNotice;
+use shrimpman_domain::{TimeRange, sign_in_notice::SignInNotice};
 
 use super::SignInNoticeRow;
 
@@ -7,7 +7,7 @@ impl From<SignInNoticeRow> for SignInNotice {
         Self {
             id: notice.id,
             content: notice.content,
-            period: notice.period.into(),
+            period: TimeRange::new(notice.starts_at, notice.expires_at),
             priority: notice.priority,
         }
     }

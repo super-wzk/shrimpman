@@ -1,5 +1,5 @@
 use jiff::Timestamp;
-use shrimpman_domain::{TimeRange, sign_in_notice::SignInNotice};
+use shrimpman_domain::sign_in_notice::SignInNotice;
 use toasty::Db;
 
 use super::SignInNoticeRow;
@@ -22,29 +22,27 @@ impl SignInNoticeRepository {
         limit: usize,
     ) -> toasty::Result<Vec<SignInNotice>> {
         let mut db = self.db.clone();
-        let notices = SignInNoticeRow::all()
-            .order_by(SignInNoticeRow::fields().priority().desc())
-            .order_by(SignInNoticeRow::fields().id().desc())
-            .exec(&mut db)
-            .await?;
+        let notices = toasty::query!(
+            SignInNoticeRow FILTER
+                .starts_at <= #timestamp
+                AND .expires_at >= #timestamp
+        )
+        .order_by(SignInNoticeRow::fields().priority().desc())
+        .order_by(SignInNoticeRow::fields().id().desc())
+        .limit(limit)
+        .exec(&mut db)
+        .await?;
 
-        // Toasty 0.10 cannot serialize SQLite predicates over Timestamp fields.
-        Ok(notices
-            .into_iter()
-            .filter(|notice| TimeRange::from(notice.period).contains(timestamp))
-            .take(limit)
-            .map(SignInNotice::from)
-            .collect())
+        Ok(notices.into_iter().map(SignInNotice::from).collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use jiff::SignedDuration;
+    use shrimpman_domain::TimeRange;
 
     use super::*;
-    use crate::time_range::StoredTimeRange;
-
     #[tokio::test]
     async fn lists_active_notices_by_priority_with_a_limit() {
         let db = crate::test_database().await;
@@ -64,9 +62,12 @@ mod tests {
             ("expired", expired, 10),
             ("higher", active, 2),
         ] {
+            let starts_at = period.starts_at();
+            let expires_at = period.expires_at();
             toasty::create!(SignInNoticeRow {
                 content: content.to_owned(),
-                period: StoredTimeRange::from(period),
+                starts_at,
+                expires_at,
                 priority,
             })
             .exec(&mut connection)

@@ -6,7 +6,6 @@ use shrimpman_domain::{
 use toasty::Db;
 
 use super::{AccountReturnPeriodRow, AccountRow, AccountSignInRecordRow};
-use crate::time_range::StoredTimeRange;
 
 /// Toasty-backed account persistence.
 #[derive(Debug, Clone)]
@@ -69,13 +68,15 @@ impl AccountRepository {
                 .await?
         };
         let return_period = match current_period {
-            Some(period) => period.period.into(),
+            Some(period) => TimeRange::new(period.starts_at, period.expires_at),
             None => {
                 let period = return_period::starting_at(signed_in_at);
-                let stored_period = StoredTimeRange::from(period);
+                let starts_at = period.starts_at();
+                let expires_at = period.expires_at();
                 toasty::create!(AccountReturnPeriodRow {
                     account_id,
-                    period: stored_period,
+                    starts_at,
+                    expires_at,
                 })
                 .exec(&mut transaction)
                 .await?;

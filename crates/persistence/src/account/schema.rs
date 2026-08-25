@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 use shrimpman_domain::account::CourseRights;
 
-use crate::{character::CharacterRow, sign_session::SignSessionRow, time_range::StoredTimeRange};
+use crate::{character::CharacterRow, sign_session::SignSessionRow};
 
 const DEFAULT_RIGHTS: CourseRights = CourseRights::HUNTER_LIFE.union(CourseRights::EXTRA_A);
 
@@ -62,5 +62,9 @@ pub(crate) struct AccountReturnPeriodRow {
     #[belongs_to]
     account: toasty::Deferred<AccountRow>,
 
-    pub(super) period: StoredTimeRange,
+    #[column("period_starts_at")]
+    pub(super) starts_at: Timestamp,
+
+    #[column("period_expires_at")]
+    pub(super) expires_at: Timestamp,
 }

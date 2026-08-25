@@ -1,5 +1,6 @@
+use jiff::Timestamp;
+
 use super::StoredMezeportaStall;
-use crate::time_range::StoredTimeRange;
 
 #[derive(Debug, toasty::Model)]
 #[table = "mezeporta_festivals"]
@@ -8,7 +9,12 @@ pub(crate) struct MezeportaFestivalRow {
     #[auto]
     pub(super) id: u32,
 
-    pub(super) period: StoredTimeRange,
+    #[column("period_starts_at")]
+    pub(super) starts_at: Timestamp,
+
+    #[column("period_expires_at")]
+    pub(super) expires_at: Timestamp,
+
     pub(super) solo_ticket_allowance: u32,
     pub(super) group_ticket_allowance: u32,
 

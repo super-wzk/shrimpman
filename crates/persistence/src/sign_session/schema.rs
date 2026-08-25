@@ -1,4 +1,6 @@
-use crate::{account::AccountRow, time_range::StoredTimeRange};
+use jiff::Timestamp;
+
+use crate::account::AccountRow;
 
 #[derive(Debug, toasty::Model)]
 #[table = "sign_sessions"]
@@ -14,5 +16,10 @@ pub(crate) struct SignSessionRow {
     account: toasty::Deferred<AccountRow>,
 
     pub(super) token_hash: Vec<u8>,
-    pub(super) validity: StoredTimeRange,
+
+    #[column("validity_starts_at")]
+    pub(super) starts_at: Timestamp,
+
+    #[column("validity_expires_at")]
+    pub(super) expires_at: Timestamp,
 }

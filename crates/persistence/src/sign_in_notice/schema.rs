@@ -1,4 +1,4 @@
-use crate::time_range::StoredTimeRange;
+use jiff::Timestamp;
 
 #[derive(Debug, toasty::Model)]
 #[table = "sign_in_notices"]
@@ -9,7 +9,12 @@ pub(crate) struct SignInNoticeRow {
     pub(super) id: u32,
 
     pub(super) content: String,
-    pub(super) period: StoredTimeRange,
+
+    #[column("period_starts_at")]
+    pub(super) starts_at: Timestamp,
+
+    #[column("period_expires_at")]
+    pub(super) expires_at: Timestamp,
 
     #[default(0)]
     pub(super) priority: i32,
