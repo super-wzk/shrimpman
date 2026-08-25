@@ -7,11 +7,12 @@ use shrimpman_domain::world::{ClientCompatibility, WorldContent, WorldSeason, Wo
 use crate::entrance_list::EntranceList;
 
 const INDEX_MARKER: u16 = 0x10;
+pub(super) const MAX_INDEXED_ENTRIES: usize = INDEX_MARKER as usize;
 
 /// The available Worlds returned to an Entrance client.
 #[derive(BinWrite)]
 #[bw(magic = b"SV2")]
-pub(crate) struct WorldList(pub(crate) EntranceList<World, WorldListMetadata>);
+pub(crate) struct WorldList(pub(crate) EntranceList<WorldEntry, WorldListMetadata>);
 
 #[derive(BinWrite)]
 pub(crate) struct WorldListMetadata {
@@ -20,7 +21,7 @@ pub(crate) struct WorldListMetadata {
 }
 
 #[binwrite]
-pub(crate) struct World {
+pub(crate) struct WorldEntry {
     #[bw(map = |address: &Ipv4Addr| address.to_bits(), little)]
     pub(crate) address: Ipv4Addr,
     #[bw(map = |index: &u16| *index | INDEX_MARKER)]
@@ -38,7 +39,7 @@ pub(crate) struct World {
     pub(crate) text: WorldText,
     #[bw(map = |compatibility: &ClientCompatibility| u32::from(*compatibility))]
     pub(crate) client_compatibility: ClientCompatibility,
-    pub(crate) lands: Vec<Land>,
+    pub(crate) lands: Vec<LandEntry>,
 }
 
 #[binwrite]
@@ -55,7 +56,7 @@ pub(crate) struct WorldText {
 }
 
 #[binwrite]
-pub(crate) struct Land {
+pub(crate) struct LandEntry {
     pub(crate) port: u16,
     #[bw(map = |index: &u16| *index | INDEX_MARKER)]
     pub(crate) index: u16,
@@ -84,8 +85,8 @@ mod tests {
     use super::*;
     use crate::MhfBin8;
 
-    fn land() -> Land {
-        Land {
+    fn land() -> LandEntry {
+        LandEntry {
             port: 54_001,
             index: 0,
             max_players: 100,
@@ -99,7 +100,7 @@ mod tests {
 
     #[test]
     fn writes_a_modern_world_entry() {
-        let world = World {
+        let world = WorldEntry {
             address: Ipv4Addr::LOCALHOST,
             index: 0,
             world_type: WorldType::Free,

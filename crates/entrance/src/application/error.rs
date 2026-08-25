@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use shrimpman_common::encoding::ShiftJisEncodeError;
 use shrimpman_protocol::{CommandPacketDecodeError, DispatchError, OutboundSendError, PacketError};
 use shrimpman_transport::TransportError;
 
@@ -8,6 +9,12 @@ use crate::{CommandDecodeError, EntranceRouteError};
 /// An internal failure while handling an Entrance packet.
 #[derive(Debug, Error)]
 pub enum InternalError {
+    #[error("failed to encode an Entrance string: {0}")]
+    StringEncoding(#[from] ShiftJisEncodeError),
+
+    #[error("an Entrance C string contains an interior null byte: {0}")]
+    CString(#[from] std::ffi::NulError),
+
     #[error("failed to send an Entrance packet: {0}")]
     Outbound(#[from] OutboundSendError),
 }

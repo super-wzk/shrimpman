@@ -4,15 +4,17 @@ use shrimpman_discovery::client::DiscoveryClient;
 
 /// Dependencies shared by Entrance request handlers.
 pub struct EntranceServiceContext {
-    _discovery: DiscoveryClient,
+    discovery: DiscoveryClient,
 }
 
 impl EntranceServiceContext {
     /// Creates a service context from explicitly assembled dependencies.
     pub fn new(discovery: DiscoveryClient) -> Self {
-        Self {
-            _discovery: discovery,
-        }
+        Self { discovery }
+    }
+
+    pub(crate) const fn discovery(&self) -> &DiscoveryClient {
+        &self.discovery
     }
 }
 

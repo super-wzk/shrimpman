@@ -7,3 +7,4 @@ edition.workspace = true
 bitflags = "2"
 derive_more = { version = "2", features = ["from", "into"] }
 jiff = "0.2"
+serde = { version = "1", features = ["derive"] }
