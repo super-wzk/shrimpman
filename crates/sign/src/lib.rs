@@ -14,7 +14,7 @@ pub use application::{
     SignSessionContext,
 };
 pub use config::{
-    DiscoveryClientConfig, SignConfig, SignDatabaseConfig, SignLoggingConfig, SignServerConfig,
+    LeaseKvClientConfig, SignConfig, SignDatabaseConfig, SignLoggingConfig, SignServerConfig,
     SignSessionConfig,
 };
 pub use database::SignDatabase;

@@ -5,6 +5,7 @@ use shrimpman_discovery::{
     ServiceInstance, ServiceInstanceId, ServiceName, ServiceState, client::DiscoveryClient,
     selector::RoundRobinSelector,
 };
+use shrimpman_kv::LeaseKvClient;
 use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -27,7 +28,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let database = SignDatabase::connect(&sign.database).await?;
     info!("Connected to Sign database");
 
-    let discovery = DiscoveryClient::connect(sign.discovery)?;
+    let kv = LeaseKvClient::connect(sign.kv)?;
+    let discovery = DiscoveryClient::new(kv);
     let context = SignServiceContext::new(
         sign.auto_sign_up,
         SignedDuration::try_from(sign.session.ttl)?,
@@ -79,7 +81,7 @@ fn load_config() -> Result<SignConfig, config::ConfigError> {
                 .separator("__")
                 .try_parsing(true)
                 .list_separator(",")
-                .with_list_parse_key("sign.discovery.endpoints"),
+                .with_list_parse_key("sign.kv.endpoints"),
         )
         .build()?;
 

@@ -3,8 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{ServiceInstance, ServiceName};
 
 /// Immutable local view of the currently discoverable services.
-#[derive(Clone, Debug, Default)]
-pub struct DiscoverySnapshot {
+pub(crate) struct DiscoverySnapshot {
     services: BTreeMap<ServiceName, Arc<[ServiceInstance]>>,
 }
 
@@ -30,7 +29,7 @@ impl DiscoverySnapshot {
     }
 
     /// Returns every live instance registered under `service`.
-    pub fn instances(&self, service: &ServiceName) -> Arc<[ServiceInstance]> {
+    pub(crate) fn instances(&self, service: &ServiceName) -> Arc<[ServiceInstance]> {
         self.services
             .get(service)
             .cloned()

@@ -2,6 +2,7 @@ use std::error::Error;
 
 use shrimpman_discovery::client::DiscoveryClient;
 use shrimpman_entrance::{EntranceConfig, EntranceServer, EntranceService, EntranceServiceContext};
+use shrimpman_kv::LeaseKvClient;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -17,7 +18,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         "Loaded Entrance configuration"
     );
 
-    let discovery = DiscoveryClient::connect(entrance.discovery)?;
+    let kv = LeaseKvClient::connect(entrance.kv)?;
+    let discovery = DiscoveryClient::new(kv);
     let context = EntranceServiceContext::new(discovery);
     let service = EntranceService::new(context)?;
     let advertise_addr = entrance.server.advertise_addr.clone();
@@ -52,7 +54,7 @@ fn load_config() -> Result<EntranceConfig, config::ConfigError> {
                 .separator("__")
                 .try_parsing(true)
                 .list_separator(",")
-                .with_list_parse_key("entrance.discovery.endpoints"),
+                .with_list_parse_key("entrance.kv.endpoints"),
         )
         .build()?;
 

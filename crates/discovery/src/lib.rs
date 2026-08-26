@@ -1,4 +1,4 @@
-//! Strongly typed service registration and discovery backed by etcd.
+//! Strongly typed service registration and discovery projected from leased key-value entries.
 
 #![warn(unreachable_pub)]
 
@@ -10,4 +10,3 @@ mod snapshot;
 pub use model::{
     InvalidServiceName, ServiceInstance, ServiceInstanceId, ServiceName, ServiceState,
 };
-pub use snapshot::DiscoverySnapshot;

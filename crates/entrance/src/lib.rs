@@ -15,7 +15,7 @@ pub use application::{
 };
 pub use bin8::MhfBin8;
 pub use config::{
-    DiscoveryClientConfig, EntranceConfig, EntranceLoggingConfig, EntranceServerConfig,
+    EntranceConfig, EntranceLoggingConfig, EntranceServerConfig, LeaseKvClientConfig,
 };
 pub use envelope::{Command, CommandDecodeError};
 pub use router::{EntranceRouteError, EntranceRouterBuildError};

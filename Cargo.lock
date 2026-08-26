@@ -3538,10 +3538,10 @@ dependencies = [
 name = "shrimpman-discovery"
 version = "0.1.0"
 dependencies = [
- "etcd-client",
  "jiff",
  "serde",
  "serde_json",
+ "shrimpman-kv",
  "thiserror",
  "tokio",
  "tracing",
@@ -3573,12 +3573,25 @@ dependencies = [
  "shrimpman-common",
  "shrimpman-discovery",
  "shrimpman-domain",
+ "shrimpman-kv",
  "shrimpman-protocol",
  "shrimpman-transport",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "shrimpman-kv"
+version = "0.1.0"
+dependencies = [
+ "etcd-client",
+ "jiff",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3624,6 +3637,7 @@ dependencies = [
  "shrimpman-common",
  "shrimpman-discovery",
  "shrimpman-domain",
+ "shrimpman-kv",
  "shrimpman-persistence",
  "shrimpman-protocol",
  "shrimpman-transport",

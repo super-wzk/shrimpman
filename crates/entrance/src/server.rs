@@ -141,6 +141,7 @@ mod tests {
     use bytes::Bytes;
     use futures_util::{SinkExt, StreamExt};
     use shrimpman_discovery::client::DiscoveryClient;
+    use shrimpman_kv::LeaseKvClient;
     use shrimpman_transport::MhfConnection;
     use tokio::{io::AsyncWriteExt, net::TcpStream, sync::oneshot};
 
@@ -148,9 +149,9 @@ mod tests {
     use crate::EntranceServiceContext;
 
     fn service() -> EntranceService {
-        EntranceService::new(EntranceServiceContext::new(
-            DiscoveryClient::connect(Default::default()).unwrap(),
-        ))
+        EntranceService::new(EntranceServiceContext::new(DiscoveryClient::new(
+            LeaseKvClient::connect(Default::default()).unwrap(),
+        )))
         .unwrap()
     }
 

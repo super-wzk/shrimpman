@@ -4,6 +4,8 @@ use jiff::SignedDuration;
 #[cfg(test)]
 use shrimpman_discovery::selector::RoundRobinSelector;
 use shrimpman_discovery::{client::DiscoveryClient, selector::Selector};
+#[cfg(test)]
+use shrimpman_kv::LeaseKvClient;
 use shrimpman_persistence::{
     AccountRepository, CharacterRepository, MezeportaFestaRepository, SignInNoticeRepository,
     SignSessionRepository,
@@ -109,7 +111,7 @@ impl SignServiceContext {
         Self::new(
             auto_sign_up,
             SignedDuration::from_mins(5),
-            DiscoveryClient::connect(Default::default()).unwrap(),
+            DiscoveryClient::new(LeaseKvClient::connect(Default::default()).unwrap()),
             RoundRobinSelector::new(),
             SignRepositories::new(
                 AccountRepository::new(&db),

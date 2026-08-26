@@ -6,13 +6,13 @@ const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:2379";
 const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(15);
 const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
-/// Configuration for a business service connecting to etcd.
+/// Configuration for the process-wide key-value client.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default)]
-pub struct DiscoveryClientConfig {
-    /// etcd endpoints used for registration and discovery.
+pub struct LeaseKvClientConfig {
+    /// etcd endpoints used by the key-value client.
     pub endpoints: Vec<String>,
-    /// Lifetime of registrations after this client stops refreshing its lease.
+    /// Lifetime of process-owned values after this client stops refreshing its lease.
     #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
     pub lease_ttl: Duration,
     /// Delay before reconnecting after the etcd connection is lost.
@@ -20,7 +20,7 @@ pub struct DiscoveryClientConfig {
     pub reconnect_delay: Duration,
 }
 
-impl Default for DiscoveryClientConfig {
+impl Default for LeaseKvClientConfig {
     fn default() -> Self {
         Self {
             endpoints: vec![DEFAULT_ENDPOINT.to_owned()],

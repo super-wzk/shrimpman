@@ -1,18 +1,19 @@
 use std::{net::SocketAddr, time::Duration};
 
 use serde::Deserialize;
-pub use shrimpman_discovery::client::DiscoveryClientConfig;
+pub use shrimpman_kv::LeaseKvClientConfig;
 
 const DEFAULT_PORT: u16 = 53_310;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_LOG_FILTER: &str = "warn,shrimpman_entrance=info,shrimpman_discovery=info";
+const DEFAULT_LOG_FILTER: &str =
+    "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_kv=info";
 
 /// Configuration for the Entrance service.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct EntranceConfig {
-    /// Service discovery client configuration.
-    pub discovery: DiscoveryClientConfig,
+    /// Process-wide leased key-value client configuration.
+    pub kv: LeaseKvClientConfig,
     /// Structured logging configuration for the Entrance process.
     pub logging: EntranceLoggingConfig,
     /// TCP server configuration.
@@ -73,18 +74,15 @@ mod tests {
     #[test]
     fn reads_the_entrance_section() {
         let config = ::config::Config::builder()
-            .set_override(
-                "entrance.discovery.endpoints",
-                vec!["http://etcd.internal:2379"],
-            )
+            .set_override("entrance.kv.endpoints", vec!["http://etcd.internal:2379"])
             .unwrap()
-            .set_override("entrance.discovery.lease_ttl", "30s")
+            .set_override("entrance.kv.lease_ttl", "30s")
             .unwrap()
-            .set_override("entrance.discovery.reconnect_delay", "500ms")
+            .set_override("entrance.kv.reconnect_delay", "500ms")
             .unwrap()
             .set_override(
                 "entrance.logging.filter",
-                "warn,shrimpman_entrance=debug,shrimpman_discovery=info",
+                "warn,shrimpman_entrance=debug,shrimpman_discovery=info,shrimpman_kv=info",
             )
             .unwrap()
             .set_override("entrance.server.listen_addr", "127.0.0.1:60000")
@@ -99,13 +97,15 @@ mod tests {
         assert_eq!(
             EntranceConfig::try_from(&config).unwrap(),
             EntranceConfig {
-                discovery: DiscoveryClientConfig {
+                kv: LeaseKvClientConfig {
                     endpoints: vec!["http://etcd.internal:2379".to_owned()],
                     lease_ttl: Duration::from_secs(30),
                     reconnect_delay: Duration::from_millis(500),
                 },
                 logging: EntranceLoggingConfig {
-                    filter: "warn,shrimpman_entrance=debug,shrimpman_discovery=info".to_owned(),
+                    filter:
+                        "warn,shrimpman_entrance=debug,shrimpman_discovery=info,shrimpman_kv=info"
+                            .to_owned(),
                 },
                 server: EntranceServerConfig {
                     listen_addr: "127.0.0.1:60000".parse().unwrap(),
