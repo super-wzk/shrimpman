@@ -1,14 +1,14 @@
 use std::{net::SocketAddr, time::Duration};
 
 use serde::Deserialize;
-pub use shrimpman_kv::LeaseKvClientConfig;
+pub use shrimpman_lease_kv::LeaseKvClientConfig;
 
 const DEFAULT_PORT: u16 = 53_312;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
 const DEFAULT_LOG_FILTER: &str =
-    "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_kv=info";
+    "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
 
 /// Configuration for the Sign service.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -19,7 +19,7 @@ pub struct SignConfig {
     /// Persistent storage configuration.
     pub database: SignDatabaseConfig,
     /// Process-wide leased key-value client configuration.
-    pub kv: LeaseKvClientConfig,
+    pub lease_kv: LeaseKvClientConfig,
     /// Structured logging configuration for the Sign process.
     pub logging: SignLoggingConfig,
     /// Sign session configuration.
@@ -117,15 +117,15 @@ mod tests {
         let config = ::config::Config::builder()
             .set_override("sign.auto_sign_up", true)
             .unwrap()
-            .set_override("sign.kv.endpoints", vec!["http://etcd.internal:2379"])
+            .set_override("sign.lease_kv.endpoints", vec!["http://etcd.internal:2379"])
             .unwrap()
-            .set_override("sign.kv.lease_ttl", "30s")
+            .set_override("sign.lease_kv.lease_ttl", "30s")
             .unwrap()
-            .set_override("sign.kv.reconnect_delay", "500ms")
+            .set_override("sign.lease_kv.reconnect_delay", "500ms")
             .unwrap()
             .set_override(
                 "sign.logging.filter",
-                "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_kv=info",
+                "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_lease_kv=info",
             )
             .unwrap()
             .set_override("sign.server.listen_addr", "127.0.0.1:60000")
@@ -144,14 +144,15 @@ mod tests {
             SignConfig {
                 auto_sign_up: true,
                 database: SignDatabaseConfig::default(),
-                kv: LeaseKvClientConfig {
+                lease_kv: LeaseKvClientConfig {
                     endpoints: vec!["http://etcd.internal:2379".to_owned()],
                     lease_ttl: Duration::from_secs(30),
                     reconnect_delay: Duration::from_millis(500),
                 },
                 logging: SignLoggingConfig {
-                    filter: "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_kv=info"
-                        .to_owned(),
+                    filter:
+                        "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_lease_kv=info"
+                            .to_owned(),
                 },
                 session: SignSessionConfig {
                     ttl: Duration::from_secs(10 * 60),

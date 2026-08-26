@@ -6,7 +6,7 @@ use std::{
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use shrimpman_kv::{KvEntry, KvWatch, KvWatchEvent, LeaseKvClient, LeaseKvClientError};
+use shrimpman_lease_kv::{KvEntry, KvWatch, KvWatchEvent, LeaseKvClient, LeaseKvClientError};
 use thiserror::Error;
 use tokio::sync::watch;
 use tracing::warn;
@@ -21,20 +21,20 @@ const SERVICE_KEY_PREFIX: &str = "/shrimpman/services/";
 /// Cloneable handle used by a business service to publish and discover instances.
 #[derive(Clone)]
 pub struct DiscoveryClient {
-    kv: LeaseKvClient,
+    lease_kv: LeaseKvClient,
     published_keys: Arc<Mutex<BTreeMap<ServiceInstanceId, String>>>,
     snapshot: watch::Receiver<Option<Arc<DiscoverySnapshot>>>,
 }
 
 impl DiscoveryClient {
     /// Projects service registrations from a process-wide leased key-value client.
-    pub fn new(kv: LeaseKvClient) -> Self {
-        let events = kv.watch_prefix(SERVICE_KEY_PREFIX);
+    pub fn new(lease_kv: LeaseKvClient) -> Self {
+        let events = lease_kv.watch_prefix(SERVICE_KEY_PREFIX);
         let (snapshot_tx, snapshot_rx) = watch::channel(None);
         tokio::spawn(project_snapshots(events, snapshot_tx));
 
         Self {
-            kv,
+            lease_kv,
             published_keys: Arc::default(),
             snapshot: snapshot_rx,
         }
@@ -53,9 +53,9 @@ impl DiscoveryClient {
         if let Some(previous_key) = published_keys.get(&id)
             && previous_key != &key
         {
-            self.kv.delete(previous_key.clone())?;
+            self.lease_kv.delete(previous_key.clone())?;
         }
-        self.kv.put(key.clone(), value)?;
+        self.lease_kv.put(key.clone(), value)?;
         published_keys.insert(id, key);
 
         Ok(())
@@ -71,7 +71,7 @@ impl DiscoveryClient {
             return Ok(());
         };
 
-        if let Err(error) = self.kv.delete(key.clone()) {
+        if let Err(error) = self.lease_kv.delete(key.clone()) {
             published_keys.insert(id, key);
             return Err(error.into());
         }
@@ -95,7 +95,7 @@ pub enum DiscoveryClientError {
     #[error("failed to encode a service registration: {0}")]
     Encode(#[from] serde_json::Error),
     #[error(transparent)]
-    Kv(#[from] LeaseKvClientError),
+    LeaseKv(#[from] LeaseKvClientError),
 }
 
 async fn project_snapshots(

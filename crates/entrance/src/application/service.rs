@@ -128,7 +128,7 @@ mod tests {
     use bytes::Bytes;
     use futures_util::SinkExt;
     use shrimpman_discovery::client::DiscoveryClient;
-    use shrimpman_kv::LeaseKvClient;
+    use shrimpman_lease_kv::LeaseKvClient;
     use shrimpman_protocol::{BinrwOutboundSender, Handler};
     use tokio::io::{AsyncWriteExt, duplex};
 

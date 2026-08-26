@@ -141,7 +141,7 @@ mod tests {
     use bytes::Bytes;
     use futures_util::{SinkExt, StreamExt};
     use shrimpman_discovery::client::DiscoveryClient;
-    use shrimpman_kv::LeaseKvClient;
+    use shrimpman_lease_kv::LeaseKvClient;
     use shrimpman_transport::MhfConnection;
     use tokio::{io::AsyncWriteExt, net::TcpStream, sync::oneshot};
 

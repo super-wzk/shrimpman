@@ -5,7 +5,7 @@ use jiff::SignedDuration;
 use shrimpman_discovery::selector::RoundRobinSelector;
 use shrimpman_discovery::{client::DiscoveryClient, selector::Selector};
 #[cfg(test)]
-use shrimpman_kv::LeaseKvClient;
+use shrimpman_lease_kv::LeaseKvClient;
 use shrimpman_persistence::{
     AccountRepository, CharacterRepository, MezeportaFestaRepository, SignInNoticeRepository,
     SignSessionRepository,

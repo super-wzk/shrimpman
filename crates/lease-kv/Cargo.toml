@@ -1,5 +1,5 @@
 [package]
-name = "shrimpman-kv"
+name = "shrimpman-lease-kv"
 version.workspace = true
 edition.workspace = true
 

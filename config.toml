@@ -1,13 +1,13 @@
 [migration]
 database_url = "sqlite://shrimpman.sqlite3"
 
-[entrance.kv]
+[entrance.lease_kv]
 endpoints = ["http://127.0.0.1:2379"]
 lease_ttl = "15s"
 reconnect_delay = "1s"
 
 [entrance.logging]
-filter = "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_kv=info"
+filter = "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info"
 
 [entrance.server]
 listen_addr = "0.0.0.0:53310"
@@ -20,13 +20,13 @@ auto_sign_up = false
 [sign.database]
 url = "sqlite://shrimpman.sqlite3"
 
-[sign.kv]
+[sign.lease_kv]
 endpoints = ["http://127.0.0.1:2379"]
 lease_ttl = "15s"
 reconnect_delay = "1s"
 
 [sign.logging]
-filter = "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_kv=info"
+filter = "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info"
 
 [sign.session]
 ttl = "5m"

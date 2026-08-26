@@ -3541,7 +3541,7 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
- "shrimpman-kv",
+ "shrimpman-lease-kv",
  "thiserror",
  "tokio",
  "tracing",
@@ -3573,7 +3573,7 @@ dependencies = [
  "shrimpman-common",
  "shrimpman-discovery",
  "shrimpman-domain",
- "shrimpman-kv",
+ "shrimpman-lease-kv",
  "shrimpman-protocol",
  "shrimpman-transport",
  "thiserror",
@@ -3583,7 +3583,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "shrimpman-kv"
+name = "shrimpman-lease-kv"
 version = "0.1.0"
 dependencies = [
  "etcd-client",
@@ -3637,7 +3637,7 @@ dependencies = [
  "shrimpman-common",
  "shrimpman-discovery",
  "shrimpman-domain",
- "shrimpman-kv",
+ "shrimpman-lease-kv",
  "shrimpman-persistence",
  "shrimpman-protocol",
  "shrimpman-transport",

@@ -15,7 +15,7 @@ serde = { version = "1", features = ["derive"] }
 shrimpman-common = { path = "../common" }
 shrimpman-discovery = { path = "../discovery" }
 shrimpman-domain = { path = "../domain" }
-shrimpman-kv = { path = "../kv" }
+shrimpman-lease-kv = { path = "../lease-kv" }
 shrimpman-protocol = { path = "../protocol" }
 shrimpman-transport = { path = "../transport" }
 thiserror = "2"

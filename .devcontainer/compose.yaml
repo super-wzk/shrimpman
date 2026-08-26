@@ -9,8 +9,8 @@ services:
     volumes:
       - ..:/workspaces:cached
     environment:
-      SHRIMPMAN_ENTRANCE__DISCOVERY__ENDPOINTS: http://etcd:2379
-      SHRIMPMAN_SIGN__DISCOVERY__ENDPOINTS: http://etcd:2379
+      SHRIMPMAN_ENTRANCE__LEASE_KV__ENDPOINTS: http://etcd:2379
+      SHRIMPMAN_SIGN__LEASE_KV__ENDPOINTS: http://etcd:2379
 
   etcd:
     image: gcr.io/etcd-development/etcd:v3.6.14
