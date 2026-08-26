@@ -1,18 +1,20 @@
-use std::{collections::BTreeSet, future::Future, io};
+use std::{collections::BTreeSet, future::Future, io, sync::Arc};
 
 use shrimpman_domain::world::LandKey;
 use tokio::{net::TcpListener, task::JoinSet};
+use tracing::Instrument;
 
-use crate::WorldLandConfig;
+use crate::{WorldLandConfig, WorldService};
 
 /// Owns the TCP listeners for every Land in one World process.
 pub struct WorldServer {
     lands: Vec<BoundLand>,
+    service: Arc<WorldService>,
 }
 
 impl WorldServer {
-    /// Validates and binds every configured Land listener.
-    pub async fn bind(lands: &[WorldLandConfig]) -> io::Result<Self> {
+    /// Validates and binds every configured Land listener around one shared service.
+    pub async fn bind(lands: &[WorldLandConfig], service: WorldService) -> io::Result<Self> {
         validate_lands(lands)?;
 
         let mut bound_lands = Vec::with_capacity(lands.len());
@@ -31,7 +33,10 @@ impl WorldServer {
             });
         }
 
-        Ok(Self { lands: bound_lands })
+        Ok(Self {
+            lands: bound_lands,
+            service: Arc::new(service),
+        })
     }
 
     #[cfg(test)]
@@ -43,16 +48,13 @@ impl WorldServer {
     }
 
     /// Accepts Land connections until shutdown or a listener failure.
-    ///
-    /// The protocol session is intentionally not part of this initial skeleton;
-    /// accepted connections are closed immediately.
     pub async fn run<Shutdown>(self, shutdown: Shutdown) -> io::Result<()>
     where
         Shutdown: Future,
     {
         let mut listeners = JoinSet::new();
         for land in self.lands {
-            listeners.spawn(run_land(land));
+            listeners.spawn(run_land(land, Arc::clone(&self.service)));
         }
         tokio::pin!(shutdown);
 
@@ -78,15 +80,37 @@ struct BoundLand {
     listener: TcpListener,
 }
 
-async fn run_land(land: BoundLand) -> io::Result<()> {
+async fn run_land(land: BoundLand, service: Arc<WorldService>) -> io::Result<()> {
+    let BoundLand { key, listener } = land;
+    let mut sessions = JoinSet::new();
+
     loop {
-        let (connection, peer_addr) = land.listener.accept().await?;
-        tracing::debug!(
-            land = ?land.key,
-            %peer_addr,
-            "Closing Land connection because the World protocol is not implemented"
-        );
-        drop(connection);
+        tokio::select! {
+            biased;
+
+            Some(result) = sessions.join_next(), if !sessions.is_empty() => {
+                if let Err(error) = result {
+                    tracing::error!(%error, "Land connection task terminated unexpectedly");
+                }
+            }
+            accepted = listener.accept() => {
+                let (connection, peer_addr) = accepted?;
+                let service = Arc::clone(&service);
+                let land = key.clone();
+                let span = tracing::info_span!("land_connection", ?land, %peer_addr);
+
+                sessions.spawn(
+                    async move {
+                        tracing::debug!("Accepted Land connection");
+                        match service.serve_land_connection(connection, land).await {
+                            Ok(()) => tracing::debug!("Closed Land connection"),
+                            Err(error) => tracing::warn!(%error, "Land connection failed"),
+                        }
+                    }
+                    .instrument(span),
+                );
+            }
+        }
     }
 }
 
@@ -141,9 +165,12 @@ mod tests {
 
     #[tokio::test]
     async fn binds_every_configured_land() {
-        let server = WorldServer::bind(&[land("one", 54_001), land("two", 54_002)])
-            .await
-            .unwrap();
+        let server = WorldServer::bind(
+            &[land("one", 54_001), land("two", 54_002)],
+            WorldService::new().unwrap(),
+        )
+        .await
+        .unwrap();
         let addresses = server.local_addrs().unwrap();
 
         assert_eq!(addresses.len(), 2);
@@ -157,11 +184,7 @@ mod tests {
         let duplicate_ports = [land("one", 54_001), land("two", 54_001)];
 
         assert_eq!(
-            WorldServer::bind(&[]).await.err().unwrap().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(
-            WorldServer::bind(&duplicate_keys)
+            WorldServer::bind(&[], WorldService::new().unwrap())
                 .await
                 .err()
                 .unwrap()
@@ -169,7 +192,15 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert_eq!(
-            WorldServer::bind(&duplicate_ports)
+            WorldServer::bind(&duplicate_keys, WorldService::new().unwrap())
+                .await
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            WorldServer::bind(&duplicate_ports, WorldService::new().unwrap())
                 .await
                 .err()
                 .unwrap()

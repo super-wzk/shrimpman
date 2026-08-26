@@ -3664,11 +3664,18 @@ dependencies = [
 name = "shrimpman-world"
 version = "0.1.0"
 dependencies = [
+ "binrw",
+ "bytes",
  "config",
+ "futures-util",
+ "inventory",
  "serde",
  "shrimpman-discovery",
  "shrimpman-domain",
  "shrimpman-lease-kv",
+ "shrimpman-protocol",
+ "shrimpman-transport",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
