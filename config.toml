@@ -35,3 +35,27 @@ ttl = "5m"
 listen_addr = "0.0.0.0:53312"
 advertise_addr = "127.0.0.1:53312"
 shutdown_timeout = "5s"
+
+[world]
+key = "main"
+address = "127.0.0.1"
+name = "Main World"
+description = ""
+world_type = "Free"
+season = "Breeding"
+content = "AllQuests"
+client_compatibility = "AllPlatforms"
+
+[world.lease_kv]
+endpoints = ["http://127.0.0.1:2379"]
+lease_ttl = "15s"
+reconnect_delay = "1s"
+
+[world.logging]
+filter = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info"
+
+[[world.lands]]
+key = "land-1"
+listen_addr = "0.0.0.0:54001"
+port = 54001
+max_players = 100

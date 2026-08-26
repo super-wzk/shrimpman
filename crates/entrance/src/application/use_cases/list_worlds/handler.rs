@@ -235,7 +235,7 @@ mod tests {
             world_type: WorldType::Free,
             season: WorldSeason::Warm,
             content: WorldContent::AllQuests,
-            client_compatibility: ClientCompatibility::ALL_PLATFORMS,
+            client_compatibility: ClientCompatibility::AllPlatforms,
             lands: vec![Land {
                 key: LandKey::from("beta".to_owned()),
                 port,

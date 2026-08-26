@@ -3661,6 +3661,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "shrimpman-world"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "serde",
+ "shrimpman-discovery",
+ "shrimpman-domain",
+ "shrimpman-lease-kv",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "shuttle"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -26,3 +26,7 @@ just entrance
 ```sh
 just sign
 ```
+
+```sh
+just world
+```

@@ -13,3 +13,7 @@ entrance:
 # Run the Sign service.
 sign:
     cargo run -p shrimpman-sign
+
+# Run the World service.
+world:
+    cargo run -p shrimpman-world

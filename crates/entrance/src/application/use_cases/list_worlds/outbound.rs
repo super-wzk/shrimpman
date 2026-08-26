@@ -37,7 +37,7 @@ pub(crate) struct WorldEntry {
     #[bw(map = |content: &WorldContent| *content as u8)]
     pub(crate) content: WorldContent,
     pub(crate) text: WorldText,
-    #[bw(map = |compatibility: &ClientCompatibility| u32::from(*compatibility))]
+    #[bw(map = |compatibility: &ClientCompatibility| *compatibility as u32)]
     pub(crate) client_compatibility: ClientCompatibility,
     pub(crate) lands: Vec<LandEntry>,
 }

@@ -22,7 +22,8 @@
   "forwardPorts": [
     "etcd:2379",
     53310,
-    53312
+    53312,
+    54001
   ],
   "portsAttributes": {
     "etcd:2379": {
@@ -35,6 +36,10 @@
     },
     "53312": {
       "label": "Sign Server",
+      "requireLocalPort": true
+    },
+    "54001": {
+      "label": "Land Server",
       "requireLocalPort": true
     }
   },
