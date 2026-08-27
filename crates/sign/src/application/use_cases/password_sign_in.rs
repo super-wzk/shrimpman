@@ -4,10 +4,10 @@ mod outbound;
 
 use handler::PasswordSignInHandler;
 
-use crate::router::{SignPacketRegistration, VersionSelector};
+use crate::router::{SignRouteRegistration, VersionSelector};
 
 inventory::submit! {
-    SignPacketRegistration::new(
+    SignRouteRegistration::new(
         &["SIGN:", "DSGN:", "DLTSKEYSIGN:"],
         VersionSelector::Any,
         &PasswordSignInHandler,

@@ -9,7 +9,7 @@ use registration::EntranceHandlerDecoder;
 
 mod registration;
 
-pub(crate) use registration::EntrancePacketRegistration;
+pub(crate) use registration::EntranceRouteRegistration;
 
 type Routes = RouteTable<&'static str, (), EntranceHandlerDecoder>;
 
@@ -41,7 +41,7 @@ impl EntranceRouter {
         let routes = if let Some(routes) = ROUTES.get() {
             routes
         } else {
-            let routes = build_routes(inventory::iter::<EntrancePacketRegistration>)?;
+            let routes = build_routes(inventory::iter::<EntranceRouteRegistration>)?;
             ROUTES.get_or_init(|| routes)
         };
         Ok(Self { routes })
@@ -63,7 +63,7 @@ impl RouteResolver<Command, ()> for EntranceRouter {
 }
 
 fn build_routes(
-    registrations: impl IntoIterator<Item = &'static EntrancePacketRegistration>,
+    registrations: impl IntoIterator<Item = &'static EntranceRouteRegistration>,
 ) -> Result<Routes, EntranceRouterBuildError> {
     let entries = registrations.into_iter().flat_map(|registration| {
         registration
@@ -117,11 +117,11 @@ mod tests {
         }
     }
 
-    static FIRST: EntrancePacketRegistration =
-        EntrancePacketRegistration::new(&["ALL+"], &FIRST_HANDLER);
+    static FIRST: EntranceRouteRegistration =
+        EntranceRouteRegistration::new(&["ALL+"], &FIRST_HANDLER);
 
     inventory::submit! {
-        EntrancePacketRegistration::new(
+        EntranceRouteRegistration::new(
             &["TEST-COMMAND"],
             &FIRST_HANDLER,
         )

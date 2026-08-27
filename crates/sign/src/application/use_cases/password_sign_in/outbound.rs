@@ -10,11 +10,11 @@ use shrimpman_domain::{
     account::CourseRights,
     character::{Character, CharacterId, CharacterSignInHistory, Gender, WeaponType},
     mezeporta::MezeportaFesta,
-    session::SignSessionId,
+    session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
     sign_in_notice::SignInNotice,
 };
 
-use crate::{InternalError, application::session_token::SESSION_TOKEN_LEN};
+use crate::InternalError;
 
 const CHARACTER_NAME_LEN: usize = 16;
 const CHARACTER_DESCRIPTION_LEN: usize = 32;
@@ -36,7 +36,7 @@ pub(super) enum PasswordSignInResponse {
 pub(super) struct IssuedSignSession {
     #[bw(map = |id: &SignSessionId| u32::from(*id))]
     session_id: SignSessionId,
-    token: [u8; SESSION_TOKEN_LEN],
+    token: [u8; SIGN_SESSION_TOKEN_LEN],
     timestamp: UnixTimestamp32,
 }
 
@@ -196,7 +196,7 @@ impl SignInSuccess {
 impl IssuedSignSession {
     pub(super) fn new(
         id: SignSessionId,
-        token: [u8; SESSION_TOKEN_LEN],
+        token: [u8; SIGN_SESSION_TOKEN_LEN],
         issued_at: Timestamp,
     ) -> Self {
         Self {

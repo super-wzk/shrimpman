@@ -14,7 +14,6 @@ inventory = "0.3"
 jiff = { version = "0.2", features = ["serde"] }
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.11"
 shrimpman-common = { path = "../common" }
 shrimpman-domain = { path = "../domain" }
 shrimpman-discovery = { path = "../discovery" }

@@ -133,7 +133,7 @@ mod tests {
     use tokio::io::{AsyncWriteExt, duplex};
 
     use super::*;
-    use crate::router::EntrancePacketRegistration;
+    use crate::router::EntranceRouteRegistration;
 
     #[derive(BinRead)]
     struct TestRequest(u8);
@@ -161,7 +161,7 @@ mod tests {
     }
 
     inventory::submit! {
-        EntrancePacketRegistration::new(
+        EntranceRouteRegistration::new(
             &["TEST-SERVICE"],
             &TestHandler,
         )

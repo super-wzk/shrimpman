@@ -46,6 +46,9 @@ season = "Breeding"
 content = "AllQuests"
 client_compatibility = "AllPlatforms"
 
+[world.database]
+url = "sqlite://shrimpman.sqlite3"
+
 [world.lease_kv]
 endpoints = ["http://127.0.0.1:2379"]
 lease_ttl = "15s"
@@ -58,4 +61,10 @@ filter = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=
 key = "land-1"
 listen_addr = "0.0.0.0:54001"
 port = 54001
+max_players = 100
+
+[[world.lands]]
+key = "land-2"
+listen_addr = "0.0.0.0:54002"
+port = 54002
 max_players = 100

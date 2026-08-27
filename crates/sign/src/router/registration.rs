@@ -7,13 +7,13 @@ use super::VersionSelector;
 
 pub(super) type SignHandlerDecoder = BinrwHandlerDecoder<SignSessionContext, InternalError>;
 
-pub(crate) struct SignPacketRegistration {
+pub(crate) struct SignRouteRegistration {
     pub(super) commands: &'static [&'static str],
     pub(super) versions: VersionSelector,
     pub(super) decoder: SignHandlerDecoder,
 }
 
-impl SignPacketRegistration {
+impl SignRouteRegistration {
     pub(crate) const fn new(
         commands: &'static [&'static str],
         versions: VersionSelector,
@@ -32,4 +32,4 @@ impl SignPacketRegistration {
     }
 }
 
-inventory::collect!(SignPacketRegistration);
+inventory::collect!(SignRouteRegistration);

@@ -3,8 +3,8 @@ pub(super) mod outbound;
 
 use handler::ListWorldsHandler;
 
-use crate::router::EntrancePacketRegistration;
+use crate::router::EntranceRouteRegistration;
 
 inventory::submit! {
-    EntrancePacketRegistration::new(&["ALL"], &ListWorldsHandler)
+    EntranceRouteRegistration::new(&["ALL"], &ListWorldsHandler)
 }

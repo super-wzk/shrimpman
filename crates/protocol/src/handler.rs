@@ -11,11 +11,11 @@ pub enum DispatchMode {
     Concurrent,
 }
 
-/// Handles one strongly typed inbound value using an explicit outbound channel.
-pub trait Handler<Context, Sender>: Sized + Send + Sync + 'static
+/// Handles one strongly typed inbound value using an explicit connection exchange.
+pub trait Handler<Context, Exchange>: Sized + Send + Sync + 'static
 where
     Context: Send + 'static,
-    Sender: Send + 'static,
+    Exchange: Send + 'static,
 {
     type Inbound: Send + 'static;
     type Error: Send + 'static;
@@ -26,15 +26,15 @@ where
         &self,
         context: Context,
         inbound: Self::Inbound,
-        outbound: Sender,
+        exchange: Exchange,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
 /// An object-safe handler used after a concrete handler type has been erased.
-pub trait ErasedHandler<Context, Sender, Error>: Send + 'static
+pub trait ErasedHandler<Context, Exchange, Error>: Send + 'static
 where
     Context: Send + 'static,
-    Sender: Send + 'static,
+    Exchange: Send + 'static,
     Error: Send + 'static,
 {
     fn mode(&self) -> DispatchMode;
@@ -42,7 +42,7 @@ where
     fn handle(
         self: Box<Self>,
         context: Context,
-        outbound: Sender,
+        exchange: Exchange,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 }
 
@@ -79,18 +79,18 @@ where
     ///
     /// If the concurrent task limit has been reached, this waits for one task
     /// before queuing the new item.
-    pub async fn dispatch<Context, Sender>(
+    pub async fn dispatch<Context, Exchange>(
         &mut self,
-        handler: Box<dyn ErasedHandler<Context, Sender, HandlerError>>,
+        handler: Box<dyn ErasedHandler<Context, Exchange, HandlerError>>,
         context: Context,
-        outbound: Sender,
+        exchange: Exchange,
     ) -> Result<(), DispatchError<HandlerError>>
     where
         Context: Send + 'static,
-        Sender: Send + 'static,
+        Exchange: Send + 'static,
     {
         let mode = handler.mode();
-        self.schedule(mode, handler.handle(context, outbound)).await
+        self.schedule(mode, handler.handle(context, exchange)).await
     }
 
     async fn schedule<HandlerFuture>(
@@ -160,9 +160,9 @@ mod tests {
             &self,
             context: u8,
             inbound: Self::Inbound,
-            outbound: UnboundedSender<u8>,
+            exchange: UnboundedSender<u8>,
         ) -> Result<(), Self::Error> {
-            outbound.send(inbound.0 + context + self.offset).unwrap();
+            exchange.send(inbound.0 + context + self.offset).unwrap();
             Ok(())
         }
     }

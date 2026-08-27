@@ -39,14 +39,6 @@ impl WorldServer {
         })
     }
 
-    #[cfg(test)]
-    fn local_addrs(&self) -> io::Result<Vec<std::net::SocketAddr>> {
-        self.lands
-            .iter()
-            .map(|land| land.listener.local_addr())
-            .collect()
-    }
-
     /// Accepts Land connections until shutdown or a listener failure.
     pub async fn run<Shutdown>(self, shutdown: Shutdown) -> io::Result<()>
     where
@@ -165,46 +157,36 @@ mod tests {
 
     #[tokio::test]
     async fn binds_every_configured_land() {
-        let server = WorldServer::bind(
-            &[land("one", 54_001), land("two", 54_002)],
-            WorldService::new().unwrap(),
-        )
-        .await
-        .unwrap();
-        let addresses = server.local_addrs().unwrap();
+        let db = crate::test_database().await;
+        let service = WorldService::new(crate::test_repositories(&db)).unwrap();
+        let server = WorldServer::bind(&[land("one", 54_001), land("two", 54_002)], service)
+            .await
+            .unwrap();
 
-        assert_eq!(addresses.len(), 2);
-        assert!(addresses.iter().all(|address| address.port() != 0));
+        assert_eq!(server.lands.len(), 2);
+        assert!(server.lands.iter().all(|land| {
+            land.listener
+                .local_addr()
+                .is_ok_and(|address| address.port() != 0)
+        }));
         server.run(future::ready(())).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn rejects_ambiguous_land_metadata() {
+    #[test]
+    fn rejects_ambiguous_land_metadata() {
         let duplicate_keys = [land("same", 54_001), land("same", 54_002)];
         let duplicate_ports = [land("one", 54_001), land("two", 54_001)];
 
         assert_eq!(
-            WorldServer::bind(&[], WorldService::new().unwrap())
-                .await
-                .err()
-                .unwrap()
-                .kind(),
+            validate_lands(&[]).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
         assert_eq!(
-            WorldServer::bind(&duplicate_keys, WorldService::new().unwrap())
-                .await
-                .err()
-                .unwrap()
-                .kind(),
+            validate_lands(&duplicate_keys).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
         assert_eq!(
-            WorldServer::bind(&duplicate_ports, WorldService::new().unwrap())
-                .await
-                .err()
-                .unwrap()
-                .kind(),
+            validate_lands(&duplicate_ports).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
     }

@@ -9,13 +9,18 @@ bytes = "1"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 futures-util = { version = "0.3", features = ["sink"] }
 inventory = "0.3"
+jiff = "0.2"
 serde = { version = "1", features = ["derive"] }
+shrimpman-common = { path = "../common" }
 shrimpman-discovery = { path = "../discovery" }
 shrimpman-domain = { path = "../domain" }
 shrimpman-lease-kv = { path = "../lease-kv" }
+shrimpman-persistence = { path = "../persistence" }
 shrimpman-protocol = { path = "../protocol" }
 shrimpman-transport = { path = "../transport" }
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+toasty = { version = "0.10", features = ["sqlite"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

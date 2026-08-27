@@ -4,7 +4,7 @@ use shrimpman_discovery::{
     ServiceInstance, ServiceInstanceId, ServiceName, ServiceState, client::DiscoveryClient,
 };
 use shrimpman_lease_kv::LeaseKvClient;
-use shrimpman_world::{WorldConfig, WorldServer, WorldService};
+use shrimpman_world::{WorldConfig, WorldDatabase, WorldServer, WorldService};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -17,9 +17,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     info!(world = ?world.key, "Starting World service");
 
     let metadata = world.metadata();
+    let database = WorldDatabase::connect(&world.database).await?;
+    info!("Connected to World database");
+
     let lease_kv = LeaseKvClient::connect(world.lease_kv)?;
     let discovery = DiscoveryClient::new(lease_kv);
-    let service = WorldService::new()?;
+    let service = WorldService::new(database.repositories())?;
     let server = WorldServer::bind(&world.lands, service).await?;
 
     let instance_id = ServiceInstanceId::new();

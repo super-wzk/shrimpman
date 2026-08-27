@@ -10,7 +10,7 @@ use registration::SignHandlerDecoder;
 mod registration;
 mod selector;
 
-pub(crate) use registration::SignPacketRegistration;
+pub(crate) use registration::SignRouteRegistration;
 pub(crate) use selector::VersionSelector;
 
 type Routes = RouteTable<&'static str, VersionSelector, SignHandlerDecoder>;
@@ -49,7 +49,7 @@ impl SignRouter {
         let routes = if let Some(routes) = ROUTES.get() {
             routes
         } else {
-            let routes = build_routes(inventory::iter::<SignPacketRegistration>)?;
+            let routes = build_routes(inventory::iter::<SignRouteRegistration>)?;
             ROUTES.get_or_init(|| routes)
         };
         Ok(Self { routes })
@@ -76,7 +76,7 @@ impl RouteResolver<Command, ClientVersion> for SignRouter {
 }
 
 fn build_routes(
-    registrations: impl IntoIterator<Item = &'static SignPacketRegistration>,
+    registrations: impl IntoIterator<Item = &'static SignRouteRegistration>,
 ) -> Result<Routes, SignRouterBuildError> {
     let entries = registrations.into_iter().flat_map(|registration| {
         registration
@@ -153,14 +153,14 @@ mod tests {
         }
     }
 
-    static LEGACY: SignPacketRegistration =
-        SignPacketRegistration::new(COMMANDS, VersionSelector::Before(V100), &LEGACY_HANDLER);
-    static MODERN: SignPacketRegistration =
-        SignPacketRegistration::new(COMMANDS, VersionSelector::From(V100), &MODERN_HANDLER);
-    static FALLBACK: SignPacketRegistration =
-        SignPacketRegistration::new(COMMANDS, VersionSelector::Any, &LEGACY_HANDLER);
-    static EXACT: SignPacketRegistration =
-        SignPacketRegistration::new(COMMANDS, VersionSelector::Exact(V100), &MODERN_HANDLER);
+    static LEGACY: SignRouteRegistration =
+        SignRouteRegistration::new(COMMANDS, VersionSelector::Before(V100), &LEGACY_HANDLER);
+    static MODERN: SignRouteRegistration =
+        SignRouteRegistration::new(COMMANDS, VersionSelector::From(V100), &MODERN_HANDLER);
+    static FALLBACK: SignRouteRegistration =
+        SignRouteRegistration::new(COMMANDS, VersionSelector::Any, &LEGACY_HANDLER);
+    static EXACT: SignRouteRegistration =
+        SignRouteRegistration::new(COMMANDS, VersionSelector::Exact(V100), &MODERN_HANDLER);
 
     #[test]
     fn selects_implementations_by_version_range() {
@@ -185,12 +185,12 @@ mod tests {
 
     #[test]
     fn rejects_overlapping_selectors_with_the_same_precedence() {
-        static FROM_041: SignPacketRegistration = SignPacketRegistration::new(
+        static FROM_041: SignRouteRegistration = SignRouteRegistration::new(
             COMMANDS,
             VersionSelector::From(ClientVersion::new(41)),
             &LEGACY_HANDLER,
         );
-        static BEFORE_100: SignPacketRegistration = SignPacketRegistration::new(
+        static BEFORE_100: SignRouteRegistration = SignRouteRegistration::new(
             COMMANDS,
             VersionSelector::Before(ClientVersion::new(100)),
             &MODERN_HANDLER,

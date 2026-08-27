@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use binrw::{BinRead, BinWrite, Endian, binwrite};
 use bytes::Bytes;
-use shrimpman_protocol::{BinrwOutboundSender, CommandDecoder, DecodedCommand, OutboundSendError};
+use shrimpman_protocol::{CommandDecoder, DecodedCommand};
 
 pub(crate) const MSG_SYS_END: u16 = 0x0010;
 
@@ -25,51 +25,21 @@ impl CommandDecoder for LandCommandDecoder {
 }
 
 /// Associates a typed Land packet body with its wire opcode.
-#[allow(dead_code, reason = "used by Land packet types")]
 pub(crate) trait LandPacket: Send + 'static {
     const OPCODE: u16;
 }
 
 #[binwrite]
 #[brw(big)]
-#[allow(dead_code, reason = "constructed when a Land handler sends a response")]
-struct LandOutbound<Packet>
+pub(crate) struct LandOutbound<Packet>
 where
     Packet: LandPacket + for<'args> BinWrite<Args<'args> = ()>,
 {
     #[bw(calc = Packet::OPCODE)]
     opcode: u16,
-    packet: Packet,
+    pub(crate) packet: Packet,
     #[bw(calc = MSG_SYS_END)]
     end: u16,
-}
-
-/// Adds the Land command envelope before delegating to the shared binrw sender.
-#[allow(dead_code, reason = "used by Land packet handlers")]
-pub(crate) trait LandOutboundSender {
-    async fn send_packet<Packet>(&self, packet: Packet) -> Result<(), OutboundSendError>
-    where
-        Packet: LandPacket + for<'args> BinWrite<Args<'args> = ()>;
-
-    async fn send_packet_and_flush<Packet>(&self, packet: Packet) -> Result<(), OutboundSendError>
-    where
-        Packet: LandPacket + for<'args> BinWrite<Args<'args> = ()>;
-}
-
-impl LandOutboundSender for BinrwOutboundSender {
-    async fn send_packet<Packet>(&self, packet: Packet) -> Result<(), OutboundSendError>
-    where
-        Packet: LandPacket + for<'args> BinWrite<Args<'args> = ()>,
-    {
-        self.send(LandOutbound { packet }).await
-    }
-
-    async fn send_packet_and_flush<Packet>(&self, packet: Packet) -> Result<(), OutboundSendError>
-    where
-        Packet: LandPacket + for<'args> BinWrite<Args<'args> = ()>,
-    {
-        self.send_and_flush(LandOutbound { packet }).await
-    }
 }
 
 #[cfg(test)]

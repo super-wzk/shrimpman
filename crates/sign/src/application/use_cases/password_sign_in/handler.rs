@@ -13,7 +13,7 @@ use super::{
 use crate::{
     application::{
         service_names,
-        session_token::{generate_session_token, hash_session_token},
+        session_token::generate_session_token,
     },
     InternalError, SignSessionContext,
 };
@@ -108,7 +108,7 @@ async fn password_sign_in(
         .sign_sessions()
         .create(
             &account,
-            hash_session_token(&token),
+            &token,
             TimeRange::from_duration(now, service.session_ttl()),
         )
         .await?;

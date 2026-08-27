@@ -1,8 +1,9 @@
 use jiff::Timestamp;
+use sha2::{Digest, Sha256};
 use shrimpman_domain::{
     TimeRange,
     account::{Account, AccountId},
-    session::SignSessionId,
+    session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
 };
 use toasty::Db;
 
@@ -23,11 +24,12 @@ impl SignSessionRepository {
     pub async fn create(
         &self,
         account: &Account,
-        token_hash: Vec<u8>,
+        token: &[u8; SIGN_SESSION_TOKEN_LEN],
         validity: TimeRange,
     ) -> toasty::Result<SignSessionId> {
         let mut db = self.db.clone();
         let account_id = u32::from(account.id);
+        let token_hash = hash_token(token);
         let starts_at = validity.starts_at();
         let expires_at = validity.expires_at();
         let session = toasty::create!(SignSessionRow {
@@ -41,16 +43,16 @@ impl SignSessionRepository {
         Ok(SignSessionId::from(session.id))
     }
 
-    /// Resolves an unexpired session with a matching token hash to its account.
+    /// Resolves an unexpired session with a matching token to its account.
     pub async fn authenticate(
         &self,
         id: SignSessionId,
-        token_hash: &[u8],
+        token: &[u8; SIGN_SESSION_TOKEN_LEN],
         authenticated_at: Timestamp,
     ) -> toasty::Result<Option<AccountId>> {
         let mut db = self.db.clone();
         let id = u32::from(id);
-        let token_hash = token_hash.to_vec();
+        let token_hash = hash_token(token);
         let session = toasty::query!(
             SignSessionRow FILTER
                 .id == #id
@@ -64,6 +66,10 @@ impl SignSessionRepository {
 
         Ok(session.map(|session| AccountId::from(session.account_id)))
     }
+}
+
+fn hash_token(token: &[u8; SIGN_SESSION_TOKEN_LEN]) -> Vec<u8> {
+    Sha256::digest(token).to_vec()
 }
 
 #[cfg(test)]
@@ -83,33 +89,30 @@ mod tests {
         let repository = SignSessionRepository::new(&db);
         let starts_at = Timestamp::new(1_800_000_000, 0).unwrap();
         let expires_at = starts_at + SignedDuration::from_mins(5);
-        let token_hash = vec![7; 32];
+        let token = b"0123456789ABCDEF";
+        let invalid_token = b"FEDCBA9876543210";
         let session_id = repository
-            .create(
-                &account,
-                token_hash.clone(),
-                TimeRange::new(starts_at, expires_at),
-            )
+            .create(&account, token, TimeRange::new(starts_at, expires_at))
             .await
             .unwrap();
 
         assert_eq!(
             repository
-                .authenticate(session_id, &token_hash, starts_at)
+                .authenticate(session_id, token, starts_at)
                 .await
                 .unwrap(),
             Some(account.id)
         );
         assert_eq!(
             repository
-                .authenticate(session_id, &token_hash, expires_at)
+                .authenticate(session_id, token, expires_at)
                 .await
                 .unwrap(),
             Some(account.id)
         );
         assert_eq!(
             repository
-                .authenticate(session_id, &[8; 32], starts_at)
+                .authenticate(session_id, invalid_token, starts_at)
                 .await
                 .unwrap(),
             None
@@ -118,7 +121,7 @@ mod tests {
             repository
                 .authenticate(
                     session_id,
-                    &token_hash,
+                    token,
                     expires_at + SignedDuration::from_nanos(1),
                 )
                 .await
@@ -127,7 +130,7 @@ mod tests {
         );
         assert_eq!(
             repository
-                .authenticate(SignSessionId::from(u32::MAX), &token_hash, starts_at)
+                .authenticate(SignSessionId::from(u32::MAX), token, starts_at)
                 .await
                 .unwrap(),
             None

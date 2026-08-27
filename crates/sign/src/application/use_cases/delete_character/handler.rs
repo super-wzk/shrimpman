@@ -2,10 +2,7 @@ use jiff::Timestamp;
 use shrimpman_protocol::{BinrwOutboundSender, Handler};
 
 use super::inbound::DeleteCharacter;
-use crate::{
-    InternalError, SignSessionContext,
-    application::session_token::hash_session_token,
-};
+use crate::{InternalError, SignSessionContext};
 
 const DELETE_SUCCESS: u8 = 1;
 
@@ -39,10 +36,9 @@ async fn delete_character(
         character_id,
         session_id,
     } = inbound;
-    let token_hash = hash_session_token(&session_token);
     let Some(account_id) = service
         .sign_sessions()
-        .authenticate(session_id, &token_hash, now)
+        .authenticate(session_id, &session_token, now)
         .await?
     else {
         tracing::info!(
@@ -75,12 +71,16 @@ mod tests {
     use std::sync::Arc;
 
     use jiff::SignedDuration;
-    use shrimpman_domain::{TimeRange, account::Account};
+    use shrimpman_domain::{
+        TimeRange,
+        account::Account,
+        session::SIGN_SESSION_TOKEN_LEN,
+    };
 
     use super::*;
     use crate::SignServiceContext;
 
-    const TOKEN: &[u8; 16] = b"0123456789ABCDEF";
+    const TOKEN: [u8; SIGN_SESSION_TOKEN_LEN] = *b"0123456789ABCDEF";
 
     struct DeleteFixture {
         service: Arc<SignServiceContext>,
@@ -102,7 +102,7 @@ mod tests {
             .sign_sessions()
             .create(
                 &account,
-                hash_session_token(TOKEN),
+                &TOKEN,
                 TimeRange::from_duration(now, SignedDuration::from_mins(5)),
             )
             .await
@@ -112,7 +112,7 @@ mod tests {
             service,
             account,
             request: DeleteCharacter {
-                session_token: TOKEN.to_vec(),
+                session_token: TOKEN,
                 character_id: character.id,
                 session_id,
             },
@@ -147,7 +147,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_an_invalid_session_token() {
         let mut fixture = fixture().await;
-        fixture.request.session_token = b"wrong".to_vec();
+        fixture.request.session_token = [b'x'; SIGN_SESSION_TOKEN_LEN];
 
         let deleted = delete_character(
             SignSessionContext::new(Arc::clone(&fixture.service)),

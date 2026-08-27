@@ -4,8 +4,8 @@ mod outbound;
 
 use handler::ListWorldsPresenceHandler;
 
-use crate::router::EntrancePacketRegistration;
+use crate::router::EntranceRouteRegistration;
 
 inventory::submit! {
-    EntrancePacketRegistration::new(&["ALL+"], &ListWorldsPresenceHandler)
+    EntranceRouteRegistration::new(&["ALL+"], &ListWorldsPresenceHandler)
 }

@@ -3,10 +3,10 @@ mod inbound;
 
 use handler::DeleteCharacterHandler;
 
-use crate::router::{SignPacketRegistration, VersionSelector};
+use crate::router::{SignRouteRegistration, VersionSelector};
 
 inventory::submit! {
-    SignPacketRegistration::new(
+    SignRouteRegistration::new(
         &["DELETE:"],
         VersionSelector::Any,
         &DeleteCharacterHandler,

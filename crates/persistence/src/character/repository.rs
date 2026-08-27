@@ -40,6 +40,43 @@ impl CharacterRepository {
         Ok(character.into())
     }
 
+    /// Finds an active character only when it belongs to the given account.
+    pub async fn find_active_for_account(
+        &self,
+        account_id: AccountId,
+        character_id: CharacterId,
+    ) -> toasty::Result<Option<Character>> {
+        let mut db = self.db.clone();
+        let account_id = u32::from(account_id);
+        let character_id = u32::from(character_id);
+        let character = toasty::query!(
+            CharacterRow FILTER .id == #character_id AND .account_id == #account_id
+        )
+        .filter(CharacterRow::fields().deleted_at().is_none())
+        .first()
+        .exec(&mut db)
+        .await?;
+
+        Ok(character.map(Character::from))
+    }
+
+    /// Records a successful character sign-in.
+    pub async fn record_sign_in(
+        &self,
+        character: &Character,
+        signed_in_at: jiff::Timestamp,
+    ) -> toasty::Result<()> {
+        let mut db = self.db.clone();
+        let character = CharacterRow::get_by_id(&mut db, u32::from(character.id)).await?;
+        toasty::create!(in character.sign_in_records() {
+            signed_in_at,
+        })
+        .exec(&mut db)
+        .await?;
+
+        Ok(())
+    }
+
     /// Deletes an active character only when it belongs to the given account.
     ///
     /// Characters without savedata are removed entirely. Initialized
@@ -184,6 +221,43 @@ mod tests {
         assert_eq!(history.last_sign_in_at(first_character_id), Some(latest));
         assert_eq!(history.last_sign_in_at(second_character_id), Some(later));
         assert_eq!(history.last_character_id(), Some(first_character_id));
+    }
+
+    #[tokio::test]
+    async fn finds_an_owned_character_and_records_its_sign_in() {
+        let db = crate::test_database().await;
+        let accounts = AccountRepository::new(&db);
+        let alice = accounts
+            .create("alice".to_owned(), "hash".to_owned())
+            .await
+            .unwrap();
+        let bob = accounts
+            .create("bob".to_owned(), "hash".to_owned())
+            .await
+            .unwrap();
+        let repository = CharacterRepository::new(&db);
+        let character = repository.create_new(&alice).await.unwrap();
+        let signed_in_at = Timestamp::new(1_800_000_000, 0).unwrap();
+
+        assert!(
+            repository
+                .find_active_for_account(bob.id, character.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let found = repository
+            .find_active_for_account(alice.id, character.id)
+            .await
+            .unwrap()
+            .unwrap();
+        repository
+            .record_sign_in(&found, signed_in_at)
+            .await
+            .unwrap();
+
+        let history = repository.sign_in_history(&[found]).await.unwrap();
+        assert_eq!(history.last_sign_in_at(character.id), Some(signed_in_at));
     }
 
     #[tokio::test]

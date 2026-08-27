@@ -48,6 +48,11 @@ pub struct BinrwOutboundSender {
 }
 
 impl BinrwOutboundSender {
+    /// Wraps a raw outbound channel for big-endian binrw packets.
+    pub fn big_endian(sender: OutboundSender<BinrwOutbound>) -> Self {
+        Self::new(sender, Endian::Big)
+    }
+
     fn new(sender: OutboundSender<BinrwOutbound>, endian: Endian) -> Self {
         Self { sender, endian }
     }
@@ -140,7 +145,6 @@ where
             decode: decode_handler::<Context, Error, H>,
         }
     }
-
     pub const fn big_endian(
         handler: &'static impl Handler<
             Context,

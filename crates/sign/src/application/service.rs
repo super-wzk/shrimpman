@@ -136,7 +136,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::router::{SignPacketRegistration, VersionSelector};
+    use crate::router::{SignRouteRegistration, VersionSelector};
 
     #[derive(BinRead)]
     struct TestRequest(u8);
@@ -167,7 +167,7 @@ mod tests {
     }
 
     inventory::submit! {
-        SignPacketRegistration::new(
+        SignRouteRegistration::new(
             &["TEST:"],
             VersionSelector::Any,
             &TestHandler,

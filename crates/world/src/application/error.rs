@@ -7,8 +7,26 @@ use crate::LandRouteError;
 /// An internal failure while handling a Land packet.
 #[derive(Debug, Error)]
 pub enum InternalError {
+    #[error("World database operation failed: {0}")]
+    Database(#[from] toasty::Error),
+
     #[error("failed to send a Land packet: {0}")]
     Outbound(#[from] OutboundSendError),
+
+    #[error("current server time is outside the protocol's 32-bit timestamp range")]
+    ServerTimeOutOfRange,
+
+    #[error("all World request slots are occupied")]
+    RequestSlotsExhausted,
+
+    #[error("World request timed out")]
+    RequestTimedOut,
+
+    #[error("World connection closed while waiting for a response")]
+    ConnectionClosed,
+
+    #[error("failed to decode a World response: {0}")]
+    ResponseDecode(#[source] binrw::Error),
 }
 
 /// An invalid single-packet Land payload.

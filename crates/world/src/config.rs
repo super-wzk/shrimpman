@@ -8,6 +8,7 @@ pub use shrimpman_lease_kv::LeaseKvClientConfig;
 
 const DEFAULT_LOG_FILTER: &str =
     "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
+const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
 
 /// Configuration for one World process.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -28,6 +29,9 @@ pub struct WorldConfig {
     pub content: WorldContent,
     /// Historical client-platform compatibility code.
     pub client_compatibility: ClientCompatibility,
+    /// Persistent storage configuration.
+    #[serde(default)]
+    pub database: WorldDatabaseConfig,
     /// Land listeners owned by this process.
     pub lands: Vec<WorldLandConfig>,
     /// Process-wide leased key-value client configuration.
@@ -36,6 +40,22 @@ pub struct WorldConfig {
     /// Structured logging configuration for the World process.
     #[serde(default)]
     pub logging: WorldLoggingConfig,
+}
+
+/// Database configuration for the World service.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WorldDatabaseConfig {
+    /// Toasty connection URL.
+    pub url: String,
+}
+
+impl Default for WorldDatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: DEFAULT_DATABASE_URL.to_owned(),
+        }
+    }
 }
 
 impl WorldConfig {
@@ -143,6 +163,7 @@ mod tests {
         assert_eq!(metadata.key, WorldKey::from("main".to_owned()));
         assert_eq!(metadata.address, "192.0.2.10".parse::<Ipv4Addr>().unwrap());
         assert_eq!(metadata.name, "Main World");
+        assert_eq!(config.database, WorldDatabaseConfig::default());
         assert_eq!(metadata.client_compatibility, ClientCompatibility::PC);
         assert_eq!(metadata.lands.len(), 1);
         assert_eq!(metadata.lands[0].key, LandKey::from("land-1".to_owned()));

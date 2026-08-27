@@ -5,12 +5,12 @@ use crate::{EntranceSessionContext, InternalError};
 
 pub(super) type EntranceHandlerDecoder = BinrwHandlerDecoder<EntranceSessionContext, InternalError>;
 
-pub(crate) struct EntrancePacketRegistration {
+pub(crate) struct EntranceRouteRegistration {
     pub(super) commands: &'static [&'static str],
     pub(super) decoder: EntranceHandlerDecoder,
 }
 
-impl EntrancePacketRegistration {
+impl EntranceRouteRegistration {
     pub(crate) const fn new(
         commands: &'static [&'static str],
         handler: &'static impl Handler<
@@ -27,4 +27,4 @@ impl EntrancePacketRegistration {
     }
 }
 
-inventory::collect!(EntrancePacketRegistration);
+inventory::collect!(EntranceRouteRegistration);
