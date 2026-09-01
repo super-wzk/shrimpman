@@ -29,7 +29,7 @@ pub enum InternalError {
     ResponseDecode(#[source] binrw::Error),
 }
 
-/// An invalid single-packet Land payload.
+/// An invalid Land packet group.
 #[derive(Debug, Error)]
 pub enum PacketDecodeError {
     #[error("Land payload is missing its big-endian MSG_SYS_END marker")]
@@ -41,8 +41,8 @@ pub enum PacketDecodeError {
     #[error("failed to decode Land packet: {0}")]
     Packet(#[source] CommandPacketDecodeError<binrw::Error, LandRouteError, binrw::Error>),
 
-    #[error("Land packet left {remaining} bytes before MSG_SYS_END")]
-    TrailingBody { remaining: u64 },
+    #[error("Land MSG_SYS_END is followed by {remaining} bytes")]
+    EndMarkerNotFinal { remaining: u64 },
 }
 
 /// A failure while serving one Land connection.

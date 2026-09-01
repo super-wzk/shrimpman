@@ -7,7 +7,10 @@ use thiserror::Error;
 
 use registration::{LandErasedHandler, LandHandlerDecoder};
 
-use crate::response::{MSG_SYS_ACK, WireResponse};
+use crate::{
+    envelope::MSG_SYS_END,
+    response::{MSG_SYS_ACK, WireResponse},
+};
 
 mod registration;
 
@@ -15,15 +18,19 @@ pub(crate) use registration::LandRouteRegistration;
 
 type Routes = RouteTable<u16, (), LandPacketDecoder>;
 
+const MSG_SYS_NOP: u16 = 0x0011;
+
 pub(crate) enum LandInbound {
     Handler(LandErasedHandler),
     Response(WireResponse),
+    Control,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum LandPacketDecoder {
     Handler(LandHandlerDecoder),
     Response,
+    Control,
 }
 
 impl PacketDecoder<()> for LandPacketDecoder {
@@ -38,6 +45,7 @@ impl PacketDecoder<()> for LandPacketDecoder {
         match self {
             Self::Handler(decoder) => decoder.decode(metadata, payload).map(LandInbound::Handler),
             Self::Response => WireResponse::read_be(payload).map(LandInbound::Response),
+            Self::Control => Ok(LandInbound::Control),
         }
     }
 }
@@ -98,7 +106,12 @@ fn build_routes(
             LandPacketDecoder::Handler(registration.decoder),
         )
     });
-    let entries = std::iter::once((MSG_SYS_ACK, (), LandPacketDecoder::Response)).chain(entries);
+    let built_in_entries = [
+        (MSG_SYS_END, (), LandPacketDecoder::Control),
+        (MSG_SYS_NOP, (), LandPacketDecoder::Control),
+        (MSG_SYS_ACK, (), LandPacketDecoder::Response),
+    ];
+    let entries = built_in_entries.into_iter().chain(entries);
 
     RouteTable::build(entries).map_err(|error| match error {
         RouteTableBuildError::EmptySelector { .. } => {

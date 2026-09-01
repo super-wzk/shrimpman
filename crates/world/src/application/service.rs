@@ -20,7 +20,7 @@ use crate::{
 };
 
 type RoutedPacketDecoder = CommandPacketDecoder<LandCommandDecoder, LandRouter>;
-type LandPacketStream<Io> = PacketStream<MhfConnection<Io>, SinglePacketDecoder>;
+type LandPacketStream<Io> = PacketStream<MhfConnection<Io>, LandPacketGroupDecoder>;
 
 /// Coordinates the Land connections owned by one World process.
 pub struct WorldService {
@@ -65,7 +65,7 @@ struct LandSession<Io> {
 impl<Io> LandSession<Io> {
     fn new(io: Io, land: LandKey, service: Arc<WorldServiceContext>, router: LandRouter) -> Self {
         let connection = MhfConnection::new(io);
-        let decoder = SinglePacketDecoder::new(router);
+        let decoder = LandPacketGroupDecoder::new(router);
 
         Self {
             context: WorldSessionContext::new(service, land),
@@ -119,6 +119,7 @@ where
                             tracing::debug!(handle, "Ignored unmatched World response");
                         }
                     }
+                    LandInbound::Control => {}
                 }
             }
 
@@ -168,15 +169,12 @@ where
     }
 }
 
-/// Removes and validates the group terminator before routing one packet body.
-///
-/// Land batching is intentionally rejected for now: the routed decoder must
-/// consume every byte before the final MSG_SYS_END marker.
-struct SinglePacketDecoder {
+/// Routes each packet in a Land group and validates its final MSG_SYS_END.
+struct LandPacketGroupDecoder {
     routed: RoutedPacketDecoder,
 }
 
-impl SinglePacketDecoder {
+impl LandPacketGroupDecoder {
     fn new(router: LandRouter) -> Self {
         Self {
             routed: CommandPacketDecoder::new(LandCommandDecoder, router),
@@ -184,7 +182,7 @@ impl SinglePacketDecoder {
     }
 }
 
-impl PayloadDecoder for SinglePacketDecoder {
+impl PayloadDecoder for LandPacketGroupDecoder {
     type Inbound = <RoutedPacketDecoder as PayloadDecoder>::Inbound;
     type Error = PacketDecodeError;
 
@@ -192,14 +190,10 @@ impl PayloadDecoder for SinglePacketDecoder {
         &mut self,
         payload: &mut Cursor<Bytes>,
     ) -> Result<PayloadDecode<Self::Inbound>, Self::Error> {
-        let start = payload.position() as usize;
         let payload_len = payload.get_ref().len();
         let Some(packet_end) = payload_len.checked_sub(size_of::<u16>()) else {
             return Err(PacketDecodeError::MissingEndMarker);
         };
-        if packet_end < start {
-            return Err(PacketDecodeError::MissingEndMarker);
-        }
 
         let end = &payload.get_ref()[packet_end..];
         let actual = u16::from_be_bytes([end[0], end[1]]);
@@ -207,18 +201,24 @@ impl PayloadDecoder for SinglePacketDecoder {
             return Err(PacketDecodeError::InvalidEndMarker { actual });
         }
 
-        let mut packet = Cursor::new(payload.get_ref().slice(start..packet_end));
-        let decoded = self
+        let decoded = match self
             .routed
-            .decode_next(&mut packet)
-            .map_err(PacketDecodeError::Packet)?;
-        let remaining = packet.get_ref().len() as u64 - packet.position();
-        if remaining != 0 {
-            return Err(PacketDecodeError::TrailingBody { remaining });
+            .decode_next(payload)
+            .map_err(PacketDecodeError::Packet)?
+        {
+            PayloadDecode::Item(decoded) => decoded,
+            PayloadDecode::Complete => return Err(PacketDecodeError::MissingEndMarker),
+        };
+
+        if *decoded.command() == MSG_SYS_END {
+            let remaining = payload_len as u64 - payload.position();
+            if remaining != 0 {
+                return Err(PacketDecodeError::EndMarkerNotFinal { remaining });
+            }
+            return Ok(PayloadDecode::Complete);
         }
 
-        payload.set_position(payload_len as u64);
-        Ok(decoded)
+        Ok(PayloadDecode::Item(decoded))
     }
 }
 
@@ -235,7 +235,10 @@ mod tests {
     };
     use shrimpman_persistence::{AccountRepository, CharacterRepository, SignSessionRepository};
     use shrimpman_protocol::Handler;
-    use tokio::io::duplex;
+    use tokio::{
+        io::{DuplexStream, duplex},
+        task::JoinHandle,
+    };
 
     use super::*;
     use crate::{
@@ -401,8 +404,10 @@ mod tests {
         Bytes::from(payload)
     }
 
-    #[tokio::test]
-    async fn reuses_a_packet_type_in_both_directions_and_frames_each_send() {
+    async fn test_connection() -> (
+        MhfConnection<DuplexStream>,
+        JoinHandle<Result<(), ConnectionError>>,
+    ) {
         let (client_io, server_io) = duplex(4096);
         let db = crate::test_database().await;
         let service = WorldService::new(crate::test_repositories(&db)).unwrap();
@@ -411,10 +416,18 @@ mod tests {
                 .serve_land_connection(server_io, LandKey::from("test".to_owned()))
                 .await
         });
-        let mut client = MhfConnection::new(client_io);
+
+        (MhfConnection::new(client_io), server)
+    }
+
+    #[tokio::test]
+    async fn routes_a_packet_group_and_frames_each_send() {
+        let (mut client, server) = test_connection().await;
 
         client
-            .send(Bytes::from_static(&[0x12, 0x34, 7, 0x00, 0x10]))
+            .send(Bytes::from_static(&[
+                0x12, 0x34, 7, 0x12, 0x34, 8, 0x00, 0x10,
+            ]))
             .await
             .unwrap();
 
@@ -426,21 +439,44 @@ mod tests {
             client.next().await.unwrap().unwrap(),
             Bytes::from_static(&[0xcd, 0xef, 0x00, 0x09, 0x00, 0x10])
         );
+        assert_eq!(
+            client.next().await.unwrap().unwrap(),
+            Bytes::from_static(&[0x12, 0x34, 9, 0x00, 0x10])
+        );
+        assert_eq!(
+            client.next().await.unwrap().unwrap(),
+            Bytes::from_static(&[0xcd, 0xef, 0x00, 0x0a, 0x00, 0x10])
+        );
+        client.close().await.unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn routes_a_batched_ping_and_nop_before_acknowledging() {
+        let (mut client, server) = test_connection().await;
+
+        client
+            .send(Bytes::from_static(&[
+                0x00, 0x17, 0x12, 0x34, 0x56, 0x78, 0x00, 0x11, 0x00, 0x10,
+            ]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            client.next().await.unwrap().unwrap(),
+            Bytes::from_static(&[
+                0x00, 0x12, 0x12, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x10,
+            ])
+        );
+
         client.close().await.unwrap();
         server.await.unwrap().unwrap();
     }
 
     #[tokio::test]
     async fn routes_success_and_failure_responses_without_closing_the_connection() {
-        let (client_io, server_io) = duplex(4096);
-        let db = crate::test_database().await;
-        let service = WorldService::new(crate::test_repositories(&db)).unwrap();
-        let server = tokio::spawn(async move {
-            service
-                .serve_land_connection(server_io, LandKey::from("test".to_owned()))
-                .await
-        });
-        let mut client = MhfConnection::new(client_io);
+        let (mut client, server) = test_connection().await;
 
         client
             .send(Bytes::from_static(&[0x23, 0x45, 0x00, 0x10]))
@@ -574,20 +610,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_multiple_packets_before_the_end_marker() {
-        let mut decoder = SinglePacketDecoder::new(LandRouter::new().unwrap());
+    fn rejects_packets_after_the_end_marker() {
+        let mut decoder = LandPacketGroupDecoder::new(LandRouter::new().unwrap());
         let mut payload = Cursor::new(Bytes::from_static(&[
-            0x12, 0x34, 7, 0x12, 0x34, 8, 0x00, 0x10,
+            0x00, 0x11, 0x00, 0x10, 0x00, 0x11, 0x00, 0x10,
         ]));
 
-        let error = match decoder.decode_next(&mut payload) {
-            Ok(_) => panic!("multiple Land packets were accepted in one payload"),
-            Err(error) => error,
-        };
-
         assert!(matches!(
-            error,
-            PacketDecodeError::TrailingBody { remaining: 3 }
+            decoder.decode_next(&mut payload).unwrap(),
+            PayloadDecode::Item(_)
+        ));
+        assert!(matches!(
+            decoder.decode_next(&mut payload),
+            Err(PacketDecodeError::EndMarkerNotFinal { remaining: 4 })
         ));
     }
 }
