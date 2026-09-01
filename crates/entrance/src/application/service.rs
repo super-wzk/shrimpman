@@ -174,27 +174,37 @@ mod tests {
         .unwrap()
     }
 
-    #[tokio::test]
-    async fn dispatches_a_null_terminated_command_then_closes_the_connection() {
-        RECEIVED_VALUE.store(0, Ordering::Relaxed);
+    async fn exchange(request: &'static [u8]) -> Bytes {
         let (mut client_io, server_io) = duplex(4096);
         let service = service();
         let server = tokio::spawn(async move { service.serve_connection(server_io).await });
 
         client_io.write_all(&[0; INITIALIZATION_LEN]).await.unwrap();
         let mut client = MhfConnection::new(client_io);
-        client
-            .send(Bytes::from_static(b"TEST-SERVICE\0\x07"))
-            .await
-            .unwrap();
+        client.send(Bytes::from_static(request)).await.unwrap();
 
-        assert_eq!(
-            client.next().await.unwrap().unwrap(),
-            Bytes::from_static(&[8])
-        );
+        let response = client.next().await.unwrap().unwrap();
         assert!(client.next().await.is_none());
         server.await.unwrap().unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn dispatches_a_null_terminated_command_then_closes_the_connection() {
+        RECEIVED_VALUE.store(0, Ordering::Relaxed);
+
+        assert_eq!(
+            exchange(b"TEST-SERVICE\0\x07").await,
+            Bytes::from_static(&[8])
+        );
         assert_eq!(RECEIVED_VALUE.load(Ordering::Relaxed), 7);
+    }
+
+    #[tokio::test]
+    async fn serves_all_plus_with_or_without_a_presence_body() {
+        for request in [b"ALL+\0".as_slice(), b"ALL+\0\0\x01\0\0\0\x2a".as_slice()] {
+            assert!(!exchange(request).await.is_empty());
+        }
     }
 
     #[tokio::test]

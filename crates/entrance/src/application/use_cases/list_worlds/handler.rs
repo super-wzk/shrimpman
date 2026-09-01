@@ -27,13 +27,15 @@ impl Handler<EntranceSessionContext, BinrwOutboundSender> for ListWorldsHandler 
         _inbound: Self::Inbound,
         outbound: BinrwOutboundSender,
     ) -> Result<(), Self::Error> {
-        let response = execute(context)?;
+        let response = build_world_list(&context)?;
         outbound.send(response).await?;
         Ok(())
     }
 }
 
-fn execute(context: EntranceSessionContext) -> Result<MhfBin8<WorldList>, InternalError> {
+pub(in crate::application::use_cases) fn build_world_list(
+    context: &EntranceSessionContext,
+) -> Result<MhfBin8<WorldList>, InternalError> {
     let instances = context
         .service_context()
         .discovery()
