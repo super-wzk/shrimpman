@@ -7,9 +7,11 @@ edition.workspace = true
 binrw = "0.15"
 bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
+nu-pretty-hex = "0.115"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

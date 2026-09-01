@@ -1,5 +1,7 @@
 use bytes::{Buf, Bytes, BytesMut};
+use nu_pretty_hex::PrettyHex;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::debug;
 
 use crate::{
     DecodeStep,
@@ -43,6 +45,7 @@ impl Decoder for MhfTransportCodec {
         // A checksum error is terminal for the frame, but cipher state remains
         // unchanged because decrypt_in_place commits it only after validation.
         self.inbound.decrypt_in_place(header, body.as_mut())?;
+        debug!(payload = ?body.hex_dump(), "Received");
         Ok(Some(body.freeze()))
     }
 }
@@ -86,6 +89,7 @@ impl Encoder<Bytes> for MhfTransportCodec {
         }
 
         self.outbound = next_outbound;
+        debug!(payload = ?payload.hex_dump(), "Sent");
         Ok(())
     }
 }

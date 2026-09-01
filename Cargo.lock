@@ -2441,6 +2441,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nu-pretty-hex"
+version = "0.115.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "931686e6a9b46d23f16c98180709ed70a1360aa4a7eaa8724c9d5dabab953547"
+dependencies = [
+ "nu-ansi-term",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3678,9 +3687,11 @@ dependencies = [
  "binrw",
  "bytes",
  "futures-util",
+ "nu-pretty-hex",
  "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
