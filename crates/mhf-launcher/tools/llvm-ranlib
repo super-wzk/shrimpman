@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# lld-link /lib already writes the COFF archive index. The host macOS ranlib
+# cannot process these object files and would replace the library with an empty
+# archive.
+exit 0

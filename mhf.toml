@@ -1,0 +1,67 @@
+# [server] 模拟 Sign 密码登录成功后的领域数据。
+[server]
+entrance_servers = ["127.0.0.1:53310"]
+last_character_id = 1
+rights = 12
+return_expires_at = 4294967295
+
+[server.credentials]
+username = "user_abc"
+password = "123456"
+
+[server.session]
+session_id = 1
+token = "KySJuNnR2PJu00Uw"
+# issued_at 省略时使用启动时刻。
+
+[[server.characters]]
+id = 1
+name = "char_abc"
+gr = 50
+hr = 999
+is_new = false
+
+# 已建模的 MHF 配置使用领域名称和 TOML 原生类型；未建模项保留字符串。
+[set]
+preset_level = 0
+custom = true
+
+[screen]
+mode = "windowed"
+window_resolution = { width = 400, height = 400 }
+fullscreen_resolution = { width = 1920, height = 1200 }
+bright = "-128"
+
+[video]
+display_character_limit = 100
+use_dxt_textures = false
+now_monitor_wh = true
+graphics_version = "high_definition"
+
+[sound]
+disabled = false
+volume = 0
+inactive_volume = 0
+minimized_volume = 0
+sample_rate = 48000
+buffer_size = 2048
+
+[localization]
+language = "japanese"
+
+[font]
+quality = "antialiased"
+weight = 0x2bc
+name = "MS Gothic"
+
+[option]
+draw_skip = true
+clog_disabled = false
+
+[launch]
+use_proxy = false
+use_ie_proxy = false
+proxy_configured = true
+proxy_address = "127.0.0.1"
+proxy_port = 8888
+server_selection = 1
