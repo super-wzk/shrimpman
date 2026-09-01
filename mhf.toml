@@ -1,67 +1,219 @@
-# [server] 模拟 Sign 密码登录成功后的领域数据。
-[server]
-entrance_servers = ["127.0.0.1:53310"]
-last_character_id = 1
-rights = 12
-return_expires_at = 4294967295
+[CHATPHI_211111]
+PHINF_ID_0 = "111111"
+PHINF_ID_1 = "0"
+PHINF_ID_10 = "0"
+PHINF_ID_11 = "0"
+PHINF_ID_12 = "0"
+PHINF_ID_13 = "0"
+PHINF_ID_14 = "0"
+PHINF_ID_15 = "0"
+PHINF_ID_16 = "0"
+PHINF_ID_17 = "0"
+PHINF_ID_18 = "0"
+PHINF_ID_19 = "0"
+PHINF_ID_2 = "0"
+PHINF_ID_20 = "0"
+PHINF_ID_21 = "0"
+PHINF_ID_22 = "0"
+PHINF_ID_23 = "0"
+PHINF_ID_24 = "0"
+PHINF_ID_25 = "0"
+PHINF_ID_26 = "0"
+PHINF_ID_27 = "0"
+PHINF_ID_28 = "0"
+PHINF_ID_29 = "0"
+PHINF_ID_3 = "0"
+PHINF_ID_4 = "0"
+PHINF_ID_5 = "0"
+PHINF_ID_6 = "0"
+PHINF_ID_7 = "0"
+PHINF_ID_8 = "0"
+PHINF_ID_9 = "0"
+PHINF_NAME_0 = ""
+PHINF_NAME_1 = "0"
+PHINF_NAME_10 = "0"
+PHINF_NAME_11 = "0"
+PHINF_NAME_12 = "0"
+PHINF_NAME_13 = "0"
+PHINF_NAME_14 = "0"
+PHINF_NAME_15 = "0"
+PHINF_NAME_16 = "0"
+PHINF_NAME_17 = "0"
+PHINF_NAME_18 = "0"
+PHINF_NAME_19 = "0"
+PHINF_NAME_2 = "0"
+PHINF_NAME_20 = "0"
+PHINF_NAME_21 = "0"
+PHINF_NAME_22 = "0"
+PHINF_NAME_23 = "0"
+PHINF_NAME_24 = "0"
+PHINF_NAME_25 = "0"
+PHINF_NAME_26 = "0"
+PHINF_NAME_27 = "0"
+PHINF_NAME_28 = "0"
+PHINF_NAME_29 = "0"
+PHINF_NAME_3 = "0"
+PHINF_NAME_4 = "0"
+PHINF_NAME_5 = "0"
+PHINF_NAME_6 = "0"
+PHINF_NAME_7 = "0"
+PHINF_NAME_8 = "0"
+PHINF_NAME_9 = "0"
 
-[server.credentials]
-username = "user_abc"
-password = "123456"
+[CHAT_SIZE]
+RECEIVE_0 = "0"
+RECEIVE_1 = "256"
 
-[server.session]
-session_id = 1
-token = "KySJuNnR2PJu00Uw"
-# issued_at 省略时使用启动时刻。
+[font]
+name = "MS Gothic"
+quality = "antialiased"
+weight = 700
 
-[[server.characters]]
-id = 1
-name = "char_abc"
-gr = 50
-hr = 999
-is_new = false
-
-# 已建模的 MHF 配置使用领域名称和 TOML 原生类型；未建模项保留字符串。
-[set]
-preset_level = 0
-custom = true
-
-[screen]
-mode = "windowed"
-window_resolution = { width = 400, height = 400 }
-fullscreen_resolution = { width = 1920, height = 1200 }
-bright = "-128"
-
-[video]
-display_character_limit = 100
-use_dxt_textures = false
-now_monitor_wh = true
-graphics_version = "high_definition"
-
-[sound]
-disabled = false
-volume = 0
-inactive_volume = 0
-minimized_volume = 0
-sample_rate = 48000
-buffer_size = 2048
+[launch]
+proxy_address = "127.0.0.1"
+proxy_configured = true
+proxy_port = 8888
+server_selection = 1
+use_ie_proxy = false
+use_proxy = false
 
 [localization]
 language = "japanese"
 
-[font]
-quality = "antialiased"
-weight = 0x2bc
-name = "MS Gothic"
-
 [option]
-draw_skip = true
+90C_GRAPHIC_ANTI_ALIASING = "1"
+90C_GRAPHIC_ANTI_ALIASING_WEIGHTSCALE = "100"
+90C_GRAPHIC_BGLIGHT_SHADOWATTENUATION = "100"
+90C_GRAPHIC_BLOOM = "1"
+90C_GRAPHIC_BLOOM_COLOR = "100"
+90C_GRAPHIC_BLOOM_DISPERSION = "100"
+90C_GRAPHIC_BLOOM_THRESHOLD = "100"
+90C_GRAPHIC_DOF = "1"
+90C_GRAPHIC_DOF_FARBLURSIZE = "100"
+90C_GRAPHIC_GAUSSIANBLUR_BLENDRATE = "100"
+90C_GRAPHIC_GAUSSIANBLUR_DISPERSION = "100"
+90C_GRAPHIC_GODRAY = "1"
+90C_GRAPHIC_PLLIGHT_SHADOWATTENUATION = "100"
+90C_GRAPHIC_SHADOWMAP_COLOR = "100"
+90C_GRAPHIC_SHADOW_LOBBY = "0"
+90C_GRAPHIC_SHADOW_QUEST = "1"
+90C_GRAPHIC_SOFTPARTICLE = "1"
+90C_GRAPHIC_SSAO = "0"
+90C_GRAPHIC_SSAO_DENSITY = "100"
+90C_GRAPHIC_TYPE = "1"
+APM_00 = "0"
+APM_01 = "0"
+APM_02 = "0"
+APM_03 = "0"
+AUTOUSE_ONOFF = "1"
+BOWGUN_SHELL_LV1 = "0"
+CAMERA_BOW = "0"
+CAMERA_GUN = "0"
+CAMERA_GUN2 = "0"
+CAMERA_TYPE = "0"
+CAMERA_TYPE_ARCHER = "0"
+CAMERA_TYPE_BOWGUN = "0"
+CAM_AIMKEY_MODE = "0"
+CAM_PITCH_MODE = "0"
+CAM_PITCH_SPEED = "3"
+CHATLOGSIZE = "0"
+CHAT_KEY_TYPE = "0"
+DISP_CHAT_CHANNEL = "0"
+DISP_CTRL_ICON = "both"
+DISP_DIRECTION = "0"
+DISP_FACILITY_NAME_SIZE = "14"
+DISP_FKEY = "0"
+DISP_GAUGE_TYPE = "0"
+DISP_LBRANGE = "3"
+DISP_LBWEAPON = "0"
+DISP_NPC_NAME_SIZE = "14"
+DISP_PC_NAME_COLOR = "00000000"
+DISP_PC_TITLE = "on"
+EFF_LIGHT = "0"
+ESC_DIR_TYPE = "0"
+FKEY_TYPE = "0"
+FONT_SIZE = "1"
+FOSTA_ONOFF = "0"
+FOSTA_TALK_ONOFF = "0"
+GK_ACCOMPANY = "0"
+GUNNERCTRL = "0"
+HASYU_NAVI_ONOFF = "1"
+ICONDSP_ONOFF = "1"
+LBCAM_MANUAL = "1"
+LBCAM_ROT = "7"
+LBCAM_ZOOM = "3233"
+MATCHING_RANK_ONOFF = "0"
+MESSAGE_LOG_FILE = "anytime"
+MOUSE_ENABLE = "0"
+MOUSE_RANGE = "0"
+NAMEMASK = "0"
+ONESHOT_RASTA_ONOFF = "0"
+OPE_GUIDE = "0"
+OVERLAY_HOLD_ICON = "with"
+PLATE_DIRECTION = "1"
+PL_FACIAL = "0"
+SCOPECTRL = "0"
+SCREENSHOT_BBS_CAPTURE = "0"
+SCREENSHOT_BBS_COCKPIT = "0"
+SCREENSHOT_BBS_SHARE = "0"
+SOFTKEYBOARD = "0"
+S_PL_TRANS = "0"
+VIBRATION = "0"
+WALLPAPER_TRANSPARENCY = "0"
+ZPLATE_CHANGE = "0"
 clog_disabled = false
+draw_skip = true
 
-[launch]
-use_proxy = false
-use_ie_proxy = false
-proxy_configured = true
-proxy_address = "127.0.0.1"
-proxy_port = 8888
-server_selection = 1
+[screen]
+bright = "-128"
+mode = "windowed"
+
+[screen.fullscreen_resolution]
+height = 1200
+width = 1920
+
+[screen.window_resolution]
+height = 400
+width = 400
+
+[server]
+entrance_servers = ["127.0.0.1:53310"]
+last_character_id = 1
+return_expires_at = 4294967295
+rights = 12
+
+[[server.characters]]
+gr = 50
+hr = 999
+id = 1
+is_new = false
+name = "char_abc"
+
+[server.credentials]
+password = "123456"
+username = "user_abc"
+
+[server.session]
+session_id = 1
+token = "KySJuNnR2PJu00Uw"
+
+[set]
+custom = true
+preset_level = 0
+
+[sound]
+SOUND_BGM = "5"
+SOUND_SE = "7"
+SOUND_TYPE = "1"
+buffer_size = 2048
+disabled = false
+inactive_volume = 0
+minimized_volume = 0
+sample_rate = 48000
+volume = 0
+
+[video]
+display_character_limit = 100
+graphics_version = "high_definition"
+now_monitor_wh = true
+use_dxt_textures = false
