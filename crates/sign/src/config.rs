@@ -3,6 +3,8 @@ use std::{net::SocketAddr, time::Duration};
 use serde::Deserialize;
 pub use shrimpman_lease_kv::LeaseKvClientConfig;
 
+use crate::http;
+
 const DEFAULT_PORT: u16 = 53_312;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(5 * 60);
@@ -11,7 +13,7 @@ const DEFAULT_LOG_FILTER: &str =
     "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
 
 /// Configuration for the Sign service.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SignConfig {
     /// Whether a successful sign-in may create a missing account.
@@ -20,12 +22,32 @@ pub struct SignConfig {
     pub database: SignDatabaseConfig,
     /// Process-wide leased key-value client configuration.
     pub lease_kv: LeaseKvClientConfig,
+    /// HTTP API configuration.
+    pub http: http::Config,
     /// Structured logging configuration for the Sign process.
     pub logging: SignLoggingConfig,
     /// Sign session configuration.
     pub session: SignSessionConfig,
     /// TCP server configuration.
     pub server: SignServerConfig,
+    /// Time to wait for active work after shutdown is requested.
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
+    pub shutdown_timeout: Duration,
+}
+
+impl Default for SignConfig {
+    fn default() -> Self {
+        Self {
+            auto_sign_up: false,
+            database: SignDatabaseConfig::default(),
+            lease_kv: LeaseKvClientConfig::default(),
+            http: http::Config::default(),
+            logging: SignLoggingConfig::default(),
+            session: SignSessionConfig::default(),
+            server: SignServerConfig::default(),
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+        }
+    }
 }
 
 /// Database configuration for the Sign service.
@@ -85,9 +107,6 @@ pub struct SignServerConfig {
     pub listen_addr: SocketAddr,
     /// Address advertised to other services through Discovery.
     pub advertise_addr: String,
-    /// Time to wait for active connections before canceling them.
-    #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
-    pub shutdown_timeout: Duration,
 }
 
 impl Default for SignServerConfig {
@@ -95,7 +114,6 @@ impl Default for SignServerConfig {
         Self {
             listen_addr: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
             advertise_addr: format!("127.0.0.1:{DEFAULT_PORT}"),
-            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
 }
@@ -123,6 +141,8 @@ mod tests {
             .unwrap()
             .set_override("sign.lease_kv.reconnect_delay", "500ms")
             .unwrap()
+            .set_override("sign.http.listen_addr", "127.0.0.1:60002")
+            .unwrap()
             .set_override(
                 "sign.logging.filter",
                 "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_lease_kv=info",
@@ -132,7 +152,7 @@ mod tests {
             .unwrap()
             .set_override("sign.server.advertise_addr", "127.0.0.1:60001")
             .unwrap()
-            .set_override("sign.server.shutdown_timeout", "250ms")
+            .set_override("sign.shutdown_timeout", "250ms")
             .unwrap()
             .set_override("sign.session.ttl", "10m")
             .unwrap()
@@ -144,6 +164,9 @@ mod tests {
             SignConfig {
                 auto_sign_up: true,
                 database: SignDatabaseConfig::default(),
+                http: http::Config {
+                    listen_addr: "127.0.0.1:60002".parse().unwrap(),
+                },
                 lease_kv: LeaseKvClientConfig {
                     endpoints: vec!["http://etcd.internal:2379".to_owned()],
                     lease_ttl: Duration::from_secs(30),
@@ -160,8 +183,8 @@ mod tests {
                 server: SignServerConfig {
                     listen_addr: "127.0.0.1:60000".parse().unwrap(),
                     advertise_addr: "127.0.0.1:60001".to_owned(),
-                    shutdown_timeout: Duration::from_millis(250),
                 },
+                shutdown_timeout: Duration::from_millis(250),
             }
         );
     }

@@ -23,6 +23,7 @@
     "etcd:2379",
     53310,
     53312,
+    53313,
     54001
   ],
   "portsAttributes": {
@@ -36,6 +37,10 @@
     },
     "53312": {
       "label": "Sign Server",
+      "requireLocalPort": true
+    },
+    "53313": {
+      "label": "Sign HTTP API",
       "requireLocalPort": true
     },
     "54001": {

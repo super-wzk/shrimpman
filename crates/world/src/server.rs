@@ -1,7 +1,11 @@
 use std::{collections::BTreeSet, future::Future, io, sync::Arc};
 
 use shrimpman_domain::world::LandKey;
-use tokio::{net::TcpListener, task::JoinSet};
+use tokio::{
+    net::TcpListener,
+    task::{JoinError, JoinSet},
+};
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::{WorldLandConfig, WorldService};
@@ -42,28 +46,42 @@ impl WorldServer {
     /// Accepts Land connections until shutdown or a listener failure.
     pub async fn run<Shutdown>(self, shutdown: Shutdown) -> io::Result<()>
     where
-        Shutdown: Future,
+        Shutdown: Future<Output = ()>,
     {
         let mut listeners = JoinSet::new();
+        let cancellation = CancellationToken::new();
         for land in self.lands {
-            listeners.spawn(run_land(land, Arc::clone(&self.service)));
+            listeners.spawn(run_land(
+                land,
+                Arc::clone(&self.service),
+                cancellation.child_token(),
+            ));
         }
         tokio::pin!(shutdown);
 
-        let result = tokio::select! {
+        tokio::select! {
+            biased;
+
             _ = &mut shutdown => {
                 tracing::info!("Stopping World server");
+                cancellation.cancel();
+                while let Some(result) = listeners.join_next().await {
+                    match result {
+                        Ok(result) => result?,
+                        Err(error) => return Err(io::Error::other(error)),
+                    }
+                }
                 Ok(())
             }
-            result = listeners.join_next() => match result {
-                Some(Ok(result)) => result,
-                Some(Err(error)) => Err(io::Error::other(error)),
-                None => Ok(()),
-            },
-        };
-
-        listeners.shutdown().await;
-        result
+            result = listeners.join_next() => {
+                listeners.shutdown().await;
+                match result {
+                    Some(Ok(result)) => result,
+                    Some(Err(error)) => Err(io::Error::other(error)),
+                    None => Ok(()),
+                }
+            }
+        }
     }
 }
 
@@ -72,7 +90,11 @@ struct BoundLand {
     listener: TcpListener,
 }
 
-async fn run_land(land: BoundLand, service: Arc<WorldService>) -> io::Result<()> {
+async fn run_land(
+    land: BoundLand,
+    service: Arc<WorldService>,
+    cancellation: CancellationToken,
+) -> io::Result<()> {
     let BoundLand { key, listener } = land;
     let mut sessions = JoinSet::new();
 
@@ -80,10 +102,16 @@ async fn run_land(land: BoundLand, service: Arc<WorldService>) -> io::Result<()>
         tokio::select! {
             biased;
 
+            () = cancellation.cancelled() => {
+                tracing::info!(
+                    land = ?key,
+                    active_connections = sessions.len(),
+                    "Stopping Land server"
+                );
+                break;
+            }
             Some(result) = sessions.join_next(), if !sessions.is_empty() => {
-                if let Err(error) = result {
-                    tracing::error!(%error, "Land connection task terminated unexpectedly");
-                }
+                report_join_error(result);
             }
             accepted = listener.accept() => {
                 let (connection, peer_addr) = accepted?;
@@ -103,6 +131,33 @@ async fn run_land(land: BoundLand, service: Arc<WorldService>) -> io::Result<()>
                 );
             }
         }
+    }
+
+    drop(listener);
+    drain_sessions(&key, sessions).await;
+
+    Ok(())
+}
+
+async fn drain_sessions(land: &LandKey, mut sessions: JoinSet<()>) {
+    if sessions.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        ?land,
+        active_connections = sessions.len(),
+        "Waiting for active Land connections"
+    );
+    while let Some(result) = sessions.join_next().await {
+        report_join_error(result);
+    }
+    tracing::info!(?land, "All active Land connections completed");
+}
+
+fn report_join_error(result: Result<(), JoinError>) {
+    if let Err(error) = result {
+        tracing::error!(%error, "Land connection task terminated unexpectedly");
     }
 }
 
@@ -144,6 +199,8 @@ fn validate_lands(lands: &[WorldLandConfig]) -> io::Result<()> {
 mod tests {
     use std::future;
 
+    use tokio::sync::oneshot;
+
     use super::*;
 
     fn land(key: &str, port: u16) -> WorldLandConfig {
@@ -170,6 +227,25 @@ mod tests {
                 .is_ok_and(|address| address.port() != 0)
         }));
         server.run(future::ready(())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn waits_for_active_sessions_during_shutdown() {
+        let (complete, completion) = oneshot::channel();
+        let mut sessions = JoinSet::new();
+        sessions.spawn(async move {
+            let _ = completion.await;
+        });
+        let land = LandKey::from("one".to_owned());
+        let draining = drain_sessions(&land, sessions);
+        tokio::pin!(draining);
+
+        tokio::select! {
+            () = &mut draining => panic!("active session drained before it completed"),
+            () = tokio::task::yield_now() => {}
+        }
+        complete.send(()).unwrap();
+        draining.await;
     }
 
     #[test]

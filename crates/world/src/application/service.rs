@@ -362,7 +362,7 @@ mod tests {
             .create("alice".to_owned(), "hash".to_owned())
             .await
             .unwrap();
-        let character = characters.create_new(&account).await.unwrap();
+        let character = characters.create_new(account.id).await.unwrap();
         let session_id = sign_sessions
             .create(
                 &account,

@@ -1,4 +1,4 @@
-use std::{future::Future, io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{future::Future, io, net::SocketAddr};
 
 use tokio::{
     net::TcpListener,
@@ -11,8 +11,7 @@ use crate::{SignServerConfig, SignService};
 /// Accepts TCP connections and dispatches them to the Sign service.
 pub struct SignServer {
     listener: TcpListener,
-    service: Arc<SignService>,
-    shutdown_timeout: Duration,
+    service: SignService,
 }
 
 impl SignServer {
@@ -20,11 +19,7 @@ impl SignServer {
     pub async fn bind(config: SignServerConfig, service: SignService) -> io::Result<Self> {
         let listener = TcpListener::bind(config.listen_addr).await?;
 
-        Ok(Self {
-            listener,
-            service: Arc::new(service),
-            shutdown_timeout: config.shutdown_timeout,
-        })
+        Ok(Self { listener, service })
     }
 
     /// Returns the listener's effective local address.
@@ -34,17 +29,12 @@ impl SignServer {
 
     /// Serves connections until the shutdown future completes or the listener fails.
     ///
-    /// After accepting stops, active connections receive the configured grace period
-    /// before any remaining tasks are canceled.
+    /// After accepting stops, waits for active connections to finish.
     pub async fn run<Shutdown>(self, shutdown: Shutdown) -> io::Result<()>
     where
-        Shutdown: Future,
+        Shutdown: Future<Output = ()>,
     {
-        let Self {
-            listener,
-            service,
-            shutdown_timeout,
-        } = self;
+        let Self { listener, service } = self;
         let mut sessions = JoinSet::new();
         tokio::pin!(shutdown);
 
@@ -67,7 +57,7 @@ impl SignServer {
                         Ok(connection) => connection,
                         Err(error) => break Err(error),
                     };
-                    let service = Arc::clone(&service);
+                    let service = service.clone();
                     let span = tracing::info_span!("sign_connection", %peer_addr);
 
                     sessions.spawn(
@@ -85,9 +75,13 @@ impl SignServer {
         };
 
         drop(listener);
-        drain_sessions(sessions, shutdown_timeout).await;
+        if let Err(error) = result {
+            sessions.shutdown().await;
+            return Err(error);
+        }
+        drain_sessions(sessions).await;
 
-        result
+        Ok(())
     }
 }
 
@@ -97,41 +91,24 @@ fn report_join_error(result: Result<(), JoinError>) {
     }
 }
 
-async fn drain_sessions(mut sessions: JoinSet<()>, timeout: Duration) {
+async fn drain_sessions(mut sessions: JoinSet<()>) {
     if sessions.is_empty() {
         return;
     }
 
     tracing::info!(
         active_connections = sessions.len(),
-        ?timeout,
         "Waiting for active Sign connections"
     );
-    let completed = tokio::time::timeout(timeout, async {
-        while let Some(result) = sessions.join_next().await {
-            report_join_error(result);
-        }
-    })
-    .await;
-
-    if completed.is_err() {
-        let remaining = sessions.len();
-        tracing::warn!(remaining, "Sign shutdown timed out; canceling connections");
-        sessions.shutdown().await;
-    } else {
-        tracing::info!("All active Sign connections completed");
+    while let Some(result) = sessions.join_next().await {
+        report_join_error(result);
     }
+    tracing::info!("All active Sign connections completed");
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        future,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
+    use std::future;
 
     use crate::SignServiceContext;
 
@@ -142,7 +119,6 @@ mod tests {
         let config = SignServerConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             advertise_addr: "127.0.0.1:53312".to_owned(),
-            shutdown_timeout: Duration::ZERO,
         };
         let listen_addr = config.listen_addr;
         let service = SignService::new(SignServiceContext::for_test(true).await).unwrap();
@@ -152,28 +128,5 @@ mod tests {
         assert_eq!(local_addr.ip(), listen_addr.ip());
         assert_ne!(local_addr.port(), listen_addr.port());
         server.run(future::ready(())).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn cancels_sessions_after_the_shutdown_timeout() {
-        struct DropFlag(Arc<AtomicBool>);
-
-        impl Drop for DropFlag {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Relaxed);
-            }
-        }
-
-        let dropped = Arc::new(AtomicBool::new(false));
-        let drop_flag = DropFlag(Arc::clone(&dropped));
-        let mut sessions = JoinSet::new();
-        sessions.spawn(async move {
-            let _drop_flag = drop_flag;
-            future::pending::<()>().await;
-        });
-
-        drain_sessions(sessions, Duration::ZERO).await;
-
-        assert!(dropped.load(Ordering::Relaxed));
     }
 }

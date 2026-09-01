@@ -9,7 +9,7 @@ const DEFAULT_LOG_FILTER: &str =
     "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
 
 /// Configuration for the Entrance service.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct EntranceConfig {
     /// Process-wide leased key-value client configuration.
@@ -18,6 +18,20 @@ pub struct EntranceConfig {
     pub logging: EntranceLoggingConfig,
     /// TCP server configuration.
     pub server: EntranceServerConfig,
+    /// Time to wait for active work after shutdown is requested.
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
+    pub shutdown_timeout: Duration,
+}
+
+impl Default for EntranceConfig {
+    fn default() -> Self {
+        Self {
+            lease_kv: LeaseKvClientConfig::default(),
+            logging: EntranceLoggingConfig::default(),
+            server: EntranceServerConfig::default(),
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+        }
+    }
 }
 
 /// Filtering configuration for structured Entrance process logs.
@@ -44,9 +58,6 @@ pub struct EntranceServerConfig {
     pub listen_addr: SocketAddr,
     /// Public address of the Entrance server.
     pub advertise_addr: String,
-    /// Time to wait for active connections before canceling them.
-    #[serde(with = "jiff::fmt::serde::unsigned_duration::required")]
-    pub shutdown_timeout: Duration,
 }
 
 impl Default for EntranceServerConfig {
@@ -54,7 +65,6 @@ impl Default for EntranceServerConfig {
         Self {
             listen_addr: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
             advertise_addr: format!("127.0.0.1:{DEFAULT_PORT}"),
-            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
 }
@@ -92,7 +102,7 @@ mod tests {
             .unwrap()
             .set_override("entrance.server.advertise_addr", "entrance.internal:60001")
             .unwrap()
-            .set_override("entrance.server.shutdown_timeout", "250ms")
+            .set_override("entrance.shutdown_timeout", "250ms")
             .unwrap()
             .build()
             .unwrap();
@@ -113,8 +123,8 @@ mod tests {
                 server: EntranceServerConfig {
                     listen_addr: "127.0.0.1:60000".parse().unwrap(),
                     advertise_addr: "entrance.internal:60001".to_owned(),
-                    shutdown_timeout: Duration::from_millis(250),
                 },
+                shutdown_timeout: Duration::from_millis(250),
             }
         );
     }

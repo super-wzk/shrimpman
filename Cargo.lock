@@ -248,6 +248,8 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -255,7 +257,10 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -3469,6 +3474,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3657,7 +3673,7 @@ name = "shrimpman-sign"
 version = "0.1.0"
 dependencies = [
  "argon2",
- "automod",
+ "axum",
  "binrw",
  "bytes",
  "config",
@@ -3666,6 +3682,7 @@ dependencies = [
  "jiff",
  "rand 0.10.2",
  "serde",
+ "serde_json",
  "shrimpman-common",
  "shrimpman-discovery",
  "shrimpman-domain",
@@ -3676,6 +3693,7 @@ dependencies = [
  "thiserror",
  "toasty",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

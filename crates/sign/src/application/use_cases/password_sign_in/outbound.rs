@@ -1,19 +1,18 @@
 use binrw::{BinWrite, binwrite};
 use jiff::Timestamp;
 use shrimpman_common::{
-    binary::{
-        Bool8, CountedVec, FixedCString, PrefixedCString, U8OrU16Length, UnixTimestamp32,
-    },
+    binary::{Bool8, CountedVec, FixedCString, PrefixedCString, U8OrU16Length, UnixTimestamp32},
     encoding::encode_shift_jis,
 };
 use shrimpman_domain::{
     account::CourseRights,
-    character::{Character, CharacterId, CharacterSignInHistory, Gender, WeaponType},
+    character::{CharacterId, Gender, WeaponType},
     mezeporta::MezeportaFesta,
     session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
     sign_in_notice::SignInNotice,
 };
 
+use super::model;
 use crate::InternalError;
 
 const CHARACTER_NAME_LEN: usize = 16;
@@ -33,7 +32,7 @@ pub(super) enum PasswordSignInResponse {
 }
 
 #[derive(BinWrite)]
-pub(super) struct IssuedSignSession {
+struct IssuedSignSession {
     #[bw(map = |id: &SignSessionId| u32::from(*id))]
     session_id: SignSessionId,
     token: [u8; SIGN_SESSION_TOKEN_LEN],
@@ -97,6 +96,20 @@ impl TryFrom<SignInNotice> for LoginNotice {
     }
 }
 
+impl TryFrom<model::Outcome> for PasswordSignInResponse {
+    type Error = InternalError;
+
+    fn try_from(outcome: model::Outcome) -> Result<Self, Self::Error> {
+        match outcome {
+            model::Outcome::Success(success) => {
+                Ok(Self::Success(SignInSuccess::try_from(*success)?))
+            }
+            model::Outcome::IllegalInput => Ok(Self::IllegalInput),
+            model::Outcome::WrongPassword => Ok(Self::WrongPassword),
+        }
+    }
+}
+
 #[derive(BinWrite)]
 struct CharacterRelationEntry {
     #[bw(map = |id: &CharacterId| u32::from(*id))]
@@ -130,79 +143,47 @@ struct SignCharacter {
     unknown_2: u8,
 }
 
-impl SignInSuccess {
-    pub(super) fn new(
-        session: IssuedSignSession,
-        rights: CourseRights,
-        characters: Vec<Character>,
-        character_sign_in_history: &CharacterSignInHistory,
-        return_expires_at: Timestamp,
-    ) -> Result<Self, InternalError> {
-        let issued_at = Timestamp::from(session.timestamp);
+impl TryFrom<model::Success> for SignInSuccess {
+    type Error = InternalError;
 
+    fn try_from(success: model::Success) -> Result<Self, Self::Error> {
         Ok(Self {
-            session,
+            session: success.session.into(),
             patch_servers: Vec::new(),
-            entrance_servers: Vec::new(),
-            characters: characters
+            entrance_servers: success
+                .entrance_servers
                 .into_iter()
-                .map(|character| {
-                    let last_sign_in_at = character_sign_in_history
-                        .last_sign_in_at(character.id)
-                        .unwrap_or(issued_at);
-                    SignCharacter::try_from((character, last_sign_in_at))
-                })
+                .map(|address| PrefixedCString::new(address.into_bytes()))
+                .collect::<Result<_, _>>()?,
+            characters: success
+                .characters
+                .into_iter()
+                .map(SignCharacter::try_from)
                 .collect::<Result<_, _>>()?,
             friends: Vec::new().into(),
             guild_members: Vec::new().into(),
-            notices: Vec::new().into(),
-            last_character_id: character_sign_in_history.last_character_id(),
-            rights,
-            return_expires_at: return_expires_at.into(),
-            festa: SignInMezeportaFesta::disabled(),
+            notices: success
+                .notices
+                .into_iter()
+                .map(LoginNotice::try_from)
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
+            last_character_id: success.last_character_id,
+            rights: success.rights,
+            return_expires_at: success.return_expires_at.into(),
+            festa: success
+                .festa
+                .map_or_else(SignInMezeportaFesta::disabled, SignInMezeportaFesta::from),
         })
-    }
-
-    pub(super) fn with_entrance_server(
-        mut self,
-        address: Option<&str>,
-    ) -> Result<Self, InternalError> {
-        self.entrance_servers = address
-            .map(|address| PrefixedCString::new(address.as_bytes().to_vec()))
-            .transpose()?
-            .into_iter()
-            .collect();
-        Ok(self)
-    }
-
-    pub(super) fn with_notices(
-        mut self,
-        notices: Vec<SignInNotice>,
-    ) -> Result<Self, InternalError> {
-        self.notices = notices
-            .into_iter()
-            .map(LoginNotice::try_from)
-            .collect::<Result<Vec<_>, _>>()?
-            .into();
-        Ok(self)
-    }
-
-    pub(super) fn with_festa(mut self, festa: Option<MezeportaFesta>) -> Self {
-        self.festa = festa.map_or_else(SignInMezeportaFesta::disabled, SignInMezeportaFesta::from);
-        self
     }
 }
 
-impl IssuedSignSession {
-    pub(super) fn new(
-        id: SignSessionId,
-        token: [u8; SIGN_SESSION_TOKEN_LEN],
-        issued_at: Timestamp,
-    ) -> Self {
+impl From<model::IssuedSession> for IssuedSignSession {
+    fn from(session: model::IssuedSession) -> Self {
         Self {
-            session_id: id,
-            token,
-            timestamp: issued_at.into(),
+            session_id: session.id,
+            token: session.token,
+            timestamp: session.issued_at.into(),
         }
     }
 }
@@ -213,11 +194,7 @@ impl From<MezeportaFesta> for SignInMezeportaFesta {
             id: festa.id,
             starts_at: festa.period.starts_at().into(),
             ends_at: festa.period.expires_at().into(),
-            tickets: vec![
-                festa.solo_ticket_allowance,
-                festa.group_ticket_allowance,
-            ]
-            .into(),
+            tickets: vec![festa.solo_ticket_allowance, festa.group_ticket_allowance].into(),
             stalls: festa
                 .stalls
                 .into_iter()
@@ -240,15 +217,16 @@ impl SignInMezeportaFesta {
     }
 }
 
-impl TryFrom<(Character, Timestamp)> for SignCharacter {
+impl TryFrom<model::SignedInCharacter> for SignCharacter {
     type Error = InternalError;
 
-    fn try_from((character, last_sign_in_at): (Character, Timestamp)) -> Result<Self, Self::Error> {
+    fn try_from(signed_in: model::SignedInCharacter) -> Result<Self, Self::Error> {
+        let character = signed_in.character;
         Ok(Self {
             id: character.id,
             hr: character.hr,
             weapon_type: character.weapon_type,
-            last_sign_in_at: last_sign_in_at.into(),
+            last_sign_in_at: signed_in.last_sign_in_at.into(),
             gender: character.gender,
             is_new: character.is_new().into(),
             name: FixedCString::new(encode_shift_jis(&character.name)?)?,
@@ -262,7 +240,10 @@ impl TryFrom<(Character, Timestamp)> for SignCharacter {
 mod tests {
     use binrw::io::Cursor;
     use jiff::SignedDuration;
-    use shrimpman_domain::TimeRange;
+    use shrimpman_domain::{
+        TimeRange,
+        character::{Character, CharacterId, Gender, WeaponType},
+    };
 
     use super::*;
 
@@ -302,29 +283,32 @@ mod tests {
     fn encodes_the_success_response_header_and_character() {
         let timestamp_seconds = 1_800_000_000;
         let timestamp = Timestamp::new(timestamp_seconds, 0).unwrap();
-        let character_sign_in_history = CharacterSignInHistory::default();
-        let success = SignInSuccess::new(
-            IssuedSignSession::new(
-                SignSessionId::from(7),
-                *b"0123456789ABCDEF",
-                timestamp,
-            ),
-            CourseRights::HUNTER_LIFE.union(CourseRights::EXTRA_A),
-            vec![Character {
-                id: CharacterId::from(3),
-                gender: Gender::Female,
-                savedata: Some(vec![1]),
-                name: "テスト".to_owned(),
-                description: "hunter".to_owned(),
-                gr: 2,
-                hr: 1,
-                weapon_type: WeaponType::GreatSword,
+        let success = SignInSuccess::try_from(model::Success {
+            session: model::IssuedSession {
+                id: SignSessionId::from(7),
+                token: *b"0123456789ABCDEF",
+                issued_at: timestamp,
+            },
+            entrance_servers: vec!["127.0.0.1:53310".to_owned()],
+            characters: vec![model::SignedInCharacter {
+                character: Character {
+                    id: CharacterId::from(3),
+                    gender: Gender::Female,
+                    savedata: Some(vec![1]),
+                    name: "テスト".to_owned(),
+                    description: "hunter".to_owned(),
+                    gr: 2,
+                    hr: 1,
+                    weapon_type: WeaponType::GreatSword,
+                },
+                last_sign_in_at: timestamp,
             }],
-            &character_sign_in_history,
-            timestamp,
-        )
-        .unwrap()
-        .with_entrance_server(Some("127.0.0.1:53310"))
+            notices: Vec::new(),
+            last_character_id: None,
+            rights: CourseRights::HUNTER_LIFE.union(CourseRights::EXTRA_A),
+            return_expires_at: timestamp,
+            festa: None,
+        })
         .unwrap();
         let mut output = Cursor::new(Vec::new());
 

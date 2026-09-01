@@ -1,4 +1,4 @@
-use std::{future::Future, io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{future::Future, io, net::SocketAddr, sync::Arc};
 
 use tokio::{
     net::TcpListener,
@@ -12,7 +12,6 @@ use crate::{EntranceServerConfig, EntranceService};
 pub struct EntranceServer {
     listener: TcpListener,
     service: Arc<EntranceService>,
-    shutdown_timeout: Duration,
 }
 
 impl EntranceServer {
@@ -23,7 +22,6 @@ impl EntranceServer {
         Ok(Self {
             listener,
             service: Arc::new(service),
-            shutdown_timeout: config.shutdown_timeout,
         })
     }
 
@@ -34,17 +32,12 @@ impl EntranceServer {
 
     /// Serves connections until the shutdown future completes or the listener fails.
     ///
-    /// After accepting stops, active connections receive the configured grace period
-    /// before any remaining tasks are canceled.
+    /// After accepting stops, waits for active connections to finish.
     pub async fn run<Shutdown>(self, shutdown: Shutdown) -> io::Result<()>
     where
-        Shutdown: Future,
+        Shutdown: Future<Output = ()>,
     {
-        let Self {
-            listener,
-            service,
-            shutdown_timeout,
-        } = self;
+        let Self { listener, service } = self;
         let mut sessions = JoinSet::new();
         tokio::pin!(shutdown);
 
@@ -87,9 +80,13 @@ impl EntranceServer {
         };
 
         drop(listener);
-        drain_sessions(sessions, shutdown_timeout).await;
+        if let Err(error) = result {
+            sessions.shutdown().await;
+            return Err(error);
+        }
+        drain_sessions(sessions).await;
 
-        result
+        Ok(())
     }
 }
 
@@ -99,45 +96,23 @@ fn report_join_error(result: Result<(), JoinError>) {
     }
 }
 
-async fn drain_sessions(mut sessions: JoinSet<()>, timeout: Duration) {
+async fn drain_sessions(mut sessions: JoinSet<()>) {
     if sessions.is_empty() {
         return;
     }
 
     tracing::info!(
         active_connections = sessions.len(),
-        ?timeout,
         "Waiting for active Entrance connections"
     );
-    let completed = tokio::time::timeout(timeout, async {
-        while let Some(result) = sessions.join_next().await {
-            report_join_error(result);
-        }
-    })
-    .await;
-
-    if completed.is_err() {
-        let remaining = sessions.len();
-        tracing::warn!(
-            remaining,
-            "Entrance shutdown timed out; canceling connections"
-        );
-        sessions.shutdown().await;
-    } else {
-        tracing::info!("All active Entrance connections completed");
+    while let Some(result) = sessions.join_next().await {
+        report_join_error(result);
     }
+    tracing::info!("All active Entrance connections completed");
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        future,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
-
     use bytes::Bytes;
     use futures_util::{SinkExt, StreamExt};
     use shrimpman_discovery::client::DiscoveryClient;
@@ -160,7 +135,6 @@ mod tests {
         let config = EntranceServerConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             advertise_addr: "127.0.0.1:53310".to_owned(),
-            shutdown_timeout: Duration::ZERO,
         };
         let listen_addr = config.listen_addr;
         let server = EntranceServer::bind(config, service()).await.unwrap();
@@ -182,28 +156,5 @@ mod tests {
 
         shutdown.send(()).unwrap();
         running.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn cancels_sessions_after_the_shutdown_timeout() {
-        struct DropFlag(Arc<AtomicBool>);
-
-        impl Drop for DropFlag {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Relaxed);
-            }
-        }
-
-        let dropped = Arc::new(AtomicBool::new(false));
-        let drop_flag = DropFlag(Arc::clone(&dropped));
-        let mut sessions = JoinSet::new();
-        sessions.spawn(async move {
-            let _drop_flag = drop_flag;
-            future::pending::<()>().await;
-        });
-
-        drain_sessions(sessions, Duration::ZERO).await;
-
-        assert!(dropped.load(Ordering::Relaxed));
     }
 }

@@ -1,8 +1,8 @@
 use jiff::Timestamp;
 use shrimpman_protocol::{BinrwOutboundSender, Handler};
 
-use super::inbound::DeleteCharacter;
-use crate::{InternalError, SignSessionContext};
+use super::{inbound::DeleteCharacter, model};
+use crate::{InternalError, SignServiceContext, SignSessionContext};
 
 const DELETE_SUCCESS: u8 = 1;
 
@@ -18,24 +18,33 @@ impl Handler<SignSessionContext, BinrwOutboundSender> for DeleteCharacterHandler
         inbound: Self::Inbound,
         outbound: BinrwOutboundSender,
     ) -> Result<(), Self::Error> {
-        if delete_character(context, inbound, Timestamp::now()).await? {
+        let outcome = delete_character(
+            context.service_context(),
+            model::Request {
+                session_token: inbound.session_token,
+                character_id: inbound.character_id,
+                session_id: inbound.session_id,
+            },
+            Timestamp::now(),
+        )
+        .await?;
+        if matches!(outcome, model::Outcome::Deleted) {
             outbound.send(DELETE_SUCCESS).await?;
         }
         Ok(())
     }
 }
 
-async fn delete_character(
-    context: SignSessionContext,
-    inbound: DeleteCharacter,
+pub(crate) async fn delete_character(
+    service: &SignServiceContext,
+    request: model::Request,
     now: Timestamp,
-) -> Result<bool, InternalError> {
-    let service = context.service_context();
-    let DeleteCharacter {
+) -> Result<model::Outcome, InternalError> {
+    let model::Request {
         session_token,
         character_id,
         session_id,
-    } = inbound;
+    } = request;
     let Some(account_id) = service
         .sign_sessions()
         .authenticate(session_id, &session_token, now)
@@ -46,7 +55,7 @@ async fn delete_character(
             ?character_id,
             "Rejected character deletion with an invalid session"
         );
-        return Ok(false);
+        return Ok(model::Outcome::InvalidSession);
     };
 
     let deleted = service
@@ -55,27 +64,21 @@ async fn delete_character(
         .await?;
     if deleted {
         tracing::info!(?account_id, ?character_id, "Deleted character");
+        Ok(model::Outcome::Deleted)
     } else {
         tracing::info!(
             ?account_id,
             ?character_id,
             "Character deletion did not match an active owned character"
         );
+        Ok(model::Outcome::NotFound)
     }
-
-    Ok(deleted)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use jiff::SignedDuration;
-    use shrimpman_domain::{
-        TimeRange,
-        account::Account,
-        session::SIGN_SESSION_TOKEN_LEN,
-    };
+    use shrimpman_domain::{TimeRange, account::AccountId, session::SIGN_SESSION_TOKEN_LEN};
 
     use super::*;
     use crate::SignServiceContext;
@@ -83,20 +86,20 @@ mod tests {
     const TOKEN: [u8; SIGN_SESSION_TOKEN_LEN] = *b"0123456789ABCDEF";
 
     struct DeleteFixture {
-        service: Arc<SignServiceContext>,
-        account: Account,
-        request: DeleteCharacter,
+        service: SignServiceContext,
+        account_id: AccountId,
+        request: model::Request,
         now: Timestamp,
     }
 
     async fn fixture() -> DeleteFixture {
-        let service = Arc::new(SignServiceContext::for_test(false).await);
+        let service = SignServiceContext::for_test(false).await;
         let account = service
             .accounts()
             .create("alice".to_owned(), "hash".to_owned())
             .await
             .unwrap();
-        let character = service.characters().create_new(&account).await.unwrap();
+        let character = service.characters().create_new(account.id).await.unwrap();
         let now = Timestamp::new(1_800_000_000, 0).unwrap();
         let session_id = service
             .sign_sessions()
@@ -110,8 +113,8 @@ mod tests {
 
         DeleteFixture {
             service,
-            account,
-            request: DeleteCharacter {
+            account_id: account.id,
+            request: model::Request {
                 session_token: TOKEN,
                 character_id: character.id,
                 session_id,
@@ -124,20 +127,16 @@ mod tests {
     async fn deletes_a_character_owned_by_the_authenticated_account() {
         let fixture = fixture().await;
 
-        let deleted = delete_character(
-            SignSessionContext::new(Arc::clone(&fixture.service)),
-            fixture.request,
-            fixture.now,
-        )
-        .await
-        .unwrap();
+        let outcome = delete_character(&fixture.service, fixture.request, fixture.now)
+            .await
+            .unwrap();
 
-        assert!(deleted);
+        assert!(matches!(outcome, model::Outcome::Deleted));
         assert!(
             fixture
                 .service
                 .characters()
-                .list_active(&fixture.account)
+                .list_active(fixture.account_id)
                 .await
                 .unwrap()
                 .is_empty()
@@ -149,20 +148,16 @@ mod tests {
         let mut fixture = fixture().await;
         fixture.request.session_token = [b'x'; SIGN_SESSION_TOKEN_LEN];
 
-        let deleted = delete_character(
-            SignSessionContext::new(Arc::clone(&fixture.service)),
-            fixture.request,
-            fixture.now,
-        )
-        .await
-        .unwrap();
+        let outcome = delete_character(&fixture.service, fixture.request, fixture.now)
+            .await
+            .unwrap();
 
-        assert!(!deleted);
+        assert!(matches!(outcome, model::Outcome::InvalidSession));
         assert_eq!(
             fixture
                 .service
                 .characters()
-                .list_active(&fixture.account)
+                .list_active(fixture.account_id)
                 .await
                 .unwrap()
                 .len(),

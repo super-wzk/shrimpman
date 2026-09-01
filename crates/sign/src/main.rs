@@ -1,13 +1,14 @@
 use std::error::Error;
 
+use futures_util::FutureExt;
 use jiff::SignedDuration;
 use shrimpman_discovery::{
     ServiceInstance, ServiceInstanceId, ServiceName, ServiceState, client::DiscoveryClient,
     selector::RoundRobinSelector,
 };
 use shrimpman_lease_kv::LeaseKvClient;
-use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext};
-use tracing::{error, info};
+use shrimpman_sign::{SignConfig, SignDatabase, SignServer, SignService, SignServiceContext, http};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: ServiceName = ServiceName::from_static("sign");
@@ -20,8 +21,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     info!(
         auto_sign_up = sign.auto_sign_up,
-        listen_addr = %sign.server.listen_addr,
+        http_listen_addr = %sign.http.listen_addr,
+        tcp_listen_addr = %sign.server.listen_addr,
         advertise_addr = %sign.server.advertise_addr,
+        shutdown_timeout = ?sign.shutdown_timeout,
         "Loaded Sign configuration"
     );
 
@@ -39,23 +42,58 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     );
     let service = SignService::new(context)?;
     let advertise_addr = sign.server.advertise_addr.clone();
+    let shutdown_timeout = sign.shutdown_timeout;
+    let http_server = http::Server::bind(sign.http, service.clone()).await?;
     let server = SignServer::bind(sign.server, service).await?;
-    let listen_addr = server.local_addr()?;
-    info!(%listen_addr, %advertise_addr, "Sign server is ready");
+    let http_listen_addr = http_server.local_addr()?;
+    let tcp_listen_addr = server.local_addr()?;
 
     let instance_id = ServiceInstanceId::new();
-    discovery.publish(ServiceInstance::new(
+    let instance = ServiceInstance::new(
         instance_id,
         SERVICE_NAME,
         ServiceState::Ready,
-        Some(advertise_addr),
+        Some(advertise_addr.clone()),
         (),
-    )?)?;
+    )?;
+    let draining_instance = ServiceInstance {
+        state: ServiceState::Draining,
+        ..instance.clone()
+    };
+    discovery.publish(instance)?;
+    info!(%tcp_listen_addr, %http_listen_addr, %advertise_addr, "Sign service is ready");
 
-    server.run(shutdown_signal()).await?;
-    info!("Sign server stopped");
+    let shutdown = {
+        let discovery = discovery.clone();
+        async move {
+            shutdown_signal().await;
 
+            match discovery.publish(draining_instance) {
+                Ok(()) => info!("Sign service is draining"),
+                Err(error) => error!(%error, "Failed to mark Sign service as draining"),
+            }
+        }
+        .shared()
+    };
+    let shutdown_deadline = {
+        let shutdown = shutdown.clone();
+        async move {
+            shutdown.await;
+            tokio::time::sleep(shutdown_timeout).await;
+        }
+    };
+    let servers =
+        async move { tokio::try_join!(server.run(shutdown.clone()), http_server.run(shutdown)) };
+    tokio::select! {
+        result = servers => {
+            result?;
+        }
+        () = shutdown_deadline => {
+            warn!(?shutdown_timeout, "Sign shutdown timed out; canceling active connections");
+        }
+    }
     discovery.withdraw(instance_id)?;
+    info!("Sign service stopped");
 
     Ok(())
 }

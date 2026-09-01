@@ -6,6 +6,7 @@ mod application;
 mod config;
 mod database;
 mod envelope;
+pub mod http;
 mod router;
 mod server;
 

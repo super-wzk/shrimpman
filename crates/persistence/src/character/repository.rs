@@ -1,5 +1,5 @@
 use shrimpman_domain::{
-    account::{Account, AccountId},
+    account::AccountId,
     character::{Character, CharacterId, CharacterSignInHistory},
 };
 use toasty::Db;
@@ -18,9 +18,9 @@ impl CharacterRepository {
         Self { db: db.clone() }
     }
 
-    pub async fn list_active(&self, account: &Account) -> toasty::Result<Vec<Character>> {
+    pub async fn list_active(&self, account_id: AccountId) -> toasty::Result<Vec<Character>> {
         let mut db = self.db.clone();
-        let account_id = u32::from(account.id);
+        let account_id = u32::from(account_id);
         let characters = toasty::query!(CharacterRow FILTER .account_id == #account_id)
             .filter(CharacterRow::fields().deleted_at().is_none())
             .order_by(CharacterRow::fields().id().asc())
@@ -30,9 +30,9 @@ impl CharacterRepository {
         Ok(characters.into_iter().map(Character::from).collect())
     }
 
-    pub async fn create_new(&self, account: &Account) -> toasty::Result<Character> {
+    pub async fn create_new(&self, account_id: AccountId) -> toasty::Result<Character> {
         let mut db = self.db.clone();
-        let account_id = u32::from(account.id);
+        let account_id = u32::from(account_id);
         let character = toasty::create!(CharacterRow { account_id })
             .exec(&mut db)
             .await?;
@@ -168,16 +168,16 @@ mod tests {
     use super::*;
     use crate::AccountRepository;
 
-    async fn fixture() -> (Db, Account, CharacterRepository, Character) {
+    async fn fixture() -> (Db, AccountId, CharacterRepository, Character) {
         let db = crate::test_database().await;
         let account = AccountRepository::new(&db)
             .create("alice".to_owned(), "hash".to_owned())
             .await
             .unwrap();
         let repository = CharacterRepository::new(&db);
-        let character = repository.create_new(&account).await.unwrap();
+        let character = repository.create_new(account.id).await.unwrap();
 
-        (db, account, repository, character)
+        (db, account.id, repository, character)
     }
 
     #[tokio::test]
@@ -188,8 +188,8 @@ mod tests {
             .await
             .unwrap();
         let repository = CharacterRepository::new(&db);
-        let first_character = repository.create_new(&account).await.unwrap();
-        let second_character = repository.create_new(&account).await.unwrap();
+        let first_character = repository.create_new(account.id).await.unwrap();
+        let second_character = repository.create_new(account.id).await.unwrap();
         let first_character_id = first_character.id;
         let second_character_id = second_character.id;
         let first = Timestamp::new(1_700_000_000, 0).unwrap();
@@ -236,7 +236,7 @@ mod tests {
             .await
             .unwrap();
         let repository = CharacterRepository::new(&db);
-        let character = repository.create_new(&alice).await.unwrap();
+        let character = repository.create_new(alice.id).await.unwrap();
         let signed_in_at = Timestamp::new(1_800_000_000, 0).unwrap();
 
         assert!(
@@ -262,11 +262,11 @@ mod tests {
 
     #[tokio::test]
     async fn hard_deletes_an_uninitialized_character() {
-        let (db, account, repository, character) = fixture().await;
+        let (db, account_id, repository, character) = fixture().await;
 
         assert!(
             repository
-                .delete_for_account(account.id, character.id, Timestamp::now())
+                .delete_for_account(account_id, character.id, Timestamp::now())
                 .await
                 .unwrap()
         );
@@ -283,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn soft_deletes_an_initialized_character() {
-        let (db, account, repository, character) = fixture().await;
+        let (db, account_id, repository, character) = fixture().await;
         let character_id = character.id;
         let deleted_at = Timestamp::new(1_800_000_000, 0).unwrap();
         let mut db = db.clone();
@@ -298,7 +298,7 @@ mod tests {
 
         assert!(
             repository
-                .delete_for_account(account.id, character_id, deleted_at)
+                .delete_for_account(account_id, character_id, deleted_at)
                 .await
                 .unwrap()
         );
@@ -307,12 +307,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.deleted_at, Some(deleted_at));
-        assert!(repository.list_active(&account).await.unwrap().is_empty());
+        assert!(repository.list_active(account_id).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn refuses_to_delete_another_accounts_character() {
-        let (db, owner, repository, character) = fixture().await;
+        let (db, owner_id, repository, character) = fixture().await;
         let accounts = AccountRepository::new(&db);
         let other = accounts
             .create("bob".to_owned(), "hash".to_owned())
@@ -325,6 +325,6 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(repository.list_active(&owner).await.unwrap().len(), 1);
+        assert_eq!(repository.list_active(owner_id).await.unwrap().len(), 1);
     }
 }

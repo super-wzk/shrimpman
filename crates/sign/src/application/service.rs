@@ -1,12 +1,16 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Instant};
 
 use futures_util::StreamExt;
+use jiff::Timestamp;
 use shrimpman_protocol::{CommandPacketDecoder, Dispatcher, PacketStream, outbound_channel};
 use shrimpman_transport::MhfConnection;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::Instrument;
 
-use super::{ConnectionError, InternalError, SignServiceContext, SignSessionContext};
+use super::{
+    ConnectionError, InternalError, SignServiceContext, SignSessionContext,
+    use_cases::{create_character, delete_character, password_sign_in},
+};
 use crate::{
     envelope::SignCommandDecoder,
     router::{SignRouter, SignRouterBuildError},
@@ -18,6 +22,7 @@ type SignPacketStream<Io> =
     PacketStream<MhfConnection<Io>, CommandPacketDecoder<SignCommandDecoder, SignRouter>>;
 
 /// Serves the Sign protocol over accepted connections.
+#[derive(Clone)]
 pub struct SignService {
     context: Arc<SignServiceContext>,
     router: SignRouter,
@@ -49,6 +54,27 @@ impl SignService {
         let context = SignSessionContext::new(Arc::clone(&self.context));
 
         SignSession::new(io, context, self.router).run().await
+    }
+
+    pub(crate) async fn password_sign_in(
+        &self,
+        request: password_sign_in::model::Request,
+    ) -> Result<password_sign_in::model::Outcome, InternalError> {
+        password_sign_in::handler::password_sign_in(&self.context, request).await
+    }
+
+    pub(crate) async fn delete_character(
+        &self,
+        request: delete_character::model::Request,
+    ) -> Result<delete_character::model::Outcome, InternalError> {
+        delete_character::handler::delete_character(&self.context, request, Timestamp::now()).await
+    }
+
+    pub(crate) async fn create_character(
+        &self,
+        request: create_character::model::Request,
+    ) -> Result<create_character::model::Outcome, InternalError> {
+        create_character::handler::create_character(&self.context, request, Timestamp::now()).await
     }
 }
 

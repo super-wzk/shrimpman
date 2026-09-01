@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
 use serde::Deserialize;
 use shrimpman_domain::world::{
@@ -9,6 +12,7 @@ pub use shrimpman_lease_kv::LeaseKvClientConfig;
 const DEFAULT_LOG_FILTER: &str =
     "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
 const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configuration for one World process.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -40,6 +44,16 @@ pub struct WorldConfig {
     /// Structured logging configuration for the World process.
     #[serde(default)]
     pub logging: WorldLoggingConfig,
+    /// Time to wait for active work after shutdown is requested.
+    #[serde(
+        default = "default_shutdown_timeout",
+        with = "jiff::fmt::serde::unsigned_duration::required"
+    )]
+    pub shutdown_timeout: Duration,
+}
+
+const fn default_shutdown_timeout() -> Duration {
+    DEFAULT_SHUTDOWN_TIMEOUT
 }
 
 /// Database configuration for the World service.
@@ -139,6 +153,7 @@ mod tests {
                 season = "Warm"
                 content = "AllQuests"
                 client_compatibility = "PC"
+                shutdown_timeout = "250ms"
 
                 [world.lease_kv]
                 endpoints = ["http://etcd.internal:2379"]
@@ -164,6 +179,7 @@ mod tests {
         assert_eq!(metadata.address, "192.0.2.10".parse::<Ipv4Addr>().unwrap());
         assert_eq!(metadata.name, "Main World");
         assert_eq!(config.database, WorldDatabaseConfig::default());
+        assert_eq!(config.shutdown_timeout, Duration::from_millis(250));
         assert_eq!(metadata.client_compatibility, ClientCompatibility::PC);
         assert_eq!(metadata.lands.len(), 1);
         assert_eq!(metadata.lands[0].key, LandKey::from("land-1".to_owned()));

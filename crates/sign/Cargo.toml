@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-automod = "1"
 argon2 = { version = "0.5", features = ["std"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 binrw = "0.15"
 bytes = "1"
 config = { version = "0.15", default-features = false, features = ["toml"] }
@@ -26,3 +26,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 toasty = { version = "0.10", features = ["sqlite"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }

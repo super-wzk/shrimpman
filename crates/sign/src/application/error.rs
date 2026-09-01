@@ -31,6 +31,9 @@ pub enum InternalError {
 
     #[error("failed to send a Sign packet: {0}")]
     Outbound(#[from] OutboundSendError),
+
+    #[error("a newly issued Sign session could not be authenticated")]
+    InvalidIssuedSession,
 }
 
 /// A failure while serving one Sign connection.

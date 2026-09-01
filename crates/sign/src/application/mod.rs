@@ -3,7 +3,7 @@ mod error;
 mod service;
 mod service_names;
 mod session_token;
-mod use_cases;
+pub(crate) mod use_cases;
 
 pub use context::{SignRepositories, SignServiceContext, SignSessionContext};
 pub use error::{ConnectionError, InternalError};

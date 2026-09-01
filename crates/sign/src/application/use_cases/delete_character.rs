@@ -1,5 +1,6 @@
-mod handler;
+pub(crate) mod handler;
 mod inbound;
+pub(crate) mod model;
 
 use handler::DeleteCharacterHandler;
 
