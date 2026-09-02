@@ -1,0 +1,135 @@
+use eframe::egui;
+
+pub(super) const BG: egui::Color32 = egui::Color32::from_rgb(17, 19, 24);
+pub(super) const CARD_BG: egui::Color32 = egui::Color32::from_rgb(26, 29, 38);
+pub(super) const CONTROL_BG: egui::Color32 = egui::Color32::from_rgb(20, 23, 30);
+pub(super) const HOVER_BG: egui::Color32 = egui::Color32::from_rgb(38, 43, 56);
+pub(super) const BORDER: egui::Color32 = egui::Color32::from_rgb(48, 53, 68);
+pub(super) const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 163, 61);
+pub(super) const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(244, 184, 93);
+pub(super) const ACCENT_ACTIVE: egui::Color32 = egui::Color32::from_rgb(199, 135, 45);
+pub(super) const ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(31, 21, 6);
+pub(super) const TEXT: egui::Color32 = egui::Color32::from_rgb(232, 230, 227);
+pub(super) const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(156, 162, 178);
+pub(super) const ERROR: egui::Color32 = egui::Color32::from_rgb(224, 85, 97);
+pub(super) const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 138, 146);
+pub(super) const WARNING: egui::Color32 = egui::Color32::from_rgb(229, 192, 123);
+pub(super) const WARNING_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 208, 148);
+
+pub(super) fn install(context: &egui::Context) {
+    context.set_theme(egui::ThemePreference::Dark);
+    let mut visuals = egui::Visuals::dark();
+
+    visuals.panel_fill = BG;
+    visuals.window_fill = BG;
+    visuals.window_stroke = egui::Stroke::new(1.0, BORDER);
+    visuals.extreme_bg_color = CONTROL_BG;
+    visuals.faint_bg_color = CARD_BG;
+    visuals.weak_text_color = Some(TEXT_WEAK);
+    visuals.hyperlink_color = ACCENT;
+
+    visuals.widgets.noninteractive.weak_bg_fill = CARD_BG;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT);
+
+    visuals.widgets.inactive.weak_bg_fill = CONTROL_BG;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT);
+
+    visuals.widgets.hovered.weak_bg_fill = HOVER_BG;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, HOVER_BG);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, TEXT);
+
+    visuals.widgets.active.weak_bg_fill = HOVER_BG;
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, TEXT);
+
+    visuals.selection.bg_fill = ACCENT.gamma_multiply(0.35);
+    visuals.selection.stroke = egui::Stroke::new(1.0, TEXT);
+
+    context.all_styles_mut(|style| {
+        style.visuals = visuals.clone();
+        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        style.spacing.button_padding = egui::vec2(14.0, 7.0);
+    });
+}
+
+/// Accent-colored call-to-action button with scoped hover/press/disabled states.
+pub(super) fn primary_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    enabled: bool,
+    width: f32,
+) -> egui::Response {
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.weak_bg_fill = ACCENT;
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, ON_ACCENT);
+        visuals.widgets.hovered.weak_bg_fill = ACCENT_HOVER;
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, ON_ACCENT);
+        visuals.widgets.active.weak_bg_fill = ACCENT_ACTIVE;
+        visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, ON_ACCENT);
+        visuals.widgets.noninteractive.weak_bg_fill = ACCENT.gamma_multiply(0.30);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, ON_ACCENT);
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(
+                egui::RichText::new(text)
+                    .strong()
+                    .color(ON_ACCENT)
+                    .size(15.0),
+            )
+            .left_text(egui::Atom::grow())
+            .right_text(egui::Atom::grow())
+            .corner_radius(8)
+            .min_size(egui::vec2(width, 38.0)),
+        )
+    })
+    .inner
+}
+
+pub(super) fn error_banner(ui: &mut egui::Ui, text: &str) {
+    banner(ui, text, ERROR, ERROR_TEXT);
+}
+
+pub(super) fn warning_banner(ui: &mut egui::Ui, text: &str) {
+    banner(ui, text, WARNING, WARNING_TEXT);
+}
+
+fn banner(ui: &mut egui::Ui, text: &str, color: egui::Color32, text_color: egui::Color32) {
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.12))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.55)))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(text).color(text_color).size(13.0));
+        });
+}
+
+/// Small rounded label used for character stats and badges.
+pub(super) fn chip(
+    ui: &mut egui::Ui,
+    text: impl Into<String>,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    strong: bool,
+) {
+    let mut text = egui::RichText::new(text.into())
+        .size(11.0)
+        .color(text_color);
+    if strong {
+        text = text.strong();
+    }
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(5)
+        .inner_margin(egui::Margin::symmetric(7, 2))
+        .show(ui, |ui| {
+            ui.label(text);
+        });
+}

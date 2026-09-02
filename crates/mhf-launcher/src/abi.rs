@@ -7,6 +7,10 @@ use windows::{
 };
 
 const MHF_LAUNCH_PARAMS_SIZE: usize = 0x2010;
+const MHF_GLOBAL_DATA_SIZE: usize = 0x8ae0;
+const LOGIN_NOTICE_SLOTS: usize = 4;
+const LOGIN_NOTICE_BYTES: usize = 0x1000;
+const FESTA_STALL_SLOTS: usize = 8;
 
 pub(crate) fn copy_ascii_c_string(
     field: &str,
@@ -183,6 +187,29 @@ pub(crate) fn function32(pointer: *const ()) -> u32 {
 }
 
 #[repr(C)]
+pub(crate) struct MhfGlobalData32 {
+    reserved_0000: [u8; 0x0a0c],
+    pub(crate) notice_lengths: [u32; LOGIN_NOTICE_SLOTS],
+    reserved_0a1c: [u8; 8],
+    pub(crate) notice_flags: [u16; LOGIN_NOTICE_SLOTS],
+    pub(crate) notices: [[u8; LOGIN_NOTICE_BYTES]; LOGIN_NOTICE_SLOTS],
+    reserved_4a2c: [u8; 0x4080],
+    pub(crate) festa_id: u32,
+    pub(crate) festa_starts_at: u32,
+    pub(crate) festa_expires_at: u32,
+    pub(crate) festa_solo_tickets: u32,
+    pub(crate) festa_group_tickets: u32,
+    pub(crate) festa_stalls: [u32; FESTA_STALL_SLOTS],
+}
+
+impl Default for MhfGlobalData32 {
+    fn default() -> Self {
+        // SAFETY: every field accepts an all-zero representation.
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
 pub(crate) struct HostServices32 {
     reserved_00: u32,
     request_size: u32,
@@ -253,6 +280,12 @@ const _: () = {
     assert!(std::mem::offset_of!(MhfLaunchParams32, server_selection) == 0x1e7c);
     assert!(std::mem::offset_of!(MhfLaunchParams32, host_services) == 0x1e80);
     assert!(std::mem::offset_of!(MhfLaunchParams32, return_expires_at) == 0x2004);
+    assert!(std::mem::size_of::<MhfGlobalData32>() == MHF_GLOBAL_DATA_SIZE);
+    assert!(std::mem::offset_of!(MhfGlobalData32, notice_lengths) == 0x0a0c);
+    assert!(std::mem::offset_of!(MhfGlobalData32, notice_flags) == 0x0a24);
+    assert!(std::mem::offset_of!(MhfGlobalData32, notices) == 0x0a2c);
+    assert!(std::mem::offset_of!(MhfGlobalData32, festa_id) == 0x8aac);
+    assert!(std::mem::offset_of!(MhfGlobalData32, festa_stalls) == 0x8ac0);
     assert!(std::mem::size_of::<HostServices32>() == 0x24);
     assert!(std::mem::offset_of!(MhfHostData32, data_ptr) == 0x2018);
     assert!(std::mem::offset_of!(MhfHostData32, host_services) == 0x2030);

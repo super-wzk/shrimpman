@@ -176,30 +176,12 @@ width = 1920
 height = 400
 width = 400
 
-[server]
-entrance_servers = ["127.0.0.1:53310"]
-last_character_id = 1
-return_expires_at = 4294967295
-rights = 12
-
-[[server.characters]]
-gr = 50
-hr = 999
-id = 1
-is_new = false
-name = "char_abc"
-
-[server.credentials]
-password = "123456"
-username = "user_abc"
-
-[server.session]
-session_id = 1
-token = "KySJuNnR2PJu00Uw"
-
 [set]
 custom = true
 preset_level = 0
+
+[sign.http]
+base_url = "http://127.0.0.1:53313"
 
 [sound]
 SOUND_BGM = "5"

@@ -1,25 +1,20 @@
 # MHF launcher
 
-这个 Windows PE32 应用使用一个 UTF-8 `mhf.toml` 提供游戏配置和模拟 Sign 登录
-数据，再启动 `mhfo.dll` 或 `mhfo-hd.dll`。`[server]` 使用 Sign 领域中的命名；
-其余已建模配置同样使用小写下划线的领域命名，不需要 `ini.` 前缀：
+这个 Windows PE32 应用使用 egui/eframe 提供登录和角色选择界面，通过 Sign HTTP
+API 获取真实会话和角色数据，再启动 `mhfo.dll` 或 `mhfo-hd.dll`。Sign API 地址由
+`mhf.toml` 的 `[sign.http] base_url` 配置，登录界面不接受临时覆盖。
+
+登录成功后，角色列表来自 `POST /sign-in` 的响应；“New character”调用
+`POST /characters` 创建待初始化角色并自动选中。选择角色并点击“Launch game”后，
+启动器先关闭 UI，再安装 INI hook 并把当前会话、角色和 Entrance 地址映射到游戏 ABI。
+用户名、密码、会话和角色不写入 `mhf.toml`。
+
+UTF-8 `mhf.toml` 保存 Sign API 地址和游戏设置，但不保存任何登录数据。已建模配置
+使用小写下划线的领域命名，不需要 `ini.` 前缀：
 
 ```toml
-[server]
-entrance_servers = ["127.0.0.1:53310"]
-last_character_id = 1
-
-[server.credentials]
-username = "user_abc"
-password = "123456"
-
-[server.session]
-session_id = 1
-token = "KySJuNnR2PJu00Uw"
-
-[[server.characters]]
-id = 1
-name = "char_abc"
+[sign.http]
+base_url = "http://127.0.0.1:53313"
 
 [screen]
 mode = "windowed"
@@ -38,7 +33,8 @@ language = "japanese"
 例如 `windowed`、`high_definition` 和 `antialiased`。语言可选 `japanese`、
 `english`、`korean` 和 `traditional_chinese`。`set`、`screen`、`video`、`sound`、
 `localization`、`font`、`option` 和 `launch` 会解析为强类型配置；游戏动态创建的其他
-section/key 仍以 string 原样保留。
+section/key 仍以 string 原样保留。`[sign]` 是启动器配置命名空间，不会暴露给游戏的
+Win32 Profile API。
 
 加载游戏 DLL 前，启动器使用 MinHook 的 `create_hook_api` 拦截
 `GetPrivateProfileIntA`、`GetPrivateProfileStringA` 和
@@ -54,17 +50,20 @@ section/key 仍以 string 原样保留。
 ## 代码结构
 
 - `src/abi.rs`：32 位 `repr(C)` 结构、函数签名和布局断言。
-- `src/model.rs`：定义完整领域 `Config`、游戏 `MhfConfig`、Sign 登录结果和启动
-  profile；角色、会话与权限复用 workspace 领域类型。
+- `src/model.rs`：定义游戏 `MhfConfig`、启动时的 Sign 登录结果和启动 profile；角色、
+  会话与权限复用 workspace 领域类型。
 - `src/launcher.rs`：负责领域模型到 ABI 的映射及 Win32 启动流程。
-- `src/bin/mhf-launcher/config.rs`：在 TOML 持久化格式与强类型 `Config` 之间转换；
-  原始 `toml::Table` 只封装在私有字段的 `Store` 中。
+- `src/bin/mhf-launcher/http/`：Sign HTTP 客户端及按 API 命名空间组织的请求、响应
+  模型。
+- `src/bin/mhf-launcher/ui/`：按 Elm 结构组织状态更新、界面渲染和 eframe 适配。
+- `src/bin/mhf-launcher/config.rs`：解析 `[sign.http]` 和强类型 `MhfConfig`，并将后者
+  映射到 TOML 持久化格式；原始 `toml::Table` 只封装在私有 `Store` 中。
 - `src/bin/mhf-launcher/ini_hook.rs`：把 Win32 Profile API 代理到 TOML。
-- `src/bin/mhf-launcher/runtime.rs`：处理路径、文件和运行编排。
+- `src/bin/mhf-launcher/runtime.rs`：准备游戏目录与配置，并在 UI 退出后执行游戏启动。
 
 profile 只使用 Rust 的 `&str`；DLL 名、INI 名、互斥量前缀和宿主提示文本由
 `main` 传入，`CString`/`PCSTR` 转换留在 Win32 边界。固定的 `mhDLL_Main` ABI
-入口由 library 定义。领域 `Config` 使用 `bool`、枚举、`Ipv4Addr`、
+入口由 library 定义。启动时的 `Config` 使用 `bool`、枚举、`Ipv4Addr`、
 `SocketAddrV4`、`CharacterId`、`SignSessionId`、`CourseRights`、`Timestamp` 和固定
 长度 token；DLL 所需的原始 `u32` 只出现在 ABI 映射边界。crate 只支持 i686
 Windows。
@@ -77,12 +76,16 @@ DLL 均为 32 位，因此必须构建 i686 版本：
 cargo build -p shrimpman-mhf-launcher --release --target i686-pc-windows-msvc
 ```
 
-启动器参数依次为 TOML 路径和游戏目录。相对 TOML 路径以启动进程的当前工作
-目录为基准；默认文件名为 `mhf.toml`。游戏目录用于定位 `mhfo[-hd].dll`，不再
-要求存在物理 `mhf.ini`：
+启动器使用 clap 解析独立选项。未提供 `-c/--config` 时读取启动器同目录的
+`mhf.toml`；未提供 `-d/--game-dir` 时使用启动器目录。显式传入的相对路径仍以
+启动进程的当前工作目录为基准。游戏目录用于定位 `mhfo[-hd].dll`，不再要求存在
+物理 `mhf.ini`：
 
 ```text
-mhf-launcher.exe mhf.toml D:\\mhf
+mhf-launcher.exe
+mhf-launcher.exe --config mhf.toml --game-dir D:\\mhf
+mhf-launcher.exe -d D:\\mhf
+mhf-launcher.exe --help
 ```
 
 在 workspace 根目录使用 Just 时，Windows 直接运行 `.exe`，其他系统自动添加

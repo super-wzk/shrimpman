@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-const MAX_SIGN_IN_NOTICES: usize = u8::MAX as usize;
+const MAX_SIGN_IN_NOTICES: usize = 4;
 
 pub(super) struct PasswordSignInHandler;
 

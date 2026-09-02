@@ -84,6 +84,9 @@ mod tests {
         let body = response_json(response).await;
         assert_eq!(body["id"], 1);
         assert_eq!(body["is_new"], true);
+        assert_eq!(body["weapon_type"], "SwordAndShield");
+        assert_eq!(body["gender"], "Male");
+        assert_eq!(body["last_sign_in_at"], Value::Null);
 
         let request = create_request(fixture.session_id, &fixture.session_token);
         let response = fixture.router.oneshot(request).await.unwrap();

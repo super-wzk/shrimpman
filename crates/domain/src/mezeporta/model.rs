@@ -1,4 +1,5 @@
 use crate::TimeRange;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MezeportaFesta {
@@ -9,7 +10,7 @@ pub struct MezeportaFesta {
     pub stalls: Vec<MezeportaStall>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum MezeportaStall {
     TokotokoPartnya = 2,

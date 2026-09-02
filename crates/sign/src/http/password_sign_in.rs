@@ -5,6 +5,7 @@ use axum::{
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use shrimpman_domain::mezeporta::{MezeportaFesta, MezeportaStall};
 
 use super::{character, error_response};
 use crate::{SignService, application::use_cases::password_sign_in::model};
@@ -50,9 +51,11 @@ pub(super) struct ResponseBody {
     session: SessionBody,
     entrance_servers: Vec<String>,
     characters: Vec<character::ResponseBody>,
+    notices: Vec<String>,
     last_character_id: Option<u32>,
     rights: u32,
     return_expires_at: Timestamp,
+    festa: Option<FestaBody>,
 }
 
 #[derive(Serialize)]
@@ -60,6 +63,16 @@ struct SessionBody {
     session_id: u32,
     token: String,
     issued_at: Timestamp,
+}
+
+#[derive(Serialize)]
+struct FestaBody {
+    id: u32,
+    starts_at: Timestamp,
+    expires_at: Timestamp,
+    solo_ticket_allowance: u32,
+    group_ticket_allowance: u32,
+    stalls: Vec<MezeportaStall>,
 }
 
 impl From<model::Success> for ResponseBody {
@@ -75,11 +88,35 @@ impl From<model::Success> for ResponseBody {
             characters: success
                 .characters
                 .into_iter()
-                .map(|signed_in| character::ResponseBody::from(signed_in.character))
+                .map(|signed_in| {
+                    character::ResponseBody::signed_in(
+                        signed_in.character,
+                        signed_in.last_sign_in_at,
+                    )
+                })
+                .collect(),
+            notices: success
+                .notices
+                .into_iter()
+                .map(|notice| notice.content)
                 .collect(),
             last_character_id: success.last_character_id.map(Into::into),
             rights: success.rights.bits(),
             return_expires_at: success.return_expires_at,
+            festa: success.festa.map(FestaBody::from),
+        }
+    }
+}
+
+impl From<MezeportaFesta> for FestaBody {
+    fn from(festa: MezeportaFesta) -> Self {
+        Self {
+            id: festa.id,
+            starts_at: festa.period.starts_at(),
+            expires_at: festa.period.expires_at(),
+            solo_ticket_allowance: festa.solo_ticket_allowance,
+            group_ticket_allowance: festa.group_ticket_allowance,
+            stalls: festa.stalls,
         }
     }
 }
@@ -93,6 +130,13 @@ mod tests {
         response::Response,
     };
     use serde_json::{Value, json};
+    use shrimpman_domain::{
+        TimeRange,
+        account::CourseRights,
+        mezeporta::{MezeportaFesta, MezeportaStall},
+        session::SignSessionId,
+        sign_in_notice::SignInNotice,
+    };
     use tower::ServiceExt;
 
     use super::*;
@@ -116,9 +160,56 @@ mod tests {
         assert!(body["session"]["issued_at"].is_string());
         assert_eq!(body["entrance_servers"], json!([]));
         assert_eq!(body["characters"], json!([]));
+        assert_eq!(body["notices"], json!([]));
         assert_eq!(body["last_character_id"], Value::Null);
         assert_eq!(body["rights"], 12);
         assert!(body["return_expires_at"].is_string());
+        assert_eq!(body["festa"], Value::Null);
+    }
+
+    #[test]
+    fn response_includes_notices_and_festa() {
+        let starts_at = Timestamp::new(1_800_000_000, 0).unwrap();
+        let expires_at = Timestamp::new(1_800_003_600, 0).unwrap();
+        let response = ResponseBody::from(model::Success {
+            session: model::IssuedSession {
+                id: SignSessionId::from(1),
+                token: *b"0123456789ABCDEF",
+                issued_at: starts_at,
+            },
+            entrance_servers: Vec::new(),
+            characters: Vec::new(),
+            notices: vec![SignInNotice {
+                id: 1,
+                content: "Welcome".to_owned(),
+                period: TimeRange::new(starts_at, expires_at),
+                priority: 1,
+            }],
+            last_character_id: None,
+            rights: CourseRights::empty(),
+            return_expires_at: expires_at,
+            festa: Some(MezeportaFesta {
+                id: 7,
+                period: TimeRange::new(starts_at, expires_at),
+                solo_ticket_allowance: 5,
+                group_ticket_allowance: 2,
+                stalls: vec![MezeportaStall::Unknown3, MezeportaStall::VolpakkunTogether],
+            }),
+        });
+
+        let body = serde_json::to_value(response).unwrap();
+        assert_eq!(body["notices"], json!(["Welcome"]));
+        assert_eq!(
+            body["festa"],
+            json!({
+                "id": 7,
+                "starts_at": starts_at,
+                "expires_at": expires_at,
+                "solo_ticket_allowance": 5,
+                "group_ticket_allowance": 2,
+                "stalls": ["Unknown3", "VolpakkunTogether"]
+            })
+        );
     }
 
     #[tokio::test]

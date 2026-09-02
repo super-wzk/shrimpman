@@ -18,7 +18,7 @@ mhf-build:
 
 # Build and launch MHF. Relative config paths are resolved from the workspace root.
 mhf-launch config="mhf.toml": mhf-build
-    {{ mhf_runner }} "{{ mhf_executable }}" "{{ config }}" "{{ mhf_game_dir }}"
+    {{ mhf_runner }} "{{ mhf_executable }}" --config "{{ config }}" --game-dir "{{ mhf_game_dir }}"
 
 # Run the database management CLI.
 db *args:

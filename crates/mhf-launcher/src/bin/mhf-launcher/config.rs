@@ -1,22 +1,12 @@
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use shrimpman_domain::{
-    account::CourseRights,
-    character::CharacterId,
-    session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
-};
-use shrimpman_mhf_launcher::{
-    Config, FontQuality, GraphicsVersion, IssuedSignSession, Language, MhfConfig,
-    PasswordCredentials, ScreenMode, SignCharacter, SignInSuccess,
-};
+use shrimpman_mhf_launcher::{FontQuality, GraphicsVersion, Language, MhfConfig, ScreenMode};
 use std::{
     fs,
-    net::SocketAddrV4,
     path::{Path, PathBuf},
 };
 use toml::{Table, Value};
 
-const SIGN_SECTION: &str = "server";
+const SIGN_SECTION: &str = "sign";
 
 const INI_SECTIONS: &[(&str, &str)] = &[
     ("SET", "set"),
@@ -345,24 +335,43 @@ fn parse_ini_u32(value: &str) -> Result<u32, String> {
 pub(crate) struct Store {
     path: PathBuf,
     document: Table,
-    default_issued_at: Timestamp,
 }
 
-pub(crate) fn load(path: PathBuf, default_issued_at: Timestamp) -> Result<(Config, Store), String> {
+#[derive(Debug, Deserialize)]
+pub(crate) struct Settings {
+    pub(crate) sign: sign::Settings,
+    #[serde(flatten)]
+    pub(crate) mhf: MhfConfig,
+}
+
+pub(crate) mod sign {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(crate) struct Settings {
+        pub(crate) http: http::Settings,
+    }
+
+    pub(crate) mod http {
+        use serde::Deserialize;
+
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub(crate) struct Settings {
+            pub(crate) base_url: String,
+        }
+    }
+}
+
+pub(crate) fn load(path: PathBuf) -> Result<(Settings, Store), String> {
     let source = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let document: Table = toml::from_str(&source)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-    let config = decode(&document, default_issued_at)
+    let config = decode(&document)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-    Ok((
-        config,
-        Store {
-            path,
-            document,
-            default_issued_at,
-        },
-    ))
+    Ok((config, Store { path, document }))
 }
 
 impl Store {
@@ -413,7 +422,7 @@ impl Store {
         value: String,
     ) -> Result<(), String> {
         if section.eq_ignore_ascii_case(SIGN_SECTION) {
-            return Err("[server] is reserved for Sign data".to_owned());
+            return Err("[sign] is launcher configuration, not an MHF INI section".to_owned());
         }
         let field = ini_field(&section, &key);
         let value = match field {
@@ -448,7 +457,7 @@ impl Store {
 
     pub(crate) fn remove_key(&mut self, section: &str, key: &str) -> Result<(), String> {
         if section.eq_ignore_ascii_case(SIGN_SECTION) {
-            return Err("[server] is reserved for Sign data".to_owned());
+            return Err("[sign] is launcher configuration, not an MHF INI section".to_owned());
         }
         let field = ini_field(section, key);
         self.update(|document| {
@@ -473,7 +482,7 @@ impl Store {
 
     pub(crate) fn remove_section(&mut self, section: &str) -> Result<(), String> {
         if section.eq_ignore_ascii_case(SIGN_SECTION) {
-            return Err("[server] is reserved for Sign data".to_owned());
+            return Err("[sign] is launcher configuration, not an MHF INI section".to_owned());
         }
         self.update(|document| {
             if let Some(section) = section_name(document, section) {
@@ -485,7 +494,7 @@ impl Store {
     fn update(&mut self, update: impl FnOnce(&mut Table)) -> Result<(), String> {
         let mut document = self.document.clone();
         update(&mut document);
-        decode(&document, self.default_issued_at)?;
+        decode(&document)?;
         write_document(&self.path, &document)?;
         self.document = document;
         Ok(())
@@ -498,9 +507,14 @@ fn write_document(path: &Path, document: &Table) -> Result<(), String> {
     fs::write(path, source).map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
-fn decode(document: &Table, default_issued_at: Timestamp) -> Result<Config, String> {
+fn decode(document: &Table) -> Result<Settings, String> {
     for (section, value) in document {
-        if section == SIGN_SECTION {
+        if section.eq_ignore_ascii_case(SIGN_SECTION) {
+            if section != SIGN_SECTION {
+                return Err(format!(
+                    "launcher config section [{section}] must be named [{SIGN_SECTION}]"
+                ));
+            }
             continue;
         }
         let known_section = toml_section_name(section);
@@ -532,10 +546,9 @@ fn decode(document: &Table, default_issued_at: Timestamp) -> Result<Config, Stri
             }
         }
     }
-    let stored: StoredConfig = Value::Table(document.clone())
+    Value::Table(document.clone())
         .try_into()
-        .map_err(|error| error.to_string())?;
-    stored.into_domain(default_issued_at)
+        .map_err(|error| error.to_string())
 }
 
 fn profile_section<'a>(document: &'a Table, name: &str) -> Option<&'a Table> {
@@ -557,151 +570,14 @@ fn section_name(document: &Table, name: &str) -> Option<String> {
         .cloned()
 }
 
-#[derive(Deserialize)]
-struct StoredConfig {
-    #[serde(rename = "server")]
-    sign_in: StoredSignIn,
-    #[serde(flatten)]
-    mhf: MhfConfig,
-}
-
-impl StoredConfig {
-    fn into_domain(self, default_issued_at: Timestamp) -> Result<Config, String> {
-        let (credentials, sign_in) = self.sign_in.into_domain(default_issued_at)?;
-
-        Ok(Config {
-            credentials,
-            sign_in,
-            mhf: self.mhf,
-        })
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredSignIn {
-    credentials: StoredCredentials,
-    session: StoredSession,
-    entrance_servers: Vec<SocketAddrV4>,
-    characters: Vec<StoredCharacter>,
-    last_character_id: u32,
-    #[serde(default)]
-    rights: u32,
-    #[serde(default = "default_return_expires_at")]
-    return_expires_at: u32,
-}
-
-impl StoredSignIn {
-    fn into_domain(
-        self,
-        default_issued_at: Timestamp,
-    ) -> Result<(PasswordCredentials, SignInSuccess), String> {
-        let credentials = PasswordCredentials {
-            username: self.credentials.username,
-            password: self.credentials.password,
-        };
-        let session = IssuedSignSession {
-            session_id: SignSessionId::from(self.session.session_id),
-            token: parse_session_token(&self.session.token)?,
-            issued_at: self
-                .session
-                .issued_at
-                .map(timestamp)
-                .transpose()?
-                .unwrap_or(default_issued_at),
-        };
-        let sign_in = SignInSuccess {
-            session,
-            entrance_servers: self.entrance_servers,
-            characters: self
-                .characters
-                .into_iter()
-                .map(|character| SignCharacter {
-                    id: CharacterId::from(character.id),
-                    name: character.name,
-                    gr: character.gr,
-                    hr: character.hr,
-                    is_new: character.is_new,
-                })
-                .collect(),
-            last_character_id: CharacterId::from(self.last_character_id),
-            rights: CourseRights::from_bits_retain(self.rights),
-            return_expires_at: timestamp(self.return_expires_at)?,
-        };
-        Ok((credentials, sign_in))
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredCredentials {
-    username: String,
-    password: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredSession {
-    session_id: u32,
-    token: String,
-    issued_at: Option<u32>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredCharacter {
-    id: u32,
-    name: String,
-    #[serde(default)]
-    gr: u16,
-    #[serde(default)]
-    hr: u16,
-    #[serde(default)]
-    is_new: bool,
-}
-
-fn parse_session_token(value: &str) -> Result<[u8; SIGN_SESSION_TOKEN_LEN], String> {
-    if !value.is_ascii() || value.len() != SIGN_SESSION_TOKEN_LEN {
-        return Err(format!(
-            "session token must contain exactly {SIGN_SESSION_TOKEN_LEN} ASCII bytes"
-        ));
-    }
-    let mut token = [0; SIGN_SESSION_TOKEN_LEN];
-    token.copy_from_slice(value.as_bytes());
-    Ok(token)
-}
-
-fn timestamp(seconds: u32) -> Result<Timestamp, String> {
-    Timestamp::new(i64::from(seconds), 0)
-        .map_err(|error| format!("invalid Unix timestamp {seconds}: {error}"))
-}
-
-const fn default_return_expires_at() -> u32 {
-    u32::MAX
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
     const SOURCE: &str = r#"
-[server]
-entrance_servers = ["127.0.0.1:53310"]
-last_character_id = 1
-rights = 12
-
-[server.credentials]
-username = "user_abc"
-password = "123456"
-
-[server.session]
-session_id = 1
-token = "KySJuNnR2PJu00Uw"
-
-[[server.characters]]
-id = 1
-name = "char_abc"
+[sign.http]
+base_url = "http://127.0.0.1:53313"
 
 [screen]
 mode = "windowed"
@@ -729,32 +605,25 @@ value = "preserved"
         toml::from_str(SOURCE).expect("test config should parse")
     }
 
-    fn issued_at() -> Timestamp {
-        Timestamp::new(1_700_000_000, 0).expect("valid test timestamp")
-    }
-
     #[test]
     fn example_config_uses_the_domain_types() {
         let document = toml::from_str(include_str!("../../../../../mhf.toml"))
             .expect("example config should parse");
-        let config = decode(&document, issued_at()).expect("example config should be valid");
+        let config = decode(&document).expect("example config should be valid");
 
+        assert_eq!(config.sign.http.base_url, "http://127.0.0.1:53313");
         assert_eq!(config.mhf.screen.mode, ScreenMode::Windowed);
         assert_eq!(
             config.mhf.video.graphics_version,
             GraphicsVersion::HighDefinition
         );
         assert_eq!(config.mhf.localization.language, Language::Japanese);
-        assert_eq!(
-            config.sign_in.entrance_servers[0].ip(),
-            &Ipv4Addr::LOCALHOST
-        );
-        assert_eq!(config.sign_in.session.issued_at, issued_at());
+        assert!(!document.contains_key("server"));
     }
 
     #[test]
     fn persistence_decodes_to_the_strong_domain_config() {
-        let config = decode(&document(), issued_at()).expect("test config should be valid");
+        let config = decode(&document()).expect("test config should be valid");
 
         assert_eq!(config.mhf.video.graphics_version, GraphicsVersion::Standard);
         assert_eq!(config.mhf.localization.language, Language::Japanese);
@@ -771,13 +640,13 @@ value = "preserved"
             profile_section(&document, "extra").unwrap()["value"].as_str(),
             Some("preserved")
         );
-        assert!(profile_section(&document, "server").is_none());
+        assert!(profile_section(&document, "sign").is_none());
 
         let video = document
             .remove("video")
             .expect("video section should exist");
         document.insert("VIDEO".to_owned(), video);
-        let error = decode(&document, issued_at()).expect_err("legacy section names must fail");
+        let error = decode(&document).expect_err("legacy section names must fail");
         assert!(error.contains("[VIDEO] must be named [video]"));
 
         let video = document
@@ -791,7 +660,7 @@ value = "preserved"
             .remove("graphics_version")
             .expect("graphics version should exist");
         video.insert("GRAPHICS_VER".to_owned(), version);
-        let error = decode(&document, issued_at()).expect_err("legacy field names must fail");
+        let error = decode(&document).expect_err("legacy field names must fail");
         assert!(error.contains("GRAPHICS_VER must be named graphics_version"));
     }
 
@@ -800,7 +669,7 @@ value = "preserved"
         let path =
             std::env::temp_dir().join(format!("shrimpman-mhf-config-{}.toml", std::process::id()));
         fs::write(&path, SOURCE).expect("test config should be written");
-        let (_, mut store) = load(path.clone(), issued_at()).expect("test config should load");
+        let (_, mut store) = load(path.clone()).expect("test config should load");
 
         assert!(store.section_names().contains(&"SCREEN".to_owned()));
         assert!(
@@ -872,7 +741,8 @@ value = "preserved"
 
         let source = fs::read_to_string(&path).expect("updated config should be readable");
         let document: Table = toml::from_str(&source).expect("updated config should remain TOML");
-        assert!(source.contains("[server]"));
+        assert!(!source.contains("[server]"));
+        assert!(source.contains("[sign.http]"));
         assert!(source.contains("value = \"updated\""));
         assert!(source.contains("graphics_version = \"high_definition\""));
         assert!(source.contains("language = \"korean\""));

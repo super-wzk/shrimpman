@@ -1,10 +1,11 @@
 use derive_more::{From, Into};
+use serde::{Deserialize, Serialize};
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
 pub struct CharacterId(u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Gender {
     Male = 0,
@@ -12,7 +13,7 @@ pub enum Gender {
 }
 
 /// Weapon class used by a character.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum WeaponType {
     SwordAndShield = 0,

@@ -1,9 +1,12 @@
+use clap::Parser;
 use shrimpman_mhf_launcher::MhfLaunchProfile;
-use std::process::ExitCode;
+use std::{path::PathBuf, process::ExitCode};
 
 mod config;
+mod http;
 mod ini_hook;
 mod runtime;
+mod ui;
 
 const PROFILE: MhfLaunchProfile<'static> = MhfLaunchProfile {
     mhfo_dll: "mhfo.dll",
@@ -14,24 +17,47 @@ const PROFILE: MhfLaunchProfile<'static> = MhfLaunchProfile {
     host_message: "Host protection service is unavailable",
 };
 
+#[derive(Parser)]
+#[command(about = "Monster Hunter Frontier launcher", version)]
+struct Args {
+    /// TOML configuration path; defaults to mhf.toml next to the launcher.
+    #[arg(short = 'c', long = "config", value_name = "PATH")]
+    config_path: Option<PathBuf>,
+
+    /// Game directory; defaults to the launcher directory.
+    #[arg(short = 'd', long = "game-dir", value_name = "DIRECTORY")]
+    game_dir: Option<PathBuf>,
+}
+
 fn main() -> ExitCode {
-    let mut args = std::env::args_os().skip(1);
-    let config_path = args.next().map(std::path::PathBuf::from);
-    let game_dir = args.next().map(std::path::PathBuf::from);
+    let args = Args::parse();
 
-    if args.next().is_some() {
-        eprintln!("usage: mhf-launcher.exe [mhf.toml] [game-directory]");
-        return ExitCode::FAILURE;
-    }
-
-    match runtime::run(&PROFILE, config_path, game_dir) {
-        Ok(game_result) => {
+    match run(args.config_path, args.game_dir) {
+        Ok(Some(game_result)) => {
             println!("mhDLL_Main returned {game_result}");
             ExitCode::SUCCESS
         }
+        Ok(None) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("mhf-launcher: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn run(config_path: Option<PathBuf>, game_dir: Option<PathBuf>) -> Result<Option<i32>, String> {
+    let prepared = runtime::prepare(config_path, game_dir)?;
+    let client =
+        http::Client::new(prepared.sign_http_base_url()).map_err(|error| error.to_string())?;
+    let Some(request) = ui::run(client)? else {
+        return Ok(None);
+    };
+    prepared
+        .launch(
+            &PROFILE,
+            request.credentials,
+            request.sign_in,
+            request.selected_character_id,
+        )
+        .map(Some)
 }

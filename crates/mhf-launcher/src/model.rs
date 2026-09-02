@@ -2,7 +2,8 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use shrimpman_domain::{
     account::CourseRights,
-    character::CharacterId,
+    character::{CharacterId, Gender, WeaponType},
+    mezeporta::MezeportaFesta,
     session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
 };
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -21,6 +22,7 @@ pub struct MhfLaunchProfile<'a> {
 pub struct Config {
     pub credentials: PasswordCredentials,
     pub sign_in: SignInSuccess,
+    pub selected_character_id: CharacterId,
     pub mhf: MhfConfig,
 }
 
@@ -43,6 +45,9 @@ pub struct SignCharacter {
     pub name: String,
     pub gr: u16,
     pub hr: u16,
+    pub weapon_type: WeaponType,
+    pub gender: Gender,
+    pub last_sign_in_at: Option<Timestamp>,
     pub is_new: bool,
 }
 
@@ -51,13 +56,18 @@ pub struct SignInSuccess {
     pub session: IssuedSignSession,
     pub entrance_servers: Vec<SocketAddrV4>,
     pub characters: Vec<SignCharacter>,
-    pub last_character_id: CharacterId,
+    pub notices: Vec<String>,
+    pub last_character_id: Option<CharacterId>,
     pub rights: CourseRights,
     pub return_expires_at: Timestamp,
+    pub festa: Option<MezeportaFesta>,
 }
 
 impl SignInSuccess {
-    pub(crate) fn selected_character(&self) -> Result<&SignCharacter, String> {
+    pub(crate) fn selected_character(
+        &self,
+        selected_character_id: CharacterId,
+    ) -> Result<&SignCharacter, String> {
         if self.entrance_servers.is_empty() {
             return Err("sign-in result has no entrance server".to_owned());
         }
@@ -87,8 +97,10 @@ impl SignInSuccess {
 
         self.characters
             .iter()
-            .find(|character| character.id == self.last_character_id)
-            .ok_or_else(|| "last_character_id does not identify a configured character".to_owned())
+            .find(|character| character.id == selected_character_id)
+            .ok_or_else(|| {
+                "selected_character_id does not identify an authenticated character".to_owned()
+            })
     }
 }
 

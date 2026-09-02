@@ -1,10 +1,11 @@
 use crate::{
-    Config, GraphicsVersion, MhfConfig, MhfLaunchParams32, MhfLaunchProfile,
+    Config, GraphicsVersion, MhfConfig, MhfLaunchParams32, MhfLaunchProfile, SignInSuccess,
     abi::{
-        GameMain, HostServices32, MhfHostData32, copy_ansi_c_string, copy_ascii_c_string,
-        function32, ptr32,
+        GameMain, HostServices32, MhfGlobalData32, MhfHostData32, copy_ansi_c_string,
+        copy_ascii_c_string, function32, ptr32,
     },
 };
+use shrimpman_common::encoding::encode_shift_jis;
 use std::{
     ffi::{CStr, CString, c_char, c_void},
     sync::atomic::{AtomicPtr, Ordering},
@@ -14,12 +15,12 @@ use windows::{
         Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HGLOBAL, HINSTANCE, HMODULE},
         System::{
             LibraryLoader::{GetModuleHandleA, GetProcAddress, LoadLibraryA},
-            Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc},
+            Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock},
             Threading::{CreateMutexA, GetCurrentProcessId},
         },
         UI::Input::KeyboardAndMouse::GetKeyboardLayout,
     },
-    core::{Owned, PCSTR},
+    core::{Error, Owned, PCSTR},
 };
 
 const MHFO_MAIN: &CStr = c"mhDLL_Main";
@@ -74,6 +75,7 @@ pub fn launch_mhfo(
     )?;
 
     let game_global_alloc = allocate_global()?;
+    initialize_global_data(*game_global_alloc, &config.sign_in)?;
     data.params.global_alloc = *game_global_alloc;
     apply_sign_in(&mut data.params, config)?;
 
@@ -139,7 +141,7 @@ fn apply_config(params: &mut MhfLaunchParams32, config: &MhfConfig) -> Result<()
 
 fn apply_sign_in(params: &mut MhfLaunchParams32, config: &Config) -> Result<(), String> {
     let sign_in = &config.sign_in;
-    let character = sign_in.selected_character()?;
+    let character = sign_in.selected_character(config.selected_character_id)?;
     let entrance_server = sign_in
         .entrance_servers
         .first()
@@ -210,6 +212,109 @@ fn unix_timestamp32(field: &str, timestamp: &jiff::Timestamp) -> Result<u32, Str
         .map_err(|_| format!("{field} is outside the unsigned 32-bit Unix timestamp range"))
 }
 
+fn initialize_global_data(global_alloc: HGLOBAL, sign_in: &SignInSuccess) -> Result<(), String> {
+    let pointer = unsafe { GlobalLock(global_alloc) };
+    if pointer.is_null() {
+        return Err(format!("GlobalLock failed: {}", Error::from_thread()));
+    }
+
+    let result = apply_global_sign_in(unsafe { &mut *pointer.cast::<MhfGlobalData32>() }, sign_in);
+    let unlock_result = unsafe { GlobalUnlock(global_alloc) };
+    result?;
+
+    match unlock_result {
+        Ok(()) => Ok(()),
+        Err(error) if error.code().is_ok() => Ok(()),
+        Err(error) => Err(format!("GlobalUnlock failed: {error}")),
+    }
+}
+
+fn apply_global_sign_in(data: &mut MhfGlobalData32, sign_in: &SignInSuccess) -> Result<(), String> {
+    let notice_slots = data.notices.len();
+    let notice_bytes = data.notices[0].len();
+    if sign_in.notices.len() > notice_slots {
+        return Err(format!(
+            "sign-in result has {} notices; at most {notice_slots} are supported",
+            sign_in.notices.len()
+        ));
+    }
+    let notices = sign_in
+        .notices
+        .iter()
+        .enumerate()
+        .map(|(index, notice)| {
+            let encoded = encode_shift_jis(notice).map_err(|_| {
+                format!(
+                    "sign-in notice {} cannot be encoded as Shift-JIS",
+                    index + 1
+                )
+            })?;
+            if encoded.contains(&0) {
+                return Err(format!("sign-in notice {} contains a NUL byte", index + 1));
+            }
+            if encoded.len() > notice_bytes {
+                return Err(format!(
+                    "sign-in notice {} is {} encoded bytes; at most {notice_bytes} bytes are supported",
+                    index + 1,
+                    encoded.len()
+                ));
+            }
+            Ok(encoded)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let festa_stall_slots = data.festa_stalls.len();
+    let festa = sign_in
+        .festa
+        .as_ref()
+        .map(|festa| {
+            if festa.id == 0 {
+                return Err("active Mezeporta Festa ID must not be 0".to_owned());
+            }
+            if festa.stalls.len() > festa_stall_slots {
+                return Err(format!(
+                    "Mezeporta Festa has {} stalls; at most {festa_stall_slots} are supported",
+                    festa.stalls.len()
+                ));
+            }
+            Ok((
+                festa,
+                unix_timestamp32("Festa starts_at", &festa.period.starts_at())?,
+                unix_timestamp32("Festa expires_at", &festa.period.expires_at())?,
+            ))
+        })
+        .transpose()?;
+
+    data.notice_lengths.fill(0);
+    data.notice_flags.fill(0);
+    for notice in &mut data.notices {
+        notice.fill(0);
+    }
+    for (index, notice) in notices.iter().enumerate() {
+        data.notice_lengths[index] = notice.len() as u32;
+        data.notices[index][..notice.len()].copy_from_slice(notice);
+    }
+
+    data.festa_id = 0;
+    data.festa_starts_at = 0;
+    data.festa_expires_at = 0;
+    data.festa_solo_tickets = 0;
+    data.festa_group_tickets = 0;
+    data.festa_stalls.fill(0);
+    if let Some((festa, starts_at, expires_at)) = festa {
+        data.festa_id = festa.id;
+        data.festa_starts_at = starts_at;
+        data.festa_expires_at = expires_at;
+        data.festa_solo_tickets = festa.solo_ticket_allowance;
+        data.festa_group_tickets = festa.group_ticket_allowance;
+        for (target, stall) in data.festa_stalls.iter_mut().zip(&festa.stalls) {
+            *target = u32::from(*stall as u8);
+        }
+    }
+
+    Ok(())
+}
+
 fn set_host_message(message: &str) -> Result<CString, String> {
     let message =
         CString::new(message).map_err(|_| "host message must not contain NUL".to_owned())?;
@@ -265,8 +370,13 @@ fn create_unique_mutex(name: &CStr) -> Result<Owned<HANDLE>, String> {
 }
 
 fn allocate_global() -> Result<Owned<HGLOBAL>, String> {
-    let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, 0x8ae0) }
-        .map_err(|error| format!("GlobalAlloc failed: {error}"))?;
+    let handle = unsafe {
+        GlobalAlloc(
+            GMEM_MOVEABLE | GMEM_ZEROINIT,
+            std::mem::size_of::<MhfGlobalData32>(),
+        )
+    }
+    .map_err(|error| format!("GlobalAlloc failed: {error}"))?;
     Ok(unsafe { Owned::new(handle) })
 }
 
@@ -295,8 +405,14 @@ extern "C" fn host_message() -> *const c_char {
 mod tests {
     use super::*;
     use crate::{IssuedSignSession, PasswordCredentials, SignCharacter, SignInSuccess};
-    use jiff::Timestamp;
-    use shrimpman_domain::{account::CourseRights, character::CharacterId, session::SignSessionId};
+    use jiff::{SignedDuration, Timestamp};
+    use shrimpman_domain::{
+        TimeRange,
+        account::CourseRights,
+        character::{CharacterId, Gender, WeaponType},
+        mezeporta::{MezeportaFesta, MezeportaStall},
+        session::SignSessionId,
+    };
 
     #[test]
     fn sign_in_domain_maps_to_the_mhfo_abi() {
@@ -318,13 +434,25 @@ mod tests {
                     name: "char_abc".to_owned(),
                     gr: 50,
                     hr: 999,
+                    weapon_type: WeaponType::GreatSword,
+                    gender: Gender::Male,
+                    last_sign_in_at: Some(issued_at),
                     is_new: false,
                 }],
-                last_character_id: CharacterId::from(1),
+                notices: vec!["Welcome".to_owned(), "テスト".to_owned()],
+                last_character_id: Some(CharacterId::from(1)),
                 rights: CourseRights::from_bits_retain(12),
                 return_expires_at: Timestamp::new(i64::from(u32::MAX), 0)
                     .expect("valid expiry timestamp"),
+                festa: Some(MezeportaFesta {
+                    id: 7,
+                    period: TimeRange::from_duration(issued_at, SignedDuration::from_hours(1)),
+                    solo_ticket_allowance: 5,
+                    group_ticket_allowance: 2,
+                    stalls: vec![MezeportaStall::Unknown3, MezeportaStall::VolpakkunTogether],
+                }),
             },
+            selected_character_id: CharacterId::from(1),
             mhf: MhfConfig::default(),
         };
         let mut params = MhfLaunchParams32::default();
@@ -342,5 +470,25 @@ mod tests {
         assert_eq!(params.selected_character_hr, 999);
         assert_eq!(params.selected_character_gr, 50);
         assert_eq!(params.fixed_200c_one, 1);
+
+        let mut global_data = MhfGlobalData32::default();
+        apply_global_sign_in(&mut global_data, &config.sign_in)
+            .expect("global Sign data should fit the ABI");
+        assert_eq!(global_data.notice_lengths[..2], [7, 6]);
+        assert_eq!(&global_data.notices[0][..7], b"Welcome");
+        assert_eq!(
+            &global_data.notices[1][..6],
+            &[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]
+        );
+        assert_eq!(global_data.festa_id, 7);
+        assert_eq!(global_data.festa_starts_at, 1_700_000_000);
+        assert_eq!(global_data.festa_expires_at, 1_700_003_600);
+        assert_eq!(global_data.festa_solo_tickets, 5);
+        assert_eq!(global_data.festa_group_tickets, 2);
+        assert_eq!(global_data.festa_stalls[..2], [3, 4]);
+
+        let global_alloc = allocate_global().expect("global Sign data should allocate");
+        initialize_global_data(*global_alloc, &config.sign_in)
+            .expect("global Sign data should initialize");
     }
 }

@@ -1,33 +1,74 @@
-use jiff::Timestamp;
-use shrimpman_mhf_launcher::{MhfLaunchProfile, launch_mhfo};
+use shrimpman_domain::character::CharacterId;
+use shrimpman_mhf_launcher::{
+    Config, MhfConfig, MhfLaunchProfile, PasswordCredentials, SignInSuccess, launch_mhfo,
+};
 use std::{env, path::PathBuf};
 
-pub(crate) fn run(
-    profile: &MhfLaunchProfile<'_>,
+pub(crate) struct PreparedLaunch {
+    game_dir: PathBuf,
+    sign: super::config::sign::Settings,
+    mhf: MhfConfig,
+    store: super::config::Store,
+}
+
+pub(crate) fn prepare(
     config_path: Option<PathBuf>,
     game_dir: Option<PathBuf>,
-) -> Result<i32, String> {
+) -> Result<PreparedLaunch, String> {
     let invocation_dir = env::current_dir()
         .map_err(|error| format!("failed to determine current directory: {error}"))?;
+    let launcher_dir = env::current_exe()
+        .map_err(|error| format!("failed to determine executable path: {error}"))?
+        .parent()
+        .ok_or_else(|| "executable has no parent directory".to_owned())?
+        .to_owned();
     let game_dir = match game_dir {
         Some(path) => invocation_dir.join(path),
-        None => env::current_exe()
-            .map_err(|error| format!("failed to determine executable path: {error}"))?
-            .parent()
-            .ok_or_else(|| "executable has no parent directory".to_owned())?
-            .to_owned(),
+        None => launcher_dir.clone(),
     };
     let config_path = match config_path {
-        Some(path) if path.is_absolute() => path,
         Some(path) => invocation_dir.join(path),
-        None => invocation_dir.join("mhf.toml"),
+        None => launcher_dir.join("mhf.toml"),
     };
 
-    let (config, store) = super::config::load(config_path, Timestamp::now())?;
-    let game_dir = enter_game_directory(game_dir)?;
-    super::ini_hook::install(profile.ini_name, store)?;
+    let (settings, store) = super::config::load(config_path)?;
+    if !game_dir.is_dir() {
+        return Err(format!(
+            "game directory does not exist: {}",
+            game_dir.display()
+        ));
+    }
 
-    launch_mhfo(profile, &game_dir, &config)
+    Ok(PreparedLaunch {
+        game_dir,
+        sign: settings.sign,
+        mhf: settings.mhf,
+        store,
+    })
+}
+
+impl PreparedLaunch {
+    pub(crate) fn sign_http_base_url(&self) -> &str {
+        &self.sign.http.base_url
+    }
+
+    pub(crate) fn launch(
+        self,
+        profile: &MhfLaunchProfile<'_>,
+        credentials: PasswordCredentials,
+        sign_in: SignInSuccess,
+        selected_character_id: CharacterId,
+    ) -> Result<i32, String> {
+        let game_dir = enter_game_directory(self.game_dir)?;
+        super::ini_hook::install(profile.ini_name, self.store)?;
+        let config = Config {
+            credentials,
+            sign_in,
+            selected_character_id,
+            mhf: self.mhf,
+        };
+        launch_mhfo(profile, &game_dir, &config)
+    }
 }
 
 fn enter_game_directory(game_dir: PathBuf) -> Result<String, String> {
