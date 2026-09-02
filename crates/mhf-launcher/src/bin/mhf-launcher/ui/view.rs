@@ -24,7 +24,7 @@ pub(super) fn show(model: &mut Model, ui: &mut egui::Ui) -> Option<Message> {
 }
 
 fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
-    let content_height = 320.0;
+    let content_height = 348.0;
     ui.add_space(((ui.available_height() - content_height) * 0.5).max(0.0));
 
     let mut message = None;
@@ -89,7 +89,13 @@ fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
                             .desired_width(f32::INFINITY),
                     );
 
-                    ui.add_space(16.0);
+                    ui.add_space(10.0);
+                    ui.add_enabled(
+                        !state.submitting,
+                        egui::Checkbox::new(&mut state.form.remember_password, "Remember password"),
+                    );
+
+                    ui.add_space(14.0);
                     let can_sign_in = state.can_submit();
                     let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
                     let width = ui.available_width();

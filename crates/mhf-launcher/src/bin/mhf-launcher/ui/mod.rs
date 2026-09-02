@@ -2,7 +2,7 @@ mod model;
 mod theme;
 mod view;
 
-use crate::http;
+use crate::{credentials::CredentialStore, http};
 use eframe::egui;
 use model::{Effect, Message, Model};
 use shrimpman_domain::character::CharacterId;
@@ -15,9 +15,12 @@ pub(crate) struct LaunchRequest {
     pub(crate) selected_character_id: CharacterId,
 }
 
-pub(crate) fn run(client: http::Client) -> Result<Option<LaunchRequest>, String> {
+pub(crate) fn run(
+    client: http::Client,
+    credential_store: CredentialStore,
+) -> Result<Option<LaunchRequest>, String> {
     let mut launch_request = None;
-    let app = EframeApp::new(client, &mut launch_request);
+    let app = EframeApp::new(client, credential_store, &mut launch_request);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([500.0, 520.0])
@@ -40,17 +43,27 @@ pub(crate) fn run(client: http::Client) -> Result<Option<LaunchRequest>, String>
 struct EframeApp<'a> {
     model: Model,
     client: http::Client,
+    credential_store: CredentialStore,
     messages: Receiver<Message>,
     message_sender: Sender<Message>,
     launch_request: &'a mut Option<LaunchRequest>,
 }
 
 impl<'a> EframeApp<'a> {
-    fn new(client: http::Client, launch_request: &'a mut Option<LaunchRequest>) -> Self {
+    fn new(
+        client: http::Client,
+        credential_store: CredentialStore,
+        launch_request: &'a mut Option<LaunchRequest>,
+    ) -> Self {
         let (message_sender, messages) = mpsc::channel();
+        let model = match credential_store.read() {
+            Ok(credentials) => Model::sign_in(credentials, None),
+            Err(error) => Model::sign_in(None, Some(error)),
+        };
         Self {
-            model: Model::default(),
+            model,
             client,
+            credential_store,
             messages,
             message_sender,
             launch_request,
@@ -67,15 +80,42 @@ impl<'a> EframeApp<'a> {
 
     fn execute(&mut self, effect: Effect, context: &egui::Context) {
         match effect {
-            Effect::SignIn(credentials) => {
+            Effect::SignIn {
+                credentials,
+                remember_password,
+            } => {
                 let sender = self.message_sender.clone();
                 let repaint_context = context.clone();
+                let credential_store = self.credential_store.clone();
+                let credentials_to_store = PasswordCredentials {
+                    username: credentials.username.clone(),
+                    password: credentials.password.clone(),
+                };
                 let result = self.client.sign_in(&credentials, move |result| {
-                    let _ = sender.send(Message::SignedIn(result));
+                    let credential_error = if result.is_ok() {
+                        let credential_result = if remember_password {
+                            credential_store.write(&credentials_to_store)
+                        } else {
+                            credential_store.delete()
+                        };
+                        credential_result.err()
+                    } else {
+                        None
+                    };
+                    let _ = sender.send(Message::SignedIn {
+                        result,
+                        credential_error,
+                    });
                     repaint_context.request_repaint();
                 });
                 if let Err(error) = result {
-                    self.dispatch(Message::SignedIn(Err(error)), context);
+                    self.dispatch(
+                        Message::SignedIn {
+                            result: Err(error),
+                            credential_error: None,
+                        },
+                        context,
+                    );
                 }
             }
             Effect::CreateCharacter {

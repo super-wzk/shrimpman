@@ -14,11 +14,10 @@ pub(super) enum Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self::SignIn(SignIn::default())
+        Self::sign_in(None, None)
     }
 }
 
-#[derive(Default)]
 pub(super) struct SignIn {
     pub(super) form: CredentialsForm,
     pub(super) submitting: bool,
@@ -35,9 +34,18 @@ impl SignIn {
 pub(super) struct CredentialsForm {
     pub(super) username: String,
     pub(super) password: String,
+    pub(super) remember_password: bool,
 }
 
 impl CredentialsForm {
+    fn remembered(credentials: PasswordCredentials) -> Self {
+        Self {
+            username: credentials.username,
+            password: credentials.password,
+            remember_password: true,
+        }
+    }
+
     fn to_credentials(&self) -> PasswordCredentials {
         PasswordCredentials {
             username: self.username.trim().to_owned(),
@@ -171,7 +179,10 @@ impl Characters {
 
 pub(super) enum Message {
     SignIn,
-    SignedIn(Result<SignInSuccess, http::Error>),
+    SignedIn {
+        result: Result<SignInSuccess, http::Error>,
+        credential_error: Option<String>,
+    },
     SignOut,
     Select(CharacterSelection),
     CharacterCreated(Result<SignCharacter, http::Error>),
@@ -183,7 +194,10 @@ pub(super) enum Message {
 }
 
 pub(super) enum Effect {
-    SignIn(PasswordCredentials),
+    SignIn {
+        credentials: PasswordCredentials,
+        remember_password: bool,
+    },
     CreateCharacter {
         session_id: SignSessionId,
         session_token: [u8; SIGN_SESSION_TOKEN_LEN],
@@ -197,6 +211,14 @@ pub(super) enum Effect {
 }
 
 impl Model {
+    pub(super) fn sign_in(credentials: Option<PasswordCredentials>, error: Option<String>) -> Self {
+        Self::SignIn(SignIn {
+            form: credentials.map_or_else(CredentialsForm::default, CredentialsForm::remembered),
+            submitting: false,
+            error,
+        })
+    }
+
     pub(super) fn update(self, message: Message) -> (Self, Option<Effect>) {
         match (self, message) {
             (Self::SignIn(mut state), Message::SignIn) => {
@@ -205,11 +227,24 @@ impl Model {
                 }
 
                 let credentials = state.form.to_credentials();
+                let remember_password = state.form.remember_password;
                 state.submitting = true;
                 state.error = None;
-                (Self::SignIn(state), Some(Effect::SignIn(credentials)))
+                (
+                    Self::SignIn(state),
+                    Some(Effect::SignIn {
+                        credentials,
+                        remember_password,
+                    }),
+                )
             }
-            (Self::SignIn(state), Message::SignedIn(Ok(sign_in))) => {
+            (
+                Self::SignIn(state),
+                Message::SignedIn {
+                    result: Ok(sign_in),
+                    credential_error,
+                },
+            ) => {
                 let selection = sign_in
                     .last_character_id
                     .and_then(|character_id| {
@@ -232,12 +267,17 @@ impl Model {
                         sign_in,
                         selection,
                         operation: CharacterOperation::Idle,
-                        error: None,
+                        error: credential_error,
                     }),
                     None,
                 )
             }
-            (Self::SignIn(mut state), Message::SignedIn(Err(error))) => {
+            (
+                Self::SignIn(mut state),
+                Message::SignedIn {
+                    result: Err(error), ..
+                },
+            ) => {
                 state.submitting = false;
                 state.error = Some(http_error_message(&error));
                 (Self::SignIn(state), None)
@@ -384,21 +424,47 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddrV4};
 
     #[test]
+    fn saved_credentials_prefill_the_sign_in_form() {
+        let model = Model::sign_in(
+            Some(PasswordCredentials {
+                username: "hunter".to_owned(),
+                password: "secret".to_owned(),
+            }),
+            None,
+        );
+
+        let Model::SignIn(state) = model else {
+            panic!("saved credentials did not open the sign-in page");
+        };
+        assert_eq!(state.form.username, "hunter");
+        assert_eq!(state.form.password, "secret");
+        assert!(state.form.remember_password);
+    }
+
+    #[test]
     fn sign_in_transitions_to_character_selection() {
         let model = sign_in_model();
         let (model, effect) = model.update(Message::SignIn);
 
-        let Some(Effect::SignIn(credentials)) = effect else {
+        let Some(Effect::SignIn {
+            credentials,
+            remember_password,
+        }) = effect
+        else {
             panic!("sign-in did not emit an HTTP effect");
         };
         assert_eq!(credentials.username, "hunter");
         assert_eq!(credentials.password, "secret");
+        assert!(!remember_password);
         let Model::SignIn(state) = model else {
             panic!("sign-in request changed the page");
         };
         assert!(state.submitting);
 
-        let (model, effect) = Model::SignIn(state).update(Message::SignedIn(Ok(sign_in_success())));
+        let (model, effect) = Model::SignIn(state).update(Message::SignedIn {
+            result: Ok(sign_in_success()),
+            credential_error: None,
+        });
         assert!(effect.is_none());
         let Model::Characters(state) = model else {
             panic!("successful sign-in did not open character selection");
@@ -408,6 +474,25 @@ mod tests {
             CharacterSelection::Existing(CharacterId::from(7))
         );
         assert_eq!(state.form.username, "  hunter  ");
+    }
+
+    #[test]
+    fn sign_in_effect_preserves_the_remember_password_choice() {
+        let mut state = match sign_in_model() {
+            Model::SignIn(state) => state,
+            _ => unreachable!(),
+        };
+        state.form.remember_password = true;
+
+        let (_, effect) = Model::SignIn(state).update(Message::SignIn);
+
+        let Some(Effect::SignIn {
+            remember_password, ..
+        }) = effect
+        else {
+            panic!("sign-in did not emit an HTTP effect");
+        };
+        assert!(remember_password);
     }
 
     #[test]
@@ -605,6 +690,7 @@ mod tests {
         CredentialsForm {
             username: "  hunter  ".to_owned(),
             password: "secret".to_owned(),
+            remember_password: false,
         }
     }
 

@@ -7,9 +7,13 @@ API 获取真实会话和角色数据，再启动 `mhfo.dll` 或 `mhfo-hd.dll`�
 登录成功后，角色列表来自 `POST /sign-in` 的响应；“New character”调用
 `POST /characters` 创建待初始化角色并自动选中。选择角色并点击“Launch game”后，
 启动器先关闭 UI，再安装 INI hook 并把当前会话、角色和 Entrance 地址映射到游戏 ABI。
-用户名、密码、会话和角色不写入 `mhf.toml`。
+用户名、密码、会话和角色不写入 `mhf.toml`。勾选 “Remember password” 后，只有登录
+成功的用户名和密码会保存到系统凭据库；原生 Windows 使用 Credential Manager，
+WineCX 使用其凭据桥接写入 macOS Keychain。取消勾选并成功登录会删除此前保存的凭据。
 
-UTF-8 `mhf.toml` 保存 Sign API 地址和游戏设置，但不保存任何登录数据。已建模配置
+UTF-8 `mhf.toml` 保存 Sign API 地址和游戏设置，但不保存任何登录数据。凭据按 Sign
+API 地址隔离，目标名称为 `Shrimpman MHF — <Sign API 地址>`，可由遵守相同凭据
+约定的其他 Shrimpman MHF 客户端复用；会话和角色始终只保留在当前进程中。已建模配置
 使用小写下划线的领域命名，不需要 `ini.` 前缀：
 
 ```toml
