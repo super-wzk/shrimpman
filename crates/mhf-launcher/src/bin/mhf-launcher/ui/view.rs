@@ -1,4 +1,4 @@
-use super::model::{Characters, Message, Model, SignIn};
+use super::model::{CharacterOperation, Characters, Message, Model, SignIn};
 use super::theme;
 use eframe::egui;
 use jiff::Timestamp;
@@ -63,8 +63,8 @@ fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
                     let username = ui.add_enabled(
                         !state.submitting,
                         egui::TextEdit::singleline(&mut state.form.username)
-                            .desired_width(f32::INFINITY)
-                            .min_size(egui::vec2(0.0, 32.0)),
+                            .margin(theme::TEXT_EDIT_MARGIN)
+                            .desired_width(f32::INFINITY),
                     );
                     let autofocus = ui.id().with("username_autofocus");
                     if !ui
@@ -85,8 +85,8 @@ fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
                         !state.submitting,
                         egui::TextEdit::singleline(&mut state.form.password)
                             .password(true)
-                            .desired_width(f32::INFINITY)
-                            .min_size(egui::vec2(0.0, 32.0)),
+                            .margin(theme::TEXT_EDIT_MARGIN)
+                            .desired_width(f32::INFINITY),
                     );
 
                     ui.add_space(16.0);
@@ -142,7 +142,7 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .add_enabled(!state.creating, egui::Button::new("Sign out"))
+                .add_enabled(state.is_idle(), egui::Button::new("Sign out"))
                 .clicked()
             {
                 message = Some(Message::SignOut);
@@ -169,21 +169,36 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
             ui.separator();
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                let deletion_target = state
+                    .selected_character_id
+                    .filter(|id| state.can_delete(*id));
                 if ui
                     .add_enabled(
-                        state.can_create(),
-                        egui::Button::new("New character").min_size(egui::vec2(0.0, 34.0)),
+                        deletion_target.is_some(),
+                        egui::Button::new(egui::RichText::new("Delete").color(theme::ERROR_TEXT)),
                     )
+                    .clicked()
+                {
+                    message = deletion_target.map(Message::DeleteCharacter);
+                }
+
+                if ui
+                    .add_enabled(state.can_create(), egui::Button::new("New character"))
                     .clicked()
                 {
                     message = Some(Message::CreateCharacter);
                 }
 
-                if state.creating {
+                let status = match state.operation {
+                    CharacterOperation::CreatingCharacter => Some("Creating character..."),
+                    CharacterOperation::DeletingCharacter => Some("Deleting character..."),
+                    _ => None,
+                };
+                if let Some(status) = status {
                     ui.add_space(6.0);
                     ui.add(egui::Spinner::new().size(16.0).color(theme::ACCENT));
                     ui.label(
-                        egui::RichText::new("Creating character...")
+                        egui::RichText::new(status)
                             .size(12.5)
                             .color(theme::TEXT_WEAK),
                     );
@@ -217,20 +232,30 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
             );
         });
     } else {
-        let (up, down, enter) = ui.input(|input| {
+        let (up, down, enter, delete) = ui.input(|input| {
             (
                 input.key_pressed(egui::Key::ArrowUp),
                 input.key_pressed(egui::Key::ArrowDown),
                 input.key_pressed(egui::Key::Enter),
+                input.key_pressed(egui::Key::Delete),
             )
         });
-        if (up || down)
-            && let Some(next) = adjacent_character(state, down)
-        {
-            message = Some(Message::SelectCharacter(next));
-        }
-        if enter && state.launch_character_id().is_some() {
-            message = Some(Message::Launch);
+        if state.is_idle() {
+            if (up || down)
+                && let Some(next) = adjacent_character(state, down)
+            {
+                message = Some(Message::SelectCharacter(next));
+            }
+            if enter && state.launch_character_id().is_some() {
+                message = Some(Message::Launch);
+            }
+            if delete
+                && let Some(character_id) = state
+                    .selected_character_id
+                    .filter(|id| state.can_delete(*id))
+            {
+                message = Some(Message::DeleteCharacter(character_id));
+            }
         }
 
         egui::ScrollArea::vertical()
@@ -243,6 +268,55 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
                     ui.add_space(6.0);
                 }
             });
+    }
+
+    if let Some(character_id) = state.deletion_target() {
+        let name = state
+            .sign_in
+            .characters
+            .iter()
+            .find(|character| character.id == character_id)
+            .map(character_name)
+            .unwrap_or_default();
+        egui::Modal::new(egui::Id::new("confirm_character_deletion")).show(ui.ctx(), |ui| {
+            ui.set_width(320.0);
+            ui.label(egui::RichText::new("Delete character?").size(16.0).strong());
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{name} will be permanently deleted. This cannot be undone."
+                ))
+                .color(theme::TEXT_WEAK),
+            );
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::new("Cancel").min_size(egui::vec2(90.0, 0.0)))
+                    .clicked()
+                {
+                    message = Some(Message::CancelDeletion);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(theme::ERROR)
+                            .min_size(egui::vec2(100.0, 0.0)),
+                        )
+                        .clicked()
+                    {
+                        message = Some(Message::ConfirmDeletion);
+                    }
+                });
+            });
+        });
+        if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            message = Some(Message::CancelDeletion);
+        }
     }
 
     message
@@ -354,7 +428,7 @@ fn character_card(
         .interact(egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if response.hovered() && !selected && !state.creating {
+    if response.hovered() && !selected && state.is_idle() {
         ui.painter().rect_stroke(
             response.rect,
             10,
@@ -374,7 +448,7 @@ fn character_card(
         );
     }
 
-    if state.creating {
+    if !state.is_idle() {
         return None;
     }
     if response.double_clicked() && selected && state.launch_character_id().is_some() {

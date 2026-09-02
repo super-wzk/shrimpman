@@ -5,7 +5,7 @@ use shrimpman_domain::character::{CharacterId, Gender, WeaponType};
 use shrimpman_mhf_launcher::SignCharacter;
 
 #[derive(Serialize)]
-pub(super) struct CreateRequest<'a> {
+pub(super) struct SessionRequest<'a> {
     pub(super) session_id: u32,
     pub(super) session_token: &'a str,
 }

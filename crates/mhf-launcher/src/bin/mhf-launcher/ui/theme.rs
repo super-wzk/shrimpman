@@ -15,10 +15,12 @@ pub(super) const ERROR: egui::Color32 = egui::Color32::from_rgb(224, 85, 97);
 pub(super) const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 138, 146);
 pub(super) const WARNING: egui::Color32 = egui::Color32::from_rgb(229, 192, 123);
 pub(super) const WARNING_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 208, 148);
+pub(super) const TEXT_EDIT_MARGIN: egui::Margin = egui::Margin::symmetric(10, 8);
 
 pub(super) fn install(context: &egui::Context) {
     context.set_theme(egui::ThemePreference::Dark);
     let mut visuals = egui::Visuals::dark();
+    let control_corner_radius = egui::CornerRadius::same(6);
 
     visuals.panel_fill = BG;
     visuals.window_fill = BG;
@@ -43,6 +45,16 @@ pub(super) fn install(context: &egui::Context) {
     visuals.widgets.active.weak_bg_fill = HOVER_BG;
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, TEXT);
 
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.corner_radius = control_corner_radius;
+    }
+
     visuals.selection.bg_fill = ACCENT.gamma_multiply(0.35);
     visuals.selection.stroke = egui::Stroke::new(1.0, TEXT);
 
@@ -50,6 +62,7 @@ pub(super) fn install(context: &egui::Context) {
         style.visuals = visuals.clone();
         style.spacing.item_spacing = egui::vec2(10.0, 8.0);
         style.spacing.button_padding = egui::vec2(14.0, 7.0);
+        style.spacing.interact_size.y = 34.0;
     });
 }
 
@@ -84,8 +97,7 @@ pub(super) fn primary_button(
             )
             .left_text(egui::Atom::grow())
             .right_text(egui::Atom::grow())
-            .corner_radius(8)
-            .min_size(egui::vec2(width, 38.0)),
+            .min_size(egui::vec2(width, 0.0)),
         )
     })
     .inner

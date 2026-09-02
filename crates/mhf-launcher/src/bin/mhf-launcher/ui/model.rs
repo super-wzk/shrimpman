@@ -57,13 +57,21 @@ pub(super) struct Characters {
     pub(super) form: CredentialsForm,
     pub(super) sign_in: SignInSuccess,
     pub(super) selected_character_id: Option<CharacterId>,
-    pub(super) creating: bool,
+    pub(super) operation: CharacterOperation,
     pub(super) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CharacterOperation {
+    Idle,
+    CreatingCharacter,
+    ConfirmingDeletion(CharacterId),
+    DeletingCharacter,
 }
 
 impl Characters {
     pub(super) fn can_create(&self) -> bool {
-        !self.creating
+        self.is_idle()
             && self.sign_in.characters.len() < 16
             && !self
                 .sign_in
@@ -72,11 +80,31 @@ impl Characters {
                 .any(|character| character.is_new)
     }
 
+    pub(super) fn can_delete(&self, character_id: CharacterId) -> bool {
+        self.is_idle()
+            && self
+                .sign_in
+                .characters
+                .iter()
+                .any(|character| character.id == character_id)
+    }
+
     pub(super) fn launch_character_id(&self) -> Option<CharacterId> {
-        if self.creating || self.sign_in.entrance_servers.is_empty() {
+        if !self.is_idle() || self.sign_in.entrance_servers.is_empty() {
             return None;
         }
         self.selected_character_id
+    }
+
+    pub(super) fn is_idle(&self) -> bool {
+        self.operation == CharacterOperation::Idle
+    }
+
+    pub(super) fn deletion_target(&self) -> Option<CharacterId> {
+        match self.operation {
+            CharacterOperation::ConfirmingDeletion(character_id) => Some(character_id),
+            _ => None,
+        }
     }
 }
 
@@ -87,6 +115,10 @@ pub(super) enum Message {
     SelectCharacter(CharacterId),
     CreateCharacter,
     CharacterCreated(Result<SignCharacter, http::Error>),
+    DeleteCharacter(CharacterId),
+    ConfirmDeletion,
+    CancelDeletion,
+    CharacterDeleted(Result<CharacterId, http::Error>),
     Launch,
 }
 
@@ -95,6 +127,11 @@ pub(super) enum Effect {
     CreateCharacter {
         session_id: SignSessionId,
         session_token: [u8; SIGN_SESSION_TOKEN_LEN],
+    },
+    DeleteCharacter {
+        session_id: SignSessionId,
+        session_token: [u8; SIGN_SESSION_TOKEN_LEN],
+        character_id: CharacterId,
     },
     Launch(LaunchRequest),
 }
@@ -121,7 +158,7 @@ impl Model {
                         form: state.form,
                         sign_in,
                         selected_character_id,
-                        creating: false,
+                        operation: CharacterOperation::Idle,
                         error: None,
                     }),
                     None,
@@ -132,7 +169,7 @@ impl Model {
                 state.error = Some(http_error_message(&error));
                 (Self::SignIn(state), None)
             }
-            (Self::Characters(state), Message::SignOut) if !state.creating => (
+            (Self::Characters(state), Message::SignOut) if state.is_idle() => (
                 Self::SignIn(SignIn {
                     form: state.form,
                     submitting: false,
@@ -141,7 +178,7 @@ impl Model {
                 None,
             ),
             (Self::Characters(mut state), Message::SelectCharacter(character_id)) => {
-                if !state.creating
+                if state.is_idle()
                     && state
                         .sign_in
                         .characters
@@ -161,12 +198,12 @@ impl Model {
                     session_id: state.sign_in.session.session_id,
                     session_token: state.sign_in.session.token,
                 };
-                state.creating = true;
+                state.operation = CharacterOperation::CreatingCharacter;
                 state.error = None;
                 (Self::Characters(state), Some(effect))
             }
             (Self::Characters(mut state), Message::CharacterCreated(Ok(character))) => {
-                state.creating = false;
+                state.operation = CharacterOperation::Idle;
                 state.selected_character_id = Some(character.id);
                 if let Some(existing) = state
                     .sign_in
@@ -181,7 +218,53 @@ impl Model {
                 state.error = None;
                 (Self::Characters(state), None)
             }
-            (Self::Characters(mut state), Message::CharacterCreated(Err(error))) => {
+            (Self::Characters(mut state), Message::DeleteCharacter(character_id)) => {
+                if state.can_delete(character_id) {
+                    state.operation = CharacterOperation::ConfirmingDeletion(character_id);
+                }
+                (Self::Characters(state), None)
+            }
+            (Self::Characters(mut state), Message::CancelDeletion) => {
+                state.operation = CharacterOperation::Idle;
+                (Self::Characters(state), None)
+            }
+            (Self::Characters(mut state), Message::ConfirmDeletion) => {
+                let Some(character_id) = state.deletion_target() else {
+                    return (Self::Characters(state), None);
+                };
+
+                let effect = Effect::DeleteCharacter {
+                    session_id: state.sign_in.session.session_id,
+                    session_token: state.sign_in.session.token,
+                    character_id,
+                };
+                state.operation = CharacterOperation::DeletingCharacter;
+                state.error = None;
+                (Self::Characters(state), Some(effect))
+            }
+            (Self::Characters(mut state), Message::CharacterDeleted(Ok(character_id))) => {
+                state.operation = CharacterOperation::Idle;
+                state
+                    .sign_in
+                    .characters
+                    .retain(|character| character.id != character_id);
+                if state.sign_in.last_character_id == Some(character_id) {
+                    state.sign_in.last_character_id = None;
+                }
+                if state.selected_character_id == Some(character_id) {
+                    state.selected_character_id = state
+                        .sign_in
+                        .characters
+                        .first()
+                        .map(|character| character.id);
+                }
+                state.error = None;
+                (Self::Characters(state), None)
+            }
+            (
+                Self::Characters(mut state),
+                Message::CharacterCreated(Err(error)) | Message::CharacterDeleted(Err(error)),
+            ) => {
                 let error_message = http_error_message(&error);
                 if error.code() == Some("invalid_session") {
                     return (
@@ -194,7 +277,7 @@ impl Model {
                     );
                 }
 
-                state.creating = false;
+                state.operation = CharacterOperation::Idle;
                 state.error = Some(error_message);
                 (Self::Characters(state), None)
             }
@@ -223,6 +306,7 @@ fn http_error_message(error: &http::Error) -> String {
         Some("pending_character_exists") => {
             "A new character is already waiting for setup.".to_owned()
         }
+        Some("character_not_found") => "The character no longer exists.".to_owned(),
         Some("internal_error") => "The Sign service failed to process the request.".to_owned(),
         _ => error.to_string(),
     }
@@ -293,9 +377,63 @@ mod tests {
         let Model::Characters(state) = model else {
             panic!("created character changed the page");
         };
-        assert!(!state.creating);
+        assert_eq!(state.operation, CharacterOperation::Idle);
         assert_eq!(state.selected_character_id, Some(CharacterId::from(8)));
         assert_eq!(state.sign_in.characters.len(), 2);
+        assert!(state.can_delete(CharacterId::from(8)));
+    }
+
+    #[test]
+    fn character_deletion_removes_the_character_and_clears_the_selection() {
+        let (model, effect) =
+            Model::Characters(characters()).update(Message::DeleteCharacter(CharacterId::from(7)));
+        assert!(effect.is_none());
+        let Model::Characters(state) = model else {
+            panic!("deletion request changed the page");
+        };
+        assert_eq!(state.deletion_target(), Some(CharacterId::from(7)));
+
+        let (model, effect) = Model::Characters(state).update(Message::ConfirmDeletion);
+        let Some(Effect::DeleteCharacter {
+            session_id,
+            session_token,
+            character_id,
+        }) = effect
+        else {
+            panic!("character deletion did not emit an HTTP effect");
+        };
+        assert_eq!(session_id, SignSessionId::from(11));
+        assert_eq!(session_token, *b"0123456789abcdef");
+        assert_eq!(character_id, CharacterId::from(7));
+        let Model::Characters(state) = model else {
+            panic!("character deletion changed the page");
+        };
+        assert_eq!(state.operation, CharacterOperation::DeletingCharacter);
+
+        let (model, effect) =
+            Model::Characters(state).update(Message::CharacterDeleted(Ok(CharacterId::from(7))));
+        assert!(effect.is_none());
+        let Model::Characters(state) = model else {
+            panic!("deleted character changed the page");
+        };
+        assert_eq!(state.operation, CharacterOperation::Idle);
+        assert!(state.sign_in.characters.is_empty());
+        assert_eq!(state.selected_character_id, None);
+    }
+
+    #[test]
+    fn cancel_deletion_keeps_the_character() {
+        let (model, effect) =
+            Model::Characters(characters()).update(Message::DeleteCharacter(CharacterId::from(7)));
+        assert!(effect.is_none());
+
+        let (model, effect) = model.update(Message::CancelDeletion);
+        assert!(effect.is_none());
+        let Model::Characters(state) = model else {
+            panic!("cancelling deletion changed the page");
+        };
+        assert_eq!(state.operation, CharacterOperation::Idle);
+        assert_eq!(state.sign_in.characters.len(), 1);
     }
 
     #[test]
@@ -344,7 +482,7 @@ mod tests {
             form: credentials_form(),
             sign_in: sign_in_success(),
             selected_character_id: Some(CharacterId::from(7)),
-            creating: false,
+            operation: CharacterOperation::Idle,
             error: None,
         }
     }

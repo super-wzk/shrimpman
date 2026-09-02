@@ -2,7 +2,10 @@ mod character;
 mod sign_in;
 
 use serde::{Serialize, de::DeserializeOwned};
-use shrimpman_domain::session::{SIGN_SESSION_TOKEN_LEN, SignSessionId};
+use shrimpman_domain::{
+    character::CharacterId,
+    session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
+};
 use shrimpman_mhf_launcher::{PasswordCredentials, SignCharacter, SignInSuccess};
 use std::{fmt, time::Duration};
 
@@ -50,13 +53,7 @@ impl Client {
         session_token: [u8; SIGN_SESSION_TOKEN_LEN],
         on_done: impl FnOnce(Result<SignCharacter, Error>) + Send + 'static,
     ) -> Result<(), Error> {
-        let session_token = std::str::from_utf8(&session_token).map_err(|_| {
-            Error::InvalidRequest("Sign session token is not valid ASCII".to_owned())
-        })?;
-        let request = character::CreateRequest {
-            session_id: session_id.into(),
-            session_token,
-        };
+        let request = session_request(session_id, &session_token)?;
         self.post(
             "/characters",
             &request,
@@ -64,6 +61,27 @@ impl Client {
                 on_done(result.and_then(character::Response::into_domain));
             },
         )
+    }
+
+    pub(crate) fn delete_character(
+        &self,
+        session_id: SignSessionId,
+        session_token: [u8; SIGN_SESSION_TOKEN_LEN],
+        character_id: CharacterId,
+        on_done: impl FnOnce(Result<CharacterId, Error>) + Send + 'static,
+    ) -> Result<(), Error> {
+        let request = session_request(session_id, &session_token)?;
+        let request = ehttp::Request::post_json(
+            format!("{}/characters/{}", self.base_url, u32::from(character_id)),
+            &request,
+        )
+        .map_err(|error| Error::InvalidRequest(error.to_string()))?
+        .with_method(ehttp::Method::DELETE)
+        .with_timeout(Some(REQUEST_TIMEOUT));
+        ehttp::fetch(request, move |response| {
+            on_done(require_success(response).map(|_| character_id));
+        });
+        Ok(())
     }
 
     fn post<RequestBody, ResponseBody>(
@@ -84,6 +102,18 @@ impl Client {
         });
         Ok(())
     }
+}
+
+fn session_request(
+    session_id: SignSessionId,
+    session_token: &[u8; SIGN_SESSION_TOKEN_LEN],
+) -> Result<character::SessionRequest<'_>, Error> {
+    let session_token = std::str::from_utf8(session_token)
+        .map_err(|_| Error::InvalidRequest("Sign session token is not valid ASCII".to_owned()))?;
+    Ok(character::SessionRequest {
+        session_id: session_id.into(),
+        session_token,
+    })
 }
 
 #[derive(Debug)]
@@ -140,6 +170,12 @@ fn parse_response<ResponseBody>(
 where
     ResponseBody: DeserializeOwned,
 {
+    require_success(response)?
+        .json()
+        .map_err(|error| Error::InvalidResponse(error.to_string()))
+}
+
+fn require_success(response: ehttp::Result<ehttp::Response>) -> Result<ehttp::Response, Error> {
     let response = response.map_err(|error| Error::Transport(error.to_string()))?;
     if !response.ok {
         let code = response
@@ -151,8 +187,5 @@ where
             code,
         });
     }
-
-    response
-        .json()
-        .map_err(|error| Error::InvalidResponse(error.to_string()))
+    Ok(response)
 }

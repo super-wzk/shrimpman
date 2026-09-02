@@ -94,6 +94,26 @@ impl<'a> EframeApp<'a> {
                     self.dispatch(Message::CharacterCreated(Err(error)), context);
                 }
             }
+            Effect::DeleteCharacter {
+                session_id,
+                session_token,
+                character_id,
+            } => {
+                let sender = self.message_sender.clone();
+                let repaint_context = context.clone();
+                let result = self.client.delete_character(
+                    session_id,
+                    session_token,
+                    character_id,
+                    move |result| {
+                        let _ = sender.send(Message::CharacterDeleted(result));
+                        repaint_context.request_repaint();
+                    },
+                );
+                if let Err(error) = result {
+                    self.dispatch(Message::CharacterDeleted(Err(error)), context);
+                }
+            }
             Effect::Launch(request) => {
                 *self.launch_request = Some(request);
                 context.send_viewport_cmd(egui::ViewportCommand::Close);
