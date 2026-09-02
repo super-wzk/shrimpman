@@ -1,23 +1,39 @@
 use eframe::egui;
 
+const SARASA_UI_SC: &str = "Sarasa UI SC";
+
 pub(super) const BG: egui::Color32 = egui::Color32::from_rgb(17, 19, 24);
 pub(super) const CARD_BG: egui::Color32 = egui::Color32::from_rgb(26, 29, 38);
-pub(super) const CONTROL_BG: egui::Color32 = egui::Color32::from_rgb(20, 23, 30);
-pub(super) const HOVER_BG: egui::Color32 = egui::Color32::from_rgb(38, 43, 56);
+const CONTROL_BG: egui::Color32 = egui::Color32::from_rgb(20, 23, 30);
+const HOVER_BG: egui::Color32 = egui::Color32::from_rgb(38, 43, 56);
 pub(super) const BORDER: egui::Color32 = egui::Color32::from_rgb(48, 53, 68);
 pub(super) const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 163, 61);
-pub(super) const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(244, 184, 93);
-pub(super) const ACCENT_ACTIVE: egui::Color32 = egui::Color32::from_rgb(199, 135, 45);
-pub(super) const ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(31, 21, 6);
-pub(super) const TEXT: egui::Color32 = egui::Color32::from_rgb(232, 230, 227);
+const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(244, 184, 93);
+const ACCENT_ACTIVE: egui::Color32 = egui::Color32::from_rgb(199, 135, 45);
+const ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(31, 21, 6);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(232, 230, 227);
 pub(super) const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(156, 162, 178);
 pub(super) const ERROR: egui::Color32 = egui::Color32::from_rgb(224, 85, 97);
 pub(super) const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 138, 146);
-pub(super) const WARNING: egui::Color32 = egui::Color32::from_rgb(229, 192, 123);
-pub(super) const WARNING_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 208, 148);
+const WARNING: egui::Color32 = egui::Color32::from_rgb(229, 192, 123);
+const WARNING_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 208, 148);
 pub(super) const TEXT_EDIT_MARGIN: egui::Margin = egui::Margin::symmetric(10, 8);
 
 pub(super) fn install(context: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        SARASA_UI_SC.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../../../assets/fonts/SarasaUiSC-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, SARASA_UI_SC.to_owned());
+    context.set_fonts(fonts);
+
     context.set_theme(egui::ThemePreference::Dark);
     let mut visuals = egui::Visuals::dark();
     let control_corner_radius = egui::CornerRadius::same(6);
@@ -120,28 +136,5 @@ fn banner(ui: &mut egui::Ui, text: &str, color: egui::Color32, text_color: egui:
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(egui::RichText::new(text).color(text_color).size(13.0));
-        });
-}
-
-/// Small rounded label used for character stats and badges.
-pub(super) fn chip(
-    ui: &mut egui::Ui,
-    text: impl Into<String>,
-    fill: egui::Color32,
-    text_color: egui::Color32,
-    strong: bool,
-) {
-    let mut text = egui::RichText::new(text.into())
-        .size(11.0)
-        .color(text_color);
-    if strong {
-        text = text.strong();
-    }
-    egui::Frame::new()
-        .fill(fill)
-        .corner_radius(5)
-        .inner_margin(egui::Margin::symmetric(7, 2))
-        .show(ui, |ui| {
-            ui.label(text);
         });
 }

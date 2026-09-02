@@ -56,9 +56,22 @@ impl CredentialsForm {
 pub(super) struct Characters {
     pub(super) form: CredentialsForm,
     pub(super) sign_in: SignInSuccess,
-    pub(super) selected_character_id: Option<CharacterId>,
+    pub(super) selection: CharacterSelection,
     pub(super) operation: CharacterOperation,
     pub(super) error: Option<String>,
+}
+
+const CHARACTER_LIMIT: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CharacterSelection {
+    Existing(CharacterId),
+    New,
+}
+
+enum LaunchAction {
+    UseCharacter(CharacterId),
+    CreateCharacter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,30 +83,70 @@ pub(super) enum CharacterOperation {
 }
 
 impl Characters {
-    pub(super) fn can_create(&self) -> bool {
-        self.is_idle()
-            && self.sign_in.characters.len() < 16
-            && !self
-                .sign_in
-                .characters
-                .iter()
-                .any(|character| character.is_new)
+    fn has_existing_character(&self, character_id: CharacterId) -> bool {
+        self.sign_in
+            .characters
+            .iter()
+            .any(|character| character.id == character_id && !character.is_new)
     }
 
-    pub(super) fn can_delete(&self, character_id: CharacterId) -> bool {
-        self.is_idle()
-            && self
-                .sign_in
-                .characters
-                .iter()
-                .any(|character| character.id == character_id)
+    fn pending_character_id(&self) -> Option<CharacterId> {
+        self.sign_in
+            .characters
+            .iter()
+            .find(|character| character.is_new)
+            .map(|character| character.id)
     }
 
-    pub(super) fn launch_character_id(&self) -> Option<CharacterId> {
+    pub(super) fn has_new_slot(&self) -> bool {
+        self.pending_character_id().is_some() || self.sign_in.characters.len() < CHARACTER_LIMIT
+    }
+
+    fn can_select(&self, selection: CharacterSelection) -> bool {
+        if !self.is_idle() {
+            return false;
+        }
+
+        match selection {
+            CharacterSelection::Existing(character_id) => self.has_existing_character(character_id),
+            CharacterSelection::New => self.has_new_slot(),
+        }
+    }
+
+    fn can_delete(&self, character_id: CharacterId) -> bool {
+        self.is_idle() && self.has_existing_character(character_id)
+    }
+
+    pub(super) fn selected_deletable_character_id(&self) -> Option<CharacterId> {
+        match self.selection {
+            CharacterSelection::Existing(character_id) if self.can_delete(character_id) => {
+                Some(character_id)
+            }
+            _ => None,
+        }
+    }
+
+    fn launch_action(&self) -> Option<LaunchAction> {
         if !self.is_idle() || self.sign_in.entrance_servers.is_empty() {
             return None;
         }
-        self.selected_character_id
+
+        match self.selection {
+            CharacterSelection::Existing(character_id) => self
+                .has_existing_character(character_id)
+                .then_some(LaunchAction::UseCharacter(character_id)),
+            CharacterSelection::New => match self.pending_character_id() {
+                Some(character_id) => Some(LaunchAction::UseCharacter(character_id)),
+                None if self.sign_in.characters.len() < CHARACTER_LIMIT => {
+                    Some(LaunchAction::CreateCharacter)
+                }
+                None => None,
+            },
+        }
+    }
+
+    pub(super) fn can_launch(&self) -> bool {
+        self.launch_action().is_some()
     }
 
     pub(super) fn is_idle(&self) -> bool {
@@ -106,14 +159,21 @@ impl Characters {
             _ => None,
         }
     }
+
+    fn into_launch_request(self, selected_character_id: CharacterId) -> LaunchRequest {
+        LaunchRequest {
+            credentials: self.form.into_credentials(),
+            sign_in: self.sign_in,
+            selected_character_id,
+        }
+    }
 }
 
 pub(super) enum Message {
     SignIn,
     SignedIn(Result<SignInSuccess, http::Error>),
     SignOut,
-    SelectCharacter(CharacterId),
-    CreateCharacter,
+    Select(CharacterSelection),
     CharacterCreated(Result<SignCharacter, http::Error>),
     DeleteCharacter(CharacterId),
     ConfirmDeletion,
@@ -150,14 +210,27 @@ impl Model {
                 (Self::SignIn(state), Some(Effect::SignIn(credentials)))
             }
             (Self::SignIn(state), Message::SignedIn(Ok(sign_in))) => {
-                let selected_character_id = sign_in
+                let selection = sign_in
                     .last_character_id
-                    .or_else(|| sign_in.characters.first().map(|character| character.id));
+                    .and_then(|character_id| {
+                        sign_in
+                            .characters
+                            .iter()
+                            .find(|character| character.id == character_id)
+                    })
+                    .or_else(|| sign_in.characters.first())
+                    .map_or(CharacterSelection::New, |character| {
+                        if character.is_new {
+                            CharacterSelection::New
+                        } else {
+                            CharacterSelection::Existing(character.id)
+                        }
+                    });
                 (
                     Self::Characters(Characters {
                         form: state.form,
                         sign_in,
-                        selected_character_id,
+                        selection,
                         operation: CharacterOperation::Idle,
                         error: None,
                     }),
@@ -177,34 +250,14 @@ impl Model {
                 }),
                 None,
             ),
-            (Self::Characters(mut state), Message::SelectCharacter(character_id)) => {
-                if state.is_idle()
-                    && state
-                        .sign_in
-                        .characters
-                        .iter()
-                        .any(|character| character.id == character_id)
-                {
-                    state.selected_character_id = Some(character_id);
+            (Self::Characters(mut state), Message::Select(selection)) => {
+                if state.can_select(selection) {
+                    state.selection = selection;
                 }
                 (Self::Characters(state), None)
             }
-            (Self::Characters(mut state), Message::CreateCharacter) => {
-                if !state.can_create() {
-                    return (Self::Characters(state), None);
-                }
-
-                let effect = Effect::CreateCharacter {
-                    session_id: state.sign_in.session.session_id,
-                    session_token: state.sign_in.session.token,
-                };
-                state.operation = CharacterOperation::CreatingCharacter;
-                state.error = None;
-                (Self::Characters(state), Some(effect))
-            }
             (Self::Characters(mut state), Message::CharacterCreated(Ok(character))) => {
-                state.operation = CharacterOperation::Idle;
-                state.selected_character_id = Some(character.id);
+                let selected_character_id = character.id;
                 if let Some(existing) = state
                     .sign_in
                     .characters
@@ -215,8 +268,8 @@ impl Model {
                 } else {
                     state.sign_in.characters.push(character);
                 }
-                state.error = None;
-                (Self::Characters(state), None)
+                let request = state.into_launch_request(selected_character_id);
+                (Self::Closing, Some(Effect::Launch(request)))
             }
             (Self::Characters(mut state), Message::DeleteCharacter(character_id)) => {
                 if state.can_delete(character_id) {
@@ -251,12 +304,15 @@ impl Model {
                 if state.sign_in.last_character_id == Some(character_id) {
                     state.sign_in.last_character_id = None;
                 }
-                if state.selected_character_id == Some(character_id) {
-                    state.selected_character_id = state
+                if state.selection == CharacterSelection::Existing(character_id) {
+                    state.selection = state
                         .sign_in
                         .characters
-                        .first()
-                        .map(|character| character.id);
+                        .iter()
+                        .find(|character| !character.is_new)
+                        .map_or(CharacterSelection::New, |character| {
+                            CharacterSelection::Existing(character.id)
+                        });
                 }
                 state.error = None;
                 (Self::Characters(state), None)
@@ -281,18 +337,22 @@ impl Model {
                 state.error = Some(error_message);
                 (Self::Characters(state), None)
             }
-            (Self::Characters(state), Message::Launch) => {
-                let Some(selected_character_id) = state.launch_character_id() else {
-                    return (Self::Characters(state), None);
-                };
-
-                let request = LaunchRequest {
-                    credentials: state.form.into_credentials(),
-                    sign_in: state.sign_in,
-                    selected_character_id,
-                };
-                (Self::Closing, Some(Effect::Launch(request)))
-            }
+            (Self::Characters(mut state), Message::Launch) => match state.launch_action() {
+                Some(LaunchAction::UseCharacter(selected_character_id)) => {
+                    let request = state.into_launch_request(selected_character_id);
+                    (Self::Closing, Some(Effect::Launch(request)))
+                }
+                Some(LaunchAction::CreateCharacter) => {
+                    let effect = Effect::CreateCharacter {
+                        session_id: state.sign_in.session.session_id,
+                        session_token: state.sign_in.session.token,
+                    };
+                    state.operation = CharacterOperation::CreatingCharacter;
+                    state.error = None;
+                    (Self::Characters(state), Some(effect))
+                }
+                None => (Self::Characters(state), None),
+            },
             (model, _) => (model, None),
         }
     }
@@ -343,14 +403,16 @@ mod tests {
         let Model::Characters(state) = model else {
             panic!("successful sign-in did not open character selection");
         };
-        assert_eq!(state.selected_character_id, Some(CharacterId::from(7)));
+        assert_eq!(
+            state.selection,
+            CharacterSelection::Existing(CharacterId::from(7))
+        );
         assert_eq!(state.form.username, "  hunter  ");
     }
 
     #[test]
-    fn character_creation_updates_and_selects_the_character() {
-        let state = characters();
-        let (model, effect) = Model::Characters(state).update(Message::CreateCharacter);
+    fn launching_an_empty_slot_creates_the_character_then_launches() {
+        let (model, effect) = Model::Characters(empty_characters()).update(Message::Launch);
 
         let Some(Effect::CreateCharacter {
             session_id,
@@ -361,30 +423,62 @@ mod tests {
         };
         assert_eq!(session_id, SignSessionId::from(11));
         assert_eq!(session_token, *b"0123456789abcdef");
-
-        let character = SignCharacter {
-            id: CharacterId::from(8),
-            name: String::new(),
-            gr: 0,
-            hr: 1,
-            weapon_type: WeaponType::SwordAndShield,
-            gender: Gender::Male,
-            last_sign_in_at: None,
-            is_new: true,
-        };
-        let (model, effect) = model.update(Message::CharacterCreated(Ok(character)));
-        assert!(effect.is_none());
         let Model::Characters(state) = model else {
-            panic!("created character changed the page");
+            panic!("character creation changed the page before it completed");
         };
-        assert_eq!(state.operation, CharacterOperation::Idle);
-        assert_eq!(state.selected_character_id, Some(CharacterId::from(8)));
-        assert_eq!(state.sign_in.characters.len(), 2);
-        assert!(state.can_delete(CharacterId::from(8)));
+        assert_eq!(state.operation, CharacterOperation::CreatingCharacter);
+
+        let (model, effect) =
+            Model::Characters(state).update(Message::CharacterCreated(Ok(new_character(8))));
+        assert!(matches!(model, Model::Closing));
+        let Some(Effect::Launch(request)) = effect else {
+            panic!("created character was not launched");
+        };
+        assert_eq!(request.selected_character_id, CharacterId::from(8));
+        assert!(
+            request
+                .sign_in
+                .characters
+                .iter()
+                .any(|character| character.id == CharacterId::from(8))
+        );
     }
 
     #[test]
-    fn character_deletion_removes_the_character_and_clears_the_selection() {
+    fn launching_a_pending_new_character_does_not_create_another_one() {
+        let mut state = characters();
+        state.sign_in.characters.push(new_character(8));
+        state.selection = CharacterSelection::New;
+
+        let (model, effect) = Model::Characters(state).update(Message::Launch);
+
+        assert!(matches!(model, Model::Closing));
+        let Some(Effect::Launch(request)) = effect else {
+            panic!("pending character was not launched directly");
+        };
+        assert_eq!(request.selected_character_id, CharacterId::from(8));
+    }
+
+    #[test]
+    fn pending_new_character_cannot_be_deleted() {
+        let mut state = characters();
+        state.sign_in.characters.push(new_character(8));
+        state.selection = CharacterSelection::New;
+        assert!(!state.can_delete(CharacterId::from(8)));
+        assert_eq!(state.selected_deletable_character_id(), None);
+
+        let (model, effect) =
+            Model::Characters(state).update(Message::DeleteCharacter(CharacterId::from(8)));
+
+        assert!(effect.is_none());
+        let Model::Characters(state) = model else {
+            panic!("rejected deletion changed the page");
+        };
+        assert_eq!(state.operation, CharacterOperation::Idle);
+    }
+
+    #[test]
+    fn character_deletion_removes_the_character_and_selects_the_new_slot() {
         let (model, effect) =
             Model::Characters(characters()).update(Message::DeleteCharacter(CharacterId::from(7)));
         assert!(effect.is_none());
@@ -418,7 +512,7 @@ mod tests {
         };
         assert_eq!(state.operation, CharacterOperation::Idle);
         assert!(state.sign_in.characters.is_empty());
-        assert_eq!(state.selected_character_id, None);
+        assert_eq!(state.selection, CharacterSelection::New);
     }
 
     #[test]
@@ -438,7 +532,7 @@ mod tests {
 
     #[test]
     fn invalid_session_returns_to_sign_in() {
-        let (model, _) = Model::Characters(characters()).update(Message::CreateCharacter);
+        let (model, _) = Model::Characters(empty_characters()).update(Message::Launch);
         let error = http::Error::Response {
             status: 401,
             code: Some("invalid_session".to_owned()),
@@ -481,9 +575,29 @@ mod tests {
         Characters {
             form: credentials_form(),
             sign_in: sign_in_success(),
-            selected_character_id: Some(CharacterId::from(7)),
+            selection: CharacterSelection::Existing(CharacterId::from(7)),
             operation: CharacterOperation::Idle,
             error: None,
+        }
+    }
+
+    fn empty_characters() -> Characters {
+        let mut state = characters();
+        state.sign_in.characters.clear();
+        state.selection = CharacterSelection::New;
+        state
+    }
+
+    fn new_character(id: u32) -> SignCharacter {
+        SignCharacter {
+            id: CharacterId::from(id),
+            name: String::new(),
+            gr: 0,
+            hr: 1,
+            weapon_type: WeaponType::SwordAndShield,
+            gender: Gender::Male,
+            last_sign_in_at: None,
+            is_new: true,
         }
     }
 
