@@ -56,24 +56,22 @@
       "extensions": [
         "rust-lang.rust-analyzer",
         "tamasfe.even-better-toml",
-        "eamodio.gitlens",
         "davidanson.vscode-markdownlint",
         "ms-azuretools.vscode-docker",
         "shardulm94.trailing-spaces",
         "FanaticPythoner.better-todo-tree",
-        "bierner.emojisense",
         "stkb.rewrap",
         "vscode-icons-team.vscode-icons",
-        "redhat.vscode-yaml",
         "intellsmi.comment-translate",
         "isudox.vscode-jetbrains-keybindings",
-        "nefrob.vscode-just-syntax"
+        "nefrob.vscode-just-syntax",
+        "tombi-toml.tombi",
+        "spikespaz.vscode-smoothtype"
         // "mohsen1.prettify-json", // Prettify JSON data
         // "zxh404.vscode-proto3", // Supports Proto syntax
         // "jrebocho.vscode-random", // Generates random values
         // "alefragnani.Bookmarks", // Manage bookmarks
         // "quicktype.quicktype", // Paste JSON as code
-        // "spikespaz.vscode-smoothtype", // smooth cursor animation
       ],
       "settings": {
         "files.eol": "\n",

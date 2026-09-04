@@ -17,7 +17,7 @@ listen_addr = "0.0.0.0:53310"
 advertise_addr = "127.0.0.1:53310"
 
 [sign]
-auto_sign_up = false
+auto_sign_up = true
 shutdown_timeout = "5s"
 
 [sign.database]
@@ -46,7 +46,7 @@ key = "main"
 address = "127.0.0.1"
 name = "Main World"
 description = ""
-world_type = "Free"
+world_type = "Beginner"
 season = "Breeding"
 content = "AllQuests"
 client_compatibility = "AllPlatforms"
