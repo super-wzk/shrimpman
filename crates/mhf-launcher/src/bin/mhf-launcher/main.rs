@@ -4,6 +4,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 mod config;
 mod credentials;
+mod font;
 mod http;
 mod ini_hook;
 mod runtime;

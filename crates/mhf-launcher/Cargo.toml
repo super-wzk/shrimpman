@@ -5,8 +5,9 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+bumpalo = "3.20.3"
 clap = { version = "4", features = ["derive"] }
-eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "wgpu"] }
+eframe = { version = "0.36.1", default-features = false, features = ["wgpu"] }
 ehttp = { version = "0.7.1", features = ["json"] }
 jiff = { version = "0.2", features = ["serde"] }
 minhook = "0.9.0"
@@ -14,11 +15,13 @@ serde = { version = "1", features = ["derive"] }
 shrimpman-common = { path = "../common" }
 shrimpman-domain = { path = "../domain" }
 toml = "1"
+unicode-width = { version = "0.2", features = ["cjk"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Security",
     "Win32_Security_Credentials",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Threading",
@@ -26,4 +29,9 @@ windows = { version = "0.62", features = [
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_Globalization",
+    "Win32_Graphics_Gdi",
 ] }
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

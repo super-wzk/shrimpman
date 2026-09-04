@@ -84,6 +84,14 @@ pub fn launch_mhfo(
         GraphicsVersion::HighDefinition => profile.mhfo_hd_dll,
     };
     let game = MhfoModule::load(game_name)?;
+    if let Some(translation) = &config.translation {
+        crate::localization::install(
+            game.handle(),
+            &translation.locale,
+            translation.missing,
+            &data.params.font_name,
+        )?;
+    }
     let entry = game.main()?;
     data.mhfo_module = game.handle();
     data.mhfo_main = Some(entry);
@@ -453,6 +461,7 @@ mod tests {
                 }),
             },
             selected_character_id: CharacterId::from(1),
+            translation: None,
             mhf: MhfConfig::default(),
         };
         let mut params = MhfLaunchParams32::default();

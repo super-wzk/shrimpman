@@ -20,14 +20,18 @@ API 地址隔离，目标名称为 `Shrimpman MHF — <Sign API 地址>`，可�
 [sign.http]
 base_url = "http://127.0.0.1:53313"
 
+[translation]
+locale = "zh-CN"
+missing = "original"
+
 [screen]
 mode = "windowed"
 window_resolution = { width = 400, height = 400 }
 
 [font]
 quality = "antialiased"
-weight = 0x2bc
-name = "MS Gothic"
+weight = 400
+name = "JetBrains Maple Mono NF NL HT"
 
 [localization]
 language = "japanese"
@@ -37,8 +41,22 @@ language = "japanese"
 例如 `windowed`、`high_definition` 和 `antialiased`。语言可选 `japanese`、
 `english`、`korean` 和 `traditional_chinese`。`set`、`screen`、`video`、`sound`、
 `localization`、`font`、`option` 和 `launch` 会解析为强类型配置；游戏动态创建的其他
-section/key 仍以 string 原样保留。`[sign]` 是启动器配置命名空间，不会暴露给游戏的
-Win32 Profile API。
+section/key 仍以 string 原样保留。`[sign]` 与 `[translation]` 是启动器配置命名空间，
+不会暴露给游戏的 Win32 Profile API。`[translation] locale` 选择按同名 JSONL 文件
+编译到 EXE 内嵌字典的额外翻译；locale ID 就是文件名，不限定语言代码格式。每个 locale
+地位相同，空 JSONL 表示没有覆盖。只有显式配置 `[translation]` 才会安装翻译 hook；
+省略该 section 时游戏完全使用原始文本。资源结构和合法 key 由 resource layout 定义，
+每个 locale 只包含自己的实际覆盖。
+`missing` 默认为 `original`，也可设为 `key` 或 `empty`。layout、key 和翻译文件格式见
+[`translations/README.md`](translations/README.md)。
+
+`[localization] language` 与翻译覆盖相互独立：前者是游戏原生语言资源选择器并写入
+MHF ABI，后者只选择启动器内嵌字典。使用 `missing = "original"` 时，未命中的 key
+显示所选游戏语言的原始文本。
+
+EXE 内嵌一份 JetBrainsMapleMono-NF-XX-NL-HT Regular，启动器 UI 直接使用其静态字节；当
+`[font] name` 选择该字体时，同一份字节会在进入游戏前注册为仅当前进程可见的 GDI
+字体，不安装到 Windows 或 Wine 字体目录。选择其他字体时使用系统中已有的对应字体。
 
 加载游戏 DLL 前，启动器使用 MinHook 的 `create_hook_api` 拦截
 `GetPrivateProfileIntA`、`GetPrivateProfileStringA` 和
@@ -57,13 +75,23 @@ Win32 Profile API。
 - `src/model.rs`：定义游戏 `MhfConfig`、启动时的 Sign 登录结果和启动 profile；角色、
   会话与权限复用 workspace 领域类型。
 - `src/launcher.rs`：负责领域模型到 ABI 的映射及 Win32 启动流程。
+- `src/localization/`：在 DAT/INF/PAC 完成原生指针重定位、首次消费或复制前，按 layout
+  遍历绝对指针并把字符串槽指向独立翻译缓存，使后续别名自然继承翻译；同时捕获实际
+  stage 文件号，并在对应 TLK image 中修改明确登记的记录。启动时按 Unicode East Asian
+  Width 的 CJK 宽度为当前 locale 建立固定的半宽/全宽虚拟字形映射，分别使用游戏原有的
+  8/16 像素槽并交给 GDI 宽字符接口；运行时不解析 JSONL。
 - `src/bin/mhf-launcher/http/`：Sign HTTP 客户端及按 API 命名空间组织的请求、响应
   模型。
 - `src/bin/mhf-launcher/ui/`：按 Elm 结构组织状态更新、界面渲染和 eframe 适配。
-- `src/bin/mhf-launcher/config.rs`：解析 `[sign.http]` 和强类型 `MhfConfig`，并将后者
-  映射到 TOML 持久化格式；原始 `toml::Table` 只封装在私有 `Store` 中。
+- `src/bin/mhf-launcher/config.rs`：解析 `[sign.http]`、`[translation]` 和强类型
+  `MhfConfig`，并将后者映射到 TOML 持久化格式；原始 `toml::Table` 只封装在私有
+  `Store` 中。
 - `src/bin/mhf-launcher/ini_hook.rs`：把 Win32 Profile API 代理到 TOML。
 - `src/bin/mhf-launcher/runtime.rs`：准备游戏目录与配置，并在 UI 退出后执行游戏启动。
+- `translations/`：`resources.json` 定义带稳定 `id` 的资源表及客户端运行时绑定；
+  每个 UTF-8 JSONL 对应一个 locale，也可以为空。`build.rs` 根据 layout 生成资源 hook、
+  校验翻译键，并把各 locale 的稀疏 UTF-8 覆盖编译成直接嵌入 EXE 的二进制字典；生成的
+  类型化 locale 注册表负责运行时查询。
 
 profile 只使用 Rust 的 `&str`；DLL 名、INI 名、互斥量前缀和宿主提示文本由
 `main` 传入，`CString`/`PCSTR` 转换留在 Win32 边界。固定的 `mhDLL_Main` ABI
@@ -82,8 +110,8 @@ cargo build -p shrimpman-mhf-launcher --release --target i686-pc-windows-msvc
 
 启动器使用 clap 解析独立选项。未提供 `-c/--config` 时读取启动器同目录的
 `mhf.toml`；未提供 `-d/--game-dir` 时使用启动器目录。显式传入的相对路径仍以
-启动进程的当前工作目录为基准。游戏目录用于定位 `mhfo[-hd].dll`，不再要求存在
-物理 `mhf.ini`：
+启动进程的当前工作目录为基准。游戏目录用于定位 `mhfo[-hd].dll`，不需要物理
+`mhf.ini`：
 
 ```text
 mhf-launcher.exe

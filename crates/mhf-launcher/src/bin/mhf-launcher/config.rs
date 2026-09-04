@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use shrimpman_mhf_launcher::{FontQuality, GraphicsVersion, Language, MhfConfig, ScreenMode};
+use shrimpman_mhf_launcher::{
+    FontQuality, GraphicsVersion, Language, MhfConfig, ScreenMode, TranslationConfig,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -7,6 +9,7 @@ use std::{
 use toml::{Table, Value};
 
 const SIGN_SECTION: &str = "sign";
+const TRANSLATION_SECTION: &str = "translation";
 
 const INI_SECTIONS: &[(&str, &str)] = &[
     ("SET", "set"),
@@ -340,6 +343,7 @@ pub(crate) struct Store {
 #[derive(Debug, Deserialize)]
 pub(crate) struct Settings {
     pub(crate) sign: sign::Settings,
+    pub(crate) translation: Option<TranslationConfig>,
     #[serde(flatten)]
     pub(crate) mhf: MhfConfig,
 }
@@ -393,7 +397,7 @@ impl Store {
     pub(crate) fn section_names(&self) -> Vec<String> {
         self.document
             .iter()
-            .filter(|(name, value)| !name.eq_ignore_ascii_case(SIGN_SECTION) && value.is_table())
+            .filter(|(name, value)| launcher_section_name(name).is_none() && value.is_table())
             .map(|(name, _)| ini_section_name(name).unwrap_or(name).to_owned())
             .collect()
     }
@@ -421,9 +425,7 @@ impl Store {
         key: String,
         value: String,
     ) -> Result<(), String> {
-        if section.eq_ignore_ascii_case(SIGN_SECTION) {
-            return Err("[sign] is launcher configuration, not an MHF INI section".to_owned());
-        }
+        reject_launcher_section(&section)?;
         let field = ini_field(&section, &key);
         let value = match field {
             Some(field) => field.kind.parse_ini(&value).map_err(|error| {
@@ -456,9 +458,7 @@ impl Store {
     }
 
     pub(crate) fn remove_key(&mut self, section: &str, key: &str) -> Result<(), String> {
-        if section.eq_ignore_ascii_case(SIGN_SECTION) {
-            return Err("[sign] is launcher configuration, not an MHF INI section".to_owned());
-        }
+        reject_launcher_section(section)?;
         let field = ini_field(section, key);
         self.update(|document| {
             let Some(section) = section_name(document, section) else {
@@ -481,9 +481,7 @@ impl Store {
     }
 
     pub(crate) fn remove_section(&mut self, section: &str) -> Result<(), String> {
-        if section.eq_ignore_ascii_case(SIGN_SECTION) {
-            return Err("[sign] is launcher configuration, not an MHF INI section".to_owned());
-        }
+        reject_launcher_section(section)?;
         self.update(|document| {
             if let Some(section) = section_name(document, section) {
                 document.remove(&section);
@@ -509,10 +507,10 @@ fn write_document(path: &Path, document: &Table) -> Result<(), String> {
 
 fn decode(document: &Table) -> Result<Settings, String> {
     for (section, value) in document {
-        if section.eq_ignore_ascii_case(SIGN_SECTION) {
-            if section != SIGN_SECTION {
+        if let Some(canonical) = launcher_section_name(section) {
+            if section != canonical {
                 return Err(format!(
-                    "launcher config section [{section}] must be named [{SIGN_SECTION}]"
+                    "launcher config section [{section}] must be named [{canonical}]"
                 ));
             }
             continue;
@@ -552,7 +550,7 @@ fn decode(document: &Table) -> Result<Settings, String> {
 }
 
 fn profile_section<'a>(document: &'a Table, name: &str) -> Option<&'a Table> {
-    if name.eq_ignore_ascii_case(SIGN_SECTION) {
+    if launcher_section_name(name).is_some() {
         return None;
     }
     let name = toml_section_name(name).unwrap_or(name);
@@ -560,6 +558,21 @@ fn profile_section<'a>(document: &'a Table, name: &str) -> Option<&'a Table> {
         .iter()
         .find(|(section, _)| section.eq_ignore_ascii_case(name))
         .and_then(|(_, value)| value.as_table())
+}
+
+fn launcher_section_name(name: &str) -> Option<&'static str> {
+    [SIGN_SECTION, TRANSLATION_SECTION]
+        .into_iter()
+        .find(|section| section.eq_ignore_ascii_case(name))
+}
+
+fn reject_launcher_section(name: &str) -> Result<(), String> {
+    let Some(section) = launcher_section_name(name) else {
+        return Ok(());
+    };
+    Err(format!(
+        "[{section}] is launcher configuration, not an MHF INI section"
+    ))
 }
 
 fn section_name(document: &Table, name: &str) -> Option<String> {
@@ -573,11 +586,16 @@ fn section_name(document: &Table, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shrimpman_mhf_launcher::MissingTranslation;
     use std::net::Ipv4Addr;
 
     const SOURCE: &str = r#"
 [sign.http]
 base_url = "http://127.0.0.1:53313"
+
+[translation]
+locale = "zh-CN"
+missing = "key"
 
 [screen]
 mode = "windowed"
@@ -627,10 +645,23 @@ value = "preserved"
 
         assert_eq!(config.mhf.video.graphics_version, GraphicsVersion::Standard);
         assert_eq!(config.mhf.localization.language, Language::Japanese);
+        let translation = config.translation.as_ref().unwrap();
+        assert_eq!(translation.locale, "zh-CN");
+        assert_eq!(translation.missing, MissingTranslation::Key);
         assert_eq!(config.mhf.font.name, "ＭＳ ゴシック");
         assert_eq!(config.mhf.font.weight, 0x190);
         assert_eq!(config.mhf.launch.proxy_address, Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(config.mhf.screen.window_resolution.width, 1280);
+    }
+
+    #[test]
+    fn missing_translation_section_disables_translation_hooks() {
+        let mut document = document();
+        document.remove(TRANSLATION_SECTION);
+
+        let config = decode(&document).expect("config without a translation section should load");
+
+        assert!(config.translation.is_none());
     }
 
     #[test]
@@ -641,6 +672,7 @@ value = "preserved"
             Some("preserved")
         );
         assert!(profile_section(&document, "sign").is_none());
+        assert!(profile_section(&document, "translation").is_none());
 
         let video = document
             .remove("video")
@@ -672,6 +704,17 @@ value = "preserved"
         let (_, mut store) = load(path.clone()).expect("test config should load");
 
         assert!(store.section_names().contains(&"SCREEN".to_owned()));
+        assert!(!store.section_names().contains(&"translation".to_owned()));
+        assert!(store.value("translation", "locale").is_none());
+        assert!(
+            store
+                .set_value(
+                    "translation".to_owned(),
+                    "locale".to_owned(),
+                    "unused".to_owned(),
+                )
+                .is_err()
+        );
         assert!(
             store
                 .key_names("SCREEN")
@@ -743,6 +786,9 @@ value = "preserved"
         let document: Table = toml::from_str(&source).expect("updated config should remain TOML");
         assert!(!source.contains("[server]"));
         assert!(source.contains("[sign.http]"));
+        assert!(source.contains("[translation]"));
+        assert!(source.contains("locale = \"zh-CN\""));
+        assert!(source.contains("missing = \"key\""));
         assert!(source.contains("value = \"updated\""));
         assert!(source.contains("graphics_version = \"high_definition\""));
         assert!(source.contains("language = \"korean\""));

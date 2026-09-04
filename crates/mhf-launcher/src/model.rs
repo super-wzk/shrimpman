@@ -23,7 +23,25 @@ pub struct Config {
     pub credentials: PasswordCredentials,
     pub sign_in: SignInSuccess,
     pub selected_character_id: CharacterId,
+    pub translation: Option<TranslationConfig>,
     pub mhf: MhfConfig,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TranslationConfig {
+    pub locale: String,
+    #[serde(default)]
+    pub missing: MissingTranslation,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingTranslation {
+    #[default]
+    Original,
+    Key,
+    Empty,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -359,8 +377,8 @@ impl Default for MhfFontConfig {
     fn default() -> Self {
         Self {
             quality: FontQuality::default(),
-            weight: 0x2bc,
-            name: "ＭＳ ゴシック".to_owned(),
+            weight: 400,
+            name: "JetBrains Maple Mono NF NL HT".to_owned(),
         }
     }
 }

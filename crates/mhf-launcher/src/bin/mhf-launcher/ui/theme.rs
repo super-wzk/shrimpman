@@ -1,7 +1,5 @@
 use eframe::egui;
 
-const SARASA_UI_SC: &str = "Sarasa UI SC";
-
 pub(super) const BG: egui::Color32 = egui::Color32::from_rgb(17, 19, 24);
 pub(super) const CARD_BG: egui::Color32 = egui::Color32::from_rgb(26, 29, 38);
 const CONTROL_BG: egui::Color32 = egui::Color32::from_rgb(20, 23, 30);
@@ -20,18 +18,19 @@ const WARNING_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 208, 148);
 pub(super) const TEXT_EDIT_MARGIN: egui::Margin = egui::Margin::symmetric(10, 8);
 
 pub(super) fn install(context: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
+    let mut fonts = egui::FontDefinitions::empty();
+    let font_name = crate::font::FAMILY_NAME.to_owned();
     fonts.font_data.insert(
-        SARASA_UI_SC.to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../../../assets/fonts/SarasaUiSC-Regular.ttf"
-        ))),
+        font_name.clone(),
+        std::sync::Arc::new(egui::FontData::from_static(crate::font::BYTES)),
     );
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, SARASA_UI_SC.to_owned());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push(font_name.clone());
+    }
     context.set_fonts(fonts);
 
     context.set_theme(egui::ThemePreference::Dark);

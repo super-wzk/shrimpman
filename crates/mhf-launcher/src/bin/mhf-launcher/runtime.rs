@@ -1,12 +1,14 @@
 use shrimpman_domain::character::CharacterId;
 use shrimpman_mhf_launcher::{
-    Config, MhfConfig, MhfLaunchProfile, PasswordCredentials, SignInSuccess, launch_mhfo,
+    Config, MhfConfig, MhfLaunchProfile, PasswordCredentials, SignInSuccess, TranslationConfig,
+    launch_mhfo,
 };
 use std::{env, path::PathBuf};
 
 pub(crate) struct PreparedLaunch {
     game_dir: PathBuf,
     sign: super::config::sign::Settings,
+    translation: Option<TranslationConfig>,
     mhf: MhfConfig,
     store: super::config::Store,
 }
@@ -42,6 +44,7 @@ pub(crate) fn prepare(
     Ok(PreparedLaunch {
         game_dir,
         sign: settings.sign,
+        translation: settings.translation,
         mhf: settings.mhf,
         store,
     })
@@ -60,11 +63,18 @@ impl PreparedLaunch {
         selected_character_id: CharacterId,
     ) -> Result<i32, String> {
         let game_dir = enter_game_directory(self.game_dir)?;
+        let configured_font = &self.mhf.font.name;
+        let _font_registration = if configured_font.eq_ignore_ascii_case(super::font::FAMILY_NAME) {
+            Some(super::font::register()?)
+        } else {
+            None
+        };
         super::ini_hook::install(profile.ini_name, self.store)?;
         let config = Config {
             credentials,
             sign_in,
             selected_character_id,
+            translation: self.translation,
             mhf: self.mhf,
         };
         launch_mhfo(profile, &game_dir, &config)
