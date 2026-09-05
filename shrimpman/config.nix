@@ -1,4 +1,10 @@
-{ config, lib, pkgs, generateToml, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  generateToml,
+  ...
+}:
 let
   inherit (lib) mkDefault mkOption;
   toml = pkgs.formats.toml { };
@@ -8,9 +14,11 @@ let
     lease_ttl = "15s";
     reconnect_delay = "1s";
   };
-  databaseUrl = "sqlite://"
+  databaseUrl =
+    "sqlite://"
     + lib.optionalString (!(lib.hasPrefix "/" config.development.stateDirectory)) "../"
-    + config.development.stateDirectory + "/shrimpman.sqlite3";
+    + config.development.stateDirectory
+    + "/shrimpman.sqlite3";
 in
 {
   options.shrimpman = mkOption {
@@ -73,17 +81,20 @@ in
         logging = {
           filter = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_transport=debug";
         };
-        lands = [ {
-          key = "land-1";
-          listen_addr = "0.0.0.0:${ports.worldLand1}";
-          port = config.development.ports.worldLand1;
-          max_players = 100;
-        } {
-          key = "land-2";
-          listen_addr = "0.0.0.0:${ports.worldLand2}";
-          port = config.development.ports.worldLand2;
-          max_players = 100;
-        } ];
+        lands = [
+          {
+            key = "land-1";
+            listen_addr = "0.0.0.0:${ports.worldLand1}";
+            port = config.development.ports.worldLand1;
+            max_players = 100;
+          }
+          {
+            key = "land-2";
+            listen_addr = "0.0.0.0:${ports.worldLand2}";
+            port = config.development.ports.worldLand2;
+            max_players = 100;
+          }
+        ];
       };
     };
     generatedFiles."shrimpman/config.toml" = generateToml "config.toml" config.shrimpman;

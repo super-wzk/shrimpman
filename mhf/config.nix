@@ -1,17 +1,25 @@
-{ config, lib, pkgs, generateToml, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  generateToml,
+  ...
+}:
 let
   inherit (lib) mkDefault mkOption;
   toml = pkgs.formats.toml { };
-  chatProfile = lib.listToAttrs (lib.concatMap (index: [
-    {
-      name = "PHINF_ID_${toString index}";
-      value = if index == 0 then "111111" else "0";
-    }
-    {
-      name = "PHINF_NAME_${toString index}";
-      value = if index == 0 then "" else "0";
-    }
-  ]) (lib.range 0 29));
+  chatProfile = lib.listToAttrs (
+    lib.concatMap (index: [
+      {
+        name = "PHINF_ID_${toString index}";
+        value = if index == 0 then "111111" else "0";
+      }
+      {
+        name = "PHINF_NAME_${toString index}";
+        value = if index == 0 then "" else "0";
+      }
+    ]) (lib.range 0 29)
+  );
 in
 {
   options.mhf = mkOption {

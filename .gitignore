@@ -8,7 +8,6 @@ shrimpman.sqlite3
 .state/
 /local/
 .direnv/
-.devenv/
 
 # pre-commit
 .pre-commit-config.yaml

@@ -21,13 +21,15 @@ packages and checks:
 | File | Responsibility |
 | --- | --- |
 | `development/shell.nix` | Shared development options, devShell and command helpers |
+| `development/git-hooks.nix` | Git hooks, format checks and shell installation |
 | `shrimpman/default.nix` | Server tools, commands and process definitions |
 | `shrimpman/config.nix` | Server application defaults and TOML generation |
 | `mhf/default.nix` | Cross-compilation, launcher and Wine/WSL execution |
 | `mhf/config.nix` | MHF application defaults and TOML generation |
 | `local/default.nix` | Optional machine-specific overrides |
 
-Only the root is a flake; `flake.lock` pins Nixpkgs, the Rust overlay, flake-parts and
+Only the root is a flake; `flake.lock` pins Nixpkgs, the Rust overlay, flake-parts,
+[git-hooks.nix](https://github.com/cachix/git-hooks.nix) and
 [process-compose-flake](https://github.com/Platonic-Systems/process-compose-flake).
 flake-parts manages platform outputs through `perSystem`, with one Rust-overlay
 package set per platform. `process-compose.shrimpman-dev` imports the application
@@ -48,6 +50,18 @@ direnv allow
 [`.envrc`](.envrc) uses a version-pinned nix-direnv, watches the toolchain and Nix
 modules, and loads the optional `local/` module with `--impure` when present.
 Entering the shell loads tools and environment variables; processes start explicitly.
+
+Entering the shell also installs the pre-commit hook through `git-hooks.nix`, using
+`prek`. Commits check Nix formatting, Rust formatting for each affected workspace,
+TOML syntax and merge conflicts. Formatting checks use the tools pinned by the
+flake; Rust uses the same toolchain as the development shell. The generated
+`.pre-commit-config.yaml` stays ignored by Git.
+
+Run all hooks with `prek run --all-files` inside the shell, or
+`nix develop --command prek run --all-files`. `nix flake check` runs the same hooks
+in the Nix build sandbox. To fix formatting, run `nixfmt` on the affected Nix files,
+or `cargo fmt --manifest-path shrimpman/Cargo.toml --all` and
+`cargo fmt --manifest-path mhf/Cargo.toml --all` from the repository root.
 
 ## Commands
 
