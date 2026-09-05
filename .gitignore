@@ -3,3 +3,12 @@ target
 .env
 .idea
 shrimpman.sqlite3
+
+# Development state and caches
+.state/
+/local/
+.direnv/
+.devenv/
+
+# pre-commit
+.pre-commit-config.yaml

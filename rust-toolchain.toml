@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+profile = "minimal"
+components = ["rustc", "cargo", "clippy", "rustfmt", "rust-analyzer", "rust-src", "llvm-tools-preview"]
+targets = ["i686-pc-windows-msvc"]

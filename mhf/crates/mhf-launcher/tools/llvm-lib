@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-exec lld-link -flavor link /lib "$@"

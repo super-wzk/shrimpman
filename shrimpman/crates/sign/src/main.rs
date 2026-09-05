@@ -112,7 +112,12 @@ fn init_tracing(config_filter: &str) -> Result<(), Box<dyn Error + Send + Sync>>
 
 fn load_config() -> Result<SignConfig, config::ConfigError> {
     let config = config::Config::builder()
-        .add_source(config::File::new("config.toml", config::FileFormat::Toml))
+        .add_source(
+            config::File::from(std::path::PathBuf::from(
+                std::env::var_os("PROJECT_CONFIG").unwrap_or_else(|| "config.toml".into()),
+            ))
+            .format(config::FileFormat::Toml),
+        )
         .add_source(
             config::Environment::with_prefix("SHRIMPMAN")
                 .prefix_separator("_")

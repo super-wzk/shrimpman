@@ -18,7 +18,7 @@ API 地址隔离，目标名称为 `Shrimpman MHF — <Sign API 地址>`，可�
 
 ```toml
 [sign.http]
-base_url = "http://127.0.0.1:53313"
+base_url = "http://127.0.0.1:53001"
 
 [translation]
 locale = "zh-CN"
@@ -102,7 +102,8 @@ Windows。
 
 ## 构建和启动
 
-DLL 均为 32 位，因此必须构建 i686 版本：
+DLL 均为 32 位，因此必须构建 i686 版本。原生 Windows 安装 MSVC 构建工具和
+Windows SDK 后使用 Cargo，直接运行生成的 EXE，不需要 cargo-xwin 或 Wine：
 
 ```text
 cargo build -p shrimpman-mhf-launcher --release --target i686-pc-windows-msvc
@@ -120,15 +121,47 @@ mhf-launcher.exe -d D:\\mhf
 mhf-launcher.exe --help
 ```
 
-在 workspace 根目录使用 Just 时，Windows 直接运行 `.exe`，其他系统自动添加
-`wine` 前缀：
+在 macOS/Linux 的仓库根目录进入 flake 开发环境后，用开发命令构建和启动：
 
-```text
-just mhf-launch
-just mhf-launch mhf.local.toml
+```sh
+nix develop --impure
+mhf-build
+mhf-launcher
+MHF_CONFIG=mhf.local.toml mhf-launcher
 ```
 
-非 Windows 系统使用 `cargo-xwin --xwin-arch x86` 构建；Windows 使用原生 Cargo。
-Just 会为 MinHook 的 C 静态库构建自动提供基于 `lld-link /lib` 的 `llvm-lib`
-兼容入口，并避免 macOS `ranlib` 破坏生成的 COFF 库。游戏目录由 `.env` 中的
-`MHF_GAME_DIR` 提供。
+配置好 direnv 后，`direnv allow` 会通过 nix-direnv 自动加载环境。本工作区的
+`mhf/default.nix` 定义构建、启动命令和默认禁用的启动器进程。机器上的设置放在
+忽略 Git 的 `local/default.nix`，作为完整 Nix 模块加载：
+
+```nix
+{ ... }: {
+  development.mhf = {
+    gameDirectory = "/path/to/mhf";
+    runner = "wine";
+  };
+}
+```
+
+Direnv 自动加载可选本地模块。手动使用本地模块时，从仓库根目录加 `--impure`：
+
+```sh
+nix develop --impure
+nix run --impure .#mhf-launcher
+nix run .#mhf-build
+```
+
+`mhf-build` 在全部受支持的 Nix 主机上使用 `cargo-xwin --xwin-arch x86`，
+由 flake 提供 LLVM 工具。当前 flake 的输出仅覆盖
+macOS/Linux；原生 Windows 使用上面的 Cargo 和 EXE 命令，WSL 使用 Linux 输出。
+Cargo 会判断构建输入是否变化并复用未变化的产物。游戏目录由 `development.mhf.gameDirectory`
+提供；Nix 默认使用 `$PROJECT_STATE/config/` 下生成配置的可写副本；脱离 Nix 时使用 `mhf/mhf.toml`，`MHF_CONFIG` 中的相对路径以 `mhf/` 为基准。
+启动方式独立选择：macOS/Linux 默认使用 Wine；检测到 WSL 的 Windows 互操作
+已启用时直接执行 EXE，通过 `wslpath` 转换配置和游戏目录，并通过 `WSLENV`
+转发 `MHF_*` 环境变量。显式设置 `development.mhf.runner`
+可指定 Wine 可执行文件，设为空字符串则直接执行 EXE；`WINEPREFIX` 默认为
+`$PROJECT_STATE/wine`，公共状态目录默认是仓库的 `.state/`。原生 Windows 直接执行 EXE。
+MHF 配置副本和 Wine 默认环境仅在启动器运行时准备，进入开发环境或编译时不会初始化。
+Sign HTTP 地址默认使用开发环境的 Nix 选项 `development.ports.signHttp`（53001），可通过
+`MHF_SIGN__HTTP__BASE_URL` 覆盖。`shrimpman-dev up` 启动服务端和 etcd；启动器也可
+在 process-compose 的 TUI 中手动启动。命令和环境变量覆盖详见仓库根目录 README。
