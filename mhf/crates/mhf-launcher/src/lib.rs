@@ -5,6 +5,7 @@ mod abi;
 mod launcher;
 mod localization;
 mod model;
+mod overlay;
 
 pub use abi::MhfLaunchParams32;
 pub use launcher::launch_mhfo;

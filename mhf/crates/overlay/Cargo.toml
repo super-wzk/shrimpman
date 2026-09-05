@@ -1,0 +1,18 @@
+[package]
+name = "mhf-overlay"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+egui = { workspace = true, features = ["default_fonts"] }
+minhook.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D9",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-numerics = "=0.3.1"

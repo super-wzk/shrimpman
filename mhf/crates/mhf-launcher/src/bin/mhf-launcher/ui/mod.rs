@@ -3,7 +3,6 @@ mod theme;
 mod view;
 
 use crate::{credentials::CredentialStore, http};
-use eframe::egui;
 use model::{Effect, Message, Model};
 use shrimpman_domain::character::CharacterId;
 use shrimpman_mhf_launcher::{PasswordCredentials, SignInSuccess};

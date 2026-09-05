@@ -1,5 +1,5 @@
-/target
-/.wine/
-/.env
+target
+.wine
+.env
 .idea
 shrimpman.sqlite3

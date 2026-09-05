@@ -1,5 +1,3 @@
-use eframe::egui;
-
 pub(super) const BG: egui::Color32 = egui::Color32::from_rgb(17, 19, 24);
 pub(super) const CARD_BG: egui::Color32 = egui::Color32::from_rgb(26, 29, 38);
 const CONTROL_BG: egui::Color32 = egui::Color32::from_rgb(20, 23, 30);

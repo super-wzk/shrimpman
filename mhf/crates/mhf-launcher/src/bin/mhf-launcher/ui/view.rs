@@ -1,6 +1,5 @@
 use super::model::{CharacterOperation, CharacterSelection, Characters, Message, Model, SignIn};
 use super::theme;
-use eframe::egui;
 use jiff::Timestamp;
 use shrimpman_domain::character::{Gender, WeaponType};
 use shrimpman_mhf_launcher::SignCharacter;

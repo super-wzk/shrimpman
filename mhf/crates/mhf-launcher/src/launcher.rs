@@ -95,6 +95,7 @@ pub fn launch_mhfo(
     let entry = game.main()?;
     data.mhfo_module = game.handle();
     data.mhfo_main = Some(entry);
+    let _overlay = crate::overlay::install()?;
     Ok(unsafe { entry(&mut data.params) })
 }
 

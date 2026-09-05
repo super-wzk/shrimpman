@@ -1,3 +1,4 @@
+use ::config::{Config as LayeredConfig, Environment, File, FileFormat};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use shrimpman_mhf_launcher::{
     FontQuality, GraphicsVersion, Language, MhfConfig, ScreenMode, TranslationConfig,
@@ -373,9 +374,33 @@ pub(crate) fn load(path: PathBuf) -> Result<(Settings, Store), String> {
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let document: Table = toml::from_str(&source)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-    let config = decode(&document)
+    let mut settings = decode(&document)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-    Ok((config, Store { path, document }))
+    settings.sign = load_sign(&source, sign_environment()).map_err(|error| {
+        format!(
+            "failed to resolve [sign] configuration from {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok((settings, Store { path, document }))
+}
+
+fn sign_environment() -> Environment {
+    Environment::with_prefix("MHF")
+        .prefix_separator("_")
+        .separator("__")
+        .try_parsing(true)
+}
+
+fn load_sign(
+    source: &str,
+    environment: Environment,
+) -> Result<sign::Settings, ::config::ConfigError> {
+    LayeredConfig::builder()
+        .add_source(File::from_str(source, FileFormat::Toml))
+        .add_source(environment)
+        .build()?
+        .get(SIGN_SECTION)
 }
 
 impl Store {
@@ -587,7 +612,7 @@ fn section_name(document: &Table, name: &str) -> Option<String> {
 mod tests {
     use super::*;
     use shrimpman_mhf_launcher::MissingTranslation;
-    use std::net::Ipv4Addr;
+    use std::{collections::HashMap, net::Ipv4Addr};
 
     const SOURCE: &str = r#"
 [sign.http]
@@ -652,6 +677,25 @@ value = "preserved"
         assert_eq!(config.mhf.font.weight, 0x190);
         assert_eq!(config.mhf.launch.proxy_address, Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(config.mhf.screen.window_resolution.width, 1280);
+    }
+
+    #[test]
+    fn environment_overrides_only_the_sign_configuration() {
+        let environment = sign_environment().source(Some(HashMap::from([
+            (
+                "MHF_SIGN__HTTP__BASE_URL".to_owned(),
+                "http://127.0.0.1:60000".to_owned(),
+            ),
+            ("MHF_WINE".to_owned(), "winecx24".to_owned()),
+        ])));
+
+        let sign = load_sign(SOURCE, environment).expect("sign configuration should load");
+
+        assert_eq!(sign.http.base_url, "http://127.0.0.1:60000");
+        assert_eq!(
+            document()["sign"]["http"]["base_url"].as_str(),
+            Some("http://127.0.0.1:53313")
+        );
     }
 
     #[test]
