@@ -1,0 +1,9 @@
+[package]
+name = "mhf-hooks"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+minhook.workspace = true
+windows = { workspace = true, features = ["Win32_System_LibraryLoader"] }

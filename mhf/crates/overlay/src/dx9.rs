@@ -6,9 +6,9 @@ use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use minhook::{MH_STATUS, MinHook};
+use mhf_hooks::{HookGuard, HookSlot};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D9::{
     D3D_SDK_VERSION, D3DADAPTER_DEFAULT, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
@@ -33,14 +33,11 @@ type Reset = unsafe extern "system" fn(
     device: *mut c_void,
     presentation_parameters: *mut D3DPRESENT_PARAMETERS,
 ) -> HRESULT;
-const PRESENT_DETOUR: Present = present_hook;
-const RESET_DETOUR: Reset = reset_hook;
 
-static PRESENT_ORIGINAL: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-static RESET_ORIGINAL: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-static RUNTIME: Mutex<Option<Runtime>> = Mutex::new(None);
+static PRESENT_TARGET: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+static RESET_TARGET: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+static HOOK_STATE: HookSlot<HookState> = HookSlot::new();
 static LAST_ERROR: Mutex<Option<Error>> = Mutex::new(None);
-static HOOK_BARRIER: RwLock<()> = RwLock::new(());
 
 const D3DERR_INVALIDCALL: HRESULT = HRESULT(0x8876_086C_u32.cast_signed());
 
@@ -50,8 +47,7 @@ const D3DERR_INVALIDCALL: HRESULT = HRESULT(0x8876_086C_u32.cast_signed());
 /// hooks installed by this instance. Other `MinHook` users remain enabled.
 #[must_use = "dropping the handle removes the D3D9 overlay hooks"]
 pub struct D3d9Hook {
-    targets: Targets,
-    active: bool,
+    hooks: HookGuard<HookState>,
 }
 
 impl D3d9Hook {
@@ -70,49 +66,36 @@ impl D3d9Hook {
     /// on a thread allowed to release the device resources. If the host invokes
     /// the device from multiple threads, it must enable D3D9 multithreaded mode.
     pub unsafe fn install(overlay: impl Overlay) -> Result<Self> {
-        let mut runtime = runtime();
-        if runtime.is_some() {
-            return Err(Error::new("a D3D9 overlay hook is already installed"));
-        }
+        let mut hooks = HOOK_STATE.prepare().map_err(Error::new)?;
         *last_error() = None;
 
         let targets = resolve_targets()?;
         let present_original = unsafe {
-            MinHook::create_hook(
+            hooks.create(
+                "D3D9 Present",
                 targets.present as *mut c_void,
-                PRESENT_DETOUR as *const () as *mut c_void,
+                present_hook as Present as *mut c_void,
             )
         }
-        .map_err(|status| minhook_error("create D3D9 Present hook", status))?;
-        let reset_original = match unsafe {
-            MinHook::create_hook(
+        .map_err(Error::new)?;
+        let reset_original = unsafe {
+            hooks.create(
+                "D3D9 Reset",
                 targets.reset as *mut c_void,
-                RESET_DETOUR as *const () as *mut c_void,
+                reset_hook as Reset as *mut c_void,
             )
-        } {
-            Ok(original) => original,
-            Err(status) => {
-                let error = minhook_error("create D3D9 Reset hook", status);
-                return Err(with_cleanup_error(error, remove_hooks(targets)));
-            }
-        };
-
-        PRESENT_ORIGINAL.store(present_original, Ordering::Release);
-        RESET_ORIGINAL.store(reset_original, Ordering::Release);
-        *runtime = Some(Runtime::new(Box::new(overlay)));
-
-        for (name, target) in [("Present", targets.present), ("Reset", targets.reset)] {
-            if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
-                let error = minhook_error(&format!("enable D3D9 {name} hook"), status);
-                drop(runtime);
-                return Err(with_cleanup_error(error, uninstall(targets)));
-            }
         }
+        .map_err(Error::new)?;
 
-        Ok(Self {
-            targets,
-            active: true,
-        })
+        PRESENT_TARGET.store(targets.present as *mut c_void, Ordering::Release);
+        RESET_TARGET.store(targets.reset as *mut c_void, Ordering::Release);
+        let state = HookState {
+            present: unsafe { mem::transmute::<*mut c_void, Present>(present_original) },
+            reset: unsafe { mem::transmute::<*mut c_void, Reset>(reset_original) },
+            runtime: Mutex::new(Runtime::new(Box::new(overlay))),
+        };
+        let hooks = unsafe { hooks.install(state) }.map_err(Error::new)?;
+        Ok(Self { hooks })
     }
 
     /// Returns and clears the most recent render or initialization error.
@@ -126,27 +109,25 @@ impl D3d9Hook {
     ///
     /// Returns an error if either hook cannot be disabled or removed.
     pub fn uninstall(mut self) -> Result<()> {
-        let result = uninstall(self.targets);
-        if result.is_ok() {
-            self.active = false;
-        }
-        result
+        self.hooks.uninstall().map_err(Error::new)
     }
 }
 
-impl Drop for D3d9Hook {
-    fn drop(&mut self) {
-        if self.active {
-            let _ = uninstall(self.targets);
-            self.active = false;
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
 struct Targets {
     present: usize,
     reset: usize,
+}
+
+struct HookState {
+    present: Present,
+    reset: Reset,
+    runtime: Mutex<Runtime>,
+}
+
+impl HookState {
+    fn runtime(&self) -> MutexGuard<'_, Runtime> {
+        self.runtime.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 struct Runtime {
@@ -254,7 +235,7 @@ struct Pipeline {
 }
 
 // SAFETY: `install` requires the host device to support every thread that can
-// enter these hooks or uninstall them, and `RUNTIME` serializes all access.
+// enter these hooks or uninstall them, and the runtime mutex serializes access.
 unsafe impl Send for Pipeline {}
 
 impl Pipeline {
@@ -308,22 +289,28 @@ unsafe extern "system" fn present_hook(
     destination_window: HWND,
     dirty_region: *const RGNDATA,
 ) -> HRESULT {
-    let _hook_guard = HOOK_BARRIER.read().unwrap_or_else(PoisonError::into_inner);
+    let invocation = HOOK_STATE.enter();
+    let state = invocation.state();
     let _ = catch_unwind(AssertUnwindSafe(|| {
         // D3D9 passes a live, borrowed COM `this` pointer to every vtable call.
         let Some(device) = (unsafe { IDirect3DDevice9::from_raw_borrowed(&device_raw) }) else {
             return;
         };
-        if let Some(runtime) = runtime().as_mut() {
-            runtime.render(device);
+        if let Some(state) = state {
+            state.runtime().render(device);
         }
     }));
 
-    let original = PRESENT_ORIGINAL.load(Ordering::Acquire);
-    if original.is_null() {
-        return D3DERR_INVALIDCALL;
-    }
-    let original = unsafe { mem::transmute::<*mut c_void, Present>(original) };
+    let original = match state {
+        Some(state) => state.present,
+        None => {
+            let target = PRESENT_TARGET.load(Ordering::Acquire);
+            if target.is_null() {
+                return D3DERR_INVALIDCALL;
+            }
+            unsafe { mem::transmute::<*mut c_void, Present>(target) }
+        }
+    };
     unsafe {
         original(
             device_raw,
@@ -339,22 +326,28 @@ unsafe extern "system" fn reset_hook(
     device_raw: *mut c_void,
     presentation_parameters: *mut D3DPRESENT_PARAMETERS,
 ) -> HRESULT {
-    let _hook_guard = HOOK_BARRIER.read().unwrap_or_else(PoisonError::into_inner);
+    let invocation = HOOK_STATE.enter();
+    let state = invocation.state();
     let _ = catch_unwind(AssertUnwindSafe(|| {
         // D3D9 passes a live, borrowed COM `this` pointer to every vtable call.
         let Some(device) = (unsafe { IDirect3DDevice9::from_raw_borrowed(&device_raw) }) else {
             return;
         };
-        if let Some(runtime) = runtime().as_mut() {
-            runtime.prepare_for_reset(device);
+        if let Some(state) = state {
+            state.runtime().prepare_for_reset(device);
         }
     }));
 
-    let original = RESET_ORIGINAL.load(Ordering::Acquire);
-    if original.is_null() {
-        return D3DERR_INVALIDCALL;
-    }
-    let original = unsafe { mem::transmute::<*mut c_void, Reset>(original) };
+    let original = match state {
+        Some(state) => state.reset,
+        None => {
+            let target = RESET_TARGET.load(Ordering::Acquire);
+            if target.is_null() {
+                return D3DERR_INVALIDCALL;
+            }
+            unsafe { mem::transmute::<*mut c_void, Reset>(target) }
+        }
+    };
     unsafe { original(device_raw, presentation_parameters) }
 }
 
@@ -422,63 +415,8 @@ fn device_window(device: &IDirect3DDevice9) -> Result<HWND> {
     }
 }
 
-fn uninstall(targets: Targets) -> Result<()> {
-    for (name, target) in [("Present", targets.present), ("Reset", targets.reset)] {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Err(status)
-                if !matches!(
-                    status,
-                    MH_STATUS::MH_ERROR_DISABLED | MH_STATUS::MH_ERROR_NOT_CREATED
-                ) =>
-            {
-                return Err(minhook_error(&format!("disable {name} hook"), status));
-            }
-            _ => {}
-        }
-    }
-
-    let _hook_guard = HOOK_BARRIER.write().unwrap_or_else(PoisonError::into_inner);
-    *runtime() = None;
-
-    let result = remove_hooks(targets);
-    if result.is_ok() {
-        PRESENT_ORIGINAL.store(ptr::null_mut(), Ordering::Release);
-        RESET_ORIGINAL.store(ptr::null_mut(), Ordering::Release);
-    }
-    result
-}
-
-fn remove_hooks(targets: Targets) -> Result<()> {
-    let mut first_error = None;
-    for (name, target) in [("Present", targets.present), ("Reset", targets.reset)] {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Err(status) if status != MH_STATUS::MH_ERROR_NOT_CREATED => {
-                first_error
-                    .get_or_insert_with(|| minhook_error(&format!("remove {name} hook"), status));
-            }
-            _ => {}
-        }
-    }
-    first_error.map_or(Ok(()), Err)
-}
-
-fn runtime() -> MutexGuard<'static, Option<Runtime>> {
-    RUNTIME.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 fn last_error() -> MutexGuard<'static, Option<Error>> {
     LAST_ERROR.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn with_cleanup_error(error: Error, cleanup: Result<()>) -> Error {
-    match cleanup {
-        Ok(()) => error,
-        Err(cleanup) => Error::new(format!("{error}; cleanup also failed: {cleanup}")),
-    }
-}
-
-fn minhook_error(operation: &str, status: MH_STATUS) -> Error {
-    Error::new(format!("failed to {operation}: {status:?}"))
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> String {

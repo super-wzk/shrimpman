@@ -1,12 +1,15 @@
 use super::config::Store;
-use minhook::MinHook;
+use mhf_hooks::{HookGuard, HookSlot};
 use std::{
     ffi::{CStr, c_void},
     ptr::{null, null_mut},
-    sync::{Mutex, MutexGuard, OnceLock, PoisonError},
+    sync::{Mutex, MutexGuard, PoisonError},
 };
 use windows_sys::{
-    Win32::Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte},
+    Win32::{
+        Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte},
+        System::WindowsProgramming,
+    },
     core::{BOOL, PCSTR, PSTR},
 };
 
@@ -15,7 +18,7 @@ type GetPrivateProfileStringA =
     unsafe extern "system" fn(PCSTR, PCSTR, PCSTR, PSTR, u32, PCSTR) -> u32;
 type WritePrivateProfileStringA = unsafe extern "system" fn(PCSTR, PCSTR, PCSTR, PCSTR) -> BOOL;
 
-struct HookState {
+pub(crate) struct HookState {
     file_name: Vec<u8>,
     store: Mutex<Store>,
     get_int: GetPrivateProfileIntA,
@@ -29,63 +32,49 @@ impl HookState {
     }
 }
 
-static STATE: OnceLock<HookState> = OnceLock::new();
+static STATE: HookSlot<HookState> = HookSlot::new();
 
-fn hook_state() -> &'static HookState {
-    STATE
-        .get()
-        .expect("hook state must exist before hooks are enabled")
-}
-
-pub(crate) fn install(ini_name: &str, store: Store) -> Result<(), String> {
-    if STATE.get().is_some() {
-        return Err("TOML-backed INI hooks are already installed".to_owned());
-    }
+pub(crate) fn install(ini_name: &str, store: Store) -> Result<HookGuard<HookState>, String> {
     if !ini_name.is_ascii() || ini_name.as_bytes().contains(&0) {
         return Err("INI file name must contain non-NUL ASCII bytes only".to_owned());
     }
 
+    let mut hooks = STATE.prepare()?;
     let get_int = unsafe {
-        MinHook::create_hook_api(
-            "kernel32.dll",
-            "GetPrivateProfileIntA",
+        hooks.create_api(
+            c"kernel32.dll",
+            c"GetPrivateProfileIntA",
             get_private_profile_int as GetPrivateProfileIntA as *mut c_void,
-        )
-        .map_err(|status| format!("failed to hook GetPrivateProfileIntA: {status:?}"))?
+        )?
     };
     let get_string = unsafe {
-        MinHook::create_hook_api(
-            "kernel32.dll",
-            "GetPrivateProfileStringA",
+        hooks.create_api(
+            c"kernel32.dll",
+            c"GetPrivateProfileStringA",
             get_private_profile_string as GetPrivateProfileStringA as *mut c_void,
-        )
-        .map_err(|status| format!("failed to hook GetPrivateProfileStringA: {status:?}"))?
+        )?
     };
     let write_string = unsafe {
-        MinHook::create_hook_api(
-            "kernel32.dll",
-            "WritePrivateProfileStringA",
+        hooks.create_api(
+            c"kernel32.dll",
+            c"WritePrivateProfileStringA",
             write_private_profile_string as WritePrivateProfileStringA as *mut c_void,
-        )
-        .map_err(|status| format!("failed to hook WritePrivateProfileStringA: {status:?}"))?
+        )?
     };
 
-    STATE
-        .set(HookState {
-            file_name: ini_name.as_bytes().to_vec(),
-            store: Mutex::new(store),
-            get_int: unsafe { std::mem::transmute::<*mut c_void, GetPrivateProfileIntA>(get_int) },
-            get_string: unsafe {
-                std::mem::transmute::<*mut c_void, GetPrivateProfileStringA>(get_string)
-            },
-            write_string: unsafe {
-                std::mem::transmute::<*mut c_void, WritePrivateProfileStringA>(write_string)
-            },
-        })
-        .map_err(|_| "TOML-backed INI hooks are already installed".to_owned())?;
-
-    unsafe { MinHook::enable_all_hooks() }
-        .map_err(|status| format!("failed to enable TOML-backed INI hooks: {status:?}"))
+    let state = HookState {
+        file_name: ini_name.as_bytes().to_vec(),
+        store: Mutex::new(store),
+        get_int: unsafe { std::mem::transmute::<*mut c_void, GetPrivateProfileIntA>(get_int) },
+        get_string: unsafe {
+            std::mem::transmute::<*mut c_void, GetPrivateProfileStringA>(get_string)
+        },
+        write_string: unsafe {
+            std::mem::transmute::<*mut c_void, WritePrivateProfileStringA>(write_string)
+        },
+    };
+    // Every detour holds its invocation through the original API call.
+    unsafe { hooks.install(state) }
 }
 
 unsafe extern "system" fn get_private_profile_int(
@@ -94,10 +83,15 @@ unsafe extern "system" fn get_private_profile_int(
     default: i32,
     file_name: PCSTR,
 ) -> u32 {
-    let state = hook_state();
-    if !is_target_file(state, file_name) {
-        return unsafe { (state.get_int)(app_name, key_name, default, file_name) };
-    }
+    let invocation = STATE.enter();
+    let state = invocation.state();
+    let original = state.map_or(
+        WindowsProgramming::GetPrivateProfileIntA as GetPrivateProfileIntA,
+        |state| state.get_int,
+    );
+    let Some(state) = state.filter(|state| is_target_file(state, file_name)) else {
+        return unsafe { original(app_name, key_name, default, file_name) };
+    };
 
     let Some(section) = ansi_pointer_to_string(app_name) else {
         return default as u32;
@@ -120,10 +114,15 @@ unsafe extern "system" fn get_private_profile_string(
     size: u32,
     file_name: PCSTR,
 ) -> u32 {
-    let state = hook_state();
-    if !is_target_file(state, file_name) {
-        return unsafe { (state.get_string)(app_name, key_name, default, output, size, file_name) };
-    }
+    let invocation = STATE.enter();
+    let state = invocation.state();
+    let original = state.map_or(
+        WindowsProgramming::GetPrivateProfileStringA as GetPrivateProfileStringA,
+        |state| state.get_string,
+    );
+    let Some(state) = state.filter(|state| is_target_file(state, file_name)) else {
+        return unsafe { original(app_name, key_name, default, output, size, file_name) };
+    };
 
     if app_name.is_null() {
         let bytes = {
@@ -163,10 +162,15 @@ unsafe extern "system" fn write_private_profile_string(
     value: PCSTR,
     file_name: PCSTR,
 ) -> BOOL {
-    let state = hook_state();
-    if !is_target_file(state, file_name) {
-        return unsafe { (state.write_string)(app_name, key_name, value, file_name) };
-    }
+    let invocation = STATE.enter();
+    let state = invocation.state();
+    let original = state.map_or(
+        WindowsProgramming::WritePrivateProfileStringA as WritePrivateProfileStringA,
+        |state| state.write_string,
+    );
+    let Some(state) = state.filter(|state| is_target_file(state, file_name)) else {
+        return unsafe { original(app_name, key_name, value, file_name) };
+    };
 
     if app_name.is_null() && key_name.is_null() && value.is_null() {
         return 1;
@@ -362,5 +366,90 @@ mod tests {
         assert_eq!(parse_profile_integer("0x2a"), 42);
         assert_eq!(parse_profile_integer("-1"), u32::MAX);
         assert_eq!(parse_profile_integer("invalid"), 0);
+    }
+
+    #[test]
+    fn ini_hooks_restore_win32_and_can_be_installed_again() {
+        use std::{
+            ffi::CString,
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("shrimpman-ini-hooks-{suffix}"));
+        fs::create_dir(&directory).unwrap();
+        let config_path = directory.join("mhf.toml");
+        let source = r#"
+[sign.http]
+base_url = "http://127.0.0.1:53001"
+[hook_test]
+value = "42"
+"#;
+        fs::write(&config_path, source).unwrap();
+        let ini_name = format!("shrimpman-virtual-{suffix}.ini");
+        let ini_file = CString::new(ini_name.as_str()).unwrap();
+        let section = c"hook_test".as_ptr().cast();
+        let key = c"value".as_ptr().cast();
+        let file = ini_file.as_ptr().cast();
+        let read =
+            || unsafe { WindowsProgramming::GetPrivateProfileIntA(section, key, 1234, file) };
+
+        let (_, store) = super::super::config::load(config_path.clone()).unwrap();
+        let mut hooks = install(&ini_name, store).unwrap();
+        assert_eq!(read(), 42);
+        assert_eq!(
+            unsafe {
+                WindowsProgramming::GetPrivateProfileIntA(
+                    section,
+                    key,
+                    1234,
+                    c"shrimpman-unrelated.ini".as_ptr().cast(),
+                )
+            },
+            1234
+        );
+        let mut output = [0; 16];
+        assert_eq!(
+            unsafe {
+                WindowsProgramming::GetPrivateProfileStringA(
+                    section,
+                    key,
+                    c"missing".as_ptr().cast(),
+                    output.as_mut_ptr(),
+                    output.len() as u32,
+                    file,
+                )
+            },
+            2
+        );
+        assert_eq!(&output[..3], b"42\0");
+        assert_ne!(
+            unsafe {
+                WindowsProgramming::WritePrivateProfileStringA(
+                    section,
+                    key,
+                    c"84".as_ptr().cast(),
+                    file,
+                )
+            },
+            0
+        );
+        hooks.uninstall().unwrap();
+        assert_eq!(read(), 1234);
+        assert_eq!(
+            unsafe { get_private_profile_int(section, key, 1234, file) },
+            1234
+        );
+
+        let (_, store) = super::super::config::load(config_path).unwrap();
+        let hooks = install(&ini_name, store).unwrap();
+        assert_eq!(read(), 84, "reinstall must read the persisted TOML value");
+        drop(hooks);
+        assert_eq!(read(), 1234);
+        fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -69,7 +69,7 @@ impl PreparedLaunch {
         } else {
             None
         };
-        super::ini_hook::install(profile.ini_name, self.store)?;
+        let mut ini_hooks = super::ini_hook::install(profile.ini_name, self.store)?;
         let config = Config {
             credentials,
             sign_in,
@@ -77,7 +77,15 @@ impl PreparedLaunch {
             translation: self.translation,
             mhf: self.mhf,
         };
-        launch_mhfo(profile, &game_dir, &config)
+        let result = launch_mhfo(profile, &game_dir, &config);
+        let cleanup = ini_hooks.uninstall();
+        match (result, cleanup) {
+            (Err(error), Err(cleanup)) => {
+                Err(format!("{error}; INI hook cleanup also failed: {cleanup}"))
+            }
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            (Ok(code), Ok(())) => Ok(code),
+        }
     }
 }
 

@@ -84,19 +84,41 @@ pub fn launch_mhfo(
         GraphicsVersion::HighDefinition => profile.mhfo_hd_dll,
     };
     let game = MhfoModule::load(game_name)?;
-    if let Some(translation) = &config.translation {
-        crate::localization::install(
-            game.handle(),
-            &translation.locale,
-            translation.missing,
-            &data.params.font_name,
-        )?;
-    }
     let entry = game.main()?;
+    let mut localization = if let Some(translation) = &config.translation {
+        // Native resource shims run only inside mhDLL_Main's game lifetime.
+        Some(unsafe {
+            crate::localization::install(
+                game.handle(),
+                &translation.locale,
+                translation.missing,
+                &data.params.font_name,
+            )
+        }?)
+    } else {
+        None
+    };
     data.mhfo_module = game.handle();
     data.mhfo_main = Some(entry);
-    let _overlay = crate::overlay::install()?;
-    Ok(unsafe { entry(&mut data.params) })
+    let overlay = crate::overlay::install()?;
+    let code = unsafe { entry(&mut data.params) };
+
+    // Stop hooks before unloading the DLL. The localization guard retains the
+    // module and translated buffers until cleanup (including DllMain) finishes.
+    let overlay_cleanup = overlay.uninstall().map_err(|error| error.to_string());
+    let localization_cleanup = localization
+        .as_mut()
+        .map_or(Ok(()), |hooks| hooks.uninstall());
+    drop(game);
+    let errors = [overlay_cleanup.err(), localization_cleanup.err()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        Ok(code)
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 fn fill_launcher_fields(

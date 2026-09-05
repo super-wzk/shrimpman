@@ -1,9 +1,9 @@
-use super::{CodeHook, HookState, MemoryRange, hook_state};
+use super::{CodeHook, HOOK_STATE, HookState, MemoryRange};
 use std::{
     ffi::c_void,
     mem::size_of,
     ptr,
-    sync::atomic::{AtomicU16, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 const TLK_LOADER_RVA: usize = 0x0071_6350;
@@ -12,7 +12,7 @@ const STAGE_HD_FILE_LOADER_RVA: usize = 0x008E_2850;
 const TLK_BUFFER_RVA: usize = 0x0ED5_2928;
 const TLK_BUFFER_CAPACITY_RVA: usize = 0x0ED5_292C;
 const MAX_TLK_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
-const UNKNOWN_STAGE: u16 = u16::MAX;
+pub(super) const UNKNOWN_STAGE: u16 = u16::MAX;
 const MAX_STAGE_PATH_LENGTH: usize = 32;
 
 const TLK_LOADER_SIGNATURE: &[(usize, u8)] = &[
@@ -85,7 +85,6 @@ const STAGE_FILE_LOADER_SIGNATURE: &[(usize, u8)] = &[
 static TLK_LOADER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static STAGE_FILE_LOADER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static STAGE_HD_FILE_LOADER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-static CURRENT_STAGE: AtomicU16 = AtomicU16::new(UNKNOWN_STAGE);
 
 macro_rules! define_stage_file_loader_detour {
     ($name:ident, $original:ident) => {
@@ -149,15 +148,21 @@ pub(super) const fn required_image_end() -> usize {
 }
 
 unsafe extern "C" fn patch_tlk_dispatch(source: *const u8, source_size: usize) {
-    unsafe { patch_tlk_records(hook_state(), source, source_size) };
+    let invocation = HOOK_STATE.enter();
+    if let Some(state) = invocation.state() {
+        unsafe { patch_tlk_records(state, source, source_size) };
+    }
 }
 
 unsafe extern "C" fn capture_stage_dispatch(path: *const u8, loaded_size: usize) {
     if loaded_size == 0 {
         return;
     }
-    if let Some(stage) = unsafe { parse_stage_path(path) } {
-        CURRENT_STAGE.store(stage, Ordering::Release);
+    let invocation = HOOK_STATE.enter();
+    if let Some(state) = invocation.state()
+        && let Some(stage) = unsafe { parse_stage_path(path) }
+    {
+        state.current_stage.store(stage, Ordering::Release);
     }
 }
 
@@ -184,7 +189,7 @@ unsafe fn parse_stage_path(path: *const u8) -> Option<u16> {
 }
 
 unsafe fn patch_tlk_records(state: &HookState, source: *const u8, source_size: usize) {
-    let stage = CURRENT_STAGE.load(Ordering::Acquire);
+    let stage = state.current_stage.load(Ordering::Acquire);
     if stage == UNKNOWN_STAGE {
         return;
     }

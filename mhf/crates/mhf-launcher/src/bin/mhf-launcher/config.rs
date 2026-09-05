@@ -654,7 +654,7 @@ value = "preserved"
             .expect("example config should parse");
         let config = decode(&document).expect("example config should be valid");
 
-        assert_eq!(config.sign.http.base_url, "http://127.0.0.1:53313");
+        assert_eq!(config.sign.http.base_url, "http://127.0.0.1:53001");
         assert_eq!(config.mhf.screen.mode, ScreenMode::Windowed);
         assert_eq!(
             config.mhf.video.graphics_version,

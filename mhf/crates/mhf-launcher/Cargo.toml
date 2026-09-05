@@ -10,15 +10,16 @@ clap = { version = "4", features = ["derive"] }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 egui.workspace = true
 eframe = { version = "0.36.1", default-features = false, features = ["wgpu"] }
-ehttp = { version = "0.7.1", features = ["json"] }
 jiff = { version = "0.2", features = ["serde"] }
+mhf-hooks = { path = "../hooks" }
 mhf-overlay = { path = "../overlay" }
-minhook.workspace = true
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 shrimpman-common = { path = "../../../shrimpman/crates/common" }
 shrimpman-domain = { path = "../../../shrimpman/crates/domain" }
 toml = "1"
 unicode-width = { version = "0.2", features = ["cjk"] }
+ureq = "3.4"
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Globalization",
@@ -33,6 +34,7 @@ windows = { workspace = true, features = [
 windows-sys = { version = "0.61", features = [
     "Win32_Globalization",
     "Win32_Graphics_Gdi",
+    "Win32_System_WindowsProgramming",
 ] }
 
 [build-dependencies]

@@ -164,8 +164,10 @@ fn decode_password(credential: &CREDENTIALW) -> Result<String, String> {
 
     let bytes = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, size) };
     let mut units = bytes
-        .chunks_exact(2)
-        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| u16::from_le_bytes(*bytes))
         .collect::<Vec<_>>();
     let password =
         String::from_utf16(&units).map_err(|_| "The saved password is not valid UTF-16".to_owned());

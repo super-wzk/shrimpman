@@ -110,7 +110,7 @@ pub(super) fn primary_button(
             )
             .left_text(egui::Atom::grow())
             .right_text(egui::Atom::grow())
-            .min_size(egui::vec2(width, 0.0)),
+            .min_size(egui::vec2(width, 38.0)),
         )
     })
     .inner
@@ -132,6 +132,15 @@ fn banner(ui: &mut egui::Ui, text: &str, color: egui::Color32, text_color: egui:
         .inner_margin(egui::Margin::symmetric(12, 9))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new(text).color(text_color).size(13.0));
+            egui::ScrollArea::vertical()
+                .id_salt(("banner", color))
+                .max_height(80.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(text).color(text_color).size(13.0))
+                            .wrap(),
+                    );
+                });
         });
 }

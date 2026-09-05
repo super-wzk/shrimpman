@@ -6,7 +6,7 @@ publish = false
 
 [target.'cfg(windows)'.dependencies]
 egui = { workspace = true, features = ["default_fonts"] }
-minhook.workspace = true
+mhf-hooks = { path = "../hooks" }
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D9",

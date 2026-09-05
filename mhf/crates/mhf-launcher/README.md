@@ -4,6 +4,10 @@
 API 获取真实会话和角色数据，再启动 `mhfo.dll` 或 `mhfo-hd.dll`。Sign API 地址由
 `mhf.toml` 的 `[sign.http] base_url` 配置，登录界面不接受临时覆盖。
 
+Sign 请求在后台线程执行，连接超时为 5 秒，从 DNS 解析到完整读取响应的总超时为
+10 秒，覆盖登录、创建和删除角色。超时后界面恢复操作，保留当前输入；简短提示显示在
+界面中，完整错误输出到 stderr。错误提示自动换行，长内容和小窗口支持滚动查看。
+
 登录成功后，角色列表来自 `POST /sign-in` 的响应；“New character”调用
 `POST /characters` 创建待初始化角色并自动选中。选择角色并点击“Launch game”后，
 启动器先关闭 UI，再安装 INI hook 并把当前会话、角色和 Entrance 地址映射到游戏 ABI。
@@ -58,13 +62,19 @@ EXE 内嵌一份 JetBrainsMapleMono-NF-XX-NL-HT Regular，启动器 UI 直接使
 `[font] name` 选择该字体时，同一份字节会在进入游戏前注册为仅当前进程可见的 GDI
 字体，不安装到 Windows 或 Wine 字体目录。选择其他字体时使用系统中已有的对应字体。
 
-加载游戏 DLL 前，启动器使用 MinHook 的 `create_hook_api` 拦截
+加载游戏 DLL 前，启动器通过 `mhf-hooks` 解析并拦截
 `GetPrivateProfileIntA`、`GetPrivateProfileStringA` 和
 `WritePrivateProfileStringA`。目标 `mhf.ini` 是虚拟文件名，所有读写实际落到
 `mhf.toml`；其他 INI 请求仍转发给原始 Win32 API。hook 边界负责在 UTF-8 和
 当前 Windows ANSI 代码页之间转换，并把领域字段映射为游戏使用的大写 INI 名称、
 `0`/`1` boolean 和数字枚举。游戏写回时执行反向映射；TOML 会被重新格式化，原
 注释不保证保留。
+
+INI、汉化/GDI 和 D3D9 分别持有自己的 hook 组，共用 `mhf-hooks` 的 MinHook 生命周期
+管理。创建失败会回滚本组已创建的目标；回调状态就绪后才逐个启用，不使用进程级的全局
+启停操作。退出时先停用目标并等待 Rust 回调及原函数调用结束，再移除 trampoline；
+清理错误会返回给启动流程。汉化裸汇编仍使用原有 ABI，要求游戏调用线程在
+`mhDLL_Main` 返回时已结束；游戏 DLL 和翻译缓存保留到汉化 hook 清理完成。
 
 每次启动都保持 `mhf_mutex_number = 0`，并用当前进程 ID 创建独立的
 `MHF_MASTER` 与 `MHF_MASTER_READY` 互斥量，因此允许多开。

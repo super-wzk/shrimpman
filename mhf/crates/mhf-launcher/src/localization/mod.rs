@@ -1,17 +1,23 @@
 use crate::MissingTranslation;
 use bumpalo::Bump;
-use minhook::MinHook;
+use mhf_hooks::{HookGuard, HookSlot};
 use std::{
     ffi::{CStr, c_void},
     fmt::{self, Write as _},
     mem::size_of,
     ptr,
     sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        Mutex,
+        atomic::{AtomicU16, AtomicUsize, Ordering},
     },
 };
-use windows::Win32::Foundation::HMODULE;
+use windows::{
+    Win32::{
+        Foundation::{FreeLibrary, HMODULE},
+        System::LibraryLoader::{GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleHandleExA},
+    },
+    core::PCSTR,
+};
 
 use dictionary::{CompiledDictionary, CompiledLocale, RuntimeLocale};
 
@@ -154,33 +160,61 @@ impl MemoryRange {
     }
 }
 
-struct HookState {
+pub(crate) struct HookState {
+    // Release the DLL before the buffers it may still reference in DllMain.
+    _module: ModuleReference,
     module_base: usize,
     locale: RuntimeLocale,
     missing: MissingTranslation,
     missing_keys: Mutex<MissingKeyArena>,
+    current_stage: AtomicU16,
     rendering: rendering::RenderingHooks,
 }
 
-static HOOK_STATE: OnceLock<HookState> = OnceLock::new();
+static HOOK_STATE: HookSlot<HookState> = HookSlot::new();
 
-pub(crate) fn install(
+// A DLL reference is process-wide and may be released from the cleanup thread.
+struct ModuleReference(usize);
+
+impl ModuleReference {
+    unsafe fn acquire(module: HMODULE) -> Result<Self, String> {
+        let mut retained = HMODULE::default();
+        unsafe {
+            GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                PCSTR(module.0.cast()),
+                &mut retained,
+            )
+        }
+        .map_err(|error| format!("failed to retain the localization module: {error}"))?;
+        Ok(Self(retained.0 as usize))
+    }
+}
+
+impl Drop for ModuleReference {
+    fn drop(&mut self) {
+        let _ = unsafe { FreeLibrary(HMODULE(self.0 as *mut c_void)) };
+    }
+}
+
+/// The module must be valid, and its native callers must stop before cleanup:
+/// the naked shims use their trampolines outside the Rust callback invocation.
+pub(crate) unsafe fn install(
     module: HMODULE,
     locale: &str,
     missing: MissingTranslation,
     font_name: &[u8],
-) -> Result<(), String> {
+) -> Result<HookGuard<HookState>, String> {
+    let mut hooks = HOOK_STATE.prepare()?;
     let dictionary = &TRANSLATION_DICTIONARY;
     let compiled_locale = dictionary.locale(locale).ok_or_else(|| {
         let available = dictionary.locale_ids().collect::<Vec<_>>().join(", ");
         format!("translation locale {locale:?} is not embedded; available locales: {available}")
     })?;
-    if HOOK_STATE.get().is_some() {
-        return Err("localization hooks are already installed".to_owned());
-    }
     let font_name = CStr::from_bytes_until_nul(font_name)
         .map_err(|_| "configured font name is not NUL-terminated".to_owned())?;
 
+    let retained_module = unsafe { ModuleReference::acquire(module) }?;
     let module_base = module.0 as usize;
     let image_size = unsafe { module_image_size(module_base) }
         .ok_or_else(|| "mhfo module has an invalid PE image layout".to_owned())?;
@@ -223,31 +257,22 @@ pub(crate) fn install(
         .chain(dynamic_resource_hooks)
     {
         let target = module_base + hook.rva;
-        let trampoline = unsafe { MinHook::create_hook(target as *mut c_void, hook.detour) }
-            .map_err(|status| format!("failed to hook {}: {status:?}", hook.name))?;
+        let trampoline = unsafe { hooks.create(hook.name, target as *mut c_void, hook.detour) }?;
         hook.original.store(trampoline as usize, Ordering::Release);
     }
 
-    let rendering = unsafe { rendering::create_hooks(font_name) }?;
+    let rendering = unsafe { rendering::create_hooks(&mut hooks, font_name) }?;
 
-    HOOK_STATE
-        .set(HookState {
-            module_base,
-            locale,
-            missing,
-            missing_keys: Mutex::new(MissingKeyArena::default()),
-            rendering,
-        })
-        .map_err(|_| "localization hooks are already installed".to_owned())?;
-
-    unsafe { MinHook::enable_all_hooks() }
-        .map_err(|status| format!("failed to enable localization hooks: {status:?}"))
-}
-
-fn hook_state() -> &'static HookState {
-    HOOK_STATE
-        .get()
-        .expect("localization hook state must exist before hooks are enabled")
+    let state = HookState {
+        _module: retained_module,
+        module_base,
+        locale,
+        missing,
+        missing_keys: Mutex::new(MissingKeyArena::default()),
+        current_stage: AtomicU16::new(tlk::UNKNOWN_STAGE),
+        rendering,
+    };
+    unsafe { hooks.install(state) }
 }
 
 fn replacement_for_key(
@@ -269,7 +294,10 @@ unsafe extern "C" fn patch_resource_dispatch(resource_index: u32) {
     let Some(resource) = MAIN_RESOURCE_BINDINGS.get(resource_index as usize) else {
         return;
     };
-    let state = hook_state();
+    let invocation = HOOK_STATE.enter();
+    let Some(state) = invocation.state() else {
+        return;
+    };
     let start = unsafe {
         ptr::read_volatile((state.module_base + resource.buffer_rva) as *const u32) as usize
     };

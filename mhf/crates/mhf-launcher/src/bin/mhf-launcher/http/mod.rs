@@ -8,11 +8,13 @@ use shrimpman_domain::{
 };
 use shrimpman_mhf_launcher::{PasswordCredentials, SignCharacter, SignInSuccess};
 use std::{fmt, time::Duration};
+use ureq::http::Method;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct Client {
     base_url: String,
+    agent: ureq::Agent,
 }
 
 impl Client {
@@ -26,6 +28,12 @@ impl Client {
 
         Ok(Self {
             base_url: base_url.to_owned(),
+            agent: ureq::Agent::config_builder()
+                .timeout_connect(Some(Duration::from_secs(5)))
+                .timeout_global(Some(REQUEST_TIMEOUT))
+                .http_status_as_error(false)
+                .build()
+                .into(),
         })
     }
 
@@ -71,17 +79,12 @@ impl Client {
         on_done: impl FnOnce(Result<CharacterId, Error>) + Send + 'static,
     ) -> Result<(), Error> {
         let request = session_request(session_id, &session_token)?;
-        let request = ehttp::Request::post_json(
-            format!("{}/characters/{}", self.base_url, u32::from(character_id)),
+        self.request(
+            Method::DELETE,
+            &format!("/characters/{}", u32::from(character_id)),
             &request,
+            move |result| on_done(result.map(|_| character_id)),
         )
-        .map_err(|error| Error::InvalidRequest(error.to_string()))?
-        .with_method(ehttp::Method::DELETE)
-        .with_timeout(Some(REQUEST_TIMEOUT));
-        ehttp::fetch(request, move |response| {
-            on_done(require_success(response).map(|_| character_id));
-        });
-        Ok(())
     }
 
     fn post<RequestBody, ResponseBody>(
@@ -94,12 +97,42 @@ impl Client {
         RequestBody: Serialize + ?Sized,
         ResponseBody: DeserializeOwned + 'static,
     {
-        let request = ehttp::Request::post_json(format!("{}{path}", self.base_url), body)
-            .map_err(|error| Error::InvalidRequest(error.to_string()))?
-            .with_timeout(Some(REQUEST_TIMEOUT));
-        ehttp::fetch(request, move |response| {
-            on_done(parse_response(response));
-        });
+        self.request(Method::POST, path, body, move |result| {
+            on_done(result.and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| Error::InvalidResponse(error.to_string()))
+            }));
+        })
+    }
+
+    fn request(
+        &self,
+        method: Method,
+        path: &str,
+        body: &(impl Serialize + ?Sized),
+        on_done: impl FnOnce(Result<Vec<u8>, Error>) + Send + 'static,
+    ) -> Result<(), Error> {
+        let body =
+            serde_json::to_vec(body).map_err(|error| Error::InvalidRequest(error.to_string()))?;
+        let request = ureq::http::Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.base_url))
+            .header("Content-Type", "application/json")
+            .body(body)
+            .map_err(|error| Error::InvalidRequest(error.to_string()))?;
+        let agent = self.agent.clone();
+        std::thread::Builder::new()
+            .name("sign-http".to_owned())
+            .spawn(move || {
+                let result = agent
+                    .run(request)
+                    .map_err(Error::Transport)
+                    .and_then(require_success);
+                on_done(result);
+            })
+            .map_err(|error| {
+                Error::InvalidRequest(format!("failed to start Sign request: {error}"))
+            })?;
         Ok(())
     }
 }
@@ -119,7 +152,7 @@ fn session_request(
 #[derive(Debug)]
 pub(crate) enum Error {
     InvalidRequest(String),
-    Transport(String),
+    Transport(ureq::Error),
     Response { status: u16, code: Option<String> },
     InvalidResponse(String),
 }
@@ -164,28 +197,128 @@ struct ErrorResponse {
     error: String,
 }
 
-fn parse_response<ResponseBody>(
-    response: ehttp::Result<ehttp::Response>,
-) -> Result<ResponseBody, Error>
-where
-    ResponseBody: DeserializeOwned,
-{
-    require_success(response)?
-        .json()
-        .map_err(|error| Error::InvalidResponse(error.to_string()))
-}
-
-fn require_success(response: ehttp::Result<ehttp::Response>) -> Result<ehttp::Response, Error> {
-    let response = response.map_err(|error| Error::Transport(error.to_string()))?;
-    if !response.ok {
-        let code = response
-            .json::<ErrorResponse>()
+fn require_success(mut response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, Error> {
+    let status = response.status();
+    let bytes = response
+        .body_mut()
+        .read_to_vec()
+        .map_err(Error::Transport)?;
+    if !status.is_success() {
+        let code = serde_json::from_slice::<ErrorResponse>(&bytes)
             .ok()
             .map(|response| response.error);
         return Err(Error::Response {
-            status: response.status,
+            status: status.as_u16(),
             code,
         });
     }
-    Ok(response)
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::Instant,
+    };
+
+    #[test]
+    fn all_operations_time_out_waiting_for_headers_or_body() {
+        thread::scope(|scope| {
+            for partial_response in [
+                "",
+                "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nContent-Type: application/json\r\n\r\n{",
+            ] {
+                for operation in ["sign_in", "create", "delete"] {
+                    scope.spawn(move || {
+                        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                        listener.set_nonblocking(true).unwrap();
+                        let client =
+                            Client::new(&format!("http://{}", listener.local_addr().unwrap()))
+                                .unwrap();
+                        let (sender, receiver) = mpsc::channel();
+                        let started = Instant::now();
+                        match operation {
+                            "sign_in" => client.sign_in(
+                                &PasswordCredentials {
+                                    username: "hunter".to_owned(),
+                                    password: "test-password".to_owned(),
+                                },
+                                move |result| sender.send(result.map(|_| ())).unwrap(),
+                            ),
+                            "create" => client.create_character(
+                                SignSessionId::from(1),
+                                *b"0123456789abcdef",
+                                move |result| sender.send(result.map(|_| ())).unwrap(),
+                            ),
+                            "delete" => client.delete_character(
+                                SignSessionId::from(1),
+                                *b"0123456789abcdef",
+                                CharacterId::from(7),
+                                move |result| sender.send(result.map(|_| ())).unwrap(),
+                            ),
+                            _ => unreachable!(),
+                        }
+                        .unwrap();
+                        let mut stream = loop {
+                            match listener.accept() {
+                                Ok((stream, _)) => break stream,
+                                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                    assert!(started.elapsed() < Duration::from_secs(5));
+                                    thread::sleep(Duration::from_millis(10));
+                                }
+                                Err(error) => panic!("failed to accept request: {error}"),
+                            }
+                        };
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut request = Vec::new();
+                        let mut byte = [0];
+                        while !request.ends_with(b"\r\n\r\n") {
+                            stream.read_exact(&mut byte).unwrap();
+                            request.push(byte[0]);
+                        }
+                        let headers = String::from_utf8(request).unwrap();
+                        let content_length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        let mut body = vec![0; content_length];
+                        stream.read_exact(&mut body).unwrap();
+                        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        if operation == "sign_in" {
+                            assert!(headers.starts_with("POST /sign-in "));
+                            assert_eq!(body["username"], "hunter");
+                        } else {
+                            assert!(headers.starts_with(if operation == "create" {
+                                "POST /characters "
+                            } else {
+                                "DELETE /characters/7 "
+                            }));
+                            assert_eq!(body["session_token"], "0123456789abcdef");
+                        }
+                        stream.write_all(partial_response.as_bytes()).unwrap();
+                        let result = receiver
+                            .recv_timeout(REQUEST_TIMEOUT + Duration::from_secs(3))
+                            .unwrap();
+                        assert!(
+                            matches!(result, Err(Error::Transport(ureq::Error::Timeout(_)))),
+                            "{operation}: {result:?}"
+                        );
+                        assert!(started.elapsed() < REQUEST_TIMEOUT + Duration::from_secs(3));
+                    });
+                }
+            }
+        });
+    }
 }

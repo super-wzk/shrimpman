@@ -23,108 +23,120 @@ pub(super) fn show(model: &mut Model, ui: &mut egui::Ui) -> Option<Message> {
 }
 
 fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
-    let content_height = 348.0;
-    ui.add_space(((ui.available_height() - content_height) * 0.5).max(0.0));
-
     let mut message = None;
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new("MONSTER HUNTER FRONTIER")
-                .size(23.0)
-                .strong()
-                .color(theme::ACCENT),
-        );
-        ui.add_space(2.0);
-        let (underline, _) = ui.allocate_exact_size(egui::vec2(64.0, 3.0), egui::Sense::hover());
-        ui.painter()
-            .rect_filled(underline, 1.5, theme::ACCENT.gamma_multiply(0.8));
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("Sign in to choose your character")
-                .size(13.0)
-                .color(theme::TEXT_WEAK),
-        );
-        ui.add_space(22.0);
+    let height_id = ui.id().with("sign_in_content_height");
+    let content_height = ui.ctx().data(|data| data.get_temp::<f32>(height_id));
+    let top_space =
+        ((ui.available_height() - content_height.unwrap_or(ui.available_height())) * 0.5).max(0.0);
+    egui::ScrollArea::vertical()
+        .id_salt("sign_in")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add_space(top_space);
+            let content = ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("MONSTER HUNTER FRONTIER")
+                        .size(20.0)
+                        .strong()
+                        .color(theme::ACCENT),
+                );
+                ui.add_space(2.0);
+                let (underline, _) =
+                    ui.allocate_exact_size(egui::vec2(64.0, 3.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(underline, 1.5, theme::ACCENT.gamma_multiply(0.8));
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Sign in to choose your character")
+                        .size(13.0)
+                        .color(theme::TEXT_WEAK),
+                );
+                ui.add_space(16.0);
 
-        egui::Frame::new()
-            .fill(theme::CARD_BG)
-            .stroke(egui::Stroke::new(1.0, theme::BORDER))
-            .corner_radius(12)
-            .inner_margin(egui::Margin::symmetric(20, 18))
-            .show(ui, |ui| {
-                ui.set_width(300.0);
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.label(
-                        egui::RichText::new("Username")
-                            .size(13.0)
-                            .color(theme::TEXT_WEAK),
-                    );
-                    let username = ui.add_enabled(
-                        !state.submitting,
-                        egui::TextEdit::singleline(&mut state.form.username)
-                            .margin(theme::TEXT_EDIT_MARGIN)
-                            .desired_width(f32::INFINITY),
-                    );
-                    let autofocus = ui.id().with("username_autofocus");
-                    if !ui
-                        .ctx()
-                        .data(|data| data.get_temp::<bool>(autofocus).unwrap_or(false))
-                    {
-                        username.request_focus();
-                        ui.ctx().data_mut(|data| data.insert_temp(autofocus, true));
-                    }
+                let form_width = (ui.available_width() - 42.0).min(320.0);
+                egui::Frame::new()
+                    .fill(theme::CARD_BG)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(12)
+                    .inner_margin(egui::Margin::symmetric(20, 18))
+                    .show(ui, |ui| {
+                        ui.set_width(form_width);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            if let Some(error) = state.error.as_deref() {
+                                theme::error_banner(ui, error);
+                                ui.add_space(4.0);
+                            }
+                            ui.label(
+                                egui::RichText::new("Username")
+                                    .size(13.0)
+                                    .color(theme::TEXT_WEAK),
+                            );
+                            let username = ui.add_enabled(
+                                !state.submitting,
+                                egui::TextEdit::singleline(&mut state.form.username)
+                                    .margin(theme::TEXT_EDIT_MARGIN)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let autofocus = ui.id().with("username_autofocus");
+                            if !ui
+                                .ctx()
+                                .data(|data| data.get_temp::<bool>(autofocus).unwrap_or(false))
+                            {
+                                username.request_focus();
+                                ui.ctx().data_mut(|data| data.insert_temp(autofocus, true));
+                            }
 
-                    ui.add_space(12.0);
-                    ui.label(
-                        egui::RichText::new("Password")
-                            .size(13.0)
-                            .color(theme::TEXT_WEAK),
-                    );
-                    ui.add_enabled(
-                        !state.submitting,
-                        egui::TextEdit::singleline(&mut state.form.password)
-                            .password(true)
-                            .margin(theme::TEXT_EDIT_MARGIN)
-                            .desired_width(f32::INFINITY),
-                    );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new("Password")
+                                    .size(13.0)
+                                    .color(theme::TEXT_WEAK),
+                            );
+                            ui.add_enabled(
+                                !state.submitting,
+                                egui::TextEdit::singleline(&mut state.form.password)
+                                    .password(true)
+                                    .margin(theme::TEXT_EDIT_MARGIN)
+                                    .desired_width(f32::INFINITY),
+                            );
 
-                    ui.add_space(10.0);
-                    ui.add_enabled(
-                        !state.submitting,
-                        egui::Checkbox::new(&mut state.form.remember_password, "Remember password"),
-                    );
-
-                    ui.add_space(14.0);
-                    let can_sign_in = state.can_submit();
-                    let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    let width = ui.available_width();
-                    let clicked =
-                        theme::primary_button(ui, "Sign in", can_sign_in, width).clicked();
-                    if clicked || (can_sign_in && enter_pressed) {
-                        message = Some(Message::SignIn);
-                    }
-
-                    if state.submitting {
-                        ui.add_space(10.0);
-                        ui.vertical_centered(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Spinner::new().size(16.0).color(theme::ACCENT));
-                                ui.label(
-                                    egui::RichText::new("Contacting sign service...")
-                                        .size(12.5)
-                                        .color(theme::TEXT_WEAK),
+                            ui.add_space(4.0);
+                            ui.scope(|ui| {
+                                ui.spacing_mut().interact_size.y = 24.0;
+                                ui.add_enabled(
+                                    !state.submitting,
+                                    egui::Checkbox::new(
+                                        &mut state.form.remember_password,
+                                        "Remember password",
+                                    ),
                                 );
                             });
-                        });
-                    }
 
-                    if let Some(error) = state.error.as_deref() {
-                        ui.add_space(10.0);
-                        theme::error_banner(ui, error);
-                    }
-                });
+                            ui.add_space(8.0);
+                            let can_sign_in = state.can_submit();
+                            let enter_pressed =
+                                ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            let width = ui.available_width();
+                            let label = if state.submitting {
+                                "Signing in..."
+                            } else {
+                                "Sign in"
+                            };
+                            let clicked =
+                                theme::primary_button(ui, label, can_sign_in, width).clicked();
+                            if clicked || (can_sign_in && enter_pressed) {
+                                message = Some(Message::SignIn);
+                            }
+                        });
+                    });
             });
-    });
+            let height = content.response.rect.height();
+            if content_height.is_none_or(|previous| (previous - height).abs() > 0.5) {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(height_id, height));
+                ui.ctx().request_discard("sign-in content resized");
+            }
+        });
     message
 }
 
@@ -157,15 +169,6 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
     ui.add_space(4.0);
     ui.separator();
     ui.add_space(4.0);
-
-    if state.sign_in.entrance_servers.is_empty() {
-        theme::warning_banner(ui, "No Entrance service is currently available.");
-        ui.add_space(4.0);
-    }
-    if let Some(error) = state.error.as_deref() {
-        theme::error_banner(ui, error);
-        ui.add_space(4.0);
-    }
 
     egui::Panel::bottom("character_actions")
         .show_separator_line(false)
@@ -236,6 +239,15 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            if state.sign_in.entrance_servers.is_empty() {
+                theme::warning_banner(ui, "No Entrance service is currently available.");
+                ui.add_space(4.0);
+            }
+            if let Some(error) = state.error.as_deref() {
+                theme::error_banner(ui, error);
+                ui.add_space(4.0);
+            }
+
             for character in state
                 .sign_in
                 .characters
@@ -549,5 +561,67 @@ fn character_name(character: &SignCharacter) -> String {
         format!("Character #{}", u32::from(character.id))
     } else {
         character.name.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_errors_keep_sign_in_reachable_at_default_and_minimum_window_sizes() {
+        for size in [egui::vec2(500.0, 520.0), egui::vec2(440.0, 430.0)] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            let mut model = Model::sign_in(None, Some("网络错误 network-error/".repeat(100)));
+            let mut output = egui::FullOutput::default();
+            for frame in 0..10 {
+                let events = if frame == 3 {
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(size.x - 22.0, size.y - 24.0)),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, -1000.0),
+                            phase: egui::TouchPhase::Move,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]
+                } else {
+                    Vec::new()
+                };
+                output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        time: Some(f64::from(frame) * 0.1),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let _ = show(&mut model, ui);
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            let (clip, button) = output
+                .shapes
+                .iter()
+                .find_map(|clipped| {
+                    if let egui::Shape::Text(text) = &clipped.shape
+                        && text.galley.job.text == "Sign in"
+                    {
+                        Some((
+                            clipped.clip_rect,
+                            text.galley.rect.translate(text.pos.to_vec2()),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .expect("sign-in button was not rendered");
+            assert!(
+                clip.contains_rect(button),
+                "button is clipped at {size:?}: {button:?} in {clip:?}"
+            );
+        }
     }
 }

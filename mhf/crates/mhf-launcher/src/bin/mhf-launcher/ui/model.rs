@@ -399,6 +399,23 @@ impl Model {
 }
 
 fn http_error_message(error: &http::Error) -> String {
+    eprintln!("{error}");
+    match error {
+        http::Error::Transport(ureq::Error::Timeout(_)) => {
+            return format!(
+                "The request timed out ({} seconds maximum). Check your connection and try again.",
+                http::REQUEST_TIMEOUT.as_secs(),
+            );
+        }
+        http::Error::Transport(_) => {
+            return "Cannot reach the sign service. Check your connection and try again."
+                .to_owned();
+        }
+        http::Error::InvalidResponse(_) => {
+            return "The sign service returned an invalid response. Please try again.".to_owned();
+        }
+        _ => {}
+    }
     match error.code() {
         Some("wrong_password") => "The username or password is incorrect.".to_owned(),
         Some("illegal_input") => "The username or password is not valid.".to_owned(),
@@ -422,6 +439,25 @@ mod tests {
     };
     use shrimpman_mhf_launcher::IssuedSignSession;
     use std::net::{Ipv4Addr, SocketAddrV4};
+
+    #[test]
+    fn timed_out_sign_in_preserves_credentials_and_allows_retry() {
+        let (model, _) = sign_in_model().update(Message::SignIn);
+        let (model, effect) = model.update(Message::SignedIn {
+            result: Err(http::Error::Transport(ureq::Error::Timeout(
+                ureq::Timeout::Global,
+            ))),
+            credential_error: None,
+        });
+        assert!(effect.is_none());
+        let Model::SignIn(state) = model else {
+            panic!("timeout must keep the sign-in form open");
+        };
+        assert!(state.can_submit());
+        assert_eq!(state.form.username, "  hunter  ");
+        assert_eq!(state.form.password, "secret");
+        assert!(state.error.as_deref().unwrap().contains("timed out"));
+    }
 
     #[test]
     fn saved_credentials_prefill_the_sign_in_form() {

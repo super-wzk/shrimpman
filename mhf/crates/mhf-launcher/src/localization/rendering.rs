@@ -1,5 +1,5 @@
-use super::{dictionary::RuntimeLocale, hook_state};
-use minhook::MinHook;
+use super::{HOOK_STATE, HookState, dictionary::RuntimeLocale};
+use mhf_hooks::HookSet;
 use std::{
     collections::HashMap,
     ffi::{CStr, CString, c_void},
@@ -9,7 +9,7 @@ use windows_sys::{
     Win32::{
         Foundation::{RECT, SIZE},
         Graphics::Gdi::{
-            BLACKNESS, ETO_OPTIONS, ExtTextOutW, GetCurrentObject, GetTextAlign,
+            self, BLACKNESS, ETO_OPTIONS, ExtTextOutW, GetCurrentObject, GetTextAlign,
             GetTextExtentPoint32W, GetTextMetricsW, HDC, HFONT, HGDIOBJ, OBJ_FONT, PatBlt,
             TA_BASELINE, TA_TOP, TEXTMETRICW,
         },
@@ -73,25 +73,25 @@ pub(super) struct RenderingHooks {
     font_correction_cache: Mutex<HashMap<usize, FontCorrectionState>>,
 }
 
-pub(super) unsafe fn create_hooks(font_name: &CStr) -> Result<RenderingHooks, String> {
-    let create_hook = |name, detour| {
-        unsafe { MinHook::create_hook_api("gdi32.dll", name, detour) }
-            .map_err(|status| format!("failed to hook {name}: {status:?}"))
-    };
+pub(super) unsafe fn create_hooks(
+    hooks: &mut HookSet<HookState>,
+    font_name: &CStr,
+) -> Result<RenderingHooks, String> {
+    let mut create_hook = |name, detour| unsafe { hooks.create_api(c"gdi32.dll", name, detour) };
     let create_font_a = create_hook(
-        "CreateFontA",
+        c"CreateFontA",
         create_font_a_detour as CreateFontAFn as *mut c_void,
     )?;
     let get_text_extent_point32_a = create_hook(
-        "GetTextExtentPoint32A",
+        c"GetTextExtentPoint32A",
         get_text_extent_point32_a_detour as GetTextExtentPoint32AFn as *mut c_void,
     )?;
     let ext_text_out_a = create_hook(
-        "ExtTextOutA",
+        c"ExtTextOutA",
         ext_text_out_a_detour as ExtTextOutAFn as *mut c_void,
     )?;
     let delete_object = create_hook(
-        "DeleteObject",
+        c"DeleteObject",
         delete_object_detour as DeleteObjectFn as *mut c_void,
     )?;
     Ok(RenderingHooks {
@@ -197,9 +197,13 @@ unsafe extern "system" fn create_font_a_detour(
     pitch_and_family: u32,
     face_name: PCSTR,
 ) -> HFONT {
-    let state = hook_state();
+    let invocation = HOOK_STATE.enter();
+    let state = invocation.state();
+    let original = state.map_or(Gdi::CreateFontA as CreateFontAFn, |state| {
+        state.rendering.create_font_a
+    });
     let font = unsafe {
-        (state.rendering.create_font_a)(
+        original(
             height,
             width,
             escapement,
@@ -217,6 +221,7 @@ unsafe extern "system" fn create_font_a_detour(
         )
     };
     if !font.is_null()
+        && let Some(state) = state
         && unsafe { state.rendering.matches_configured_font(face_name) }
         && let Some(character_height) = height.checked_abs().filter(|height| *height != 0)
     {
@@ -231,7 +236,10 @@ unsafe extern "system" fn get_text_extent_point32_a_detour(
     count: i32,
     size: *mut SIZE,
 ) -> BOOL {
-    let state = hook_state();
+    let invocation = HOOK_STATE.enter();
+    let Some(state) = invocation.state() else {
+        return unsafe { Gdi::GetTextExtentPoint32A(hdc, string, count, size) };
+    };
     let result = if let Some(character) =
         unsafe { virtual_character(&state.locale, string, count.try_into().ok()) }
     {
@@ -255,7 +263,10 @@ unsafe extern "system" fn ext_text_out_a_detour(
     count: u32,
     spacing: *const i32,
 ) -> BOOL {
-    let state = hook_state();
+    let invocation = HOOK_STATE.enter();
+    let Some(state) = invocation.state() else {
+        return unsafe { Gdi::ExtTextOutA(hdc, x, y, options, rect, string, count, spacing) };
+    };
     let y = unsafe { state.rendering.corrected_y(hdc, y) };
     if spacing.is_null()
         && let Some(character) =
@@ -283,9 +294,15 @@ unsafe extern "system" fn ext_text_out_a_detour(
 }
 
 unsafe extern "system" fn delete_object_detour(object: HGDIOBJ) -> BOOL {
-    let state = hook_state();
-    let result = unsafe { (state.rendering.delete_object)(object) };
-    if result != 0 {
+    let invocation = HOOK_STATE.enter();
+    let state = invocation.state();
+    let original = state.map_or(Gdi::DeleteObject as DeleteObjectFn, |state| {
+        state.rendering.delete_object
+    });
+    let result = unsafe { original(object) };
+    if result != 0
+        && let Some(state) = state
+    {
         state.rendering.untrack_font(object);
     }
     result
