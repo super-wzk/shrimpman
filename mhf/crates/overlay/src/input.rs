@@ -6,7 +6,7 @@ use egui::{
 };
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_NUMLOCK, VK_PAUSE, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, WHEEL_DELTA, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
@@ -19,8 +19,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::{Error, Result};
 
 const SCROLL_POINTS_PER_NOTCH: f32 = 24.0;
-const WM_MOUSELEAVE: u32 = 0x02A3;
+pub(super) const WM_MOUSELEAVE: u32 = 0x02A3;
 const NATIVE_PIXELS_PER_POINT: f32 = 1.0;
+
+pub(super) fn scan_code(wparam: WPARAM, lparam: LPARAM) -> usize {
+    match wparam.0 as u16 {
+        code if code == VK_PAUSE.0 => 0xc5,
+        code if code == VK_NUMLOCK.0 => 0x45,
+        _ => ((lparam.0 as usize >> 16) & 0x7f) | ((lparam.0 as usize >> 17) & 0x80),
+    }
+}
 
 pub(super) struct InputState {
     events: Vec<Event>,
@@ -380,5 +388,21 @@ mod tests {
         let packed = usize::from(20_u16) << 16 | usize::from((-10_i16).cast_unsigned());
         assert_eq!(low_word_signed(packed), -10);
         assert_eq!(high_word_signed(packed), 20);
+    }
+
+    #[test]
+    fn normalizes_native_keys_to_directinput_scan_codes() {
+        assert_eq!(scan_code(WPARAM(0x41), LPARAM(0x001e_0001)), 0x1e);
+        assert_eq!(scan_code(WPARAM(0x11), LPARAM(0x001d_0001)), 0x1d);
+        assert_eq!(scan_code(WPARAM(0x11), LPARAM(0x011d_0001)), 0x9d);
+        assert_eq!(scan_code(WPARAM(0x26), LPARAM(0x0148_0001)), 0xc8);
+        assert_eq!(
+            scan_code(WPARAM(VK_NUMLOCK.0.into()), LPARAM(0x0145_0001)),
+            0x45
+        );
+        assert_eq!(
+            scan_code(WPARAM(VK_PAUSE.0.into()), LPARAM(0x0045_0001)),
+            0xc5
+        );
     }
 }

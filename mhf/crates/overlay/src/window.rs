@@ -1,19 +1,23 @@
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, GWLP_WNDPROC, RegisterClassExW, SetWindowLongPtrW, UnregisterClassW,
-    WINDOW_EX_STYLE, WNDCLASSEXW, WS_OVERLAPPED,
+    DestroyWindow, GWLP_WNDPROC, GetCursorPos, RegisterClassExW, SetWindowLongPtrW,
+    UnregisterClassW, WINDOW_EX_STYLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
+    XBUTTON1,
 };
 use windows::core::w;
 
-use crate::input::{InputState, is_keyboard_message, is_pointer_message};
-use crate::{Error, Result};
+use crate::input::{InputState, WM_MOUSELEAVE, is_keyboard_message, is_pointer_message, scan_code};
+use crate::{Error, InputCaptureState, InputPolicy, Result};
 
 static WINDOW_ROUTE: Mutex<Option<WindowRoute>> = Mutex::new(None);
 
@@ -23,38 +27,17 @@ type WindowLong = i32;
 #[cfg(target_pointer_width = "64")]
 type WindowLong = isize;
 
-#[derive(Default)]
-struct CaptureState {
-    pointer: AtomicBool,
-    keyboard: AtomicBool,
-}
-
-impl CaptureState {
-    fn update(&self, pointer: bool, keyboard: bool) {
-        self.pointer.store(pointer, Ordering::Release);
-        self.keyboard.store(keyboard, Ordering::Release);
-    }
-
-    fn clear(&self) {
-        self.update(false, false);
-    }
-
-    fn blocks(&self, message: u32) -> bool {
-        (is_pointer_message(message) && self.pointer.load(Ordering::Acquire))
-            || (is_keyboard_message(message) && self.keyboard.load(Ordering::Acquire))
-    }
-}
-
 pub(super) struct WindowState {
     input: Mutex<InputState>,
-    capture: CaptureState,
+    capture: InputCaptureState,
 }
 
 impl WindowState {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(hwnd: HWND, capture: InputCaptureState) -> Self {
+        capture.lock().window = hwnd.0 as usize;
         Self {
             input: Mutex::new(InputState::new()),
-            capture: CaptureState::default(),
+            capture,
         }
     }
 
@@ -65,8 +48,8 @@ impl WindowState {
             .take(hwnd, pixels_per_point)
     }
 
-    pub(super) fn update_capture(&self, pointer: bool, keyboard: bool) {
-        self.capture.update(pointer, keyboard);
+    pub(super) fn update_capture(&self, policy: InputPolicy, context: &egui::Context) {
+        self.capture.update(policy, context);
     }
 
     pub(super) fn clear_capture(&self) {
@@ -78,7 +61,48 @@ impl WindowState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .handle_message(message, wparam, lparam);
-        self.capture.blocks(message)
+        let mut capture = self.capture.lock();
+        if is_pointer_message(message) {
+            let mut position = POINT {
+                x: lparam.0 as i16 as i32,
+                y: (lparam.0 >> 16) as i16 as i32,
+            };
+            let has_position = if matches!(message, WM_MOUSEWHEEL | WM_MOUSEHWHEEL) {
+                unsafe { ScreenToClient(HWND(capture.window as *mut _), &mut position).as_bool() }
+            } else {
+                message != WM_MOUSELEAVE
+            };
+            if has_position {
+                capture.move_pointer(egui::pos2(position.x as f32, position.y as f32));
+            }
+        }
+        match message {
+            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => capture.pointer_button(0, true),
+            WM_LBUTTONUP => capture.pointer_button(0, false),
+            WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => capture.pointer_button(1, true),
+            WM_RBUTTONUP => capture.pointer_button(1, false),
+            WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => capture.pointer_button(2, true),
+            WM_MBUTTONUP => capture.pointer_button(2, false),
+            WM_XBUTTONDOWN | WM_XBUTTONDBLCLK | WM_XBUTTONUP => {
+                let button = if (wparam.0 >> 16) as u16 == XBUTTON1 {
+                    3
+                } else {
+                    4
+                };
+                capture.pointer_button(button, message != WM_XBUTTONUP)
+            }
+            WM_MOUSEMOVE => capture.pointer_motion(),
+            WM_KEYDOWN | WM_SYSKEYDOWN => capture.key(scan_code(wparam, lparam), true),
+            WM_KEYUP | WM_SYSKEYUP => capture.key(scan_code(wparam, lparam), false),
+            WM_KILLFOCUS => {
+                capture.reset();
+                false
+            }
+            _ => {
+                (is_pointer_message(message) && capture.pointer())
+                    || (is_keyboard_message(message) && capture.keyboard())
+            }
+        }
     }
 }
 
@@ -133,10 +157,22 @@ impl Drop for WindowBinding {
             restore_window_proc(hwnd, self.original);
         }
         let mut route = window_route();
-        if route.as_ref().is_some_and(|route| route.hwnd == self.hwnd) {
+        if let Some(current) = route.as_ref().filter(|route| route.hwnd == self.hwnd) {
+            current.state.capture.reset();
             *route = None;
         }
     }
+}
+
+pub(super) fn cursor_position(window: usize) -> Option<egui::Pos2> {
+    if window == 0 {
+        return None;
+    }
+    let mut position = POINT::default();
+    unsafe { GetCursorPos(&mut position) }.ok()?;
+    unsafe { ScreenToClient(HWND(window as *mut _), &mut position) }
+        .as_bool()
+        .then(|| egui::pos2(position.x as f32, position.y as f32))
 }
 
 unsafe extern "system" fn overlay_window_proc(

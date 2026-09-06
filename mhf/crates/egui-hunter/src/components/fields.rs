@@ -1,6 +1,9 @@
-use egui::{Id, Margin, Rect, Response, RichText, Shape, Stroke, Ui, Vec2, Widget, pos2};
+use egui::{Atom, Id, Response, RichText, Shape, Ui, Vec2, Widget};
 
-use crate::{Icon, Theme, paint};
+use crate::{
+    Icon,
+    theme::{Tokens, paint},
+};
 
 /// Validation is supplied by the host. A message replaces the ordinary help text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -14,8 +17,8 @@ pub enum Validation<'a> {
 
 /// A labeled native single-line editor with optional help and validation.
 /// The returned response belongs to the editor, including `changed`/`lost_focus`.
+/// Enter preserves focus; values update through `changed`, and the host owns submission.
 pub struct TextField<'a> {
-    theme: &'a Theme,
     id: Id,
     value: &'a mut String,
     label: Option<&'a str>,
@@ -27,15 +30,9 @@ pub struct TextField<'a> {
     password: bool,
 }
 
-impl Theme {
-    /// A search-style input using the native editor for selection, clipboard and IME.
-    pub fn text_edit(&self, ui: &mut Ui, id: Id, value: &mut String, hint: &str) -> Response {
-        ui.add(self.text_field(id, value).hint(hint).icon(Icon::Search))
-    }
-
-    pub fn text_field<'a>(&'a self, id: Id, value: &'a mut String) -> TextField<'a> {
-        TextField {
-            theme: self,
+impl<'a> TextField<'a> {
+    pub fn new(id: Id, value: &'a mut String) -> Self {
+        Self {
             id,
             value,
             label: None,
@@ -47,9 +44,6 @@ impl Theme {
             password: false,
         }
     }
-}
-
-impl<'a> TextField<'a> {
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
         self
@@ -85,8 +79,7 @@ impl<'a> TextField<'a> {
 impl Widget for TextField<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.vertical(|ui| {
-            let theme = self.theme;
-            let p = theme.palette;
+            let tokens = Tokens::get(ui);
             let enabled = ui.is_enabled();
             if !enabled {
                 ui.memory_mut(|m| m.surrender_focus(self.id));
@@ -94,73 +87,71 @@ impl Widget for TextField<'_> {
             let label = self.label.map(|label| ui.label(label));
             let status = match self.validation {
                 Validation::None => None,
-                Validation::Warning(message) => Some((message, Icon::Warning, p.brass)),
-                Validation::Error(message) => Some((message, Icon::Warning, p.danger)),
-                Validation::Success(message) => Some((message, Icon::Check, p.moss)),
+                Validation::Warning(message) => {
+                    Some((message, Icon::Warning, ui.visuals().warn_fg_color))
+                }
+                Validation::Error(message) => {
+                    Some((message, Icon::Warning, ui.visuals().error_fg_color))
+                }
+                Validation::Success(message) => Some((message, Icon::Check, tokens.success)),
             };
             let background = ui.painter().add(Shape::Noop);
             let mut view = self.value.as_str();
-            let buffer: &mut dyn egui::TextBuffer = if self.read_only || !enabled {
+            let buffer: &mut dyn egui::TextBuffer = if self.read_only {
                 &mut view
             } else {
                 self.value
             };
-            let mut response = ui.add(
-                egui::TextEdit::singleline(buffer)
-                    .id(self.id)
-                    .hint_text(RichText::new(self.hint).color(p.muted))
-                    .text_color(p.text)
-                    .password(self.password)
-                    .interactive(enabled)
-                    .desired_width(ui.available_width())
-                    .frame(egui::Frame::new().inner_margin(Margin {
-                        left: if self.icon.is_some() { 36 } else { 12 },
-                        right: 12,
-                        top: 10,
-                        bottom: 10,
-                    })),
-            );
+            let icon_id = self.id.with("icon");
+            let mut editor = egui::TextEdit::singleline(buffer)
+                .id(self.id)
+                .hint_text(self.hint)
+                .password(self.password)
+                .interactive(enabled)
+                .return_key(None)
+                .desired_width(ui.available_width())
+                .frame(egui::Frame::new().inner_margin(ui.spacing().button_padding));
+            if self.icon.is_some() {
+                editor = editor.prefix(Atom::custom(
+                    icon_id,
+                    Vec2::splat(ui.spacing().icon_width_inner),
+                ));
+            }
+            let output = editor.show(ui);
+            let icon_rect = output.response.rect(icon_id);
+            let mut response = output.response.response;
             if let Some(label) = label {
                 response = response.labelled_by(label.id);
             }
+            crate::primitives::focus::consume_escape_on_blur(&response);
+            crate::primitives::focus::scroll_on_focus(&response);
             if ui.is_rect_visible(response.rect) {
-                let border = if let Some((_, _, color)) = status {
-                    color
-                } else if response.has_focus() || response.hovered() {
-                    p.brass
-                } else {
-                    p.border
-                };
+                let visuals = paint::field_visuals(ui, &response);
                 ui.painter().set(
                     background,
                     paint::chamfer(
                         response.rect.shrink(0.5),
-                        theme.metrics.cut,
-                        p.background,
-                        Stroke::new(1.0, border),
+                        tokens.cut,
+                        visuals.bg_fill,
+                        visuals.bg_stroke,
                     ),
                 );
-                if let Some(icon) = self.icon {
+                if let (Some(icon), Some(rect)) = (self.icon, icon_rect) {
                     icon.paint(
-                        ui.painter(),
-                        Rect::from_center_size(
-                            pos2(response.rect.left() + 18.0, response.rect.center().y),
-                            Vec2::splat(16.0),
-                        ),
-                        p.muted,
-                    );
-                }
-                if response.has_focus() {
-                    paint::corners(
-                        ui.painter(),
-                        response.rect.shrink(2.0),
-                        Stroke::new(1.5, p.brass),
+                        &ui.painter_at(rect),
+                        rect,
+                        ui.visuals()
+                            .override_text_color
+                            .unwrap_or_else(|| ui.visuals().weak_text_color()),
                     );
                 }
             }
             if let Some((message, icon, color)) = status {
                 ui.horizontal_top(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::splat(ui.spacing().icon_width_inner),
+                        egui::Sense::hover(),
+                    );
                     icon.paint(ui.painter(), rect, color);
                     ui.add(egui::Label::new(RichText::new(message).small().color(color)).wrap());
                 });

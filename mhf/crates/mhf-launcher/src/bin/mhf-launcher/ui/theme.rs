@@ -16,20 +16,7 @@ const WARNING_TEXT: egui::Color32 = egui::Color32::from_rgb(240, 208, 148);
 pub(super) const TEXT_EDIT_MARGIN: egui::Margin = egui::Margin::symmetric(10, 8);
 
 pub(super) fn install(context: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::empty();
-    let font_name = crate::font::FAMILY_NAME.to_owned();
-    fonts.font_data.insert(
-        font_name.clone(),
-        std::sync::Arc::new(egui::FontData::from_static(crate::font::BYTES)),
-    );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push(font_name.clone());
-    }
-    context.set_fonts(fonts);
+    shrimpman_mhf_launcher::font::install(context);
 
     context.set_theme(egui::ThemePreference::Dark);
     let mut visuals = egui::Visuals::dark();

@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use egui::{Context, Event, Key, Modifiers, RawInput};
 
+use crate::primitives::focus::engagement::{self, ControllerAction, Forward, Route};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Up,
@@ -28,7 +30,8 @@ pub struct GamepadState {
     pub direction: Option<Direction>,
     pub confirm: bool,
     pub cancel: bool,
-    /// Map shoulder buttons to native Tab/Shift-Tab to leave a list or grid.
+    /// Sequential controller navigation, normally bound to RB/LB. Engagement
+    /// routes this within its regions; otherwise it becomes native Tab.
     pub next_focus: bool,
     pub previous_focus: bool,
 }
@@ -84,17 +87,14 @@ impl NavigationInput {
             .filter(|time| time.is_finite())
             .unwrap_or(self.time + f64::from(raw.predicted_dt.max(0.0)))
             .max(self.time);
-        if raw.events.iter().any(|event| {
-            matches!(
-                event,
-                Event::Key { pressed: true, .. }
-                    | Event::Text(_)
-                    | Event::PointerMoved(_)
-                    | Event::PointerButton { pressed: true, .. }
-                    | Event::MouseWheel { .. }
-            )
-        }) {
+        engagement::prepare_input(ctx, raw.viewport_id);
+        if raw.events.iter().any(engagement::native_activity) {
             self.device = InputDevice::KeyboardMouse;
+            // Real input wins this frame. A held stick must be released or
+            // changed before it can take over from keyboard/mouse again.
+            self.held = state;
+            self.next_repeat = None;
+            return;
         }
         if !raw.focused {
             // Holding A while returning to the window must not activate a button.
@@ -103,13 +103,15 @@ impl NavigationInput {
             return;
         }
 
-        let has_focus = ctx.memory(|m| m.focused().is_some());
         let changed_direction = state.direction != self.held.direction;
         let repeating = self.next_repeat.is_some_and(|next| self.time >= next);
         if let Some(direction) = state.direction {
             if changed_direction || repeating {
-                let key = if has_focus { direction.key() } else { Key::Tab };
-                self.pulse(ctx, raw, key, Modifiers::NONE, !changed_direction);
+                self.action(
+                    ctx,
+                    raw,
+                    ControllerAction::Direction(direction, !changed_direction),
+                );
                 self.next_repeat = Some(
                     self.time
                         + if changed_direction {
@@ -124,22 +126,61 @@ impl NavigationInput {
             self.next_repeat = None;
         }
         if state.confirm && !self.held.confirm {
-            let key = if has_focus { Key::Enter } else { Key::Tab };
-            self.pulse(ctx, raw, key, Modifiers::NONE, false);
+            self.action(ctx, raw, ControllerAction::Confirm);
         }
         if state.cancel && !self.held.cancel {
-            self.pulse(ctx, raw, Key::Escape, Modifiers::NONE, false);
+            self.action(ctx, raw, ControllerAction::Cancel);
         }
         if state.next_focus && !self.held.next_focus {
-            self.pulse(ctx, raw, Key::Tab, Modifiers::NONE, false);
+            self.action(ctx, raw, ControllerAction::Next(true));
         }
         if state.previous_focus && !self.held.previous_focus {
-            self.pulse(ctx, raw, Key::Tab, Modifiers::SHIFT, false);
+            self.action(ctx, raw, ControllerAction::Next(false));
         }
         self.held = state;
         if let Some(next) = self.next_repeat {
             ctx.request_repaint_after(Duration::from_secs_f64((next - self.time).max(0.0)));
         }
+    }
+
+    fn action(&mut self, ctx: &Context, raw: &mut RawInput, action: ControllerAction) {
+        let forward = match engagement::route(ctx, raw.viewport_id, action) {
+            Some(Route::Handled) => {
+                self.device = InputDevice::Gamepad;
+                ctx.request_repaint();
+                return;
+            }
+            Some(Route::Forward(forward)) => Some(forward),
+            None => None,
+        };
+        let (key, modifiers, repeat) = if let Some(forward) = forward {
+            (forward.key, Modifiers::NONE, forward.repeat)
+        } else {
+            let focused = ctx.memory(|memory| memory.focused().is_some());
+            match action {
+                ControllerAction::Direction(direction, repeat) => (
+                    if focused { direction.key() } else { Key::Tab },
+                    Modifiers::NONE,
+                    repeat,
+                ),
+                ControllerAction::Confirm => (
+                    if focused { Key::Enter } else { Key::Tab },
+                    Modifiers::NONE,
+                    false,
+                ),
+                ControllerAction::Cancel => (Key::Escape, Modifiers::NONE, false),
+                ControllerAction::Next(next) => (
+                    Key::Tab,
+                    if next {
+                        Modifiers::NONE
+                    } else {
+                        Modifiers::SHIFT
+                    },
+                    false,
+                ),
+            }
+        };
+        self.pulse(ctx, raw, key, modifiers, repeat, forward);
     }
 
     fn pulse(
@@ -149,6 +190,7 @@ impl NavigationInput {
         key: Key,
         modifiers: Modifiers,
         repeat: bool,
+        forward: Option<Forward>,
     ) {
         // A synthetic release must not release a real, held keyboard key.
         if ctx.input(|i| i.key_down(key))
@@ -159,6 +201,7 @@ impl NavigationInput {
         {
             return;
         }
+        let start = raw.events.len();
         for pressed in [true, false] {
             raw.events.push(Event::Key {
                 key,
@@ -168,7 +211,59 @@ impl NavigationInput {
                 modifiers,
             });
         }
+        engagement::record_pulse(ctx, raw.viewport_id, start, &raw.events[start..], forward);
         self.device = InputDevice::Gamepad;
         ctx.request_repaint();
     }
+}
+
+/// Consume an unmodified Escape press after child content has handled its input.
+/// Repeats are discarded, so holding Escape cannot dismiss multiple containers.
+/// The caller decides whether this means leaving an editor, going back or closing.
+pub fn consume_escape(ctx: &Context) -> bool {
+    consume_press(ctx, &[Key::Escape])
+}
+
+pub(crate) fn consume_press(ctx: &Context, keys: &[Key]) -> bool {
+    ctx.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                repeat,
+                modifiers: Modifiers::NONE,
+                ..
+            } = event
+                && keys.contains(key)
+            {
+                pressed |= !repeat;
+                false
+            } else {
+                true
+            }
+        });
+        pressed
+    })
+}
+
+pub(crate) fn discard_escape_repeats(ctx: &Context) {
+    discard_repeats(ctx, &[Key::Escape]);
+}
+
+pub(crate) fn discard_repeats(ctx: &Context, keys: &[Key]) {
+    ctx.input_mut(|input| {
+        input.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: true,
+                    modifiers: Modifiers::NONE,
+                    ..
+                } if keys.contains(key)
+            )
+        });
+    });
 }

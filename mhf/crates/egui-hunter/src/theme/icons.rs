@@ -60,7 +60,7 @@ impl Icon {
             }
             Self::Potion => {
                 let body = Rect::from_min_max(point(0.22, 0.38), point(0.78, 0.9));
-                p.add(crate::paint::chamfer(
+                p.add(super::paint::chamfer(
                     body,
                     rect.width() * 0.1,
                     color.gamma_multiply(0.2),

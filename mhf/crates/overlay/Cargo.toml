@@ -4,8 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-[target.'cfg(windows)'.dependencies]
+[dependencies]
 egui = { workspace = true, features = ["default_fonts"] }
+
+[target.'cfg(windows)'.dependencies]
 mhf-hooks = { path = "../hooks" }
 windows = { workspace = true, features = [
     "Win32_Foundation",

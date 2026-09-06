@@ -1,26 +1,56 @@
+mod input;
+mod validation;
+
+use egui_hunter::Theme;
 use mhf_overlay::{
-    Overlay,
+    InputPolicy, Overlay,
     dx9::D3d9Hook,
     egui::{self, Context},
 };
 
-pub(crate) fn install() -> Result<D3d9Hook, String> {
-    unsafe { D3d9Hook::install(GameOverlay) }
-        .map_err(|error| format!("failed to install D3D9 overlay: {error}"))
+pub(crate) fn install() -> Result<OverlayHook, String> {
+    let renderer = unsafe { D3d9Hook::install(GameOverlay::default()) }
+        .map_err(|error| format!("failed to install D3D9 overlay: {error}"))?;
+    let input = unsafe { input::install(renderer.input_capture()) }?;
+    Ok(OverlayHook { input, renderer })
 }
 
-struct GameOverlay;
+pub(crate) struct OverlayHook {
+    input: mhf_hooks::HookGuard<input::HookState>,
+    renderer: D3d9Hook,
+}
+
+impl OverlayHook {
+    pub(crate) fn uninstall(mut self) -> Result<(), String> {
+        let input = self.input.uninstall();
+        let renderer = self.renderer.uninstall().map_err(|error| error.to_string());
+        match (input, renderer) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(input), Err(renderer)) => Err(format!("{input}; {renderer}")),
+        }
+    }
+}
+
+#[derive(Default)]
+struct GameOverlay {
+    validation: validation::ValidationPage,
+}
 
 impl Overlay for GameOverlay {
-    fn ui(&mut self, context: &Context) {
-        egui::Window::new("Shrimpman Debug")
-            .default_pos([16.0, 16.0])
-            .resizable(false)
-            .show(context, |ui| {
-                ui.label("D3D9 overlay is active.");
-            });
+    fn initialize(&mut self, context: &Context) {
+        crate::font::install(context);
+        Theme::default().apply(context);
+    }
 
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let context = ui.ctx();
+        self.validation.show(context);
         draw_cursor(context);
+    }
+
+    fn input_policy(&self, _context: &Context) -> InputPolicy {
+        self.validation.input_policy()
     }
 }
 

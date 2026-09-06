@@ -3,9 +3,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::{AddFontMemResourceEx, RemoveFontMemResourceEx},
 };
 
-pub(super) const FAMILY_NAME: &str = "JetBrains Maple Mono NF NL HT";
-pub(super) static BYTES: &[u8] =
-    include_bytes!("../../../assets/fonts/JetBrainsMapleMono-NF-XX-NL-HT-Regular.ttf");
+pub(super) use shrimpman_mhf_launcher::font::{BYTES, FAMILY_NAME};
 
 pub(super) struct Registration(HANDLE);
 

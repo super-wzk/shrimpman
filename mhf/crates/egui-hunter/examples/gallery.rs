@@ -1,11 +1,24 @@
 //! Run with `cargo run -p egui-hunter --example gallery --target <host-triple>`.
 use std::path::PathBuf;
 
-use egui::{Color32, FontId, Id, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
-use egui_hunter::{
-    ButtonKind, Direction, FocusGroup, Icon, MenuStack, NoticeKind, Notifications, OverlayState,
-    Property, Surface, Tab, TabsState, Theme, Validation,
+use egui::{
+    Color32, FontSelection, Id, Rect, RichText, Sense, Stroke, TextStyle, Vec2, pos2, vec2,
 };
+use egui_hunter::{
+    Button, ButtonKind, Checkbox, Dialog, DialogState, Direction, FocusEngagement, FocusGroup,
+    Icon, ItemSlot, Meter, NavigationStack, NavigationState, NoticeKind, Notifications, Panel,
+    Popup, Property, ResponsiveColumns, RichTooltip, ScrollPanel, Surface, Tab, Tabs, TextField,
+    Theme, Toggle, Tokens, Validation, Window, key_hint, notice, properties, scroll_keyboard,
+    scroll_on_focus,
+};
+
+fn highlight_region(ui: &mut egui::Ui, id: Id) {
+    if ui.memory(|memory| memory.has_focus(id) && memory.allows_interaction(ui.layer_id())) {
+        let active = ui.visuals().widgets.active;
+        ui.visuals_mut().window_fill = active.bg_fill;
+        ui.visuals_mut().window_stroke = active.bg_stroke;
+    }
+}
 
 #[derive(Default)]
 struct Options {
@@ -68,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(move |cc| {
             install_fonts(&cc.egui_ctx, options.font.as_deref())?;
             let mut gallery = Gallery::default();
-            gallery.theme.apply(&cc.egui_ctx);
+            Theme::default().apply(&cc.egui_ctx);
             gallery.screenshot = options.screenshot;
             if options.dialog {
                 gallery.dialog.open(&cc.egui_ctx);
@@ -81,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             gallery.preview_tooltip = options.tooltip;
             if options.popup {
-                gallery.popup.open(&cc.egui_ctx);
+                egui::Popup::open_id(&cc.egui_ctx, Id::new("gallery-popup"));
             }
             gallery.window_open = options.window;
             if options.notices {
@@ -178,7 +191,6 @@ enum MenuPage {
 }
 
 struct Gallery {
-    theme: Theme,
     quest: usize,
     item: usize,
     category: usize,
@@ -186,14 +198,13 @@ struct Gallery {
     query: String,
     tips: bool,
     auto_sort: bool,
-    input_style: usize,
+    keycap_preview: usize,
     volume: f32,
     health: f32,
-    dialog: OverlayState,
-    popup: OverlayState,
+    dialog: DialogState,
     notices: Notifications,
-    page: TabsState,
-    menu: MenuStack<MenuPage>,
+    page: NavigationState,
+    menu: NavigationStack<MenuPage>,
     window_open: bool,
     hunter_name: String,
     room_name: String,
@@ -206,13 +217,13 @@ struct Gallery {
     pointer_repeat: Option<(Direction, f64)>,
     preview_tooltip: bool,
     screenshot: Option<PathBuf>,
-    frames: usize,
+    screenshot_started: Option<f64>,
+    screenshot_requested: bool,
 }
 
 impl Default for Gallery {
     fn default() -> Self {
         Self {
-            theme: Theme::default(),
             quest: 0,
             item: 0,
             category: 0,
@@ -291,14 +302,13 @@ impl Default for Gallery {
             query: String::new(),
             tips: true,
             auto_sort: true,
-            input_style: 0,
+            keycap_preview: 0,
             volume: 70.0,
             health: 0.68,
-            dialog: OverlayState::default(),
-            popup: OverlayState::default(),
+            dialog: DialogState::default(),
             notices: Notifications::new(Id::new("gallery-notices")),
-            page: TabsState::default(),
-            menu: MenuStack::new(Id::new("camp-menu"), MenuPage::Camp),
+            page: NavigationState::default(),
+            menu: NavigationStack::new(Id::new("camp-menu"), MenuPage::Camp),
             window_open: false,
             hunter_name: String::new(),
             room_name: "密林集会所".into(),
@@ -311,18 +321,18 @@ impl Default for Gallery {
             pointer_repeat: None,
             preview_tooltip: false,
             screenshot: None,
-            frames: 0,
+            screenshot_started: None,
+            screenshot_requested: false,
         }
     }
 }
 
 impl Gallery {
     fn show(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(t.palette.background)
+                    .fill(ui.visuals().extreme_bg_color)
                     .inner_margin(24),
             )
             .show(ui, |ui| {
@@ -334,7 +344,7 @@ impl Gallery {
                         // Keep tab state outside the content closure, so page actions
                         // may freely mutate the rest of the demo state.
                         let mut page = std::mem::take(&mut self.page);
-                        t.tabs(Id::new("gallery-pages")).show(
+                        Tabs::new(Id::new("gallery-pages")).show(
                             ui,
                             &mut page,
                             &[
@@ -349,7 +359,8 @@ impl Gallery {
                                 } else if page == Id::new("details") {
                                     self.details(ui);
                                 } else {
-                                    t.columns(Id::new("gallery-columns"))
+                                    ResponsiveColumns::new(Id::new("gallery-columns"))
+                                        .gap(ui.spacing().item_spacing.x * 2.0)
                                         .min_column_width(540.0)
                                         .show(ui, 4, |ui, index| match index {
                                             0 => self.quests(ui),
@@ -366,50 +377,56 @@ impl Gallery {
                         ui.horizontal_wrapped(|ui| {
                             for label in ["选择任务", "确认目标", "整理道具", "出发狩猎"]
                             {
-                                ui.label(RichText::new("◆").color(t.palette.brass).size(10.0));
-                                ui.label(RichText::new(label).color(t.palette.muted).size(14.0));
+                                ui.label(
+                                    RichText::new("◆")
+                                        .color(ui.visuals().hyperlink_color)
+                                        .size(10.0),
+                                );
+                                ui.label(RichText::new(label).weak().size(14.0));
                                 ui.add_space(24.0);
                             }
                         });
-                        t.scroll_focus(ui, Id::new("gallery-scroll"));
                     });
             });
         self.modal(ui.ctx());
-        t.window("随行手记")
+        let mut window = Window::new("随行手记").open(&mut self.window_open);
+        window.native = window
+            .native
             .id(Id::new("field-window"))
-            .open(&mut self.window_open)
             .default_size([340.0, 220.0])
-            .default_pos([920.0, 500.0])
-            .show(ui.ctx(), |ui| {
-                ui.label("拖动空白处移动，拖动边缘调整大小。");
-                ui.add_space(8.0);
-                t.panel("今日准备")
-                    .surface(Surface::Parchment)
-                    .show(ui, |ui| {
-                        ui.label("◆ 检查装备锋利度");
-                        ui.label("◆ 补充回复药与陷阱");
-                        ui.label("◆ 在营地集合后出发");
-                    });
-            });
-        self.notices.show(ui.ctx(), &t);
+            .default_pos([920.0, 500.0]);
+        window.show(ui.ctx(), |ui| {
+            ui.label("拖动空白处移动，拖动边缘调整大小。");
+            ui.add_space(8.0);
+            Panel::new("今日准备")
+                .surface(Surface::Parchment)
+                .show(ui, |ui| {
+                    ui.label("◆ 检查装备锋利度");
+                    ui.label("◆ 补充回复药与陷阱");
+                    ui.label("◆ 在营地集合后出发");
+                });
+        });
+        self.notices.show(ui.ctx());
     }
 
     fn header(&self, ui: &mut egui::Ui) {
-        let t = self.theme;
         let wide = ui.available_width() >= 1100.0;
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-            ui.painter()
-                .circle_stroke(rect.center(), 26.0, Stroke::new(1.0, t.palette.border));
-            Icon::Sword.paint(ui.painter(), rect.shrink(8.0), t.palette.brass);
+            ui.painter().circle_stroke(
+                rect.center(),
+                26.0,
+                Stroke::new(1.0, ui.visuals().window_stroke.color),
+            );
+            Icon::Sword.paint(ui.painter(), rect.shrink(8.0), ui.visuals().hyperlink_color);
             ui.add_space(8.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new("猎人工坊").size(34.0).color(t.palette.text));
                 ui.label(
-                    RichText::new("狩猎界面 · 统一设计语言")
-                        .size(14.0)
-                        .color(t.palette.muted),
+                    RichText::new("猎人工坊")
+                        .size(34.0)
+                        .color(ui.visuals().text_color()),
                 );
+                ui.label(RichText::new("狩猎界面 · 统一设计语言").size(14.0).weak());
             });
             if wide {
                 ui.add_space(80.0);
@@ -423,35 +440,33 @@ impl Gallery {
     }
 
     fn palette(&self, ui: &mut egui::Ui) {
-        let t = self.theme;
         ui.horizontal_wrapped(|ui| {
             for (name, color) in [
-                ("骨白", t.palette.text),
-                ("炭黑", t.palette.panel),
-                ("苔绿 · 选中", t.palette.moss),
-                ("黄铜 · 聚焦", t.palette.brass),
-                ("朱红 · 危险", t.palette.danger),
+                ("骨白", ui.visuals().text_color()),
+                ("炭黑", ui.visuals().window_fill),
+                ("苔绿 · 已选", ui.visuals().selection.stroke.color),
+                ("当前操作", ui.visuals().widgets.active.bg_fill),
+                ("朱红 · 危险", ui.visuals().error_fg_color),
             ] {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                 ui.painter().rect_filled(rect, 2, color);
-                ui.label(RichText::new(name).size(13.0).color(t.palette.muted));
+                ui.label(RichText::new(name).size(13.0).weak());
                 ui.add_space(14.0);
             }
         });
     }
 
     fn quests(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("01  任务界面").show(ui, |ui| {
+        Panel::new("01  任务界面").show(ui, |ui| {
             ui.set_min_height(352.0);
             ui.columns(2, |cols| {
-                cols[0].label(RichText::new("集会所委托").small().color(t.palette.muted));
+                cols[0].label(RichText::new("集会所委托").small().weak());
                 cols[0].add_space(6.0);
                 for (index, quest) in QUESTS.iter().enumerate() {
                     let response = cols[0]
                         .push_id(index, |ui| {
                             ui.add(
-                                t.button(quest.name)
+                                Button::new(quest.name)
                                     .icon(quest.icon)
                                     .selected(self.quest == index)
                                     .full_width()
@@ -464,32 +479,32 @@ impl Gallery {
                     }
                 }
                 cols[0].add_space(12.0);
-                cols[0].label(
-                    RichText::new("委托记录在此，准备好便出发。")
-                        .small()
-                        .color(t.palette.muted),
-                );
+                cols[0].label(RichText::new("委托记录在此，准备好便出发。").small().weak());
                 let quest = &QUESTS[self.quest];
-                t.panel("")
+                Panel::new("")
                     .surface(Surface::Parchment)
                     .show(&mut cols[1], |ui| {
                         ui.label(RichText::new(quest.name).size(22.0).strong());
-                        ui.label(RichText::new(quest.rank).size(16.0).color(t.palette.ink));
+                        ui.label(
+                            RichText::new(quest.rank)
+                                .size(16.0)
+                                .color(Tokens::get(ui).ink),
+                        );
                         let (rect, _) = ui
                             .allocate_exact_size(vec2(ui.available_width(), 98.0), Sense::hover());
                         ui.painter().circle_stroke(
                             rect.center(),
                             43.0,
-                            Stroke::new(1.0, t.palette.ink.gamma_multiply(0.3)),
+                            Stroke::new(1.0, Tokens::get(ui).ink.gamma_multiply(0.3)),
                         );
                         quest.icon.paint(
                             ui.painter(),
                             Rect::from_center_size(rect.center(), Vec2::splat(72.0)),
-                            t.palette.ink,
+                            Tokens::get(ui).ink,
                         );
                         ui.separator();
                         ui.label(quest.goal);
-                        t.properties(
+                        properties(
                             ui,
                             &[
                                 Property::new("目的地", quest.location),
@@ -503,27 +518,27 @@ impl Gallery {
             ui.separator();
             ui.horizontal_wrapped(|ui| {
                 let accept = ui.add(
-                    t.button("接受任务")
+                    Button::new("接受任务")
                         .kind(ButtonKind::Primary)
                         .icon(Icon::Quest),
                 );
                 if accept.clicked() {
                     self.dialog.open_from(&accept);
                 }
-                let (confirm, back) = if self.input_style == 0 {
+                let (confirm, back) = if self.keycap_preview == 0 {
                     ("Enter", "Esc")
                 } else {
                     ("A", "B")
                 };
-                t.key_hint(ui, confirm, "确认");
-                t.key_hint(ui, back, "返回");
+                key_hint(ui, confirm, "确认");
+                key_hint(ui, back, "返回");
             });
         });
     }
 
     fn details(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.columns(Id::new("detail-columns"))
+        ResponsiveColumns::new(Id::new("detail-columns"))
+            .gap(ui.spacing().item_spacing.x * 2.0)
             .min_column_width(540.0)
             .show(ui, 4, |ui, index| match index {
                 0 => self.registration(ui),
@@ -536,11 +551,10 @@ impl Gallery {
     }
 
     fn registration(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("01  猎人登记").show(ui, |ui| {
+        Panel::new("01  猎人登记").show(ui, |ui| {
             let valid_name = !self.hunter_name.trim().is_empty();
             ui.add(
-                t.text_field(Id::new("hunter-name"), &mut self.hunter_name)
+                TextField::new(Id::new("hunter-name"), &mut self.hunter_name)
                     .label("猎人姓名")
                     .hint("为旅途留下一个名字")
                     .validation(if valid_name {
@@ -550,12 +564,12 @@ impl Gallery {
                     }),
             );
             ui.add(
-                t.text_field(Id::new("room-name"), &mut self.room_name)
+                TextField::new(Id::new("room-name"), &mut self.room_name)
                     .label("集会所名称")
                     .help("队友可通过名称找到你的集会所"),
             );
             ui.add(
-                t.text_field(Id::new("room-password"), &mut self.room_password)
+                TextField::new(Id::new("room-password"), &mut self.room_password)
                     .label("集会所口令")
                     .password(true)
                     .help("只向同行的猎人分享口令"),
@@ -563,7 +577,7 @@ impl Gallery {
             if ui
                 .add_enabled(
                     valid_name,
-                    t.button("保存登记")
+                    Button::new("保存登记")
                         .kind(ButtonKind::Primary)
                         .icon(Icon::Check),
                 )
@@ -576,11 +590,10 @@ impl Gallery {
     }
 
     fn equipment_details(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("02  装备详情").show(ui, |ui| {
+        Panel::new("02  装备详情").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let response = ui.add(
-                    t.item_slot("铁刀·神乐")
+                    ItemSlot::new("铁刀·神乐")
                         .icon(Icon::Sword)
                         .selected(true)
                         .size(72.0)
@@ -588,40 +601,37 @@ impl Gallery {
                 );
                 ui.vertical(|ui| {
                     ui.label(RichText::new("铁刀·神乐").size(22.0).strong());
-                    ui.label(RichText::new("太刀 / 稀有度 3").color(t.palette.brass));
+                    ui.label(RichText::new("太刀 / 稀有度 3").color(ui.visuals().hyperlink_color));
                     ui.label(RichText::new("悬停或聚焦图标，查看锻造资料").small().weak());
                 });
                 if self.preview_tooltip {
                     response.request_focus();
                     self.preview_tooltip = false;
                 }
-                t.tooltip(&response, "铁刀·神乐 · 锻造资料").show(|ui| {
+                RichTooltip::new(&response, "铁刀·神乐 · 锻造资料").show(|ui| {
                     ui.label("工坊以精炼矿石打造的太刀，挥舞轻快，适合连续斩击。");
                     ui.separator();
-                    t.properties(
-                        ui,
-                        &[
-                            Property::new("铁矿石", "7 / 5 · 足够").color(t.palette.moss),
-                            Property::new("燕雀石", "1 / 3 · 缺少 2").color(t.palette.danger),
-                            Property::new("锻造费用", "2400 z"),
-                        ],
-                    );
+                    let materials = [
+                        Property::new("铁矿石", "7 / 5 · 足够").color(Tokens::get(ui).success),
+                        Property::new("燕雀石", "1 / 3 · 缺少 2")
+                            .color(ui.visuals().error_fg_color),
+                        Property::new("锻造费用", "2400 z"),
+                    ];
+                    properties(ui, &materials);
                 });
             });
             ui.add_space(8.0);
             ui.separator();
-            t.properties(
-                ui,
-                &[
-                    Property::new("攻击力", "528  (+48)").color(t.palette.moss),
-                    Property::new("会心率", "0%"),
-                    Property::new("属性", "无"),
-                    Property::new("防御加成", "+10").color(t.palette.moss),
-                    Property::new("强化条件", "完成工坊的矿石委托"),
-                ],
-            );
+            let equipment = [
+                Property::new("攻击力", "528  (+48)").color(Tokens::get(ui).success),
+                Property::new("会心率", "0%"),
+                Property::new("属性", "无"),
+                Property::new("防御加成", "+10").color(Tokens::get(ui).success),
+                Property::new("强化条件", "完成工坊的矿石委托"),
+            ];
+            properties(ui, &equipment);
             ui.add_space(8.0);
-            t.panel("工匠手记")
+            Panel::new("工匠手记")
                 .surface(Surface::Parchment)
                 .show(ui, |ui| {
                     ui.label("熟悉武器的节奏，比锋刃本身更重要。准备好素材后，再来工坊看看。");
@@ -630,22 +640,21 @@ impl Gallery {
     }
 
     fn guild_records(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("04  公会记录").show(ui, |ui| {
+        Panel::new("04  公会记录").show(ui, |ui| {
             ui.add(
-                t.text_field(Id::new("guild-id"), &mut self.guild_id)
+                TextField::new(Id::new("guild-id"), &mut self.guild_id)
                     .label("猎人编号")
                     .read_only(true)
                     .validation(Validation::Success("已登记 · 编号可选择复制")),
             );
             ui.add_enabled(
                 false,
-                t.text_field(Id::new("locked-title"), &mut self.locked_title)
+                TextField::new(Id::new("locked-title"), &mut self.locked_title)
                     .label("专属称号")
                     .help("完成指定委托后解锁"),
             );
             ui.add(
-                t.text_field(Id::new("camp-alias"), &mut self.camp_note)
+                TextField::new(Id::new("camp-alias"), &mut self.camp_note)
                     .label("营地备注")
                     .hint("记录这次旅途的准备事项")
                     .validation(Validation::Warning("备注仅供本次行程使用")),
@@ -654,8 +663,7 @@ impl Gallery {
     }
 
     fn loadouts(&mut self, ui: &mut egui::Ui) -> [egui::Response; 3] {
-        let t = self.theme;
-        t.panel("03  出发装备")
+        Panel::new("03  出发装备")
             .show(ui, |ui| {
                 let labels = ["森林探索", "火龙狩猎", "高阶讨伐 · 尚未解锁", "采集与调合"];
                 let controls: Vec<_> = labels
@@ -664,7 +672,7 @@ impl Gallery {
                     .map(|(index, label)| {
                         let response = ui.add_enabled(
                             index != 2,
-                            t.button(label)
+                            Button::new(label)
                                 .id(Id::new(("loadout", index)))
                                 .selected(self.loadout == index)
                                 .full_width(),
@@ -692,7 +700,7 @@ impl Gallery {
                         let sense = Sense::click().difference(Sense::focusable_noninteractive());
                         let buttons = ["向上", "向下", "确认"]
                             .map(|label| ui.add(egui::Button::new(label).sense(sense)));
-                        t.key_hint(ui, "Enter", "确认装备");
+                        key_hint(ui, "Enter", "确认装备");
                         buttons
                     })
                     .inner;
@@ -752,20 +760,24 @@ impl Gallery {
     }
 
     fn inventory(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("02  道具袋").show(ui, |ui| {
+        let focus = ui.make_persistent_id("inventory-focus");
+        Panel::new("02  道具袋").show(ui, |ui| {
             ui.set_min_height(352.0);
             ui.horizontal_wrapped(|ui| {
                 for (index, label) in ["全部", "回复", "素材"].iter().enumerate() {
                     if ui
-                        .add(t.button(label).selected(self.category == index))
+                        .add(Button::new(label).selected(self.category == index))
                         .clicked()
                     {
                         self.category = index;
                     }
                 }
             });
-            t.text_edit(ui, Id::new("item-search"), &mut self.query, "搜索道具");
+            ui.add(
+                TextField::new(Id::new("item-search"), &mut self.query)
+                    .hint("搜索道具")
+                    .icon(Icon::Search),
+            );
             let mut visible: Vec<usize> = self
                 .items
                 .iter()
@@ -786,80 +798,88 @@ impl Gallery {
             let columns = ((ui.available_width() / 72.0) as usize).clamp(3, 5);
             let size =
                 ((ui.available_width() - (columns - 1) as f32 * 8.0) / columns as f32).min(80.0);
-            egui::ScrollArea::vertical()
-                .id_salt("inventory-slots")
-                .max_height(size * 2.0 + 8.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let mut slots = Vec::with_capacity(visible.len());
-                    egui::Grid::new("inventory-grid")
-                        .spacing([8.0, 8.0])
+            let viewport = ui.scope_builder(
+                egui::UiBuilder::new().id(focus).sense(Sense::click()),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("inventory-slots")
+                        .max_height(size * 2.0 + 8.0)
+                        .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            for (cell, &index) in visible.iter().enumerate() {
-                                let item = &self.items[index];
-                                let response = ui
-                                    .push_id(index, |ui| {
-                                        ui.add(
-                                            t.item_slot(item.name)
-                                                .icon(item.icon)
-                                                .quantity(item.count)
-                                                .selected(self.item == index)
-                                                .size(size)
-                                                .hover_text(false)
-                                                .tint(if item.recovery {
-                                                    t.palette.moss
-                                                } else {
-                                                    t.palette.text
-                                                }),
-                                        )
-                                    })
-                                    .inner;
-                                if response.clicked() {
-                                    self.item = index;
-                                }
-                                t.tooltip(&response, item.name).show(|ui| {
-                                    ui.label(item.detail);
-                                    t.properties(
-                                        ui,
-                                        &[
-                                            Property::new("持有数量", &item.count.to_string()),
-                                            Property::new(
-                                                "用途",
-                                                if item.recovery {
-                                                    "体力回复"
-                                                } else {
-                                                    "调合与锻造"
-                                                },
-                                            ),
-                                        ],
-                                    );
+                            let mut slots = Vec::with_capacity(visible.len());
+                            egui::Grid::new("inventory-grid")
+                                .spacing([8.0, 8.0])
+                                .show(ui, |ui| {
+                                    for (cell, &index) in visible.iter().enumerate() {
+                                        let item = &self.items[index];
+                                        let response = ui
+                                            .push_id(index, |ui| {
+                                                ui.add(
+                                                    ItemSlot::new(item.name)
+                                                        .icon(item.icon)
+                                                        .quantity(item.count)
+                                                        .selected(self.item == index)
+                                                        .size(size)
+                                                        .hover_text(false)
+                                                        .tint(if item.recovery {
+                                                            Tokens::get(ui).success
+                                                        } else {
+                                                            ui.visuals().text_color()
+                                                        }),
+                                                )
+                                            })
+                                            .inner;
+                                        if response.clicked() {
+                                            self.item = index;
+                                        }
+                                        RichTooltip::new(&response, item.name).show(|ui| {
+                                            ui.label(item.detail);
+                                            properties(
+                                                ui,
+                                                &[
+                                                    Property::new(
+                                                        "持有数量",
+                                                        &item.count.to_string(),
+                                                    ),
+                                                    Property::new(
+                                                        "用途",
+                                                        if item.recovery {
+                                                            "体力回复"
+                                                        } else {
+                                                            "调合与锻造"
+                                                        },
+                                                    ),
+                                                ],
+                                            );
+                                        });
+                                        slots.push(response);
+                                        if cell % columns == columns - 1 {
+                                            ui.end_row();
+                                        }
+                                    }
                                 });
-                                slots.push(response);
-                                if cell % columns == columns - 1 {
-                                    ui.end_row();
-                                }
+                            FocusGroup::grid(columns).navigate(ui, &slots);
+                            if visible.is_empty() {
+                                ui.label(RichText::new("没有找到匹配的道具").weak());
                             }
-                        });
-                    FocusGroup::grid(columns).navigate(ui, &slots);
-                    if visible.is_empty() {
-                        ui.label(RichText::new("没有找到匹配的道具").color(t.palette.muted));
-                    }
-                    t.scroll_focus(ui, Id::new("inventory-slots"));
-                });
+                            scroll_keyboard(ui, focus);
+                        })
+                },
+            );
+            if viewport.response.clicked() {
+                viewport.response.request_focus();
+            }
+            scroll_on_focus(&viewport.response);
             ui.separator();
             let item = &self.items[self.item];
             ui.horizontal(|ui| {
                 ui.label(RichText::new(item.name).size(18.0).strong());
-                ui.label(
-                    RichText::new(format!("持有 {}", item.count))
-                        .small()
-                        .color(t.palette.muted),
-                );
+                ui.label(RichText::new(format!("持有 {}", item.count)).small().weak());
             });
-            ui.label(RichText::new(item.detail).size(14.0).color(t.palette.muted));
+            ui.label(RichText::new(item.detail).size(14.0).weak());
             let usable = item.recovery && item.count > 0;
             if ui
-                .add_enabled(usable, t.button("使用道具").kind(ButtonKind::Primary))
+                .add_enabled(usable, Button::new("使用道具").kind(ButtonKind::Primary))
                 .clicked()
             {
                 self.items[self.item].count -= 1;
@@ -874,15 +894,14 @@ impl Gallery {
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("03  基础组件与状态").show(ui, |ui| {
+        Panel::new("03  基础组件与状态").show(ui, |ui| {
             ui.set_min_height(228.0);
             ui.horizontal_wrapped(|ui| {
-                ui.add(t.button("普通操作"));
-                ui.add(t.button("主要操作").kind(ButtonKind::Primary));
-                ui.add_enabled(false, t.button("暂不可用"));
+                ui.add(Button::new("普通操作"));
+                ui.add(Button::new("主要操作").kind(ButtonKind::Primary));
+                ui.add_enabled(false, Button::new("暂不可用"));
                 if ui
-                    .add(t.button("清空筛选").kind(ButtonKind::Danger))
+                    .add(Button::new("清空筛选").kind(ButtonKind::Danger))
                     .clicked()
                 {
                     self.query.clear();
@@ -891,43 +910,73 @@ impl Gallery {
             });
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                ui.add(t.checkbox(&mut self.tips, "显示提示"));
-                ui.add(t.toggle(&mut self.auto_sort, "自动整理"));
-                egui::ComboBox::from_id_salt("input-hints")
-                    .selected_text(["键鼠提示", "手柄提示"][self.input_style])
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.input_style, 0, "键鼠提示");
-                        ui.selectable_value(&mut self.input_style, 1, "手柄提示");
-                    });
+                ui.add(Checkbox::new(&mut self.tips, "显示提示"));
+                ui.add(Toggle::new(&mut self.auto_sort, "自动整理"));
+                let options = ["键鼠键帽预览", "手柄键帽预览"];
+                let id = ui.make_persistent_id("input-hints");
+                let hints = ui.add(
+                    Button::new(&format!("{} ▾", options[self.keycap_preview]))
+                        .id(id)
+                        .min_size(vec2(ui.spacing().combo_width, 0.0)),
+                );
+                let mut popup = Popup::new(&hints)
+                    .style(ui.style().clone())
+                    .tokens(Tokens::get(ui))
+                    .initial_focus(id.with(self.keycap_preview));
+                popup.native = popup.native.width(hints.rect.width());
+                popup.show(|ui| {
+                    for (index, label) in options.into_iter().enumerate() {
+                        if ui
+                            .add(
+                                Button::new(label)
+                                    .id(id.with(index))
+                                    .selected(self.keycap_preview == index),
+                            )
+                            .clicked()
+                        {
+                            self.keycap_preview = index;
+                            ui.close();
+                        }
+                    }
+                });
             });
             if self.auto_sort {
-                // Keep stable item indices while grouping the grid's display order.
-                ui.label(
-                    RichText::new("整理偏好：优先显示回复道具")
-                        .small()
-                        .color(t.palette.muted),
-                );
+                ui.label(RichText::new("整理偏好：优先显示回复道具").small().weak());
             }
-            ui.add(t.slider(&mut self.volume, 0.0..=100.0).text("音量"));
+            let volume = ui.add(
+                egui::Slider::new(&mut self.volume, 0.0..=100.0)
+                    .trailing_fill(true)
+                    .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.6 })
+                    .text("音量"),
+            );
+            scroll_on_focus(&volume);
             ui.horizontal_wrapped(|ui| {
-                let help = ui.add(t.button("查看道具说明").icon(Icon::Potion));
+                let help = ui.add(Button::new("查看道具说明").icon(Icon::Potion));
                 if self.tips {
                     help.on_hover_text("回复药：恢复少量体力。\n道具用尽后，使用按钮会禁用。");
                 }
-                t.key_hint(ui, "Tab", "切换焦点");
+                key_hint(ui, "Tab", "切换焦点");
             });
-            t.notice(ui, NoticeKind::Success, "选中用苔绿与菱形，焦点用黄铜角标");
+            notice(
+                ui,
+                NoticeKind::Success,
+                "勾选保留当前值，控件自身高亮表示焦点",
+            );
         });
     }
 
     fn hud(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("04  战斗 HUD").show(ui, |ui| {
+        Panel::new("04  战斗 HUD").show(ui, |ui| {
+            let tokens = Tokens::get(ui);
+            let accent = ui.visuals().hyperlink_color;
+            let text_color = ui.visuals().text_color();
+            let small_font =
+                FontSelection::Default.resolve_with_fallback(ui.style(), TextStyle::Small.into());
             ui.set_min_height(228.0);
             let size = vec2(ui.available_width(), 192.0);
             let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
             let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 2, t.palette.background);
+            painter.rect_filled(rect, 2, ui.visuals().extreme_bg_color);
             // Quiet geometric terrain: the showcase uses no game assets.
             for row in 0..4 {
                 let y = rect.top() + 76.0 + row as f32 * 28.0;
@@ -941,7 +990,7 @@ impl Gallery {
                     .collect();
                 painter.add(egui::Shape::line(
                     points,
-                    Stroke::new(1.0, t.palette.border.gamma_multiply(0.35)),
+                    Stroke::new(1.0, ui.visuals().window_stroke.color.gamma_multiply(0.35)),
                 ));
             }
             ui.scope_builder(
@@ -950,37 +999,37 @@ impl Gallery {
                     vec2(rect.width() * 0.53, 68.0),
                 )),
                 |ui| {
-                    ui.add(t.meter(self.health).label("体力"));
-                    ui.add(t.meter(0.56).label("耐力").color(t.palette.brass));
+                    ui.add(Meter::new(self.health).label("体力").color(tokens.success));
+                    ui.add(Meter::new(0.56).label("耐力").color(accent));
                 },
             );
             painter.text(
                 rect.right_top() + vec2(-12.0, 14.0),
                 egui::Align2::RIGHT_TOP,
                 QUESTS[self.quest].name,
-                FontId::proportional(13.0),
-                t.palette.text,
+                small_font.clone(),
+                text_color,
             );
             let map = pos2(rect.left() + 48.0, rect.bottom() - 43.0);
-            painter.circle_filled(map, 31.0, t.palette.parchment.gamma_multiply(0.6));
-            painter.circle_stroke(map, 31.0, Stroke::new(1.0, t.palette.brass));
+            painter.circle_filled(map, 31.0, tokens.parchment.gamma_multiply(0.6));
+            painter.circle_stroke(map, 31.0, Stroke::new(1.0, accent));
             painter.line_segment(
                 [map - vec2(20.0, 8.0), map + vec2(16.0, 12.0)],
-                Stroke::new(1.0, t.palette.ink),
+                Stroke::new(1.0, tokens.ink),
             );
             painter.text(
                 map,
                 egui::Align2::CENTER_CENTER,
                 "▲",
-                FontId::proportional(16.0),
-                t.palette.ink,
+                FontSelection::Default.resolve_with_fallback(ui.style(), TextStyle::Body.into()),
+                tokens.ink,
             );
             painter.text(
                 map - vec2(0.0, 35.0),
                 egui::Align2::CENTER_BOTTOM,
                 "N",
-                FontId::proportional(10.0),
-                t.palette.text,
+                small_font,
+                text_color,
             );
             let item_rect = Rect::from_min_size(
                 pos2(rect.right() - 82.0, rect.bottom() - 86.0),
@@ -988,92 +1037,119 @@ impl Gallery {
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(item_rect), |ui| {
                 ui.add(
-                    t.item_slot("回复药")
+                    ItemSlot::new("回复药")
                         .icon(Icon::Potion)
                         .quantity(self.items[0].count)
                         .selected(true)
                         .size(60.0)
-                        .tint(t.palette.moss),
+                        .tint(tokens.success),
                 );
                 ui.label(RichText::new("回复药").size(12.0));
             });
             ui.label(
                 RichText::new("信息沿边缘分布 · 中央保留战斗视野")
                     .small()
-                    .color(t.palette.muted),
+                    .weak(),
             );
         });
     }
 
     fn containers(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.columns(Id::new("container-columns"))
+        let mut engagement = FocusEngagement::new(Id::new("gallery-engagement"));
+        engagement.begin(ui, None);
+        ui.horizontal_wrapped(|ui| {
+            key_hint(ui, "Tab / Shift+Tab", "切换控件");
+            key_hint(ui, "Enter", "确认操作");
+            key_hint(ui, "Esc", "关闭弹层 / 返回");
+        });
+        ui.weak("展厅使用键盘和鼠标；手柄键帽选项仅预览样式。");
+        ResponsiveColumns::new(Id::new("container-columns"))
+            .gap(ui.spacing().item_spacing.x * 2.0)
             .min_column_width(480.0)
             .show(ui, 4, |ui, index| match index {
-                0 => self.camp_menu(ui),
-                1 => self.quest_archive(ui),
-                2 => self.overlays(ui),
-                _ => self.feedback(ui),
+                0 => self.camp_menu(ui, &mut engagement),
+                1 => self.quest_archive(ui, &mut engagement),
+                2 => self.overlays(ui, &mut engagement),
+                _ => self.feedback(ui, &mut engagement),
             });
+        engagement.navigate(ui);
     }
 
-    fn camp_menu(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("01  营地导航").show(ui, |ui| {
-            ui.set_min_height(282.0);
-            ui.label(
-                RichText::new("营地 / 装备 / 武器")
-                    .small()
-                    .color(t.palette.muted),
-            );
-            let can_back = self.menu.can_go_back();
-            let action = self
-                .menu
-                .show(ui, |ui, page| {
-                    ui.add_space(8.0);
-                    let (title, description, next) = match page {
-                        MenuPage::Camp => (
-                            "营地",
-                            "整理行装，选择下一步行动。",
-                            Some(("管理装备", MenuPage::Equipment)),
-                        ),
-                        MenuPage::Equipment => (
-                            "装备箱",
-                            "检视当前装备并调整出发配置。",
-                            Some(("检视武器", MenuPage::Weapon)),
-                        ),
-                        MenuPage::Weapon => ("猎人之刃", "攻击 320    锋利度 绿    稀有度 4", None),
-                    };
-                    ui.heading(title);
-                    ui.label(description);
-                    ui.add_space(12.0);
-                    if let Some((label, next)) = next {
-                        let response = ui.add(t.button(label).icon(Icon::Sword).full_width());
-                        response.clicked().then_some((response, next))
-                    } else {
-                        ui.add(t.meter(0.72).label("锋利度"));
-                        None
-                    }
-                })
-                .inner;
-            if let Some((opener, next)) = action {
-                self.menu.push_from(&opener, next);
-            }
-            ui.add_space(16.0);
-            if ui.add_enabled(can_back, t.button("返回上一级")).clicked() {
-                self.menu.back(ui.ctx());
-            }
-            t.key_hint(ui, "Esc", "返回上一级");
+    fn camp_menu(&mut self, ui: &mut egui::Ui, engagement: &mut FocusEngagement) {
+        let region = Id::new("gallery-camp-region");
+        engagement.show(ui, region, |ui, controls| {
+            highlight_region(ui, region);
+            Panel::new("01  营地导航").show(ui, |ui| {
+                ui.set_min_height(282.0);
+                ui.label(RichText::new("营地 / 装备 / 武器").small().weak());
+                let can_back = self.menu.can_go_back();
+                let action = self
+                    .menu
+                    .show(ui, |ui, page| {
+                        ui.add_space(8.0);
+                        let (title, description, next) = match page {
+                            MenuPage::Camp => (
+                                "营地",
+                                "整理行装，选择下一步行动。",
+                                Some(("管理装备", MenuPage::Equipment)),
+                            ),
+                            MenuPage::Equipment => (
+                                "装备箱",
+                                "检视当前装备并调整出发配置。",
+                                Some(("检视武器", MenuPage::Weapon)),
+                            ),
+                            MenuPage::Weapon => {
+                                ("猎人之刃", "攻击 320    锋利度 绿    稀有度 4", None)
+                            }
+                        };
+                        ui.heading(title);
+                        ui.label(description);
+                        ui.add_space(12.0);
+                        if let Some((label, next)) = next {
+                            let response =
+                                ui.add(Button::new(label).icon(Icon::Sword).full_width());
+                            controls.push(response.clone());
+                            response.clicked().then_some((response, next))
+                        } else {
+                            ui.add(
+                                Meter::new(0.72)
+                                    .label("锋利度")
+                                    .color(Tokens::get(ui).success),
+                            );
+                            None
+                        }
+                    })
+                    .inner;
+                if let Some((opener, next)) = action {
+                    self.menu.push_from(&opener, next);
+                }
+                ui.add_space(16.0);
+                let back = ui.add_enabled(can_back, Button::new("返回上一级"));
+                controls.push(back.clone());
+                if back.clicked() {
+                    self.menu.back(ui.ctx());
+                }
+                key_hint(ui, "Esc", "返回上一级");
+            });
         });
     }
 
-    fn quest_archive(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.scroll_panel(Id::new("archive-scroll"), "02  委托档案")
-            .max_height(258.0)
-            .show_list(
+    fn quest_archive(&mut self, ui: &mut egui::Ui, engagement: &mut FocusEngagement) {
+        let font =
+            FontSelection::Default.resolve_with_fallback(ui.style(), TextStyle::Button.into());
+        let row_height = (ui
+            .fonts_mut(|fonts| fonts.row_height(&font))
+            .max(ui.spacing().icon_width)
+            + ui.spacing().button_padding.y * 2.0)
+            .max(ui.spacing().interact_size.y);
+        let region = Id::new("gallery-archive-region");
+        engagement.show(ui, region, |ui, controls| {
+            highlight_region(ui, region);
+            let mut panel = ScrollPanel::new(Id::new("archive-scroll"), "02  委托档案");
+            panel.scroll = panel.scroll.max_height(258.0);
+            let list = panel.show_list(
                 ui,
-                36.0,
+                row_height,
                 10_000,
                 |_| true,
                 |ui, row| {
@@ -1082,92 +1158,99 @@ impl Gallery {
                         row + 1,
                         ["采集药草", "讨伐速龙", "运送矿石"][row % 3]
                     );
-                    let response = ui.add_sized(
-                        [ui.available_width(), 36.0],
-                        t.button(&name).icon(Icon::Quest),
-                    );
-                    if response.clicked() {
-                        self.notices.push(
-                            ui.ctx(),
-                            NoticeKind::Success,
-                            format!("已查阅第 {} 号委托", row + 1),
-                        );
-                    }
-                    response
+                    ui.add_sized(
+                        [ui.available_width(), row_height],
+                        Button::new(&name).icon(Icon::Quest).sense(Sense::CLICK),
+                    )
                 },
             );
+            controls.push(list.inner.response);
+            if let Some(row) = list.inner.activated {
+                self.notices.push(
+                    ui.ctx(),
+                    NoticeKind::Success,
+                    format!("已查阅第 {} 号委托", row + 1),
+                );
+            }
+        });
     }
 
-    fn overlays(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("03  窗口与浮层").show(ui, |ui| {
-            ui.set_min_height(210.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui.add(t.button("打开随行手记").icon(Icon::Quest)).clicked() {
-                    self.window_open = true;
-                }
-                let confirm = ui.add(t.button("确认委托").kind(ButtonKind::Primary));
-                if confirm.clicked() {
-                    self.dialog.open_from(&confirm);
-                }
-            });
-            ui.add_space(8.0);
-            let anchor = ui.add(t.button("营地行动").icon(Icon::Quest));
-            t.popup(&anchor)
-                .title("营地行动")
-                .show(&mut self.popup, |ui| {
+    fn overlays(&mut self, ui: &mut egui::Ui, engagement: &mut FocusEngagement) {
+        let region = Id::new("gallery-overlays-region");
+        engagement.show(ui, region, |ui, controls| {
+            highlight_region(ui, region);
+            Panel::new("03  窗口与浮层").show(ui, |ui| {
+                ui.set_min_height(210.0);
+                ui.horizontal_wrapped(|ui| {
+                    let journal = ui.add(Button::new("打开随行手记").icon(Icon::Quest));
+                    controls.push(journal.clone());
+                    if journal.clicked() {
+                        self.window_open = true;
+                    }
+                    let confirm = ui.add(Button::new("确认委托").kind(ButtonKind::Primary));
+                    controls.push(confirm.clone());
+                    if confirm.clicked() {
+                        self.dialog.open_from(&confirm);
+                    }
+                });
+                ui.add_space(8.0);
+                let anchor = ui.add(Button::new("营地行动").icon(Icon::Quest));
+                controls.push(anchor.clone());
+                let mut popup = Popup::new(&anchor).title("营地行动");
+                popup.native = popup.native.id(Id::new("gallery-popup"));
+                popup.show(|ui| {
                     for (label, icon) in [
                         ("补充道具", Icon::Potion),
                         ("整理装备", Icon::Sword),
                         ("查阅委托", Icon::Quest),
                     ] {
-                        if ui.add(t.button(label).icon(icon).full_width()).clicked() {
+                        if ui.add(Button::new(label).icon(icon).full_width()).clicked() {
                             ui.close();
                         }
                     }
                 });
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("选择行动后收起菜单；点击空白处或按 Esc 关闭。")
-                    .small()
-                    .color(t.palette.muted),
-            );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("选择行动后收起菜单；点击空白处或按 Esc 关闭。")
+                        .small()
+                        .weak(),
+                );
+            });
         });
     }
 
-    fn feedback(&mut self, ui: &mut egui::Ui) {
-        let t = self.theme;
-        t.panel("04  消息与反馈").show(ui, |ui| {
-            ui.set_min_height(210.0);
-            t.notice(ui, NoticeKind::Success, "装备检查完成，可以出发。");
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add(t.button("播放营地消息").kind(ButtonKind::Primary))
-                    .clicked()
-                {
-                    self.play_notices(ui.ctx());
-                }
-                if ui
-                    .add_enabled(!self.notices.is_empty(), t.button("清空消息"))
-                    .clicked()
-                {
-                    self.notices.clear(ui.ctx());
-                }
+    fn feedback(&mut self, ui: &mut egui::Ui, engagement: &mut FocusEngagement) {
+        let region = Id::new("gallery-feedback-region");
+        engagement.show(ui, region, |ui, controls| {
+            highlight_region(ui, region);
+            Panel::new("04  消息与反馈").show(ui, |ui| {
+                ui.set_min_height(210.0);
+                notice(ui, NoticeKind::Success, "装备检查完成，可以出发。");
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    let play = ui.add(Button::new("播放营地消息").kind(ButtonKind::Primary));
+                    controls.push(play.clone());
+                    if play.clicked() {
+                        self.play_notices(ui.ctx());
+                    }
+                    let clear = ui.add_enabled(!self.notices.is_empty(), Button::new("清空消息"));
+                    controls.push(clear.clone());
+                    if clear.clicked() {
+                        self.notices.clear(ui.ctx());
+                    }
+                });
+                ui.label(
+                    RichText::new(format!("待展示消息：{}", self.notices.len()))
+                        .small()
+                        .weak(),
+                );
             });
-            ui.label(
-                RichText::new(format!("待展示消息：{}", self.notices.len()))
-                    .small()
-                    .color(t.palette.muted),
-            );
         });
     }
 
     fn modal(&mut self, ctx: &egui::Context) {
-        let t = self.theme;
         let confirm_id = Id::new("confirm-quest");
-        let response = t
-            .dialog(Id::new("accept-quest"), "确认委托")
+        let response = Dialog::new(Id::new("accept-quest"), "确认委托")
             .initial_focus(confirm_id)
             .show(ctx, &mut self.dialog, |ui| {
                 ui.label(RichText::new(QUESTS[self.quest].name).size(24.0));
@@ -1176,15 +1259,13 @@ impl Gallery {
                 ui.horizontal(|ui| {
                     let accepted = ui
                         .add(
-                            t.button("接受委托")
+                            Button::new("接受委托")
                                 .id(confirm_id)
                                 .kind(ButtonKind::Primary),
                         )
                         .clicked();
-                    if accepted {
-                        ui.close();
-                    }
-                    if ui.add(t.button("取消")).clicked() {
+                    let cancelled = ui.add(Button::new("取消")).clicked();
+                    if accepted || cancelled {
                         ui.close();
                     }
                     accepted
@@ -1213,8 +1294,9 @@ impl Gallery {
 impl eframe::App for Gallery {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
-        self.frames += 1;
         if let Some(path) = &self.screenshot {
+            let now = ui.ctx().input(|input| input.time);
+            let started = *self.screenshot_started.get_or_insert(now);
             let screenshot = ui.ctx().input(|input| {
                 input.events.iter().find_map(|event| {
                     if let egui::Event::Screenshot { image, .. } = event {
@@ -1239,7 +1321,11 @@ impl eframe::App for Gallery {
                 println!("Saved {}", path.display());
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 self.screenshot = None;
-            } else if self.frames == 8 {
+            } else if !self.screenshot_requested
+                && now - started > f64::from(ui.style().animation_time) + 0.5
+            {
+                // Capture the settled native Area fade, independent of frame rate.
+                self.screenshot_requested = true;
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             } else {

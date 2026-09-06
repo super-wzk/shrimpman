@@ -4,13 +4,18 @@
 //! process injection and it never enables, disables, or uninitializes unrelated
 //! `MinHook` hooks in the host process.
 
-#![cfg(target_os = "windows")]
-
 pub use egui;
 
+mod capture;
+pub use capture::{InputCapture, InputCaptureState, InputPolicy};
+
+#[cfg(target_os = "windows")]
 pub mod dx9;
+#[cfg(target_os = "windows")]
 mod input;
+#[cfg(target_os = "windows")]
 mod renderer;
+#[cfg(target_os = "windows")]
 mod window;
 
 use std::fmt;
@@ -24,8 +29,19 @@ pub trait Overlay: Send + 'static {
     /// Configures the context once, after the target D3D9 device is observed.
     fn initialize(&mut self, _context: &egui::Context) {}
 
-    /// Builds one frame of `egui` UI.
-    fn ui(&mut self, context: &egui::Context);
+    /// Builds the UI using the root `egui::Ui` supplied by `Context::run_ui`.
+    /// Native layouts and panels can use this directly; floating windows and
+    /// areas use `ui.ctx()`.
+    fn ui(&mut self, ui: &mut egui::Ui);
+
+    /// Selects which input is withheld from the game. The window procedure and
+    /// `D3d9Hook::input_capture` share these decisions with native input adapters.
+    /// Queried after `ui` each frame; raw input still reaches egui in every mode.
+    /// The caller can choose a policy from its active window/page/modal state.
+    /// DirectInput, Raw Input and device polling need a separate game adapter.
+    fn input_policy(&self, _context: &egui::Context) -> InputPolicy {
+        InputPolicy::default()
+    }
 
     /// Receives non-rendering output such as clipboard and URL requests.
     ///
@@ -37,10 +53,10 @@ pub trait Overlay: Send + 'static {
 
 impl<F> Overlay for F
 where
-    F: FnMut(&egui::Context) + Send + 'static,
+    F: FnMut(&mut egui::Ui) + Send + 'static,
 {
-    fn ui(&mut self, context: &egui::Context) {
-        self(context);
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        self(ui);
     }
 }
 
@@ -51,6 +67,7 @@ pub struct Error {
 }
 
 impl Error {
+    #[cfg(target_os = "windows")]
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -66,4 +83,5 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[cfg(target_os = "windows")]
 type Result<T> = std::result::Result<T, Error>;

@@ -1,25 +1,27 @@
 use std::{collections::VecDeque, time::Duration};
 
-use egui::{Context, Id, InnerResponse, UiBuilder};
+use egui::{Context, Id};
 
-use crate::{NoticeKind, Theme};
+use crate::NoticeKind;
 
 #[derive(Debug)]
-struct Notification {
-    id: Id,
-    kind: NoticeKind,
-    text: String,
+pub struct Notification {
+    pub id: Id,
+    pub kind: NoticeKind,
+    pub text: String,
     duration: Duration,
     shown_at: Option<f64>,
 }
 
-/// A bounded FIFO with one visible notification. A queued item's lifetime starts
-/// when it is first displayed. Uses egui time/repaint, with no background timer.
+/// A bounded FIFO of compact toasts, with one visible at a time.
+/// A queued item's lifetime starts when it is first displayed. Uses egui
+/// time/repaint, with no background timer. Use a dialog for actions needing input.
 #[derive(Debug)]
 pub struct Notifications {
-    id: Id,
+    pub(super) id: Id,
     next: u64,
     capacity: usize,
+    pub(super) pass_through: bool,
     queue: VecDeque<Notification>,
 }
 
@@ -35,6 +37,7 @@ impl Notifications {
             id,
             next: 0,
             capacity: capacity.max(1),
+            pass_through: true,
             queue: VecDeque::new(),
         }
     }
@@ -47,6 +50,12 @@ impl Notifications {
     }
     pub fn front_id(&self) -> Option<Id> {
         self.queue.front().map(|notice| notice.id)
+    }
+
+    /// Whether pointer events reach controls behind the toast. Defaults to true.
+    /// This only controls egui hit testing; the host decides game input capture.
+    pub fn set_pass_through(&mut self, pass_through: bool) {
+        self.pass_through = pass_through;
     }
 
     pub fn push(&mut self, ctx: &Context, kind: NoticeKind, text: impl Into<String>) -> Id {
@@ -91,9 +100,9 @@ impl Notifications {
         ctx.request_repaint();
     }
 
-    /// Render after your main UI. Each queue needs a unique ID. Keep calling
-    /// while nonempty so expiry and pending notifications continue advancing.
-    pub fn show(&mut self, ctx: &Context, theme: &Theme) -> Option<InnerResponse<()>> {
+    /// Advance expiration and start the next item's lifetime. Call this only
+    /// when presenting the queue; rendering and positioning are caller-owned.
+    pub fn advance(&mut self, ctx: &Context) -> Option<&Notification> {
         let now = ctx.input(|i| i.time);
         let until = loop {
             let notice = self.queue.front_mut()?;
@@ -106,27 +115,6 @@ impl Notifications {
         };
         let notice = self.queue.front()?;
         ctx.request_repaint_after(Duration::from_secs_f64((until - now).max(0.0)));
-        let mut dismissed = false;
-        // Reuse a single Area ID so frequent messages do not accumulate areas.
-        let output = egui::Area::new(self.id)
-            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -24.0])
-            .order(egui::Order::Tooltip)
-            .show(ctx, |ui| {
-                ui.set_max_width((ctx.content_rect().width() - 48.0).clamp(120.0, 520.0));
-                ui.scope_builder(UiBuilder::new().id(notice.id), |ui| {
-                    theme.panel("").show(ui, |ui| {
-                        theme.notice(ui, notice.kind, &notice.text);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            dismissed = ui
-                                .add(theme.button("关闭").min_size(egui::vec2(56.0, 28.0)))
-                                .clicked();
-                        });
-                    });
-                });
-            });
-        if dismissed {
-            self.dismiss(ctx, notice.id);
-        }
-        Some(output)
+        Some(notice)
     }
 }

@@ -3,10 +3,9 @@
 //! Install [`Theme`] once, then compose widgets with normal egui layouts:
 //! ```
 //! # egui::__run_test_ui(|ui| {
-//! use egui_hunter::{ButtonKind, Icon, Theme};
-//! let theme = Theme::default();
-//! theme.panel("任务列表").show(ui, |ui| {
-//!     ui.add(theme.button("接受任务").kind(ButtonKind::Primary).icon(Icon::Quest));
+//! use egui_hunter::{Button, ButtonKind, Icon, Panel};
+//! Panel::new("任务列表").show(ui, |ui| {
+//!     ui.add(Button::new("接受任务").kind(ButtonKind::Primary).icon(Icon::Quest));
 //! });
 //! # });
 //! ```
@@ -15,28 +14,18 @@
 
 #![forbid(unsafe_code)]
 
-mod containers;
-mod fields;
-mod icons;
-mod information;
-mod input;
-mod layout;
-mod list;
-mod navigation;
-mod notifications;
-mod paint;
-mod panel;
-mod theme;
-mod widgets;
+pub mod components;
+pub mod input;
+pub mod primitives;
+pub mod theme;
 
-pub use containers::{Dialog, Popup, ScrollPanel, Window};
-pub use fields::{TextField, Validation};
-pub use icons::Icon;
-pub use information::{Meter, NoticeKind, Property, RichTooltip};
-pub use input::{Direction, GamepadState, InputDevice, NavigationInput};
-pub use layout::{ResponsiveColumns, Tab, Tabs, TabsState};
-pub use navigation::{FocusGroup, MenuStack, OverlayState};
-pub use notifications::Notifications;
-pub use panel::{Panel, Surface};
-pub use theme::{Metrics, Palette, Theme};
-pub use widgets::{Button, ButtonKind, Checkbox, ItemSlot, Toggle};
+pub use components::{
+    Button, ButtonKind, Checkbox, Dialog, DialogState, ItemSlot, Meter, NoticeKind, Notifications,
+    Panel, Popup, Property, RichTooltip, ScrollPanel, Surface, Tab, Tabs, TextField, Toggle,
+    Validation, Window, key_hint, notice, properties,
+};
+pub use input::{Direction, GamepadState, InputDevice, NavigationInput, consume_escape};
+pub use primitives::focus::{EngagementPlugin, FocusEngagement, FocusGroup, scroll_on_focus};
+pub use primitives::layout::{ListOutput, ResponsiveColumns, VirtualList, scroll_keyboard};
+pub use primitives::navigation::{NavigationStack, NavigationState};
+pub use theme::{Icon, Theme, Tokens};

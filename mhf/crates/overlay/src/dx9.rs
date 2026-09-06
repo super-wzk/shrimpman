@@ -20,7 +20,7 @@ use windows::core::{BOOL, HRESULT, Interface};
 
 use crate::renderer::Renderer;
 use crate::window::{DummyWindow, WindowBinding, WindowState};
-use crate::{Error, Overlay, Result};
+use crate::{Error, InputCaptureState, Overlay, Result};
 
 type Present = unsafe extern "system" fn(
     device: *mut c_void,
@@ -48,6 +48,7 @@ const D3DERR_INVALIDCALL: HRESULT = HRESULT(0x8876_086C_u32.cast_signed());
 #[must_use = "dropping the handle removes the D3D9 overlay hooks"]
 pub struct D3d9Hook {
     hooks: HookGuard<HookState>,
+    capture: InputCaptureState,
 }
 
 impl D3d9Hook {
@@ -89,13 +90,19 @@ impl D3d9Hook {
 
         PRESENT_TARGET.store(targets.present as *mut c_void, Ordering::Release);
         RESET_TARGET.store(targets.reset as *mut c_void, Ordering::Release);
+        let capture = InputCaptureState::default();
         let state = HookState {
             present: unsafe { mem::transmute::<*mut c_void, Present>(present_original) },
             reset: unsafe { mem::transmute::<*mut c_void, Reset>(reset_original) },
-            runtime: Mutex::new(Runtime::new(Box::new(overlay))),
+            runtime: Mutex::new(Runtime::new(Box::new(overlay), capture.clone())),
         };
         let hooks = unsafe { hooks.install(state) }.map_err(Error::new)?;
-        Ok(Self { hooks })
+        Ok(Self { hooks, capture })
+    }
+
+    /// Shares the caller's capture decisions with a game-specific input adapter.
+    pub fn input_capture(&self) -> InputCaptureState {
+        self.capture.clone()
     }
 
     /// Returns and clears the most recent render or initialization error.
@@ -109,7 +116,14 @@ impl D3d9Hook {
     ///
     /// Returns an error if either hook cannot be disabled or removed.
     pub fn uninstall(mut self) -> Result<()> {
+        self.capture.reset();
         self.hooks.uninstall().map_err(Error::new)
+    }
+}
+
+impl Drop for D3d9Hook {
+    fn drop(&mut self) {
+        self.capture.reset();
     }
 }
 
@@ -134,14 +148,16 @@ struct Runtime {
     overlay: Option<Box<dyn Overlay>>,
     pipeline: Option<Pipeline>,
     rendering_disabled: bool,
+    capture: InputCaptureState,
 }
 
 impl Runtime {
-    fn new(overlay: Box<dyn Overlay>) -> Self {
+    fn new(overlay: Box<dyn Overlay>, capture: InputCaptureState) -> Self {
         Self {
             overlay: Some(overlay),
             pipeline: None,
             rendering_disabled: false,
+            capture,
         }
     }
 
@@ -189,7 +205,7 @@ impl Runtime {
 
     fn initialize_pipeline(&mut self, device: &IDirect3DDevice9) -> Result<()> {
         let hwnd = device_window(device)?;
-        let window_state = Arc::new(WindowState::new());
+        let window_state = Arc::new(WindowState::new(hwnd, self.capture.clone()));
         let window = WindowBinding::install(hwnd, Arc::clone(&window_state))?;
         let context = egui::Context::default();
         self.overlay
@@ -253,12 +269,10 @@ impl Pipeline {
         let input = self
             .window_state
             .take_input(HWND(self.hwnd as *mut _), pixels_per_point)?;
-        let output = self.context.run_ui(input, |ui| self.overlay.ui(ui.ctx()));
+        let output = self.context.run_ui(input, |ui| self.overlay.ui(ui));
         let mut textures_delta = TextureDeltaGuard(output.textures_delta);
-        self.window_state.update_capture(
-            self.context.egui_wants_pointer_input(),
-            self.context.egui_wants_keyboard_input(),
-        );
+        self.window_state
+            .update_capture(self.overlay.input_policy(&self.context), &self.context);
         self.overlay
             .platform_output(&self.context, &output.platform_output);
 

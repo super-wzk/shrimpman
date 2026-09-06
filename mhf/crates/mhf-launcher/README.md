@@ -70,7 +70,7 @@ EXE 内嵌一份 JetBrainsMapleMono-NF-XX-NL-HT Regular，启动器 UI 直接使
 `0`/`1` boolean 和数字枚举。游戏写回时执行反向映射；TOML 会被重新格式化，原
 注释不保证保留。
 
-INI、汉化/GDI 和 D3D9 分别持有自己的 hook 组，共用 `mhf-hooks` 的 MinHook 生命周期
+INI、汉化/GDI、D3D9 和 DirectInput 分别持有自己的 hook 组，共用 `mhf-hooks` 的 MinHook 生命周期
 管理。创建失败会回滚本组已创建的目标；回调状态就绪后才逐个启用，不使用进程级的全局
 启停操作。退出时先停用目标并等待 Rust 回调及原函数调用结束，再移除 trampoline；
 清理错误会返回给启动流程。汉化裸汇编仍使用原有 ABI，要求游戏调用线程在
@@ -85,6 +85,8 @@ INI、汉化/GDI 和 D3D9 分别持有自己的 hook 组，共用 `mhf-hooks` �
 - `src/model.rs`：定义游戏 `MhfConfig`、启动时的 Sign 登录结果和启动 profile；角色、
   会话与权限复用 workspace 领域类型。
 - `src/launcher.rs`：负责领域模型到 ABI 的映射及 Win32 启动流程。
+- `src/overlay/input.rs`：过滤 MHF 通过 DirectInput 读取的鼠标、键盘状态，复用
+  Overlay 调用处的输入策略；`input/polling.rs` 保留每个按键从按下到松开的接收方。
 - `src/localization/`：在 DAT/INF/PAC 完成原生指针重定位、首次消费或复制前，按 layout
   遍历绝对指针并把字符串槽指向独立翻译缓存，使后续别名自然继承翻译；同时捕获实际
   stage 文件号，并在对应 TLK image 中修改明确登记的记录。启动时按 Unicode East Asian
@@ -175,3 +177,47 @@ MHF 配置副本和 Wine 默认环境仅在启动器运行时准备，进入开�
 Sign HTTP 地址默认使用开发环境的 Nix 选项 `development.ports.signHttp`（53001），可通过
 `MHF_SIGN__HTTP__BASE_URL` 覆盖。`shrimpman-dev up` 启动服务端和 etcd；启动器也可
 在 process-compose 的 TUI 中手动启动。命令和环境变量覆盖详见仓库根目录 README。
+
+### 游戏内组件验证页
+
+游戏启动后按 **F8** 显示或隐藏 `egui-hunter` 验证页。页面通过已有 D3D9 Overlay
+渲染，复用启动器内嵌的中文字体；包含一万条虚拟列表记录、文本输入、确认框、
+锚定菜单和排队通知。普通通知以轻量提示自动消失，不抢焦点、不拦截鼠标；
+需要作出选择时才打开确认框。验证页最外层使用原生 Modal 隔离 egui 背景交互，
+内部面板只负责标题和布局；窄窗口会切换为单列布局。
+
+键盘打开后直接聚焦「滚动与选择」列表。Tab / Shift+Tab 沿用 egui 原生顺序，
+遍历列表、表单、按钮和页面关闭入口；整个列表只占一个焦点，Tab 一次离开列表。
+列表内用方向键、PageUp / PageDown、Home / End 导航，Enter 直接选择。
+鼠标单次点击内部控件即可操作，标题和面板背景只负责展示。
+所有业务上可用的区域和控件保持可操作，不需要先确认进入框。
+
+页面另外声明可选的手柄 `FocusEngagement`：方向先选择整个区域，A 进入上次可用控件，
+这次按键不会同时执行控件；进入后操作内部内容，B 退出区域。RB / LB 在区域层切区，
+进入后切内部控件。该规则只处理有来源标记的手柄动作，不改变物理键盘行为。
+当前 Overlay 未采集真实手柄，启用这些操作需要宿主通过 `NavigationInput` 接入
+`GamepadState`，并在转换为 egui Key 前安装 `EngagementPlugin` 保留来源与路由。
+
+键盘 Esc 先由文本编辑、子菜单和弹层处理，剩余的 Esc 关闭验证页；手柄 B 另有退出
+Engagement 区域的步骤。关闭确认框或菜单后恢复入口焦点，长按手柄确认或取消不会
+连续跨层。F8 或页面关闭按钮会清除弹层、通知和输入焦点；重新打开保留文本、
+列表选择和滚动位置。这些数据仅存在于当前进程内存中。
+
+公共 `DialogInteraction` 负责最外层 Modal 的关闭和入口焦点恢复，
+`FocusEngagement::begin/show/navigate` 只衔接可选的手柄区域。
+Modal 隔离 egui 背景交互，各区域共用页面边界，不为每个框创建 Modal。
+游戏输入仍由调用处选择 `mhf-overlay::InputPolicy`：
+隐藏时鼠标和键盘都穿透，显示期间持续阻断鼠标和键盘，即使当前控件已失焦或鼠标
+位于内容面板外。策略变化期间，已按下的鼠标按钮和按键会保持原来的接收方直到松开。
+其他调用方可分别选择 `Auto`、`Block`、`PassThrough`；通知对后方 egui 控件的穿透则
+通过 `Notifications::set_pass_through` 配置。
+
+MHF 输入适配层拦截 [`GetDeviceState`](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee417897(v=vs.85))
+返回的鼠标和键盘状态，使用与窗口消息相同的策略和原始按键归属。鼠标支持 16/20 字节
+标准状态，捕获时过滤按钮、相对移动和滚轮；键盘使用 256 字节扫描码状态。设备类型和
+数据长度必须匹配，手柄、未知格式和失败调用保留原样。Hook 地址从运行时设备虚表
+获取，不依赖游戏 DLL 的固定地址，并在 `mhDLL_Main` 返回后先于 D3D9 Overlay 卸载。
+
+验证页只调用通用组件，不读写游戏数据。D3D9 渲染、窗口输入和游戏本身的输入接收
+需要在实际游戏环境中检查；手柄、IME 组合输入以及 RawInput 的输入
+仲裁仍由宿主负责。

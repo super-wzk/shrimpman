@@ -2,6 +2,7 @@
 compile_error!("mhf-launcher only supports i686 Windows");
 
 mod abi;
+pub mod font;
 mod launcher;
 mod localization;
 mod model;

@@ -9,6 +9,7 @@ bumpalo = "3.20.3"
 clap = { version = "4", features = ["derive"] }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 egui.workspace = true
+egui-hunter = { path = "../egui-hunter" }
 eframe = { version = "0.36.1", default-features = false, features = ["wgpu"] }
 jiff = { version = "0.2", features = ["serde"] }
 mhf-hooks = { path = "../hooks" }
@@ -21,6 +22,7 @@ toml = "1"
 unicode-width = { version = "0.2", features = ["cjk"] }
 ureq = "3.4"
 windows = { workspace = true, features = [
+    "Win32_Devices_HumanInterfaceDevice",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Security",
