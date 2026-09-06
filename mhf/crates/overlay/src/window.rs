@@ -5,19 +5,24 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Input::Ime::ISC_SHOWUIALL;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, GWLP_WNDPROC, GetCursorPos, RegisterClassExW, SetWindowLongPtrW,
-    UnregisterClassW, WINDOW_EX_STYLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
+    DestroyWindow, GWLP_WNDPROC, GetCursorPos, GetWindowThreadProcessId, PostMessageW,
+    RegisterClassExW, SendMessageW, SetWindowLongPtrW, UnregisterClassW, WINDOW_EX_STYLE,
+    WM_IME_SETCONTEXT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCDESTROY, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
     WM_SYSKEYUP, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
     XBUTTON1,
 };
 use windows::core::w;
 
+use crate::ime::{Ime, control_message};
 use crate::input::{InputState, WM_MOUSELEAVE, is_keyboard_message, is_pointer_message, scan_code};
-use crate::{Error, InputCaptureState, InputPolicy, Result};
+use crate::{Error, HostIme, InputCaptureState, InputPolicy, Result};
 
 static WINDOW_ROUTE: Mutex<Option<WindowRoute>> = Mutex::new(None);
 
@@ -28,39 +33,96 @@ type WindowLong = i32;
 type WindowLong = isize;
 
 pub(super) struct WindowState {
+    hwnd: usize,
     input: Mutex<InputState>,
     capture: InputCaptureState,
+    ime: Ime,
 }
 
 impl WindowState {
-    pub(super) fn new(hwnd: HWND, capture: InputCaptureState) -> Self {
+    pub(super) fn new(
+        hwnd: HWND,
+        capture: InputCaptureState,
+        host: Option<Arc<dyn HostIme>>,
+    ) -> Self {
         capture.lock().window = hwnd.0 as usize;
         Self {
+            hwnd: hwnd.0 as usize,
             input: Mutex::new(InputState::new()),
             capture,
+            ime: Ime::new(host),
         }
     }
 
-    pub(super) fn take_input(&self, hwnd: HWND, pixels_per_point: f32) -> Result<egui::RawInput> {
+    pub(super) fn take_input(&self, pixels_per_point: f32) -> Result<egui::RawInput> {
         self.input
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take(hwnd, pixels_per_point)
+            .take(HWND(self.hwnd as *mut _), pixels_per_point)
     }
 
     pub(super) fn update_capture(&self, policy: InputPolicy, context: &egui::Context) {
         self.capture.update(policy, context);
     }
 
+    pub(super) fn update_ime(&self, context: &egui::Context, output: &egui::PlatformOutput) {
+        let block_host = self.capture.captures_keyboard();
+        let ime = output.ime.filter(|_| context.input(|input| input.focused));
+        self.ime.update(
+            HWND(self.hwnd as *mut _),
+            context.memory(|memory| memory.focused()),
+            ime,
+            context.pixels_per_point(),
+            block_host,
+        );
+    }
+
     pub(super) fn clear_capture(&self) {
         self.capture.clear();
+        self.ime
+            .update(HWND(self.hwnd as *mut _), None, None, 1.0, false);
+    }
+
+    fn ime_events(&self, events: Vec<egui::ImeEvent>) {
+        if !events.is_empty() {
+            self.input
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ime_events(events);
+        }
+    }
+
+    fn finish_ime_sync(
+        &self,
+        hwnd: HWND,
+        original: WindowProc,
+        update: (Vec<egui::ImeEvent>, bool),
+    ) {
+        let (events, restored) = update;
+        self.ime_events(events);
+        if restored && unsafe { GetFocus() } == hwnd {
+            unsafe {
+                CallWindowProcW(
+                    Some(original),
+                    hwnd,
+                    WM_IME_SETCONTEXT,
+                    WPARAM(1),
+                    LPARAM(ISC_SHOWUIALL as isize),
+                );
+            }
+        }
     }
 
     fn handle_message(&self, message: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
-        self.input
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .handle_message(message, wparam, lparam);
+        // Navigation/confirm keys belong to the IME during composition. Keep
+        // recording their host/overlay ownership below, but don't edit egui text.
+        let composing_key = self.ime.composing() && is_keyboard_message(message);
+        if !composing_key {
+            self.input
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .handle_message(message, wparam, lparam);
+        }
         let mut capture = self.capture.lock();
         if is_pointer_message(message) {
             let mut position = POINT {
@@ -76,7 +138,7 @@ impl WindowState {
                 capture.move_pointer(egui::pos2(position.x as f32, position.y as f32));
             }
         }
-        match message {
+        let captured = match message {
             WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => capture.pointer_button(0, true),
             WM_LBUTTONUP => capture.pointer_button(0, false),
             WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => capture.pointer_button(1, true),
@@ -102,7 +164,10 @@ impl WindowState {
                 (is_pointer_message(message) && capture.pointer())
                     || (is_keyboard_message(message) && capture.keyboard())
             }
-        }
+        };
+        // A host editor consumes IME navigation too, even when the caller lets
+        // ordinary game keyboard input through its global capture policy.
+        captured || composing_key
     }
 }
 
@@ -114,7 +179,6 @@ struct WindowRoute {
 
 pub(super) struct WindowBinding {
     hwnd: usize,
-    original: WindowProc,
 }
 
 impl WindowBinding {
@@ -122,6 +186,7 @@ impl WindowBinding {
         if hwnd.is_invalid() {
             return Err(Error::new("D3D9 device has no valid focus window"));
         }
+        let message = control_message()?;
 
         // Keep the route locked until both the procedure and its forwarding
         // state are installed, so a concurrent message cannot observe half of
@@ -142,24 +207,32 @@ impl WindowBinding {
             original: previous,
             state,
         });
+        drop(route);
 
-        Ok(Self {
-            hwnd: hwnd_raw,
-            original: previous,
-        })
+        // Disable idle IME before returning when installed on the window thread.
+        // A rendering thread must dispatch initialization to that owning thread.
+        unsafe {
+            if GetWindowThreadProcessId(hwnd, None) == GetCurrentThreadId() {
+                SendMessageW(hwnd, message, Some(WPARAM(0)), Some(LPARAM(0)));
+            } else {
+                let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
+            }
+        }
+
+        Ok(Self { hwnd: hwnd_raw })
     }
 }
 
 impl Drop for WindowBinding {
     fn drop(&mut self) {
         let hwnd = HWND(self.hwnd as *mut _);
-        unsafe {
-            restore_window_proc(hwnd, self.original);
-        }
-        let mut route = window_route();
-        if let Some(current) = route.as_ref().filter(|route| route.hwnd == self.hwnd) {
-            current.state.capture.reset();
-            *route = None;
+        // Finish on the window thread before the caller may unload the host
+        // module containing the original procedure. Same-thread sends dispatch
+        // directly; cross-thread uninstall requires that thread to pump messages.
+        if let Ok(message) = control_message() {
+            unsafe {
+                SendMessageW(hwnd, message, Some(WPARAM(1)), Some(LPARAM(0)));
+            }
         }
     }
 }
@@ -193,18 +266,70 @@ unsafe extern "system" fn overlay_window_proc(
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     };
 
-    let blocked = catch_unwind(AssertUnwindSafe(|| {
-        state.handle_message(message, wparam, lparam)
+    let handled = catch_unwind(AssertUnwindSafe(|| {
+        if Some(message) == control_message().ok() {
+            let update = if wparam.0 == 1 {
+                state.ime.stop(hwnd, true)
+            } else {
+                state.ime.sync(hwnd)
+            };
+            state.finish_ime_sync(hwnd, original, update);
+            if wparam.0 == 1 {
+                detach_window(hwnd, original, &state);
+            }
+            return Some(LRESULT(0));
+        }
+        if matches!(message, WM_KILLFOCUS | WM_NCDESTROY) {
+            let (events, _) = state.ime.stop(hwnd, message == WM_NCDESTROY);
+            state.ime_events(events);
+            if message == WM_NCDESTROY {
+                detach_window(hwnd, original, &state);
+            }
+        } else {
+            state.finish_ime_sync(hwnd, original, state.ime.refresh(hwnd));
+        }
+        if let Some(reply) = state.ime.handle_message(message, lparam) {
+            state.ime_events(reply.events);
+            return Some(if reply.default_proc {
+                unsafe { DefWindowProcW(hwnd, message, wparam, reply.lparam) }
+            } else {
+                LRESULT(0)
+            });
+        }
+        state
+            .handle_message(message, wparam, lparam)
+            .then_some(LRESULT(1))
     }))
     .unwrap_or_else(|_| {
         state.clear_capture();
-        false
+        None
     });
 
-    if blocked {
-        LRESULT(1)
-    } else {
-        unsafe { CallWindowProcW(Some(original), hwnd, message, wparam, lparam) }
+    handled.unwrap_or_else(|| {
+        let result = unsafe { CallWindowProcW(Some(original), hwnd, message, wparam, lparam) };
+        // A native click/key may open or close an editor in the host procedure.
+        // Apply that change before the next keystroke reaches the IME.
+        if !matches!(message, WM_KILLFOCUS | WM_NCDESTROY)
+            && catch_unwind(AssertUnwindSafe(|| {
+                state.finish_ime_sync(hwnd, original, state.ime.refresh(hwnd));
+            }))
+            .is_err()
+        {
+            state.clear_capture();
+        }
+        result
+    })
+}
+
+fn detach_window(hwnd: HWND, original: WindowProc, state: &Arc<WindowState>) {
+    unsafe { restore_window_proc(hwnd, original) };
+    state.capture.reset();
+    let mut route = window_route();
+    if route
+        .as_ref()
+        .is_some_and(|route| Arc::ptr_eq(&route.state, state))
+    {
+        *route = None;
     }
 }
 
@@ -305,3 +430,6 @@ impl Drop for DummyWindow {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

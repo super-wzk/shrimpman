@@ -1,3 +1,4 @@
+mod ime;
 mod input;
 mod validation;
 
@@ -8,26 +9,40 @@ use mhf_overlay::{
     egui::{self, Context},
 };
 
-pub(crate) fn install() -> Result<OverlayHook, String> {
-    let renderer = unsafe { D3d9Hook::install(GameOverlay::default()) }
+pub(crate) unsafe fn install(
+    module: windows::Win32::Foundation::HMODULE,
+) -> Result<OverlayHook, String> {
+    let adapter = unsafe { ime::GameIme::new(module) }?;
+    let renderer = unsafe { D3d9Hook::install_with_ime(GameOverlay::default(), adapter.clone()) }
         .map_err(|error| format!("failed to install D3D9 overlay: {error}"))?;
     let input = unsafe { input::install(renderer.input_capture()) }?;
-    Ok(OverlayHook { input, renderer })
+    let ime = unsafe { adapter.install(renderer.input_capture()) }?;
+    Ok(OverlayHook {
+        input,
+        renderer,
+        ime,
+    })
 }
 
 pub(crate) struct OverlayHook {
     input: mhf_hooks::HookGuard<input::HookState>,
     renderer: D3d9Hook,
+    ime: mhf_hooks::HookGuard<ime::HookState>,
 }
 
 impl OverlayHook {
     pub(crate) fn uninstall(mut self) -> Result<(), String> {
         let input = self.input.uninstall();
         let renderer = self.renderer.uninstall().map_err(|error| error.to_string());
-        match (input, renderer) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(input), Err(renderer)) => Err(format!("{input}; {renderer}")),
+        let ime = self.ime.uninstall();
+        let errors = [input.err(), renderer.err(), ime.err()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
         }
     }
 }

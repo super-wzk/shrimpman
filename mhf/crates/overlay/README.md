@@ -69,7 +69,9 @@ impl Overlay for GameUi {
 `Auto` follows egui's hover/drag or keyboard-focus intent, `Block` withholds the
 channel from the game, and `PassThrough` forwards it even when egui wants input.
 Both channels default to `Auto`. Egui receives the input in every mode; these
-settings govern forwarding to the game's original window procedure.
+settings govern forwarding to the game's original window procedure. IME sessions
+are exclusive: `PassThrough` leaves composition with the host instead of sending
+the same composition to two editors.
 
 The caller selects a policy from its active window/page/modal state. It is
 sampled after each UI frame and applies to new presses. Press, repeat, drag and
@@ -104,6 +106,52 @@ removal. A cloned capture handle can outlive the renderer without keeping input
 blocked. The policy and `Overlay` interface also compile on non-Windows hosts
 for testing; the D3D9 backend is Windows-only.
 
+## Input methods
+
+The backend creates one private IMM32 context for the game window and retains it
+until the window binding is removed. Egui and an optional native host editor use
+that same handle. With no focused text editor, the window is associated with a null
+context so IME does not consume gameplay keys. This also applies before the first
+editor is opened and while a modal has no text focus. The private context remains
+cached with its input mode for the next editor. Only removing the window binding
+restores the exact original association, including an originally null context.
+
+Use `D3d9Hook::install_with_ime(overlay, Arc<dyn HostIme>)` to connect native text
+controls. `HostIme::target` supplies the current editor identity and a cursor
+rectangle in client pixels. `HostIme::event` receives preedit/commit events on the
+window thread while the shared context is still associated. A legacy adapter can
+read the original ANSI composition from that context and retain its existing
+encoding, buffers and insertion routine. Game-specific addresses stay in the
+adapter. Ordinary `WM_CHAR` messages keep their existing host path.
+
+Keyboard capture gives the overlay priority. A focused egui text field receives
+UTF-16 composition/result strings as `ImeEvent::Preedit` and `ImeEvent::Commit`,
+including the active clause or cursor range. A blocking modal without a text field
+also excludes the native editor. With `PassThrough`, the native editor owns IME
+even when egui has a focused field. Each editor draws its own preedit; the system
+input method draws candidates at its cursor. Handled composition messages bypass
+the original game procedure and cannot generate duplicate character events.
+
+The backend also synchronizes a hidden Win32 caret with the active text cursor.
+WineCX's macOS driver reads that caret through `GetGUIThreadInfo` to position
+native candidates; updating the IMM candidate/composition forms alone is not
+sufficient. Caret coordinates follow UI scaling in client pixels and are mapped
+to screen coordinates by Wine. An existing host caret keeps its shape/visibility
+and regains its previous position when input ownership ends.
+
+Changing owners cancels composition and delivers cancellation to the previous
+editor before switching. Composition navigation/edit keys are withheld from the
+host window procedure while device polling retains the caller's capture policy.
+Frame callbacks post updates; all IMM operations and host adapter callbacks run
+on the window thread without holding overlay locks. Uninstall on that thread, or
+keep it pumping messages until synchronous uninstall returns.
+
+Native tests cover handle reuse across host/overlay/idle transitions, cancellation
+recipients, modal/pass-through priority, context restoration, Unicode input,
+composition key routing and candidate coordinates. Actual candidate selection and
+text entry still need verification with the selected Windows or macOS/Wine input
+method.
+
 ## Upstream references
 
 The hook discovery and lifecycle follow the design of
@@ -113,7 +161,8 @@ were written against the current workspace `egui` version, using
 reference. Both upstream projects are MIT licensed; their license notices are
 recorded in `THIRD_PARTY_LICENSES.md`.
 
-Only ordinary Win32 window messages are translated to `egui`. Device API hooks
-belong to the game adapter: `mhf-launcher` filters DirectInput's immediate mouse
+Win32 window messages feed `egui`; IMM32 composition goes exclusively to the active
+overlay or host editor. Device API hooks belong to the game adapter:
+`mhf-launcher` filters DirectInput's immediate mouse
 and keyboard samples using the shared capture handle. A host using Raw Input or
 other polling APIs needs its own adapter for those paths.

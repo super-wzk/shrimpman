@@ -20,7 +20,7 @@ use windows::core::{BOOL, HRESULT, Interface};
 
 use crate::renderer::Renderer;
 use crate::window::{DummyWindow, WindowBinding, WindowState};
-use crate::{Error, InputCaptureState, Overlay, Result};
+use crate::{Error, HostIme, InputCaptureState, Overlay, Result};
 
 type Present = unsafe extern "system" fn(
     device: *mut c_void,
@@ -66,7 +66,23 @@ impl D3d9Hook {
     /// handle alive for as long as hooked frames may execute, and uninstall it
     /// on a thread allowed to release the device resources. If the host invokes
     /// the device from multiple threads, it must enable D3D9 multithreaded mode.
+    /// Uninstall on the focus-window thread, or keep that thread pumping messages
+    /// until uninstall returns, so its IME context can be restored synchronously.
     pub unsafe fn install(overlay: impl Overlay) -> Result<Self> {
+        unsafe { Self::install_inner(overlay, None) }
+    }
+
+    /// Installs the overlay with a native editor sharing its IME context.
+    ///
+    /// # Safety
+    ///
+    /// The caller must satisfy the same requirements as [`Self::install`]. The
+    /// host adapter must remain valid until synchronous overlay cleanup finishes.
+    pub unsafe fn install_with_ime(overlay: impl Overlay, ime: Arc<dyn HostIme>) -> Result<Self> {
+        unsafe { Self::install_inner(overlay, Some(ime)) }
+    }
+
+    unsafe fn install_inner(overlay: impl Overlay, ime: Option<Arc<dyn HostIme>>) -> Result<Self> {
         let mut hooks = HOOK_STATE.prepare().map_err(Error::new)?;
         *last_error() = None;
 
@@ -94,7 +110,7 @@ impl D3d9Hook {
         let state = HookState {
             present: unsafe { mem::transmute::<*mut c_void, Present>(present_original) },
             reset: unsafe { mem::transmute::<*mut c_void, Reset>(reset_original) },
-            runtime: Mutex::new(Runtime::new(Box::new(overlay), capture.clone())),
+            runtime: Mutex::new(Runtime::new(Box::new(overlay), capture.clone(), ime)),
         };
         let hooks = unsafe { hooks.install(state) }.map_err(Error::new)?;
         Ok(Self { hooks, capture })
@@ -149,15 +165,21 @@ struct Runtime {
     pipeline: Option<Pipeline>,
     rendering_disabled: bool,
     capture: InputCaptureState,
+    ime: Option<Arc<dyn HostIme>>,
 }
 
 impl Runtime {
-    fn new(overlay: Box<dyn Overlay>, capture: InputCaptureState) -> Self {
+    fn new(
+        overlay: Box<dyn Overlay>,
+        capture: InputCaptureState,
+        ime: Option<Arc<dyn HostIme>>,
+    ) -> Self {
         Self {
             overlay: Some(overlay),
             pipeline: None,
             rendering_disabled: false,
             capture,
+            ime,
         }
     }
 
@@ -205,7 +227,11 @@ impl Runtime {
 
     fn initialize_pipeline(&mut self, device: &IDirect3DDevice9) -> Result<()> {
         let hwnd = device_window(device)?;
-        let window_state = Arc::new(WindowState::new(hwnd, self.capture.clone()));
+        let window_state = Arc::new(WindowState::new(
+            hwnd,
+            self.capture.clone(),
+            self.ime.clone(),
+        ));
         let window = WindowBinding::install(hwnd, Arc::clone(&window_state))?;
         let context = egui::Context::default();
         self.overlay
@@ -218,7 +244,6 @@ impl Runtime {
             .expect("overlay must exist before pipeline initialization");
         self.pipeline = Some(Pipeline {
             device: Interface::as_raw(device) as usize,
-            hwnd: hwnd.0 as usize,
             context,
             window_state,
             renderer: Renderer::default(),
@@ -242,7 +267,6 @@ impl Runtime {
 
 struct Pipeline {
     device: usize,
-    hwnd: usize,
     context: egui::Context,
     window_state: Arc<WindowState>,
     renderer: Renderer,
@@ -266,13 +290,13 @@ impl Pipeline {
         }
 
         let pixels_per_point = self.context.pixels_per_point();
-        let input = self
-            .window_state
-            .take_input(HWND(self.hwnd as *mut _), pixels_per_point)?;
+        let input = self.window_state.take_input(pixels_per_point)?;
         let output = self.context.run_ui(input, |ui| self.overlay.ui(ui));
         let mut textures_delta = TextureDeltaGuard(output.textures_delta);
         self.window_state
             .update_capture(self.overlay.input_policy(&self.context), &self.context);
+        self.window_state
+            .update_ime(&self.context, &output.platform_output);
         self.overlay
             .platform_output(&self.context, &output.platform_output);
 

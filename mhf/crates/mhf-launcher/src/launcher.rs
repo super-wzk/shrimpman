@@ -100,7 +100,7 @@ pub fn launch_mhfo(
     };
     data.mhfo_module = game.handle();
     data.mhfo_main = Some(entry);
-    let overlay = crate::overlay::install()?;
+    let overlay = unsafe { crate::overlay::install(game.handle()) }?;
     let code = unsafe { entry(&mut data.params) };
 
     // Stop hooks before unloading the DLL. The localization guard retains the

@@ -89,6 +89,11 @@ impl InputState {
         }
     }
 
+    pub(super) fn ime_events(&mut self, events: Vec<egui::ImeEvent>) {
+        self.pending_high_surrogate = None;
+        self.events.extend(events.into_iter().map(Event::Ime));
+    }
+
     pub(super) fn take(&mut self, hwnd: HWND, pixels_per_point: f32) -> Result<RawInput> {
         self.pixels_per_point = pixels_per_point.max(f32::EPSILON);
 

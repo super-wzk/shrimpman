@@ -12,6 +12,10 @@ pub use capture::{InputCapture, InputCaptureState, InputPolicy};
 #[cfg(target_os = "windows")]
 pub mod dx9;
 #[cfg(target_os = "windows")]
+mod ime;
+#[cfg(target_os = "windows")]
+pub use ime::{HostIme, HostImeTarget};
+#[cfg(target_os = "windows")]
 mod input;
 #[cfg(target_os = "windows")]
 mod renderer;
