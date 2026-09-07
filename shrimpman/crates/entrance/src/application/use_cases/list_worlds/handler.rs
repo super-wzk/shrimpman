@@ -2,7 +2,6 @@ use std::ffi::CString;
 
 use binrw::NullString;
 use jiff::Timestamp;
-use shrimpman_common::encoding::encode_shift_jis;
 use shrimpman_discovery::{ServiceInstance, ServiceState};
 use shrimpman_domain::world::World;
 use shrimpman_protocol::{BinrwOutboundSender, Handler};
@@ -113,18 +112,12 @@ fn encode_world(index: u16, world: World) -> Result<WorldEntry, InternalError> {
         season,
         content,
         text: WorldText {
-            name: encode_null_string(&name)?,
-            description: encode_null_string(&description)?,
+            name: NullString(CString::new(name)?.into_bytes()),
+            description: NullString(CString::new(description)?.into_bytes()),
         },
         client_compatibility,
         lands,
     })
-}
-
-fn encode_null_string(value: &str) -> Result<NullString, InternalError> {
-    Ok(NullString(
-        CString::new(encode_shift_jis(value)?)?.into_bytes(),
-    ))
 }
 
 #[cfg(test)]
@@ -166,9 +159,10 @@ mod tests {
     }
 
     #[test]
-    fn orders_lands_by_key_and_encodes_world_text_as_shift_jis() {
+    fn orders_lands_by_key_and_preserves_utf8_world_text() {
         let mut world = domain_world("world", 54_002);
-        world.name = "テスト".to_owned();
+        world.name = "猎人🦐".to_owned();
+        world.description = "自由世界🌏".to_owned();
         world.lands.push(Land {
             key: LandKey::from("alpha".to_owned()),
             port: 54_001,
@@ -178,7 +172,8 @@ mod tests {
 
         let world = encode_world(0, world).unwrap();
 
-        assert_eq!(world.text.name.0, [0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+        assert_eq!(world.text.name.0, "猎人🦐".as_bytes());
+        assert_eq!(world.text.description.0, "自由世界🌏".as_bytes());
         assert_eq!(world.lands[0].port, 54_001);
         assert_eq!(world.lands[0].index, 0);
         assert_eq!(world.lands[1].port, 54_002);

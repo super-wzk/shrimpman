@@ -1,5 +1,5 @@
-//! The native editor uses its original byte buffers/insertion routine. IMM
-//! ownership and candidate UI are shared with egui through `mhf-overlay`.
+//! The native editor stores UTF-8 in its existing byte buffers. IMM ownership
+//! and candidate UI are shared with egui through `mhf-overlay`.
 
 mod editor;
 
@@ -25,7 +25,6 @@ use editor::Editor;
 
 const EDITOR_RENDER_RVA: usize = 0x014D_42F0;
 const MESSAGE_RVA: usize = 0x014D_3960;
-const INSERT_RVA: usize = 0x0080_FBA0;
 const EDITOR_RVA: usize = 0x0EDB_A1BC;
 
 type NativeMessage = unsafe extern "C" fn(HWND, u32, WPARAM, LPARAM) -> i32;
@@ -66,7 +65,7 @@ impl GameIme {
         MESSAGE_TARGET.store(base + MESSAGE_RVA, Ordering::Release);
         unsafe {
             hooks.install(HookState {
-                _adapter: Arc::clone(self),
+                adapter: Arc::clone(self),
                 message: std::mem::transmute::<*mut c_void, NativeMessage>(message),
                 capture,
             })
@@ -88,7 +87,7 @@ impl HostIme for GameIme {
 
 pub(super) struct HookState {
     // Retain native memory if hook cleanup fails while the broker is removed.
-    _adapter: Arc<GameIme>,
+    adapter: Arc<GameIme>,
     message: NativeMessage,
     capture: InputCaptureState,
 }
@@ -104,6 +103,14 @@ unsafe extern "C" fn message_hook(hwnd: HWND, message: u32, wparam: WPARAM, lpar
     // They belong to the game editor and must not alter an active overlay editor.
     if (0x7E8..=0x7ED).contains(&message) && state.capture.captures_keyboard() {
         return 1;
+    }
+    if unsafe {
+        state
+            .adapter
+            .editor
+            .composition_command(hwnd, message, lparam)
+    } {
+        return 0;
     }
     unsafe { (state.message)(hwnd, message, wparam, lparam) }
 }
@@ -154,11 +161,6 @@ unsafe fn validate_layout(base: usize) -> Result<(), String> {
             "IME message handler",
             MESSAGE_RVA,
             &[0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14, 0xA1][..],
-        ),
-        (
-            "text insertion",
-            INSERT_RVA,
-            &[0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x20, 0x02, 0x00, 0x00][..],
         ),
     ] {
         if unsafe { std::slice::from_raw_parts((base + rva) as *const u8, bytes.len()) } != bytes {

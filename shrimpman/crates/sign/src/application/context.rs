@@ -5,7 +5,7 @@ use jiff::SignedDuration;
 use shrimpman_discovery::selector::RoundRobinSelector;
 use shrimpman_discovery::{client::DiscoveryClient, selector::Selector};
 #[cfg(test)]
-use shrimpman_lease_kv::LeaseKvClient;
+use shrimpman_lease_kv::{LeaseKvClient, LeaseKvClientConfig};
 use shrimpman_persistence::{
     AccountRepository, CharacterRepository, MezeportaFestaRepository, SignInNoticeRepository,
     SignSessionRepository,
@@ -108,10 +108,16 @@ impl SignServiceContext {
         let db = builder.connect("sqlite::memory:").await.unwrap();
         db.push_schema().await.unwrap();
 
+        // Unit tests expect empty discovery and must not watch a local etcd.
+        let lease_kv = LeaseKvClient::connect(LeaseKvClientConfig {
+            endpoints: vec!["http://127.0.0.1:0".to_owned()],
+            ..Default::default()
+        })
+        .unwrap();
         Self::new(
             auto_sign_up,
             SignedDuration::from_mins(5),
-            DiscoveryClient::new(LeaseKvClient::connect(Default::default()).unwrap()),
+            DiscoveryClient::new(lease_kv),
             RoundRobinSelector::new(),
             SignRepositories::new(
                 AccountRepository::new(&db),

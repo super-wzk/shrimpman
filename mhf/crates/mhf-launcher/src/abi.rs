@@ -1,10 +1,4 @@
-use windows::{
-    Win32::{
-        Foundation::{HANDLE, HGLOBAL, HINSTANCE, HMODULE},
-        Globalization::{CP_ACP, WideCharToMultiByte},
-    },
-    core::{Error, PCSTR},
-};
+use windows::Win32::Foundation::{HANDLE, HGLOBAL, HINSTANCE, HMODULE};
 
 const MHF_LAUNCH_PARAMS_SIZE: usize = 0x2010;
 const MHF_GLOBAL_DATA_SIZE: usize = 0x8ae0;
@@ -20,6 +14,14 @@ pub(crate) fn copy_ascii_c_string(
     if !value.is_ascii() {
         return Err(format!("{field} must contain ASCII bytes only"));
     }
+    copy_utf8_c_string(field, destination, value)
+}
+
+pub(crate) fn copy_utf8_c_string(
+    field: &str,
+    destination: &mut [u8],
+    value: &str,
+) -> Result<(), String> {
     if value.as_bytes().contains(&0) {
         return Err(format!("{field} must not contain a NUL byte"));
     }
@@ -27,59 +29,11 @@ pub(crate) fn copy_ascii_c_string(
         return Err(format!(
             "{field} is {} bytes; at most {} bytes are supported",
             value.len(),
-            destination.len() - 1
+            destination.len().saturating_sub(1)
         ));
     }
     destination.fill(0);
     destination[..value.len()].copy_from_slice(value.as_bytes());
-    Ok(())
-}
-
-pub(crate) fn copy_ansi_c_string(
-    field: &str,
-    destination: &mut [u8],
-    value: &str,
-) -> Result<(), String> {
-    if value.contains('\0') {
-        return Err(format!("{field} must not contain a NUL character"));
-    }
-    destination.fill(0);
-    if value.is_empty() {
-        return Ok(());
-    }
-
-    let wide: Vec<u16> = value.encode_utf16().collect();
-    let required = unsafe { WideCharToMultiByte(CP_ACP, 0, &wide, None, PCSTR::null(), None) };
-    if required <= 0 {
-        return Err(format!(
-            "failed to encode {field} with the Windows ANSI code page: {}",
-            Error::from_thread()
-        ));
-    }
-    let required = required as usize;
-    if required >= destination.len() {
-        return Err(format!(
-            "{field} is {required} encoded bytes; at most {} bytes are supported",
-            destination.len() - 1
-        ));
-    }
-
-    let written = unsafe {
-        WideCharToMultiByte(
-            CP_ACP,
-            0,
-            &wide,
-            Some(&mut destination[..required]),
-            PCSTR::null(),
-            None,
-        )
-    };
-    if written as usize != required {
-        return Err(format!(
-            "failed to encode {field} with the Windows ANSI code page: {}",
-            Error::from_thread()
-        ));
-    }
     Ok(())
 }
 

@@ -48,8 +48,8 @@ language = "japanese"
 section/key 仍以 string 原样保留。`[sign]` 与 `[translation]` 是启动器配置命名空间，
 不会暴露给游戏的 Win32 Profile API。`[translation] locale` 选择按同名 JSONL 文件
 编译到 EXE 内嵌字典的额外翻译；locale ID 就是文件名，不限定语言代码格式。每个 locale
-地位相同，空 JSONL 表示没有覆盖。只有显式配置 `[translation]` 才会安装翻译 hook；
-省略该 section 时游戏完全使用原始文本。资源结构和合法 key 由 resource layout 定义，
+地位相同，空 JSONL 表示没有覆盖。只有显式配置 `[translation]` 才会应用翻译覆盖；
+省略该 section 时仍将原始资源转为 UTF-8，显示原文。资源结构和合法 key 由 resource layout 定义，
 每个 locale 只包含自己的实际覆盖。
 `missing` 默认为 `original`，也可设为 `key` 或 `empty`。layout、key 和翻译文件格式见
 [`translations/README.md`](translations/README.md)。
@@ -65,8 +65,8 @@ EXE 内嵌一份 JetBrainsMapleMono-NF-XX-NL-HT Regular，启动器 UI 直接使
 加载游戏 DLL 前，启动器通过 `mhf-hooks` 解析并拦截
 `GetPrivateProfileIntA`、`GetPrivateProfileStringA` 和
 `WritePrivateProfileStringA`。目标 `mhf.ini` 是虚拟文件名，所有读写实际落到
-`mhf.toml`；其他 INI 请求仍转发给原始 Win32 API。hook 边界负责在 UTF-8 和
-当前 Windows ANSI 代码页之间转换，并把领域字段映射为游戏使用的大写 INI 名称、
+`mhf.toml`；其他 INI 请求仍转发给原始 Win32 API。目标 INI 的名称和值直接使用 UTF-8，
+并把领域字段映射为游戏使用的大写 INI 名称、
 `0`/`1` boolean 和数字枚举。游戏写回时执行反向映射；TOML 会被重新格式化，原
 注释不保证保留。
 
@@ -85,13 +85,23 @@ INI、汉化/GDI、D3D9 和 DirectInput 分别持有自己的 hook 组，共用 
 - `src/model.rs`：定义游戏 `MhfConfig`、启动时的 Sign 登录结果和启动 profile；角色、
   会话与权限复用 workspace 领域类型。
 - `src/launcher.rs`：负责领域模型到 ABI 的映射及 Win32 启动流程。
+- `src/text/`：接管原生 UTF-8 分词、编辑、标记展开、换行和字形缓存；光标与容量仍
+  以字节计，排版使用 Unicode 显示列数，Win32 绘制和剪贴板使用 UTF-16。IME 提交与
+  普通 `WM_CHAR` 都按 Unicode 输入，删除、选区和滚动不会拆开 UTF-8 字符。
+  `printf` 的字符串宽度按显示列数补白；精度保留 C 的字节读取上限，并在 UTF-8
+  边界截断。整数、浮点和缓冲容量语义仍由游戏 CRT 执行。行内字串构造、倒计时与
+  按索引取空白的布局表分别保留原调用约定。
+  全角转换根据已核对的原生缓冲区容量写入；很小的数字栏若放不下全角 UTF-8，会
+  保留完整半角数字。截图文件名使用 UTF-8，并通过宽字符接口创建目录和保存图片。
 - `src/overlay/input.rs`：过滤 MHF 通过 DirectInput 读取的鼠标、键盘状态，复用
   Overlay 调用处的输入策略；`input/polling.rs` 保留每个按键从按下到松开的接收方。
-- `src/localization/`：在 DAT/INF/PAC 完成原生指针重定位、首次消费或复制前，按 layout
-  遍历绝对指针并把字符串槽指向独立翻译缓存，使后续别名自然继承翻译；同时捕获实际
-  stage 文件号，并在对应 TLK image 中修改明确登记的记录。启动时按 Unicode East Asian
-  Width 的 CJK 宽度为当前 locale 建立固定的半宽/全宽虚拟字形映射，分别使用游戏原有的
-  8/16 像素槽并交给 GDI 宽字符接口；运行时不解析 JSONL。
+- `src/localization/`：在 DAT/INF/PAC/JMP/GAO/SQD/RCC/MSX 完成原生指针重定位、
+  首次消费或复制前，按 layout 遍历文本槽；同时遍历 TLK 的全部 section 与记录。译文直接引用 EXE 内 NUL 结尾的
+  UTF-8 常量，未翻译原文按资源来源的 CP932/949/950 转为稳定存储的 UTF-8；同时更新
+  PAC 提前缓存的文本指针，后续别名自然继承新指针。`native/layout.rs` 按记录步长
+  解析 GR/HR 表及房间指针字段，`native/bindings.rs` 只保留零散编译常量的引用绑定；
+  两者统一接入 JSONL 翻译键、语言选择和缺失译文策略。
+  省略翻译配置也会转换原文；运行时不解析 JSONL，不使用虚拟字形码表。
 - `src/bin/mhf-launcher/http/`：Sign HTTP 客户端及按 API 命名空间组织的请求、响应
   模型。
 - `src/bin/mhf-launcher/ui/`：按 Elm 结构组织状态更新、界面渲染和 eframe 适配。
@@ -111,6 +121,10 @@ profile 只使用 Rust 的 `&str`；DLL 名、INI 名、互斥量前缀和宿主
 `SocketAddrV4`、`CharacterId`、`SignSessionId`、`CourseRights`、`Timestamp` 和固定
 长度 token；DLL 所需的原始 `u32` 只出现在 ABI 映射边界。crate 只支持 i686
 Windows。
+
+游戏文本和 Sign/Entrance 协议一起使用 UTF-8，需要配套的 Shrimpman 服务端。固定
+字段保留原字节容量，例如 Sign 角色名字段为 16 字节（含结尾 NUL），不会为了编码
+迁移扩展协议包。原生游戏目录参数仍限制为 ASCII；更改文本编码不改变这个路径约束。
 
 ## 构建和启动
 
@@ -225,9 +239,10 @@ MHF 输入适配层拦截 [`GetDeviceState`](https://learn.microsoft.com/en-us/p
 Overlay 有键盘输入权时，游戏输入框及其
 内部软键盘命令暂停接收；切换接收方会取消原来的组合，卸载时恢复游戏原始上下文。
 
-原生适配器根据游戏输入框的实时光标位置定位系统候选窗，直接读取共享上下文中的 ANSI 输入，
-交给游戏原有文本缓冲和插入函数；egui 接收 Unicode 事件。原生聊天仍沿用游戏自身
-的字节编码和长度限制，翻译词典的虚拟字形编号不参与输入。适配器校验对应游戏 DLL
+原生适配器根据游戏输入框的实时光标位置定位系统候选窗，将共享上下文的 Unicode
+组合与提交事件写入 UTF-8 文本缓冲；egui 使用同一组 Unicode 事件。普通 `WM_CHAR`
+在进入旧 ANSI 窗口过程前组装 UTF-16 代理对，避免字符被截成一个字节。
+输入保留游戏原有字节容量。适配器校验对应游戏 DLL
 的函数签名与布局，避免将其他版本的地址当作输入框使用。
 真实输入法的选词和上屏仍需在 Windows/macOS Wine 中验证。
 手柄以及 RawInput 的输入仲裁仍由宿主负责。

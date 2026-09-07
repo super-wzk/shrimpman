@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "record_layouts": {
     "text_1_at_0_stride_4": {
       "stride": 4,
@@ -160,6 +160,26 @@
       "stride": 368,
       "text_offset": 0,
       "parts": 92
+    },
+    "text_2_at_48_stride_56": {
+      "stride": 56,
+      "text_offset": 48,
+      "parts": 2
+    },
+    "text_1_at_4_stride_60": {
+      "stride": 60,
+      "text_offset": 4,
+      "parts": 1
+    },
+    "text_2_at_4_stride_12": {
+      "stride": 12,
+      "text_offset": 4,
+      "parts": 2
+    },
+    "text_4_at_20_stride_36": {
+      "stride": 36,
+      "text_offset": 20,
+      "parts": 4
     }
   },
   "resources": [
@@ -180,22 +200,29 @@
       "type": "records",
       "tables": [
         {
-          "id": "table_005",
+          "id": "armor_descriptions",
           "root_field": 120,
           "records": 68730,
           "layout": "text_3_at_0_stride_16"
         },
         {
-          "id": "table_010",
+          "id": "item_names",
           "root_field": 256,
           "records": 16701,
           "layout": "text_1_at_0_stride_4"
         },
         {
-          "id": "table_011",
+          "id": "item_messages",
           "root_field": 300,
-          "records": 16725,
+          "records": 24,
           "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "item_descriptions",
+          "root_field": 300,
+          "records": 16701,
+          "layout": "text_1_at_0_stride_4",
+          "first_record": 24
         },
         {
           "id": "table_012",
@@ -264,7 +291,7 @@
           "layout": "text_2_at_0_stride_28"
         },
         {
-          "id": "table_016",
+          "id": "item_acquisition_hints",
           "root_field": 2624,
           "records": 16701,
           "layout": "text_1_at_0_stride_4"
@@ -1975,23 +2002,23 @@
           "layout": "text_1_at_0_stride_4",
           "entries": [
             {
-              "id": "table_000",
+              "id": "head_armor_names",
               "records": 14594
             },
             {
-              "id": "table_001",
+              "id": "body_armor_names",
               "records": 13462
             },
             {
-              "id": "table_002",
+              "id": "arm_armor_names",
               "records": 13452
             },
             {
-              "id": "table_003",
+              "id": "waist_armor_names",
               "records": 13708
             },
             {
-              "id": "table_004",
+              "id": "leg_armor_names",
               "records": 13514
             }
           ]
@@ -2002,11 +2029,11 @@
           "layout": "text_1_at_0_stride_4",
           "entries": [
             {
-              "id": "table_006",
+              "id": "ranged_weapon_names",
               "records": 4223
             },
             {
-              "id": "table_007",
+              "id": "melee_weapon_names",
               "records": 17568
             }
           ]
@@ -2017,11 +2044,11 @@
           "layout": "text_3_at_0_stride_16",
           "entries": [
             {
-              "id": "table_008",
+              "id": "melee_weapon_descriptions",
               "records": 17568
             },
             {
-              "id": "table_009",
+              "id": "ranged_weapon_descriptions",
               "records": 4223
             }
           ]
@@ -16513,6 +16540,1044 @@
           ]
         }
       ]
+    },
+    {
+      "id": "mhfjmp",
+      "identity": null,
+      "code_page": 932,
+      "runtime": {
+        "post_relocation": {
+          "rva": "0x001CC8AB",
+          "signature": "8B 45 08 5F 5E C7 00 00 00 00 00 5B 5D C3"
+        },
+        "buffer_rva": "0x0E73D624",
+        "size_rva": "0x0E73D628"
+      },
+      "type": "records",
+      "tables": [
+        {
+          "id": "destinations",
+          "root_field": 0,
+          "records": 24,
+          "layout": "text_2_at_48_stride_56"
+        },
+        {
+          "id": "menu_labels",
+          "root_field": 12,
+          "records": {
+            "u32_at": 16
+          },
+          "layout": "text_1_at_0_stride_4"
+        }
+      ],
+      "table_directories": []
+    },
+    {
+      "id": "mhfgao",
+      "identity": null,
+      "code_page": 932,
+      "runtime": {
+        "post_relocation": {
+          "rva": "0x00AFAE6A",
+          "signature": "E8 91 8F E1 FF 8B 45 08 5F 5E C7 00 00 00 00 00"
+        },
+        "buffer_rva": "0x0E77DCDC",
+        "size_rva": "0x0EDB9B68"
+      },
+      "type": "records",
+      "tables": [
+        {
+          "id": "head_armor_names",
+          "root_field": 24,
+          "records": {
+            "until": {
+              "root_field": 16,
+              "stride": 72,
+              "offset": 0,
+              "width": 2,
+              "value": 65535
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "body_armor_names",
+          "root_field": 28,
+          "records": {
+            "until": {
+              "root_field": 20,
+              "stride": 72,
+              "offset": 0,
+              "width": 2,
+              "value": 65535
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "armor_descriptions",
+          "root_field": 32,
+          "records": {
+            "until": {
+              "root_field": 32,
+              "stride": 16,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_4_at_0_stride_16"
+        },
+        {
+          "id": "weapon_names",
+          "root_field": 40,
+          "records": {
+            "until": {
+              "root_field": 36,
+              "stride": 52,
+              "offset": 0,
+              "width": 2,
+              "value": 65535
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "weapon_descriptions",
+          "root_field": 44,
+          "records": {
+            "until": {
+              "root_field": 36,
+              "stride": 52,
+              "offset": 0,
+              "width": 2,
+              "value": 65535
+            }
+          },
+          "layout": "text_4_at_0_stride_16"
+        },
+        {
+          "id": "dialogue_1",
+          "root_field": 144,
+          "records": {
+            "until": {
+              "root_field": 144,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "dialogue_2",
+          "root_field": 148,
+          "records": {
+            "until": {
+              "root_field": 148,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "dialogue_3",
+          "root_field": 152,
+          "records": {
+            "until": {
+              "root_field": 152,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "dialogue_4",
+          "root_field": 156,
+          "records": {
+            "until": {
+              "root_field": 156,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "dialogue_5",
+          "root_field": 160,
+          "records": {
+            "until": {
+              "root_field": 160,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "dialogue_6",
+          "root_field": 164,
+          "records": {
+            "until": {
+              "root_field": 164,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "dialogue_7",
+          "root_field": 168,
+          "records": {
+            "until": {
+              "root_field": 168,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "dialogue_8",
+          "root_field": 172,
+          "records": {
+            "until": {
+              "root_field": 172,
+              "stride": 4,
+              "offset": 0,
+              "width": 4,
+              "value": 0
+            }
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "skill_names",
+          "root_field": 276,
+          "records": {
+            "u32_at": 272
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "skill_categories",
+          "root_field": 284,
+          "records": {
+            "u32_at": 280
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "skill_descriptions",
+          "root_field": 292,
+          "records": {
+            "u32_at": 288
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "skill_effects",
+          "root_field": 300,
+          "records": {
+            "u32_at": 296
+          },
+          "layout": "text_1_at_0_stride_4"
+        },
+        {
+          "id": "location_00",
+          "root_field": [
+            176,
+            0
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              4
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 0,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_01",
+          "root_field": [
+            176,
+            8
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              12
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 1,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_02",
+          "root_field": [
+            176,
+            16
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              20
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 2,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_03",
+          "root_field": [
+            176,
+            24
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              28
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 3,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_04",
+          "root_field": [
+            176,
+            32
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              36
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 4,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_05",
+          "root_field": [
+            176,
+            40
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              44
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 5,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_06",
+          "root_field": [
+            176,
+            48
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              52
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 6,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_07",
+          "root_field": [
+            176,
+            56
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              60
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 7,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_08",
+          "root_field": [
+            176,
+            64
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              68
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 8,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_09",
+          "root_field": [
+            176,
+            72
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              76
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 9,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_10",
+          "root_field": [
+            176,
+            80
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              84
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 10,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_11",
+          "root_field": [
+            176,
+            88
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              92
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 11,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_12",
+          "root_field": [
+            176,
+            96
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              100
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 12,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_13",
+          "root_field": [
+            176,
+            104
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              108
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 13,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_14",
+          "root_field": [
+            176,
+            112
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              116
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 14,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_15",
+          "root_field": [
+            176,
+            120
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              124
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 15,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_16",
+          "root_field": [
+            176,
+            128
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              132
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 16,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_17",
+          "root_field": [
+            176,
+            136
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              140
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 17,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_18",
+          "root_field": [
+            176,
+            144
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              148
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 18,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_19",
+          "root_field": [
+            176,
+            152
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              156
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 19,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_20",
+          "root_field": [
+            176,
+            160
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              164
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 20,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_21",
+          "root_field": [
+            176,
+            168
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              172
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 21,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_22",
+          "root_field": [
+            176,
+            176
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              180
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 22,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_23",
+          "root_field": [
+            176,
+            184
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              188
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 23,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_24",
+          "root_field": [
+            176,
+            192
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              196
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 24,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_25",
+          "root_field": [
+            176,
+            200
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              204
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 25,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_26",
+          "root_field": [
+            176,
+            208
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              212
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 26,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_27",
+          "root_field": [
+            176,
+            216
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              220
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 27,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_28",
+          "root_field": [
+            176,
+            224
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              228
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 28,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_29",
+          "root_field": [
+            176,
+            232
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              236
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 29,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        },
+        {
+          "id": "location_30",
+          "root_field": [
+            176,
+            240
+          ],
+          "records": {
+            "u32_at": [
+              176,
+              244
+            ]
+          },
+          "layout": "text_1_at_4_stride_60",
+          "directory": {
+            "index": 30,
+            "count": {
+              "u32_at": 180
+            }
+          }
+        }
+      ],
+      "table_directories": []
+    },
+    {
+      "id": "mhfsqd",
+      "identity": null,
+      "code_page": 932,
+      "runtime": {
+        "post_relocation": {
+          "rva": "0x001CD1FB",
+          "signature": "8B 4D 08 5F 5E C7 01 00 00 00 00"
+        },
+        "buffer_rva": "0x0E73D63C",
+        "size_rva": "0x0E73D640"
+      },
+      "type": "records",
+      "tables": [
+        {
+          "id": "effect_limits",
+          "root_field": 16,
+          "records": {
+            "u16_at": [
+              0,
+              6
+            ]
+          },
+          "layout": "text_1_at_4_stride_12"
+        },
+        {
+          "id": "special_effects",
+          "root_field": 20,
+          "records": {
+            "u16_at": [
+              0,
+              8
+            ]
+          },
+          "layout": "text_2_at_0_stride_12"
+        },
+        {
+          "id": "skill_effects",
+          "root_field": 24,
+          "records": {
+            "u16_at": [
+              0,
+              10
+            ]
+          },
+          "layout": "text_2_at_4_stride_16"
+        },
+        {
+          "id": "weapon_names",
+          "root_field": 32,
+          "records": {
+            "u16_at": [
+              0,
+              14
+            ]
+          },
+          "layout": "text_1_at_0_stride_8"
+        },
+        {
+          "id": "rating_labels",
+          "root_field": 36,
+          "records": {
+            "u16_at": [
+              0,
+              16
+            ]
+          },
+          "layout": "text_1_at_0_stride_8"
+        },
+        {
+          "id": "character_names",
+          "root_field": 40,
+          "records": {
+            "u16_at": [
+              0,
+              18
+            ]
+          },
+          "layout": "text_1_at_0_stride_8"
+        },
+        {
+          "id": "point_effects",
+          "root_field": 56,
+          "records": {
+            "u16_at": [
+              0,
+              26
+            ]
+          },
+          "layout": "text_2_at_4_stride_12"
+        }
+      ],
+      "table_directories": []
+    },
+    {
+      "id": "mhfrcc",
+      "identity": null,
+      "code_page": 932,
+      "runtime": {
+        "post_relocation": {
+          "rva": "0x00AFC9BE",
+          "signature": "8B 45 08 5F 5E C7 00 00 00 00 00 5B 5D C3"
+        },
+        "buffer_rva": "0x0E7FF404",
+        "size_rva": "0x0E7FF408"
+      },
+      "type": "records",
+      "tables": [
+        {
+          "id": "events",
+          "root_field": 0,
+          "records": {
+            "u32_at": 4
+          },
+          "layout": "text_4_at_20_stride_36"
+        },
+        {
+          "id": "menu_labels",
+          "root_field": 8,
+          "records": {
+            "u32_at": 12
+          },
+          "layout": "text_1_at_0_stride_4"
+        }
+      ],
+      "table_directories": []
+    },
+    {
+      "id": "mhfmsx",
+      "identity": null,
+      "code_page": 932,
+      "runtime": {
+        "post_relocation": {
+          "rva": "0x00AFB866",
+          "signature": "8B 4D 08 5F 5E C7 01 00 00 00 00"
+        },
+        "buffer_rva": "0x0E7FF3FC",
+        "size_rva": "0x0E7FF400"
+      },
+      "type": "records",
+      "tables": [
+        {
+          "id": "treasure_colors",
+          "root_field": 28,
+          "records": 6,
+          "layout": "text_1_at_4_stride_8"
+        },
+        {
+          "id": "treasure_items",
+          "root_field": 32,
+          "records": 17,
+          "layout": "text_2_at_28_stride_36"
+        }
+      ],
+      "table_directories": []
     }
   ]
 }

@@ -1,4 +1,4 @@
-use shrimpman_common::{binary::FixedCStringLengthError, encoding::ShiftJisEncodeError};
+use shrimpman_common::binary::FixedCStringLengthError;
 use shrimpman_protocol::{CommandPacketDecodeError, DispatchError, OutboundSendError, PacketError};
 use shrimpman_transport::TransportError;
 use thiserror::Error;
@@ -16,9 +16,6 @@ pub enum InternalError {
 
     #[error("password hashing task failed: {0}")]
     PasswordHashTask(#[from] tokio::task::JoinError),
-
-    #[error("failed to encode a Sign string: {0}")]
-    StringEncoding(#[from] ShiftJisEncodeError),
 
     #[error("a Sign response value exceeds its wire representation: {0}")]
     IntegerConversion(#[from] std::num::TryFromIntError),

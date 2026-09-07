@@ -1,11 +1,10 @@
 use crate::{
     Config, GraphicsVersion, MhfConfig, MhfLaunchParams32, MhfLaunchProfile, SignInSuccess,
     abi::{
-        GameMain, HostServices32, MhfGlobalData32, MhfHostData32, copy_ansi_c_string,
-        copy_ascii_c_string, function32, ptr32,
+        GameMain, HostServices32, MhfGlobalData32, MhfHostData32, copy_ascii_c_string,
+        copy_utf8_c_string, function32, ptr32,
     },
 };
-use shrimpman_common::encoding::encode_shift_jis;
 use std::{
     ffi::{CStr, CString, c_char, c_void},
     sync::atomic::{AtomicPtr, Ordering},
@@ -85,35 +84,29 @@ pub fn launch_mhfo(
     };
     let game = MhfoModule::load(game_name)?;
     let entry = game.main()?;
-    let mut localization = if let Some(translation) = &config.translation {
-        // Native resource shims run only inside mhDLL_Main's game lifetime.
-        Some(unsafe {
-            crate::localization::install(
-                game.handle(),
-                &translation.locale,
-                translation.missing,
-                &data.params.font_name,
-            )
-        }?)
-    } else {
-        None
-    };
+    // Resource ingress always converts legacy text, even without a translation.
+    let mut localization =
+        unsafe { crate::localization::install(game.handle(), config.translation.as_ref()) }?;
     data.mhfo_module = game.handle();
     data.mhfo_main = Some(entry);
     let overlay = unsafe { crate::overlay::install(game.handle()) }?;
+    let mut text = unsafe { crate::text::install(game.handle(), &data.params.font_name) }?;
     let code = unsafe { entry(&mut data.params) };
 
     // Stop hooks before unloading the DLL. The localization guard retains the
     // module and translated buffers until cleanup (including DllMain) finishes.
     let overlay_cleanup = overlay.uninstall().map_err(|error| error.to_string());
-    let localization_cleanup = localization
-        .as_mut()
-        .map_or(Ok(()), |hooks| hooks.uninstall());
+    let text_cleanup = text.uninstall();
+    let localization_cleanup = localization.uninstall();
     drop(game);
-    let errors = [overlay_cleanup.err(), localization_cleanup.err()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    let errors = [
+        overlay_cleanup.err(),
+        text_cleanup.err(),
+        localization_cleanup.err(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     if errors.is_empty() {
         Ok(code)
     } else {
@@ -154,7 +147,7 @@ fn apply_config(params: &mut MhfLaunchParams32, config: &MhfConfig) -> Result<()
     params.language = config.localization.language.into();
     params.font_quality = config.font.quality.into();
     params.font_weight = u32::from(config.font.weight);
-    copy_ansi_c_string("font name", &mut params.font_name, &config.font.name)?;
+    copy_utf8_c_string("font name", &mut params.font_name, &config.font.name)?;
     params.draw_skip = u32::from(config.option.draw_skip);
     params.clog_disabled = u32::from(config.option.clog_disabled);
     params.use_proxy = u32::from(config.launch.use_proxy);
@@ -180,17 +173,17 @@ fn apply_sign_in(params: &mut MhfLaunchParams32, config: &Config) -> Result<(), 
     let entrance_host = entrance_server.ip().to_string();
     let alternate_address = format!("{}:8080", entrance_server.ip());
 
-    copy_ansi_c_string(
+    copy_utf8_c_string(
         "selected character name",
         &mut params.selected_character_name,
         &character.name,
     )?;
-    copy_ansi_c_string(
+    copy_utf8_c_string(
         "username",
         &mut params.username,
         &config.credentials.username,
     )?;
-    copy_ansi_c_string(
+    copy_utf8_c_string(
         "password",
         &mut params.password,
         &config.credentials.password,
@@ -274,12 +267,7 @@ fn apply_global_sign_in(data: &mut MhfGlobalData32, sign_in: &SignInSuccess) -> 
         .iter()
         .enumerate()
         .map(|(index, notice)| {
-            let encoded = encode_shift_jis(notice).map_err(|_| {
-                format!(
-                    "sign-in notice {} cannot be encoded as Shift-JIS",
-                    index + 1
-                )
-            })?;
+            let encoded = notice.as_bytes();
             if encoded.contains(&0) {
                 return Err(format!("sign-in notice {} contains a NUL byte", index + 1));
             }
@@ -450,8 +438,8 @@ mod tests {
         let issued_at = Timestamp::new(1_700_000_000, 0).expect("valid test timestamp");
         let config = Config {
             credentials: PasswordCredentials {
-                username: "user_abc".to_owned(),
-                password: "123456".to_owned(),
+                username: "账号é".to_owned(),
+                password: "密碼🙂".to_owned(),
             },
             sign_in: SignInSuccess {
                 session: IssuedSignSession {
@@ -462,7 +450,7 @@ mod tests {
                 entrance_servers: vec!["127.0.0.1:53310".parse().expect("valid entrance server")],
                 characters: vec![SignCharacter {
                     id: CharacterId::from(1),
-                    name: "char_abc".to_owned(),
+                    name: "啊啊🙂".to_owned(),
                     gr: 50,
                     hr: 999,
                     weapon_type: WeaponType::GreatSword,
@@ -491,6 +479,14 @@ mod tests {
 
         apply_sign_in(&mut params, &config).expect("domain config should fit the ABI");
 
+        for (bytes, expected) in [
+            (params.username.as_slice(), "账号é"),
+            (params.password.as_slice(), "密碼🙂"),
+            (params.selected_character_name.as_slice(), "啊啊🙂"),
+        ] {
+            assert_eq!(&bytes[..expected.len()], expected.as_bytes());
+            assert_eq!(bytes[expected.len()], 0);
+        }
         assert_eq!(params.selected_character_id_1, 1);
         assert_eq!(params.selected_character_id_2, 1);
         assert_eq!(params.sign_session_id, 1);
@@ -506,12 +502,9 @@ mod tests {
         let mut global_data = MhfGlobalData32::default();
         apply_global_sign_in(&mut global_data, &config.sign_in)
             .expect("global Sign data should fit the ABI");
-        assert_eq!(global_data.notice_lengths[..2], [7, 6]);
+        assert_eq!(global_data.notice_lengths[..2], [7, 9]);
         assert_eq!(&global_data.notices[0][..7], b"Welcome");
-        assert_eq!(
-            &global_data.notices[1][..6],
-            &[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]
-        );
+        assert_eq!(&global_data.notices[1][..9], "テスト".as_bytes());
         assert_eq!(global_data.festa_id, 7);
         assert_eq!(global_data.festa_starts_at, 1_700_000_000);
         assert_eq!(global_data.festa_expires_at, 1_700_003_600);

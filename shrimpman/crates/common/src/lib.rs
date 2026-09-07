@@ -3,4 +3,3 @@
 #![warn(unreachable_pub)]
 
 pub mod binary;
-pub mod encoding;

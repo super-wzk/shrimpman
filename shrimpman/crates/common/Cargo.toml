@@ -6,6 +6,5 @@ edition.workspace = true
 [dependencies]
 binrw = "0.15"
 derive_more = { version = "2", features = ["from", "into"] }
-encoding_rs = "0.8"
 jiff = "0.2"
 thiserror = "2"

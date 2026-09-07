@@ -699,7 +699,7 @@ value = "preserved"
     }
 
     #[test]
-    fn missing_translation_section_disables_translation_hooks() {
+    fn missing_translation_section_disables_translation_overrides() {
         let mut document = document();
         document.remove(TRANSLATION_SECTION);
 

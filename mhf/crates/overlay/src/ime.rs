@@ -22,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
+use crate::input::decode_character;
 use crate::{Error, Result};
 use caret::Caret;
 use context::NativeContext;
@@ -35,7 +36,7 @@ pub struct HostImeTarget {
     pub cursor_rect: Rect,
 }
 
-/// Connects a native host editor to the same IME used by egui.
+/// Connects a native host editor to the Unicode text input and IME used by egui.
 ///
 /// Both callbacks run synchronously on the window thread, without an overlay
 /// lock. They must not uninstall the overlay or destroy its window. The adapter
@@ -43,8 +44,9 @@ pub struct HostImeTarget {
 pub trait HostIme: Send + Sync + 'static {
     fn target(&self) -> Option<HostImeTarget>;
 
-    /// The shared context is still associated with the window during this call,
-    /// so a legacy adapter may read ANSI composition using ImmGetContext.
+    /// Commit carries both ordinary WM_CHAR input and completed IME text.
+    /// The shared context is still associated during the callback, so adapters
+    /// can inspect composition metadata without reading text through an ANSI API.
     /// Cancellation goes to the previous identity before changing the owner.
     fn event(&self, id: usize, event: &ImeEvent);
 }
@@ -83,6 +85,7 @@ struct State {
     caret: Caret,
     owns_messages: bool,
     composing: bool,
+    pending_high_surrogate: Option<u16>,
     ended: bool,
     interrupt: bool,
     queued: bool,
@@ -231,6 +234,9 @@ impl Ime {
         };
         let changed_owner =
             target.map(|target| target.owner) != previous.map(|target| target.owner);
+        if changed_owner || interrupt {
+            self.lock().pending_high_surrogate = None;
+        }
         let mut events = Vec::new();
         let mut caret = self.lock().caret.clone();
         if let Some(previous) = previous
@@ -278,6 +284,7 @@ impl Ime {
             state.applied = None;
             state.owns_messages = !closing;
             state.composing = false;
+            state.pending_high_surrogate = None;
             return (events, restored);
         };
 
@@ -347,11 +354,48 @@ impl Ime {
         }
     }
 
+    pub(super) fn handle_character(&self, code_unit: usize) -> bool {
+        let (id, character) = {
+            let mut state = self.lock();
+            let Some(Target {
+                owner: Owner::Host(id),
+                ..
+            }) = state.applied
+            else {
+                return false;
+            };
+            if state.composing {
+                state.pending_high_surrogate = None;
+                return true;
+            }
+            let character = decode_character(&mut state.pending_high_surrogate, code_unit);
+            if character.is_some_and(char::is_control) {
+                // Enter, Backspace and shortcuts retain their native key path.
+                return false;
+            }
+            (id, character)
+        };
+        if let Some(character) = character
+            && let Some(host) = &self.host
+        {
+            host.event(id, &ImeEvent::Commit(character.to_string()));
+        }
+        // Consume incomplete/malformed pairs too: forwarding either code unit
+        // through an ANSI WindowProc would turn it into an unrelated byte.
+        true
+    }
+
     pub(super) fn handle_message(&self, message: u32, lparam: LPARAM) -> Option<Message> {
         let (native, owner, composing, ended) = {
-            let state = self.lock();
+            let mut state = self.lock();
             if !state.owns_messages {
                 return None;
+            }
+            if matches!(
+                message,
+                WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION | WM_IME_ENDCOMPOSITION
+            ) {
+                state.pending_high_surrogate = None;
             }
             (
                 state.native.clone(),

@@ -183,28 +183,9 @@ impl InputState {
     }
 
     fn character(&mut self, code_unit: usize) {
-        let Ok(code_unit) = u16::try_from(code_unit) else {
-            return;
-        };
-
-        if (0xD800..=0xDBFF).contains(&code_unit) {
-            self.pending_high_surrogate = Some(code_unit);
-            return;
-        }
-
-        let character = if (0xDC00..=0xDFFF).contains(&code_unit) {
-            let Some(high) = self.pending_high_surrogate.take() else {
-                return;
-            };
-            char::decode_utf16([high, code_unit])
-                .next()
-                .and_then(|result| result.ok())
-        } else {
-            self.pending_high_surrogate = None;
-            char::from_u32(u32::from(code_unit))
-        };
-
-        if let Some(character) = character.filter(|character| !character.is_control()) {
+        if let Some(character) = decode_character(&mut self.pending_high_surrogate, code_unit)
+            .filter(|character| !character.is_control())
+        {
             self.events.push(Event::Text(character.to_string()));
         }
     }
@@ -224,6 +205,25 @@ impl InputState {
             self.modifiers = modifiers;
             self.events.push(Event::ModifiersChanged(modifiers));
         }
+    }
+}
+
+/// WM_CHAR on our Unicode window procedure carries one UTF-16 code unit.
+/// Keep the unfinished unit with its editor, never in the native ANSI handler.
+pub(super) fn decode_character(pending_high: &mut Option<u16>, code_unit: usize) -> Option<char> {
+    let Ok(code_unit) = u16::try_from(code_unit) else {
+        *pending_high = None;
+        return None;
+    };
+    if (0xD800..=0xDBFF).contains(&code_unit) {
+        *pending_high = Some(code_unit);
+        return None;
+    }
+    let high = pending_high.take();
+    if (0xDC00..=0xDFFF).contains(&code_unit) {
+        char::decode_utf16([high?, code_unit]).next()?.ok()
+    } else {
+        char::from_u32(u32::from(code_unit))
     }
 }
 
@@ -380,6 +380,23 @@ fn high_word(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_character_messages_without_truncation_or_stale_surrogates() {
+        let mut pending = None;
+        assert_eq!(decode_character(&mut pending, 0xe9), Some('é'));
+        assert_eq!(decode_character(&mut pending, 0x4f60), Some('你'));
+        assert_eq!(decode_character(&mut pending, 0xd83d), None);
+        assert_eq!(decode_character(&mut pending, 0xde00), Some('😀'));
+        assert_eq!(decode_character(&mut pending, 0xde00), None);
+        assert_eq!(decode_character(&mut pending, 0xd83d), None);
+        assert_eq!(decode_character(&mut pending, usize::from(b'A')), Some('A'));
+        assert_eq!(decode_character(&mut pending, 0xde00), None);
+        assert_eq!(decode_character(&mut pending, 0xd83d), None);
+        assert_eq!(decode_character(&mut pending, 0x1f600), None);
+        assert_eq!(decode_character(&mut pending, 0xde00), None);
+        assert_eq!(decode_character(&mut pending, 8), Some('\u{8}'));
+    }
 
     #[test]
     fn maps_navigation_and_ascii_keys() {

@@ -1,4 +1,4 @@
-use super::{HOOK_STATE, HookState, dictionary::RuntimeLocale};
+use super::{HOOK_STATE, HookState};
 use mhf_hooks::HookSet;
 use std::{
     collections::HashMap,
@@ -9,9 +9,9 @@ use windows_sys::{
     Win32::{
         Foundation::{RECT, SIZE},
         Graphics::Gdi::{
-            self, BLACKNESS, ETO_OPTIONS, ExtTextOutW, GetCurrentObject, GetTextAlign,
-            GetTextExtentPoint32W, GetTextMetricsW, HDC, HFONT, HGDIOBJ, OBJ_FONT, PatBlt,
-            TA_BASELINE, TA_TOP, TEXTMETRICW,
+            self, CreateFontW, ETO_GLYPH_INDEX, ETO_OPTIONS, ETO_PDY, ExtTextOutW,
+            GetCurrentObject, GetTextAlign, GetTextExtentPoint32W, GetTextMetricsW, HDC, HFONT,
+            HGDIOBJ, OBJ_FONT, TA_BASELINE, TA_TOP, TEXTMETRICW,
         },
     },
     core::{BOOL, PCSTR},
@@ -21,7 +21,6 @@ use windows_sys::{
 const MS_GOTHIC_ASCENT_UNITS: i32 = 220;
 const MS_GOTHIC_DESCENT_UNITS: i32 = 36;
 const MS_GOTHIC_EM_UNITS: i32 = MS_GOTHIC_ASCENT_UNITS + MS_GOTHIC_DESCENT_UNITS;
-const GLYPH_BITMAP_SIZE: i32 = 32;
 
 type GetTextExtentPoint32AFn = unsafe extern "system" fn(HDC, PCSTR, i32, *mut SIZE) -> BOOL;
 type ExtTextOutAFn = unsafe extern "system" fn(
@@ -109,6 +108,13 @@ pub(super) unsafe fn create_hooks(
 }
 
 impl RenderingHooks {
+    unsafe fn owns_font(&self, hdc: HDC) -> bool {
+        let font = unsafe { GetCurrentObject(hdc, OBJ_FONT as u32) };
+        self.font_correction_cache
+            .lock()
+            .is_ok_and(|cache| cache.contains_key(&(font as usize)))
+    }
+
     unsafe fn correction_for(&self, hdc: HDC) -> Option<FontLayoutCorrection> {
         let font = unsafe { GetCurrentObject(hdc, OBJ_FONT as u32) };
         if font.is_null() {
@@ -152,7 +158,7 @@ impl RenderingHooks {
         }
     }
 
-    unsafe fn correct_extent_height(&self, hdc: HDC, size: *mut SIZE, result: BOOL) {
+    pub(super) unsafe fn correct_extent_height(&self, hdc: HDC, size: *mut SIZE, result: BOOL) {
         if result != 0
             && !size.is_null()
             && let Some(correction) = unsafe { self.correction_for(hdc) }
@@ -161,7 +167,7 @@ impl RenderingHooks {
         }
     }
 
-    unsafe fn corrected_y(&self, hdc: HDC, y: i32) -> i32 {
+    pub(super) unsafe fn corrected_y(&self, hdc: HDC, y: i32) -> i32 {
         if unsafe { GetTextAlign(hdc) } & TA_BASELINE != TA_TOP {
             return y;
         }
@@ -200,32 +206,61 @@ unsafe extern "system" fn create_font_a_detour(
     let invocation = HOOK_STATE.enter();
     let state = invocation.state();
     let original = state.map_or(Gdi::CreateFontA as CreateFontAFn, |state| {
-        state.rendering.create_font_a
+        state.gdi.create_font_a
     });
+    let configured =
+        state.is_some_and(|state| unsafe { state.gdi.matches_configured_font(face_name) });
+    let wide_name = if configured {
+        unsafe { CStr::from_ptr(face_name.cast()) }
+            .to_str()
+            .ok()
+            .map(|name| name.encode_utf16().chain([0]).collect::<Vec<_>>())
+    } else {
+        None
+    };
     let font = unsafe {
-        original(
-            height,
-            width,
-            escapement,
-            orientation,
-            weight,
-            italic,
-            underline,
-            strike_out,
-            character_set,
-            output_precision,
-            clip_precision,
-            quality,
-            pitch_and_family,
-            face_name,
-        )
+        if let Some(name) = wide_name.as_ref() {
+            CreateFontW(
+                height,
+                width,
+                escapement,
+                orientation,
+                weight,
+                italic,
+                underline,
+                strike_out,
+                character_set,
+                output_precision,
+                clip_precision,
+                quality,
+                pitch_and_family,
+                name.as_ptr(),
+            )
+        } else {
+            original(
+                height,
+                width,
+                escapement,
+                orientation,
+                weight,
+                italic,
+                underline,
+                strike_out,
+                character_set,
+                output_precision,
+                clip_precision,
+                quality,
+                pitch_and_family,
+                face_name,
+            )
+        }
     };
     if !font.is_null()
         && let Some(state) = state
-        && unsafe { state.rendering.matches_configured_font(face_name) }
+        && configured
         && let Some(character_height) = height.checked_abs().filter(|height| *height != 0)
     {
-        state.rendering.track_font(font, character_height);
+        state.gdi.track_font(font, character_height);
     }
     font
 }
@@ -240,16 +275,15 @@ unsafe extern "system" fn get_text_extent_point32_a_detour(
     let Some(state) = invocation.state() else {
         return unsafe { Gdi::GetTextExtentPoint32A(hdc, string, count, size) };
     };
-    let result = if let Some(character) =
-        unsafe { virtual_character(&state.locale, string, count.try_into().ok()) }
-    {
-        let mut utf16 = [0; 2];
-        let utf16 = character.encode_utf16(&mut utf16);
-        unsafe { GetTextExtentPoint32W(hdc, utf16.as_ptr(), utf16.len() as i32, size) }
-    } else {
-        unsafe { (state.rendering.get_text_extent_point32_a)(hdc, string, count, size) }
+    if !unsafe { state.gdi.owns_font(hdc) } {
+        return unsafe { (state.gdi.get_text_extent_point32_a)(hdc, string, count, size) };
+    }
+    let Some(text) = (unsafe { utf8_text(string, count.try_into().ok()) }) else {
+        return 0;
     };
-    unsafe { state.rendering.correct_extent_height(hdc, size, result) };
+    let utf16 = text.encode_utf16().collect::<Vec<_>>();
+    let result = unsafe { GetTextExtentPoint32W(hdc, utf16.as_ptr(), utf16.len() as i32, size) };
+    unsafe { state.gdi.correct_extent_height(hdc, size, result) };
     result
 }
 
@@ -267,66 +301,89 @@ unsafe extern "system" fn ext_text_out_a_detour(
     let Some(state) = invocation.state() else {
         return unsafe { Gdi::ExtTextOutA(hdc, x, y, options, rect, string, count, spacing) };
     };
-    let y = unsafe { state.rendering.corrected_y(hdc, y) };
-    if spacing.is_null()
-        && let Some(character) =
-            unsafe { virtual_character(&state.locale, string, count.try_into().ok()) }
-    {
-        // The game reuses this bitmap and copies 8 or 16 columns based on the byte count.
-        // Clear pixels a narrower Unicode glyph would otherwise leave from the previous glyph.
-        unsafe { PatBlt(hdc, 0, 0, GLYPH_BITMAP_SIZE, GLYPH_BITMAP_SIZE, BLACKNESS) };
-        let mut utf16 = [0; 2];
-        let utf16 = character.encode_utf16(&mut utf16);
+    if !unsafe { state.gdi.owns_font(hdc) } || options & ETO_GLYPH_INDEX != 0 {
         return unsafe {
-            ExtTextOutW(
-                hdc,
-                x,
-                y,
-                options,
-                rect,
-                utf16.as_ptr(),
-                utf16.len() as u32,
-                spacing,
-            )
+            (state.gdi.ext_text_out_a)(hdc, x, y, options, rect, string, count, spacing)
         };
     }
-    unsafe { (state.rendering.ext_text_out_a)(hdc, x, y, options, rect, string, count, spacing) }
+    let Some(text) = (unsafe { utf8_text(string, Some(count as usize)) }) else {
+        return 0;
+    };
+    let utf16 = text.encode_utf16().collect::<Vec<_>>();
+    let axes = if options & ETO_PDY != 0 { 2 } else { 1 };
+    let advances = if spacing.is_null() {
+        None
+    } else {
+        let source = unsafe { std::slice::from_raw_parts(spacing, text.len() * axes) };
+        Some(utf16_advances(text, source, axes))
+    };
+    let y = unsafe { state.gdi.corrected_y(hdc, y) };
+    unsafe {
+        ExtTextOutW(
+            hdc,
+            x,
+            y,
+            options,
+            rect,
+            utf16.as_ptr(),
+            utf16.len() as u32,
+            advances
+                .as_ref()
+                .map_or(std::ptr::null(), |values| values.as_ptr()),
+        )
+    }
 }
 
 unsafe extern "system" fn delete_object_detour(object: HGDIOBJ) -> BOOL {
     let invocation = HOOK_STATE.enter();
     let state = invocation.state();
     let original = state.map_or(Gdi::DeleteObject as DeleteObjectFn, |state| {
-        state.rendering.delete_object
+        state.gdi.delete_object
     });
     let result = unsafe { original(object) };
     if result != 0
         && let Some(state) = state
     {
-        state.rendering.untrack_font(object);
+        state.gdi.untrack_font(object);
     }
     result
 }
 
-unsafe fn virtual_character(
-    locale: &RuntimeLocale,
-    string: PCSTR,
-    count: Option<usize>,
-) -> Option<char> {
+unsafe fn utf8_text<'a>(string: PCSTR, count: Option<usize>) -> Option<&'a str> {
     if string.is_null() {
         return None;
     }
-    let code = match count? {
-        1 => u16::from(unsafe { *string }),
-        2 => u16::from_be_bytes([unsafe { *string }, unsafe { *string.add(1) }]),
-        _ => return None,
-    };
-    locale.virtual_character(code)
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(string, count?) }).ok()
+}
+
+fn utf16_advances(text: &str, advances: &[i32], axes: usize) -> Vec<i32> {
+    let mut output = Vec::with_capacity(text.encode_utf16().count() * axes);
+    for (offset, character) in text.char_indices() {
+        for _ in 1..character.len_utf16() {
+            output.extend(std::iter::repeat_n(0, axes));
+        }
+        for axis in 0..axes {
+            let value = (offset..offset + character.len_utf8()).fold(0i32, |sum, byte| {
+                sum.wrapping_add(advances[byte * axes + axis])
+            });
+            output.push(value);
+        }
+    }
+    output
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FontLayoutCorrection, font_layout_correction};
+    use super::{FontLayoutCorrection, font_layout_correction, utf16_advances};
+
+    #[test]
+    fn preserves_byte_advances_across_utf8_and_surrogate_pairs() {
+        assert_eq!(
+            utf16_advances("A中🙂", &[1, 2, 3, 4, 5, 6, 7, 8], 1),
+            [1, 9, 0, 26]
+        );
+        assert_eq!(utf16_advances("é", &[2, 10, 3, 20], 2), [5, 30]);
+    }
 
     #[test]
     fn derives_ms_gothic_layout_correction() {

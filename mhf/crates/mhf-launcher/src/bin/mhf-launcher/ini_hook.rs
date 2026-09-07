@@ -2,14 +2,10 @@ use super::config::Store;
 use mhf_hooks::{HookGuard, HookSlot};
 use std::{
     ffi::{CStr, c_void},
-    ptr::{null, null_mut},
     sync::{Mutex, MutexGuard, PoisonError},
 };
 use windows_sys::{
-    Win32::{
-        Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte},
-        System::WindowsProgramming,
-    },
+    Win32::System::WindowsProgramming,
     core::{BOOL, PCSTR, PSTR},
 };
 
@@ -93,10 +89,10 @@ unsafe extern "system" fn get_private_profile_int(
         return unsafe { original(app_name, key_name, default, file_name) };
     };
 
-    let Some(section) = ansi_pointer_to_string(app_name) else {
+    let Some(section) = utf8_pointer_to_string(app_name) else {
         return default as u32;
     };
-    let Some(key) = ansi_pointer_to_string(key_name) else {
+    let Some(key) = utf8_pointer_to_string(key_name) else {
         return default as u32;
     };
     let store = state.store();
@@ -133,7 +129,7 @@ unsafe extern "system" fn get_private_profile_string(
         return unsafe { copy_profile_list(output, size, &bytes) };
     }
 
-    let Some(section) = ansi_pointer_to_string(app_name) else {
+    let Some(section) = utf8_pointer_to_string(app_name) else {
         return unsafe { copy_profile_string(output, size, &default_bytes(default)) };
     };
     if key_name.is_null() {
@@ -145,13 +141,12 @@ unsafe extern "system" fn get_private_profile_string(
         return unsafe { copy_profile_list(output, size, &bytes) };
     }
 
-    let value = ansi_pointer_to_string(key_name).and_then(|key| {
+    let value = utf8_pointer_to_string(key_name).and_then(|key| {
         let store = state.store();
         store.value(&section, &key)
     });
     let bytes = value
-        .as_deref()
-        .and_then(string_to_ansi)
+        .map(String::into_bytes)
         .unwrap_or_else(|| default_bytes(default));
     unsafe { copy_profile_string(output, size, &bytes) }
 }
@@ -177,11 +172,15 @@ unsafe extern "system" fn write_private_profile_string(
     }
 
     let mut store = state.store();
-    let Some(section) = ansi_pointer_to_string(app_name) else {
+    let Some(section) = utf8_pointer_to_string(app_name) else {
         return 0;
     };
-    let key = ansi_pointer_to_string(key_name);
-    let value = ansi_pointer_to_string(value);
+    let key = utf8_pointer_to_string(key_name);
+    let decoded_value = utf8_pointer_to_string(value);
+    if (!key_name.is_null() && key.is_none()) || (!value.is_null() && decoded_value.is_none()) {
+        return 0;
+    }
+    let value = decoded_value;
     let result = match (key, value) {
         (Some(key), Some(value)) => store.set_value(section, key, value),
         (Some(key), None) => store.remove_key(&section, &key),
@@ -202,8 +201,8 @@ fn is_target_file(state: &HookState, file_name: PCSTR) -> bool {
     name.eq_ignore_ascii_case(&state.file_name)
 }
 
-fn ansi_pointer_to_string(pointer: PCSTR) -> Option<String> {
-    pointer_bytes(pointer).and_then(|bytes| ansi_to_string(&bytes))
+fn utf8_pointer_to_string(pointer: PCSTR) -> Option<String> {
+    pointer_bytes(pointer).and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 fn pointer_bytes(pointer: PCSTR) -> Option<Vec<u8>> {
@@ -218,73 +217,13 @@ fn pointer_bytes(pointer: PCSTR) -> Option<Vec<u8>> {
     }
 }
 
-fn ansi_to_string(bytes: &[u8]) -> Option<String> {
-    if bytes.is_empty() {
-        return Some(String::new());
-    }
-    let length = i32::try_from(bytes.len()).ok()?;
-    let required = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), length, null_mut(), 0) };
-    if required <= 0 {
-        return None;
-    }
-    let mut wide = vec![0; required as usize];
-    let written = unsafe {
-        MultiByteToWideChar(
-            CP_ACP,
-            0,
-            bytes.as_ptr(),
-            length,
-            wide.as_mut_ptr(),
-            required,
-        )
-    };
-    if written != required {
-        return None;
-    }
-    String::from_utf16(&wide).ok()
-}
-
-fn string_to_ansi(value: &str) -> Option<Vec<u8>> {
-    if value.is_empty() {
-        return Some(Vec::new());
-    }
-    let wide: Vec<u16> = value.encode_utf16().collect();
-    let length = i32::try_from(wide.len()).ok()?;
-    let required = unsafe {
-        WideCharToMultiByte(
-            CP_ACP,
-            0,
-            wide.as_ptr(),
-            length,
-            null_mut(),
-            0,
-            null(),
-            null_mut(),
-        )
-    };
-    if required <= 0 {
-        return None;
-    }
-    let mut bytes = vec![0; required as usize];
-    let written = unsafe {
-        WideCharToMultiByte(
-            CP_ACP,
-            0,
-            wide.as_ptr(),
-            length,
-            bytes.as_mut_ptr(),
-            required,
-            null(),
-            null_mut(),
-        )
-    };
-    (written == required).then_some(bytes)
-}
-
 fn profile_list_bytes<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     for value in values {
-        bytes.extend(string_to_ansi(value)?);
+        if value.contains('\0') {
+            return None;
+        }
+        bytes.extend_from_slice(value.as_bytes());
         bytes.push(0);
     }
     Some(bytes)
@@ -302,7 +241,7 @@ unsafe fn copy_profile_string(output: PSTR, size: u32, bytes: &[u8]) -> u32 {
     if output.is_null() || size == 0 {
         return 0;
     }
-    let count = bytes.len().min(size as usize - 1);
+    let count = utf8_prefix(bytes, size as usize - 1);
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, count);
         *output.add(count) = 0;
@@ -335,13 +274,23 @@ unsafe fn copy_profile_list(output: PSTR, size: u32, bytes: &[u8]) -> u32 {
         return 0;
     }
 
-    let count = size as usize - 2;
+    let limit = size as usize - 2;
+    let count = utf8_prefix(bytes, limit);
     unsafe {
+        std::ptr::write_bytes(output, 0, size as usize);
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, count);
-        *output.add(count) = 0;
-        *output.add(count + 1) = 0;
     }
-    count as u32
+    // Win32 signals a truncated multi-string with nSize - 2, even when a whole
+    // UTF-8 prefix leaves additional unused bytes before the double terminator.
+    limit as u32
+}
+
+fn utf8_prefix(bytes: &[u8], limit: usize) -> usize {
+    let mut end = bytes.len().min(limit);
+    while end > 0 && end < bytes.len() && bytes[end] & 0xC0 == 0x80 {
+        end -= 1;
+    }
+    end
 }
 
 fn parse_profile_integer(value: &str) -> u32 {
@@ -438,6 +387,39 @@ value = "42"
             },
             0
         );
+        let unicode_key = c"中文".as_ptr().cast();
+        assert_ne!(
+            unsafe {
+                WindowsProgramming::WritePrivateProfileStringA(
+                    section,
+                    unicode_key,
+                    c"啊🙂".as_ptr().cast(),
+                    file,
+                )
+            },
+            0
+        );
+        let mut unicode = [0; 8];
+        assert_eq!(
+            unsafe {
+                WindowsProgramming::GetPrivateProfileStringA(
+                    section,
+                    unicode_key,
+                    c"".as_ptr().cast(),
+                    unicode.as_mut_ptr(),
+                    unicode.len() as u32,
+                    file,
+                )
+            },
+            7
+        );
+        assert_eq!(&unicode, "啊🙂\0".as_bytes());
+        let mut short = [0; 5];
+        assert_eq!(
+            unsafe { copy_profile_string(short.as_mut_ptr(), 5, "啊🙂".as_bytes()) },
+            3
+        );
+        assert_eq!(&short[..4], "啊\0".as_bytes());
         hooks.uninstall().unwrap();
         assert_eq!(read(), 1234);
         assert_eq!(

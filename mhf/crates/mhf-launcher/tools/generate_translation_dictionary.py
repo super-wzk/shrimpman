@@ -13,6 +13,8 @@ from typing import Any
 
 
 MAX_RECORD_SIZE = 64 * 1024
+RESOURCE_NAMES = ("dat", "inf", "pac", "jmp", "gao", "sqd", "rcc", "msx")
+RESOURCE_IDS = {f"mhf{name}" for name in RESOURCE_NAMES}
 
 
 @dataclass(frozen=True)
@@ -42,15 +44,20 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="locale ID used as the output file name",
     )
-    parser.add_argument("--dat", type=Path, required=True)
-    parser.add_argument("--inf", type=Path, required=True)
-    parser.add_argument("--pac", type=Path, required=True)
+    for name in RESOURCE_NAMES:
+        parser.add_argument(f"--{name}", type=Path, help=f"decoded mhf{name} resource image")
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(__file__).resolve().parents[1] / "translations",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not any(getattr(args, name) is not None for name in RESOURCE_NAMES):
+        parser.error(
+            "provide at least one resource image "
+            "(--dat, --inf, --pac, --jmp, --gao, --sqd, --rcc, or --msx)"
+        )
+    return args
 
 
 def u16(data: bytes, offset: int) -> int:
@@ -71,7 +78,62 @@ def require_range(data: bytes, offset: int, size: int) -> None:
         )
 
 
-def read_source(data: bytes, target: int) -> str | None:
+def field_path(value: int | list[int]) -> tuple[int, ...]:
+    path = (value,) if isinstance(value, int) else tuple(value)
+    if not path or any(not isinstance(offset, int) or offset < 0 for offset in path):
+        raise ValueError(f"invalid resource field path {value!r}")
+    return path
+
+
+def resolve_field(data: bytes, path: int | list[int]) -> int | None:
+    """Resolve intermediate relative pointers; the final offset names a field."""
+    offsets = field_path(path)
+    base = 0
+    for offset in offsets[:-1]:
+        base = u32(data, base + offset)
+        if base == 0:
+            return None
+        require_range(data, base, 1)
+    return base + offsets[-1]
+
+
+def table_pointer(data: bytes, path: int | list[int]) -> int | None:
+    field = resolve_field(data, path)
+    if field is None:
+        return None
+    pointer = u32(data, field)
+    if pointer == 0:
+        return None
+    require_range(data, pointer, 1)
+    return pointer
+
+
+def record_count(data: bytes, source: int | dict[str, Any]) -> int:
+    if isinstance(source, int):
+        if source < 0:
+            raise ValueError("record count cannot be negative")
+        return source
+    for name, read in (("u16_at", u16), ("u32_at", u32)):
+        if name in source:
+            field = resolve_field(data, source[name])
+            return 0 if field is None else read(data, field)
+    sentinel = source["until"]
+    start = table_pointer(data, sentinel["root_field"])
+    if start is None:
+        return 0
+    stride = sentinel["stride"]
+    offset = sentinel["offset"]
+    width = sentinel["width"]
+    if stride <= 0 or offset < 0 or width not in (2, 4) or offset + width > stride:
+        raise ValueError(f"invalid record sentinel {sentinel!r}")
+    read = u16 if width == 2 else u32
+    count = 0
+    while read(data, start + count * stride + offset) != sentinel["value"]:
+        count += 1
+    return count
+
+
+def read_source(data: bytes, target: int, code_page: int = 932) -> str | None:
     require_range(data, target, 1)
     end = data.find(b"\0", target, min(len(data), target + MAX_RECORD_SIZE))
     if end < 0:
@@ -83,9 +145,9 @@ def read_source(data: bytes, target: int) -> str | None:
         # The client is a Windows ANSI application.  CP932 keeps ASCII 0x7E
         # as '~', which is significant because the game uses it in controls
         # such as ~C05; Python's shift_jisx0213 codec maps it to U+203E.
-        return raw.decode("cp932")
+        return raw.decode(f"cp{code_page}")
     except UnicodeDecodeError as error:
-        raise ValueError(f"string at 0x{target:X} is not Shift-JIS: {error}") from error
+        raise ValueError(f"string at 0x{target:X} is not CP{code_page}: {error}") from error
 
 
 def record_group(
@@ -94,6 +156,7 @@ def record_group(
     record_index: int,
     data: bytes,
     cells: tuple[int, ...],
+    code_page: int = 932,
 ) -> Group | None:
     sources: list[str | None] = []
     for cell in cells:
@@ -101,7 +164,7 @@ def record_group(
         if target == 0:
             sources.append(None)
             continue
-        source = read_source(data, target)
+        source = read_source(data, target, code_page)
         sources.append(source)
     if all(source is None for source in sources):
         return None
@@ -124,19 +187,31 @@ def record_table_groups(
     data: bytes,
     table: dict[str, Any],
     seen_cells: set[int],
+    code_page: int = 932,
 ) -> list[Group]:
     groups: list[Group] = []
-    table_start = u32(data, table["root"])
+    directory = table.get("directory")
+    if directory is not None and directory["index"] >= record_count(data, directory["count"]):
+        return groups
+    table_start = table_pointer(data, table["root"])
+    if table_start is None:
+        return groups
+    count = record_count(data, table["records"])
     text_offset = table["text_offset"]
     stride = table["stride"]
-    for record_index in range(table["records"]):
+    table_start += table.get("first_record", 0) * stride
+    if count:
+        require_range(
+            data, table_start, (count - 1) * stride + text_offset + table["parts"] * 4
+        )
+    for record_index in range(count):
         record_start = table_start + record_index * stride
         cells = tuple(
             record_start + text_offset + part * 4
             for part in range(table["parts"])
         )
         add_cells(resource, data, seen_cells, cells)
-        group = record_group(resource, table["id"], record_index, data, cells)
+        group = record_group(resource, table["id"], record_index, data, cells, code_page)
         if group is not None:
             groups.append(group)
     return groups
@@ -147,9 +222,12 @@ def quest_table_groups(
     data: bytes,
     layout: dict[str, Any],
     seen_cells: set[int],
+    code_page: int = 932,
 ) -> list[Group]:
-    category_table = u32(data, layout["root"])
-    count_data = u32(data, layout["count_root"])
+    category_table = table_pointer(data, layout["root"])
+    count_data = table_pointer(data, layout["count_root"])
+    if category_table is None or count_data is None:
+        return []
     category_count = u16(data, count_data)
     groups: list[Group] = []
     quest_ids: set[int] = set()
@@ -177,22 +255,22 @@ def quest_table_groups(
                 continue
             cells = tuple(text_table + part * 4 for part in range(layout["parts"]))
             add_cells(resource, data, seen_cells, cells)
-            group = record_group(resource, layout["id"], quest_id, data, cells)
+            group = record_group(resource, layout["id"], quest_id, data, cells, code_page)
             if group is not None:
                 groups.append(group)
     return groups
 
 
 def expand_layout(layout: dict[str, Any]) -> list[dict[str, Any]]:
-    if layout.get("version") != 3:
+    if layout.get("version") != 4:
         raise ValueError("unsupported resource layout version")
     record_layouts = layout["record_layouts"]
     resources: list[dict[str, Any]] = []
     for definition in layout["resources"]:
         resource = {
             "id": definition["id"],
-            "magic": definition["identity"]["magic"],
-            "format_version": definition["identity"]["format_version"],
+            "identity": definition.get("identity"),
+            "code_page": definition.get("code_page") or 932,
             "type": definition["type"],
         }
         if definition["type"] == "records":
@@ -201,7 +279,7 @@ def expand_layout(layout: dict[str, Any]) -> list[dict[str, Any]]:
                 tables.append(
                     expand_record_table(record_layouts, table, table["root_field"])
                 )
-            for directory in definition["table_directories"]:
+            for directory in definition.get("table_directories", []):
                 first_root = directory["first_root_field"]
                 root_stride = directory["root_stride"]
                 for index, entry in enumerate(directory["entries"]):
@@ -217,7 +295,7 @@ def expand_layout(layout: dict[str, Any]) -> list[dict[str, Any]]:
                             first_root + index * root_stride,
                         )
                     )
-            tables.sort(key=lambda table: table["root"])
+            tables.sort(key=lambda table: (field_path(table["root"]), table["first_record"]))
             resource["tables"] = tables
         elif definition["type"] == "quest":
             quest = definition["layout"]
@@ -243,7 +321,7 @@ def expand_layout(layout: dict[str, Any]) -> list[dict[str, Any]]:
 def expand_record_table(
     record_layouts: dict[str, Any],
     table: dict[str, Any],
-    root: int,
+    root: int | list[int],
 ) -> dict[str, Any]:
     layout_id = table["layout"]
     try:
@@ -254,25 +332,35 @@ def expand_record_table(
         "id": table["id"],
         "root": root,
         "records": table["records"],
+        "first_record": table.get("first_record", 0),
         "text_offset": record_layout["text_offset"],
         "parts": record_layout["parts"],
         "stride": record_layout["stride"],
+        "directory": table.get("directory"),
     }
 
 
 def extract(resource: dict[str, Any], data: bytes) -> list[Group]:
-    if u32(data, 0) != resource["magic"]:
-        raise ValueError(f"{resource['id']} has the wrong magic")
-    if u32(data, 4) != resource["format_version"]:
-        raise ValueError(f"{resource['id']} has an unsupported format version")
+    identity = resource["identity"]
+    if identity is not None:
+        if u32(data, 0) != identity["magic"]:
+            raise ValueError(f"{resource['id']} has the wrong magic")
+        if u32(data, 4) != identity["format_version"]:
+            raise ValueError(f"{resource['id']} has an unsupported format version")
     groups: list[Group] = []
     seen_cells: set[int] = set()
     if resource["type"] == "records":
         for table in resource["tables"]:
-            groups.extend(record_table_groups(resource["id"], data, table, seen_cells))
+            groups.extend(
+                record_table_groups(
+                    resource["id"], data, table, seen_cells, resource["code_page"]
+                )
+            )
     elif resource["type"] == "quest":
         groups.extend(
-            quest_table_groups(resource["id"], data, resource["layout"], seen_cells)
+            quest_table_groups(
+                resource["id"], data, resource["layout"], seen_cells, resource["code_page"]
+            )
         )
     else:
         raise ValueError(f"{resource['id']} has unknown resource type")
@@ -287,7 +375,7 @@ def key_identity(value: str) -> tuple[str, ...]:
     components = value.split(":")
     if (
         len(components) == 3
-        and components[0] in {"mhfdat", "mhfinf", "mhfpac"}
+        and components[0] in RESOURCE_IDS
         and components[2]
         and components[2].isascii()
         and components[2].isdigit()
@@ -378,14 +466,22 @@ def main() -> None:
     args = parse_args()
     layout_path = Path(__file__).resolve().parents[1] / "translations" / "resources.json"
     layout = json.loads(layout_path.read_text(encoding="utf-8"))
-    paths = {"mhfdat": args.dat, "mhfinf": args.inf, "mhfpac": args.pac}
+    paths = {
+        f"mhf{name}": path
+        for name in RESOURCE_NAMES
+        if (path := getattr(args, name)) is not None
+    }
     all_groups: list[Group] = []
     for resource in expand_layout(layout):
-        path = paths[resource["id"]]
+        path = paths.pop(resource["id"], None)
+        if path is None:
+            continue
         data = path.read_bytes()
         groups = extract(resource, data)
         print(f"{resource['id']}: {len(groups)} non-empty logical groups")
         all_groups.extend(groups)
+    if paths:
+        raise ValueError(f"resources absent from the layout: {', '.join(paths)}")
     write_output(args.output_dir, args.locale, all_groups)
 
 

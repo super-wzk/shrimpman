@@ -1,8 +1,7 @@
 use binrw::{BinWrite, binwrite};
 use jiff::Timestamp;
-use shrimpman_common::{
-    binary::{Bool8, CountedVec, FixedCString, PrefixedCString, U8OrU16Length, UnixTimestamp32},
-    encoding::encode_shift_jis,
+use shrimpman_common::binary::{
+    Bool8, CountedVec, FixedCString, PrefixedCString, U8OrU16Length, UnixTimestamp32,
 };
 use shrimpman_domain::{
     account::CourseRights,
@@ -91,7 +90,7 @@ impl TryFrom<SignInNotice> for LoginNotice {
 
     fn try_from(notice: SignInNotice) -> Result<Self, Self::Error> {
         Ok(Self {
-            content: PrefixedCString::new(encode_shift_jis(&notice.content)?)?,
+            content: PrefixedCString::new(notice.content)?,
         })
     }
 }
@@ -229,7 +228,7 @@ impl TryFrom<model::SignedInCharacter> for SignCharacter {
             last_sign_in_at: signed_in.last_sign_in_at.into(),
             gender: character.gender,
             is_new: character.is_new().into(),
-            name: FixedCString::new(encode_shift_jis(&character.name)?)?,
+            name: FixedCString::new(character.name.as_bytes())?,
             description: FixedCString::new(character.description.as_bytes())?,
             gr: character.gr,
         })
@@ -265,24 +264,50 @@ mod tests {
     }
 
     #[test]
-    fn encodes_login_notice_content_as_shift_jis() {
+    fn encodes_login_notice_content_as_utf8() {
         let mut output = Cursor::new(Vec::new());
+        let text = "啊🦐";
 
-        LoginNotice::try_from(notice("テスト"))
+        LoginNotice::try_from(notice(text))
             .unwrap()
             .write_be(&mut output)
             .unwrap();
 
+        let output = output.into_inner();
+        assert_eq!(&output[..4], &[0, 0, 0, 8]);
+        assert_eq!(std::str::from_utf8(&output[4..11]).unwrap(), text);
+        assert_eq!(output[11], 0);
+    }
+
+    #[test]
+    fn login_notice_length_counts_utf8_bytes_and_its_terminator() {
+        let text = format!("{}ab", "界".repeat(21_844));
+        let mut output = Cursor::new(Vec::new());
+        LoginNotice::try_from(notice(&text))
+            .unwrap()
+            .write_be(&mut output)
+            .unwrap();
+        let output = output.into_inner();
+
+        assert_eq!(&output[..4], &[0, 0, 0xFF, 0xFF]);
+        assert_eq!(output.len(), 4 + usize::from(u16::MAX));
         assert_eq!(
-            output.into_inner(),
-            [0, 0, 0, 7, 0x83, 0x65, 0x83, 0x58, 0x83, 0x67, 0]
+            std::str::from_utf8(&output[4..output.len() - 1]).unwrap(),
+            text
         );
+        assert_eq!(output.last(), Some(&0));
+
+        let oversized = LoginNotice::try_from(notice(&format!("{text}a"))).unwrap();
+        assert!(oversized.write_be(&mut Cursor::new(Vec::new())).is_err());
+        assert!(LoginNotice::try_from(notice("before\0after")).is_err());
     }
 
     #[test]
     fn encodes_the_success_response_header_and_character() {
         let timestamp_seconds = 1_800_000_000;
         let timestamp = Timestamp::new(timestamp_seconds, 0).unwrap();
+        let name = "啊啊啊啊啊";
+        let description = format!("{}🦐", "界".repeat(9));
         let success = SignInSuccess::try_from(model::Success {
             session: model::IssuedSession {
                 id: SignSessionId::from(7),
@@ -295,8 +320,8 @@ mod tests {
                     id: CharacterId::from(3),
                     gender: Gender::Female,
                     savedata: Some(vec![1]),
-                    name: "テスト".to_owned(),
-                    description: "hunter".to_owned(),
+                    name: name.to_owned(),
+                    description: description.clone(),
                     gr: 2,
                     hr: 1,
                     weapon_type: WeaponType::GreatSword,
@@ -331,13 +356,51 @@ mod tests {
             &output[character_offset..character_offset + 4],
             &3_u32.to_be_bytes()
         );
-        assert!(output.windows(6).any(|window| window == b"hunter"));
+        let name_offset = character_offset + 16;
+        assert_eq!(
+            std::str::from_utf8(&output[name_offset..name_offset + 15]).unwrap(),
+            name
+        );
+        assert_eq!(output[name_offset + 15], 0);
+        let description_offset = name_offset + CHARACTER_NAME_LEN;
+        assert_eq!(
+            std::str::from_utf8(&output[description_offset..description_offset + 31]).unwrap(),
+            description
+        );
+        assert_eq!(output[description_offset + 31], 0);
         let filter_offset = output
             .windows(EMPTY_TEXT_FILTER.len())
             .position(|window| window == EMPTY_TEXT_FILTER)
             .unwrap();
         let cap_link_offset = filter_offset + EMPTY_TEXT_FILTER.len();
         assert_eq!(&output[cap_link_offset..cap_link_offset + 9], &[0; 9]);
+    }
+
+    #[test]
+    fn rejects_utf8_character_text_that_exceeds_its_fixed_field() {
+        for (name, description) in [
+            (format!("{}🦐", "界".repeat(4)), String::new()),
+            (String::new(), format!("{}🦐🦐", "界".repeat(8))),
+        ] {
+            let character = model::SignedInCharacter {
+                character: Character {
+                    id: CharacterId::from(3),
+                    gender: Gender::Female,
+                    savedata: Some(vec![1]),
+                    name,
+                    description,
+                    gr: 2,
+                    hr: 1,
+                    weapon_type: WeaponType::GreatSword,
+                },
+                last_sign_in_at: Timestamp::UNIX_EPOCH,
+            };
+
+            assert!(matches!(
+                SignCharacter::try_from(character),
+                Err(InternalError::FixedCString(_))
+            ));
+        }
     }
 
     fn notice(content: &str) -> SignInNotice {

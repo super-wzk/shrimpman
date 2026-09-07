@@ -10,11 +10,12 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateCaret, DestroyCaret, GUI_CARETBLINKING, GUITHREADINFO, GetGUIThreadInfo,
-    GetWindowLongPtrW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCaretPos,
-    SetWindowPos, ShowCaret, WM_CHAR, WM_IME_CHAR, WM_IME_COMPOSITION, WM_IME_NOTIFY,
-    WM_IME_STARTCOMPOSITION,
+    CreateCaret, CreateWindowExA, DefWindowProcA, DestroyCaret, GUI_CARETBLINKING, GUITHREADINFO,
+    GetGUIThreadInfo, GetWindowLongPtrW, IsWindowUnicode, RegisterClassExA, SWP_NOACTIVATE,
+    SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCaretPos, SetWindowPos, ShowCaret, WM_CHAR,
+    WM_IME_CHAR, WM_IME_COMPOSITION, WM_IME_NOTIFY, WM_IME_STARTCOMPOSITION, WNDCLASSEXA,
 };
+use windows::core::PCSTR;
 
 use super::*;
 use crate::{HostIme, HostImeTarget, InputCapture};
@@ -54,6 +55,49 @@ struct HostWindow {
 }
 
 impl HostWindow {
+    fn new_ansi() -> Self {
+        unsafe extern "system" fn ansi_proc(
+            hwnd: HWND,
+            message: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            if matches!(message, WM_CHAR | WM_KEYDOWN | WM_KEYUP) {
+                unsafe { host_proc(hwnd, message, wparam, lparam) }
+            } else {
+                unsafe { DefWindowProcA(hwnd, message, wparam, lparam) }
+            }
+        }
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }.unwrap().into();
+        let class = WNDCLASSEXA {
+            cbSize: mem::size_of::<WNDCLASSEXA>() as u32,
+            lpfnWndProc: Some(ansi_proc),
+            hInstance: instance,
+            lpszClassName: PCSTR(c"ShrimpmanOverlayImeRoutingTest".as_ptr().cast()),
+            ..Default::default()
+        };
+        assert_ne!(unsafe { RegisterClassExA(&class) }, 0);
+        let hwnd = unsafe {
+            CreateWindowExA(
+                WINDOW_EX_STYLE::default(),
+                class.lpszClassName,
+                PCSTR(c"ANSI host input test".as_ptr().cast()),
+                WS_OVERLAPPED,
+                0,
+                0,
+                200,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+        }
+        .unwrap();
+        assert!(!unsafe { IsWindowUnicode(hwnd).as_bool() });
+        Self { hwnd, instance }
+    }
+
     fn new() -> Self {
         let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }.unwrap().into();
         let class = WNDCLASSEXW {
@@ -371,6 +415,107 @@ fn take_overlay_ime(state: &WindowState) -> Vec<ImeEvent> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn unicode_character_messages_reach_the_host_before_the_ansi_thunk() {
+    let _guard = WINDOW_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    HOST_CHAR.store(0, Ordering::Relaxed);
+    HOST_KEY.store(0, Ordering::Relaxed);
+    let window = HostWindow::new_ansi();
+    let hwnd = window.hwnd;
+    let previous_focus = unsafe { SetFocus(Some(hwnd)) }.unwrap_or_default();
+    let input = Arc::new(Mutex::new(HostInput {
+        target: Some(HostImeTarget {
+            id: 41,
+            cursor_rect: Rect::from_min_max(pos2(10.0, 10.0), pos2(11.0, 30.0)),
+        }),
+        events: Vec::new(),
+    }));
+    let capture = InputCaptureState::default();
+    capture.lock().update(
+        InputPolicy {
+            keyboard: InputCapture::PassThrough,
+            ..InputPolicy::default()
+        },
+        false,
+        false,
+    );
+    let host = Arc::new(HostAdapter {
+        input: Arc::clone(&input),
+        thread: std::thread::current().id(),
+        window: hwnd.0 as usize,
+    });
+    let state = Arc::new(WindowState::new(hwnd, capture, Some(host)));
+    let binding = WindowBinding::install(hwnd, Arc::clone(&state)).unwrap();
+    assert!(unsafe { IsWindowUnicode(hwnd).as_bool() });
+    let private = current_context(hwnd);
+    assert!(!private.is_invalid());
+
+    for unit in [0xe9, 0x4f60, 0xd83d, 0xde00] {
+        assert_eq!(send(hwnd, WM_CHAR, unit, 1), LRESULT(0));
+    }
+    assert_eq!(
+        take_host_events(&input, private),
+        [
+            (41, ImeEvent::Commit("é".to_owned())),
+            (41, ImeEvent::Commit("你".to_owned())),
+            (41, ImeEvent::Commit("😀".to_owned()))
+        ]
+    );
+    assert_eq!(HOST_CHAR.load(Ordering::Relaxed), 0);
+    assert!(
+        state
+            .take_input(1.0)
+            .unwrap()
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::Text(_) | Event::Ime(_)))
+    );
+
+    // Native editing commands still receive their key and control-character messages.
+    assert_eq!(send(hwnd, WM_KEYDOWN, 8, 1), LRESULT(71));
+    assert_eq!(send(hwnd, WM_CHAR, 8, 1), LRESULT(71));
+    assert!(take_host_events(&input, private).is_empty());
+    assert_eq!(HOST_CHAR.load(Ordering::Relaxed), 1);
+    assert_eq!(HOST_KEY.load(Ordering::Relaxed), 1);
+
+    // A pending high surrogate cannot follow the cursor into another native editor.
+    send(hwnd, WM_CHAR, 0xd83d, 1);
+    input.lock().unwrap().target.as_mut().unwrap().id = 42;
+    send(hwnd, control_message().unwrap(), 0, 0);
+    assert_eq!(take_host_events(&input, private), [(41, empty_preedit())]);
+    send(hwnd, WM_CHAR, 0xde00, 1);
+    assert!(take_host_events(&input, private).is_empty());
+
+    // Composition owns character messages, and its end cannot complete an old pair.
+    send(hwnd, WM_CHAR, 0xd83d, 1);
+    send(hwnd, WM_IME_STARTCOMPOSITION, 0, 0);
+    send(hwnd, WM_CHAR, 0xe9, 1);
+    assert!(take_host_events(&input, private).is_empty());
+    send(hwnd, WM_IME_COMPOSITION, 0, 0);
+    assert_eq!(take_host_events(&input, private), [(42, empty_preedit())]);
+    send(hwnd, WM_CHAR, 0xde00, 1);
+    assert!(take_host_events(&input, private).is_empty());
+
+    send(hwnd, WM_CHAR, 0xd83d, 1);
+    let _ = unsafe { SetFocus(None) };
+    assert_eq!(take_host_events(&input, private), [(42, empty_preedit())]);
+    let _ = unsafe { SetFocus(Some(hwnd)) };
+    send(hwnd, WM_CHAR, 0xde00, 1);
+    assert!(take_host_events(&input, private).is_empty());
+    send(hwnd, WM_CHAR, usize::from(b'A'), 1);
+    assert_eq!(
+        take_host_events(&input, private),
+        [(42, ImeEvent::Commit("A".to_owned()))]
+    );
+    assert_eq!(HOST_CHAR.load(Ordering::Relaxed), 1);
+
+    drop(binding);
+    assert!(!unsafe { IsWindowUnicode(hwnd).as_bool() });
+    let _ = unsafe { SetFocus((!previous_focus.is_invalid()).then_some(previous_focus)) };
 }
 
 fn host_owner_handoffs_reuse_context(hwnd: HWND, original: HIMC, host_window_proc: WindowLong) {

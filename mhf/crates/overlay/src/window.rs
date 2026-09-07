@@ -11,7 +11,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW,
     DestroyWindow, GWLP_WNDPROC, GetCursorPos, GetWindowThreadProcessId, PostMessageW,
-    RegisterClassExW, SendMessageW, SetWindowLongPtrW, UnregisterClassW, WINDOW_EX_STYLE,
+    RegisterClassExW, SendMessageW, SetWindowLongPtrW, UnregisterClassW, WINDOW_EX_STYLE, WM_CHAR,
     WM_IME_SETCONTEXT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_NCDESTROY, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
@@ -295,6 +295,11 @@ unsafe extern "system" fn overlay_window_proc(
             } else {
                 LRESULT(0)
             });
+        }
+        if message == WM_CHAR && state.ime.handle_character(wparam.0) {
+            // Stay on the Unicode side of CallWindowProcW's ANSI thunk. The
+            // native editor otherwise truncates wParam to one byte at 114D3CCB.
+            return Some(LRESULT(0));
         }
         state
             .handle_message(message, wparam, lparam)

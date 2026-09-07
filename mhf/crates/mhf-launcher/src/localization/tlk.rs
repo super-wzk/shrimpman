@@ -1,9 +1,16 @@
-use super::{CodeHook, HOOK_STATE, HookState, MemoryRange};
+use super::{
+    CodeHook, HOOK_STATE, HookState, MemoryRange, TranslationKey, replacement_for_key,
+    resource::read_image_string,
+};
 use std::{
+    collections::HashSet,
     ffi::c_void,
     mem::size_of,
     ptr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 const TLK_LOADER_RVA: usize = 0x0071_6350;
@@ -14,6 +21,8 @@ const TLK_BUFFER_CAPACITY_RVA: usize = 0x0ED5_292C;
 const MAX_TLK_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
 pub(super) const UNKNOWN_STAGE: u16 = u16::MAX;
 const MAX_STAGE_PATH_LENGTH: usize = 32;
+const STAGE_TLK_RETURN_RVA: usize = 0x0089_F4CD;
+const LOCALIZED_TLK_RETURN_RVA: usize = 0x0089_F5C1;
 
 const TLK_LOADER_SIGNATURE: &[(usize, u8)] = &[
     (0, 0x55),
@@ -147,10 +156,55 @@ pub(super) const fn required_image_end() -> usize {
     TLK_BUFFER_CAPACITY_RVA + size_of::<u32>()
 }
 
-unsafe extern "C" fn patch_tlk_dispatch(source: *const u8, source_size: usize) {
+pub(super) unsafe fn validate_sources(base: usize) -> Result<(), String> {
+    for (rva, expected) in [
+        (
+            0x0089_F4BF,
+            &[
+                0x8B, 0x8E, 0xF4, 0, 0, 0, 0x50, 0x03, 0xCE, 0xE8, 0x83, 0x6E, 0xE7, 0xFF, 0x83,
+                0xC4, 0x04,
+            ][..],
+        ),
+        (
+            0x0089_F5AD,
+            &[
+                0x8B, 0x54, 0xC8, 0x08, 0x85, 0xD2, 0x74, 0x0F, 0x8B, 0x4C, 0xC8, 0x04, 0x52, 0x03,
+                0xC8, 0xE8, 0x8F, 0x6D, 0xE7, 0xFF, 0x83, 0xC4, 0x04,
+            ][..],
+        ),
+    ] {
+        if unsafe { std::slice::from_raw_parts((base + rva) as *const u8, expected.len()) }
+            != expected
+        {
+            return Err(format!("unsupported TLK source boundary at RVA {rva:#x}"));
+        }
+    }
+    Ok(())
+}
+
+unsafe extern "C" fn patch_tlk_dispatch(
+    source: *const u8,
+    source_size: usize,
+    caller: usize,
+    saved_esi: u32,
+) {
     let invocation = HOOK_STATE.enter();
     if let Some(state) = invocation.state() {
-        unsafe { patch_tlk_records(state, source, source_size) };
+        let (stage, code_page) = match caller.checked_sub(state.module_base) {
+            Some(STAGE_TLK_RETURN_RVA) => (state.current_stage.load(Ordering::Acquire), 932),
+            Some(LOCALIZED_TLK_RETURN_RVA) => match state.language_code_page() {
+                Ok(code_page) => (saved_esi as u16, code_page),
+                Err(error) => {
+                    eprintln!("failed to load localized TLK text: {error}");
+                    return;
+                }
+            },
+            _ => {
+                eprintln!("unsupported TLK source caller at {caller:#x}");
+                return;
+            }
+        };
+        unsafe { patch_tlk_records(state, source, source_size, stage, code_page) };
     }
 }
 
@@ -188,11 +242,13 @@ unsafe fn parse_stage_path(path: *const u8) -> Option<u16> {
     )
 }
 
-unsafe fn patch_tlk_records(state: &HookState, source: *const u8, source_size: usize) {
-    let stage = state.current_stage.load(Ordering::Acquire);
-    if stage == UNKNOWN_STAGE {
-        return;
-    }
+unsafe fn patch_tlk_records(
+    state: &HookState,
+    source: *const u8,
+    source_size: usize,
+    stage: u16,
+    code_page: u32,
+) {
     let buffer_start =
         unsafe { ptr::read_volatile((state.module_base + TLK_BUFFER_RVA) as *const u32) as usize };
     let capacity = unsafe {
@@ -208,44 +264,89 @@ unsafe fn patch_tlk_records(state: &HookState, source: *const u8, source_size: u
         return;
     };
 
-    for entry in state.locale.stage_translations() {
-        if entry.stage != stage {
+    unsafe {
+        patch_tlk_image(
+            state,
+            MemoryRange {
+                start: buffer_start,
+                end: buffer_end,
+            },
+            stage,
+            code_page,
+        )
+    };
+}
+
+unsafe fn patch_tlk_image(state: &HookState, image: MemoryRange, stage: u16, code_page: u32) {
+    let Some(sections) = (unsafe { tlk_sections(image) }) else {
+        return;
+    };
+    let mut text = state.text.lock().unwrap_or_else(PoisonError::into_inner);
+    for section in sections {
+        let range = section.image;
+        if range.end - range.start < size_of::<u32>() {
             continue;
         }
-        let replacement = entry.replacement.as_ptr();
-        let Some(section_range) =
-            (unsafe { find_tlk_section(buffer_start, buffer_end, entry.section) })
-        else {
-            continue;
-        };
-        let record_index_end = usize::from(entry.record) + 1;
-        let Some(cell) = section_range
-            .start
-            .checked_add(usize::from(entry.record) * size_of::<u32>())
-        else {
-            continue;
-        };
-        let Some(cell_end) = cell.checked_add(size_of::<u32>()) else {
-            continue;
-        };
-        if cell_end > section_range.end {
+        // A TLK section starts with its relative string-pointer table. The
+        // first string begins immediately after that table, so its offset is
+        // the table's byte length. Read it before replacing any pointers.
+        let table_size = unsafe { ptr::read_unaligned(range.start as *const u32) } as usize;
+        let record_count = table_size / size_of::<u32>();
+        if table_size == 0
+            || !table_size.is_multiple_of(size_of::<u32>())
+            || table_size >= range.end - range.start
+            || record_count > usize::from(u16::MAX) + 1
+        {
             continue;
         }
-        let relative = unsafe { ptr::read_unaligned(cell as *const u32) };
-        let current = resolve_relative_pointer(section_range.start, relative);
-        if current == replacement as usize {
-            continue;
-        }
-        let minimum_record_offset = record_index_end * size_of::<u32>();
-        if (relative as usize) < minimum_record_offset || !section_range.contains(current) {
-            continue;
-        }
-        unsafe {
-            ptr::write_unaligned(
-                cell as *mut u32,
-                relative_pointer(section_range.start, replacement as usize),
-            )
+        let strings = MemoryRange {
+            start: range.start + table_size,
+            end: range.end,
         };
+        for record in 0..record_count {
+            let cell = range.start + record * size_of::<u32>();
+            let relative = unsafe { ptr::read_unaligned(cell as *const u32) };
+            let current = resolve_relative_pointer(range.start, relative);
+            // Existing UTF-8 replacements live outside the section. This also
+            // prevents a repeated callback from decoding them as legacy text.
+            if !strings.contains(current) {
+                continue;
+            }
+            let Some(source) = (unsafe { read_image_string(strings, current) }) else {
+                eprintln!(
+                    "TLK section {:04X} record {record:04X} has no NUL terminator inside its source section",
+                    section.id
+                );
+                continue;
+            };
+            let replacement = if stage != UNKNOWN_STAGE && section.first {
+                replacement_for_key(
+                    state,
+                    &mut text,
+                    TranslationKey::Stage {
+                        stage,
+                        section: section.id,
+                        record: record as u16,
+                    },
+                    source,
+                    code_page,
+                )
+            } else {
+                text.original(source, code_page)
+            };
+            match replacement {
+                Ok(replacement) => unsafe {
+                    ptr::write_unaligned(
+                        cell as *mut u32,
+                        relative_pointer(range.start, replacement as usize),
+                    )
+                },
+                Err(error) => eprintln!(
+                    "failed to convert TLK section {:04X} record {record:04X}: {error}",
+                    section.id
+                ),
+            }
+        }
     }
 }
 
@@ -267,53 +368,54 @@ unsafe fn tlk_image_size(source: *const u8, source_size: usize, capacity: usize)
         .then_some(image_size)
 }
 
-unsafe fn find_tlk_section(
-    buffer_start: usize,
-    buffer_end: usize,
-    wanted_section: u16,
-) -> Option<MemoryRange> {
-    let mut cursor = buffer_start;
-    let mut selected_offset = None;
-    let mut directory_end = None;
-    while cursor.checked_add(8)? <= buffer_end {
-        let section = unsafe { ptr::read_unaligned(cursor as *const i32) };
-        let offset = unsafe { ptr::read_unaligned((cursor + 4) as *const u32) } as usize;
-        cursor += 8;
-        if section == -1 {
-            directory_end = Some(cursor);
-            break;
-        }
-        if section < 0 || offset >= buffer_end - buffer_start {
+struct TlkSection {
+    id: u16,
+    first: bool,
+    image: MemoryRange,
+}
+
+unsafe fn tlk_sections(image: MemoryRange) -> Option<Vec<TlkSection>> {
+    let mut cursor = image.start;
+    let mut sections = Vec::new();
+    let mut ids = HashSet::new();
+    loop {
+        let next = cursor.checked_add(8)?;
+        if next > image.end {
             return None;
         }
-        if section as u32 == u32::from(wanted_section) {
-            selected_offset = Some(offset);
-        }
-    }
-    let directory_end = directory_end?;
-    let selected_offset = selected_offset?;
-    let section_start = buffer_start.checked_add(selected_offset)?;
-    if section_start < directory_end {
-        return None;
-    }
-
-    let mut section_end = buffer_end;
-    cursor = buffer_start;
-    while cursor.checked_add(8)? <= directory_end {
         let section = unsafe { ptr::read_unaligned(cursor as *const i32) };
+        let offset = unsafe { ptr::read_unaligned((cursor + 4) as *const u32) } as usize;
+        cursor = next;
         if section == -1 {
             break;
         }
-        let offset = unsafe { ptr::read_unaligned((cursor + 4) as *const u32) } as usize;
-        if offset > selected_offset {
-            section_end = section_end.min(buffer_start.checked_add(offset)?);
+        let id = u16::try_from(section).ok()?;
+        let start = image.start.checked_add(offset)?;
+        if !image.contains(start) {
+            return None;
         }
-        cursor += 8;
+        sections.push(TlkSection {
+            id,
+            // The game's directory lookup returns its first matching ID.
+            first: ids.insert(id),
+            image: MemoryRange {
+                start,
+                end: image.end,
+            },
+        });
     }
-    (section_start < section_end).then_some(MemoryRange {
-        start: section_start,
-        end: section_end,
-    })
+    sections.sort_unstable_by_key(|section| section.image.start);
+    for index in 0..sections.len() {
+        let end = sections
+            .get(index + 1)
+            .map_or(image.end, |next| next.image.start);
+        let section = &mut sections[index];
+        if section.image.start < cursor || section.image.start >= end {
+            return None;
+        }
+        section.image.end = end;
+    }
+    Some(sections)
 }
 
 fn relative_pointer(base: usize, target: usize) -> u32 {
@@ -330,14 +432,17 @@ unsafe extern "C" fn tlk_loader_detour() {
         "push ebp",
         "mov ebp, esp",
         "push ecx",
+        "push esi",
         "push dword ptr [ebp + 8]",
         "call dword ptr [{original}]",
         "add esp, 4",
         "push eax",
+        "push dword ptr [ebp - 8]",
+        "push dword ptr [ebp + 4]",
         "push dword ptr [ebp + 8]",
         "push dword ptr [ebp - 4]",
         "call {dispatch}",
-        "add esp, 8",
+        "add esp, 16",
         "pop eax",
         "mov esp, ebp",
         "pop ebp",
@@ -349,7 +454,171 @@ unsafe extern "C" fn tlk_loader_detour() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_stage_path, relative_pointer, resolve_relative_pointer, tlk_image_size};
+    use super::{
+        MemoryRange, UNKNOWN_STAGE, parse_stage_path, patch_tlk_image, relative_pointer,
+        resolve_relative_pointer, tlk_image_size, tlk_sections,
+    };
+    use crate::{
+        MissingTranslation,
+        localization::{CompiledDictionary, CompiledLocale, test_state},
+    };
+    use std::ffi::CStr;
+
+    static TRANSLATIONS: &[u8] = &[
+        0, 0, 0, 0, 125, 0, 0, 0, 1, 0, 23, 0, 20, 0, 0, 0, 7, 0, 0, 0, 0xE4, 0xB8, 0xAD, 0xE6,
+        0x96, 0x87, 0,
+    ];
+    static LOCALES: [CompiledLocale; 1] = [CompiledLocale::new("test", 0, 1)];
+    static DICTIONARY: CompiledDictionary = CompiledDictionary::new(TRANSLATIONS, &LOCALES);
+
+    struct TlkImage {
+        bytes: Vec<u8>,
+        sections: Vec<usize>,
+    }
+
+    impl TlkImage {
+        fn new(sections: &[(u16, &[&[u8]])]) -> Self {
+            let mut image = Self {
+                bytes: vec![0; (sections.len() + 1) * 8],
+                sections: Vec::new(),
+            };
+            image.write_u32(sections.len() * 8, u32::MAX);
+            image.write_u32(sections.len() * 8 + 4, u32::MAX);
+            for (index, (id, records)) in sections.iter().enumerate() {
+                let start = image.bytes.len();
+                image.sections.push(start);
+                image.write_u32(index * 8, u32::from(*id));
+                image.write_u32(index * 8 + 4, start as u32);
+                image.bytes.resize(start + records.len() * 4, 0);
+                for (record, source) in records.iter().enumerate() {
+                    image.write_u32(start + record * 4, (image.bytes.len() - start) as u32);
+                    image.bytes.extend_from_slice(source);
+                    image.bytes.push(0);
+                }
+            }
+            image
+        }
+
+        fn range(&self) -> MemoryRange {
+            let start = self.bytes.as_ptr() as usize;
+            MemoryRange {
+                start,
+                end: start + self.bytes.len(),
+            }
+        }
+
+        fn write_u32(&mut self, offset: usize, value: u32) {
+            self.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn pointer(&self, section: usize, record: usize) -> usize {
+            let offset = self.sections[section];
+            let cell = offset + record * 4;
+            let relative = u32::from_le_bytes(self.bytes[cell..cell + 4].try_into().unwrap());
+            resolve_relative_pointer(self.range().start + offset, relative)
+        }
+
+        fn text(&self, section: usize, record: usize) -> &CStr {
+            unsafe { CStr::from_ptr(self.pointer(section, record) as *const _) }
+        }
+    }
+
+    #[test]
+    fn converts_every_record_with_sparse_overrides_and_preserves_utf8_on_repeat() {
+        let state = test_state(DICTIONARY.locale("test"), MissingTranslation::Original);
+        let image = TlkImage::new(&[(23, &[b"ASCII", b"\x93\xFA\x96\x7B", b"\x93\xFA"])]);
+
+        unsafe { patch_tlk_image(&state, image.range(), 125, 932) };
+
+        assert_eq!(image.text(0, 0), c"ASCII");
+        assert_eq!(image.text(0, 1).to_str().unwrap(), "中文");
+        assert_eq!(image.text(0, 2).to_str().unwrap(), "日");
+        let pointers = [image.pointer(0, 1), image.pointer(0, 2)];
+        unsafe { patch_tlk_image(&state, image.range(), 125, 932) };
+        assert_eq!([image.pointer(0, 1), image.pointer(0, 2)], pointers);
+        assert_eq!(image.text(0, 1).to_str().unwrap(), "中文");
+        assert_eq!(image.text(0, 2).to_str().unwrap(), "日");
+    }
+
+    #[test]
+    fn converts_originals_when_stage_is_unknown_without_applying_missing_policy() {
+        let state = test_state(DICTIONARY.locale("test"), MissingTranslation::Key);
+        let image = TlkImage::new(&[(23, &[b"\x93\xFA\x96\x7B", b"\x93\xFA"])]);
+
+        unsafe { patch_tlk_image(&state, image.range(), UNKNOWN_STAGE, 932) };
+
+        assert_eq!(image.text(0, 0).to_str().unwrap(), "日本");
+        assert_eq!(image.text(0, 1).to_str().unwrap(), "日");
+    }
+
+    #[test]
+    fn language_overlays_convert_all_records_using_their_source_code_page() {
+        let state = test_state(None, MissingTranslation::Original);
+        for (code_page, source, expected) in [
+            (949, b"\xC7\xD1\xB1\xDB".as_slice(), "한글"),
+            (950, b"\xC1\x63\xC5\xE9".as_slice(), "繁體"),
+        ] {
+            let image = TlkImage::new(&[(23, &[b"ASCII", source])]);
+            unsafe { patch_tlk_image(&state, image.range(), 125, code_page) };
+            assert_eq!(image.text(0, 0), c"ASCII");
+            assert_eq!(image.text(0, 1).to_str().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn duplicate_ids_translate_only_the_first_directory_entry() {
+        let state = test_state(DICTIONARY.locale("test"), MissingTranslation::Original);
+        let records: &[&[u8]] = &[b"ASCII", b"\x93\xFA\x96\x7B"];
+        let mut image = TlkImage::new(&[(23, records), (23, records)]);
+        // Directory order, rather than the sections' physical byte order,
+        // determines which occurrence the game selects.
+        image.write_u32(4, image.sections[1] as u32);
+        image.write_u32(12, image.sections[0] as u32);
+
+        unsafe { patch_tlk_image(&state, image.range(), 125, 932) };
+
+        assert_eq!(image.text(0, 1).to_str().unwrap(), "日本");
+        assert_eq!(image.text(1, 1).to_str().unwrap(), "中文");
+    }
+
+    #[test]
+    fn a_string_cannot_use_the_next_sections_pointer_table_as_its_terminator() {
+        let state = test_state(None, MissingTranslation::Original);
+        let mut image = TlkImage::new(&[(23, &[b"\x93\xFA"]), (24, &[b"\x93\xFA"])]);
+        image.bytes[image.sections[1] - 1] = b'!';
+        let source = image.pointer(0, 0);
+
+        unsafe { patch_tlk_image(&state, image.range(), UNKNOWN_STAGE, 932) };
+
+        assert_eq!(image.pointer(0, 0), source);
+        assert_eq!(image.text(1, 0).to_str().unwrap(), "日");
+    }
+
+    #[test]
+    fn malformed_directories_and_pointer_tables_are_not_patched() {
+        let state = test_state(None, MissingTranslation::Original);
+        for invalid_offset in [0, u32::MAX] {
+            let mut image = TlkImage::new(&[(23, &[b"\x93\xFA"])]);
+            image.write_u32(4, invalid_offset);
+            assert!(unsafe { tlk_sections(image.range()) }.is_none());
+        }
+        let mut image = TlkImage::new(&[(23, &[b"\x93\xFA"])]);
+        image.write_u32(8, 24);
+        assert!(unsafe { tlk_sections(image.range()) }.is_none());
+
+        for invalid_table_size in [0, 3, 8, u32::MAX] {
+            let mut image = TlkImage::new(&[(23, &[b"\x93\xFA"])]);
+            image.write_u32(image.sections[0], invalid_table_size);
+            let original = image.bytes.clone();
+            unsafe { patch_tlk_image(&state, image.range(), UNKNOWN_STAGE, 932) };
+            assert_eq!(image.bytes, original);
+        }
+        let mut image = TlkImage::new(&[(23, &[b"ASCII", b"\x93\xFA"])]);
+        image.write_u32(image.sections[0] + 4, 4);
+        let original = image.bytes.clone();
+        unsafe { patch_tlk_image(&state, image.range(), UNKNOWN_STAGE, 932) };
+        assert_eq!(image.bytes, original);
+    }
 
     #[test]
     fn relative_tlk_pointer_can_target_the_static_translation_image() {

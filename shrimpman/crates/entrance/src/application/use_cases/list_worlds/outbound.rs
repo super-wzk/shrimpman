@@ -144,6 +144,33 @@ mod tests {
     }
 
     #[test]
+    fn utf8_world_text_uses_the_existing_byte_capacity() {
+        let name = "界".repeat(10);
+        let description = "啊".repeat(11);
+        let text = WorldText {
+            name: NullString::from(name.as_str()),
+            description: NullString::from(description.as_str()),
+        };
+        let mut output = Cursor::new(Vec::new());
+
+        output.write_be(&text).unwrap();
+        let output = output.into_inner();
+
+        assert_eq!(output.len(), 66);
+        assert_eq!(output[0], 0);
+        assert_eq!(std::str::from_utf8(&output[1..31]).unwrap(), name);
+        assert_eq!(output[31], 0);
+        assert_eq!(std::str::from_utf8(&output[32..65]).unwrap(), description);
+        assert_eq!(output[65], 0);
+
+        let oversized = WorldText {
+            name: text.name,
+            description: NullString::from(format!("{description}a")),
+        };
+        assert!(Cursor::new(Vec::new()).write_be(&oversized).is_err());
+    }
+
+    #[test]
     fn wraps_the_world_list_in_an_sv2_bin8_response() {
         let response = MhfBin8::new(WorldList(EntranceList {
             entries: Vec::new(),
