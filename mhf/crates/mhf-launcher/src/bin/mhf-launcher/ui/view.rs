@@ -1,25 +1,93 @@
 use super::model::{CharacterOperation, CharacterSelection, Characters, Message, Model, SignIn};
-use super::theme;
+use egui::{Align, Id, Layout, RichText};
+use egui_hunter::{
+    Button, ButtonKind, Checkbox, Dialog, DialogState, Icon, NoticeKind, Panel, Surface, TextField,
+    notice,
+};
 use jiff::Timestamp;
 use shrimpman_domain::character::{Gender, WeaponType};
 use shrimpman_mhf_launcher::SignCharacter;
 
-pub(super) fn show(model: &mut Model, ui: &mut egui::Ui) -> Option<Message> {
-    egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(theme::BG)
-                .inner_margin(egui::Margin::symmetric(20, 16)),
-        )
-        .show(ui, |ui| match model {
-            Model::SignIn(state) => show_sign_in(state, ui),
-            Model::Characters(state) => show_characters(state, ui),
-            Model::Closing => {
-                show_closing(ui);
-                None
-            }
-        })
-        .inner
+#[derive(Default)]
+pub(super) struct View {
+    deletion_dialog: DialogState,
+}
+
+impl View {
+    pub(super) fn show(&mut self, model: &mut Model, ui: &mut egui::Ui) -> Option<Message> {
+        let mut message = egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .inner_margin(20)
+                    .fill(ui.visuals().panel_fill),
+            )
+            .show(ui, |ui| match model {
+                Model::SignIn(state) => show_sign_in(state, ui),
+                Model::Characters(state) => show_characters(state, ui),
+                Model::Closing => {
+                    show_closing(ui);
+                    None
+                }
+            })
+            .inner;
+
+        let target = match model {
+            Model::Characters(state) => state.deletion_target().map(|id| {
+                state
+                    .sign_in
+                    .characters
+                    .iter()
+                    .find(|character| character.id == id)
+                    .map(character_name)
+                    .unwrap_or_default()
+            }),
+            _ => None,
+        };
+        if target.is_some() {
+            self.deletion_dialog.open(ui.ctx());
+        } else {
+            self.deletion_dialog.close(ui.ctx());
+        }
+        let cancel_id = Id::new("cancel_character_deletion");
+        Dialog::new(Id::new("confirm_character_deletion"), "Delete character?")
+            .width(360.0)
+            .initial_focus(cancel_id)
+            .dismiss_on_backdrop(false)
+            .show(ui.ctx(), &mut self.deletion_dialog, |ui| {
+                ui.add(
+                    egui::Label::new(format!(
+                        "{} will be permanently deleted. This cannot be undone.",
+                        target.as_deref().unwrap_or_default(),
+                    ))
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+                ui.columns(2, |columns| {
+                    if columns[0]
+                        .add(Button::new("Cancel").id(cancel_id).full_width())
+                        .clicked()
+                    {
+                        message = Some(Message::CancelDeletion);
+                        columns[0].close();
+                    }
+                    if columns[1]
+                        .add(Button::new("Delete").kind(ButtonKind::Danger).full_width())
+                        .clicked()
+                    {
+                        message = Some(Message::ConfirmDeletion);
+                        columns[1].close();
+                    }
+                });
+            });
+        if target.is_some() && !self.deletion_dialog.is_open() && message.is_none() {
+            message = Some(Message::CancelDeletion);
+        }
+        // Capture the opener before the model disables it during confirmation.
+        if matches!(message, Some(Message::DeleteCharacter(_))) {
+            self.deletion_dialog.open(ui.ctx());
+        }
+        message
+    }
 }
 
 fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
@@ -34,101 +102,80 @@ fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
         .show(ui, |ui| {
             ui.add_space(top_space);
             let content = ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new("MONSTER HUNTER FRONTIER")
-                        .size(20.0)
-                        .strong()
-                        .color(theme::ACCENT),
-                );
-                ui.add_space(2.0);
-                let (underline, _) =
-                    ui.allocate_exact_size(egui::vec2(64.0, 3.0), egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(underline, 1.5, theme::ACCENT.gamma_multiply(0.8));
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Sign in to choose your character")
-                        .size(13.0)
-                        .color(theme::TEXT_WEAK),
-                );
-                ui.add_space(16.0);
+                ui.label(RichText::new("MONSTER HUNTER FRONTIER").heading().strong());
+                ui.add_space(12.0);
 
-                let form_width = (ui.available_width() - 42.0).min(320.0);
-                egui::Frame::new()
-                    .fill(theme::CARD_BG)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .corner_radius(12)
-                    .inner_margin(egui::Margin::symmetric(20, 18))
-                    .show(ui, |ui| {
-                        ui.set_width(form_width);
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            if let Some(error) = state.error.as_deref() {
-                                theme::error_banner(ui, error);
+                let width = ui.available_width().min(400.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 0.0),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        Panel::new("Sign in")
+                            .surface(Surface::Parchment)
+                            .show(ui, |ui| {
+                                if let Some(error) = state.error.as_deref() {
+                                    show_notice(ui, NoticeKind::Danger, error);
+                                }
                                 ui.add_space(4.0);
-                            }
-                            ui.label(
-                                egui::RichText::new("Username")
-                                    .size(13.0)
-                                    .color(theme::TEXT_WEAK),
-                            );
-                            let username = ui.add_enabled(
-                                !state.submitting,
-                                egui::TextEdit::singleline(&mut state.form.username)
-                                    .margin(theme::TEXT_EDIT_MARGIN)
-                                    .desired_width(f32::INFINITY),
-                            );
-                            let autofocus = ui.id().with("username_autofocus");
-                            if !ui
-                                .ctx()
-                                .data(|data| data.get_temp::<bool>(autofocus).unwrap_or(false))
-                            {
-                                username.request_focus();
-                                ui.ctx().data_mut(|data| data.insert_temp(autofocus, true));
-                            }
-
-                            ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new("Password")
-                                    .size(13.0)
-                                    .color(theme::TEXT_WEAK),
-                            );
-                            ui.add_enabled(
-                                !state.submitting,
-                                egui::TextEdit::singleline(&mut state.form.password)
-                                    .password(true)
-                                    .margin(theme::TEXT_EDIT_MARGIN)
-                                    .desired_width(f32::INFINITY),
-                            );
-
-                            ui.add_space(4.0);
-                            ui.scope(|ui| {
-                                ui.spacing_mut().interact_size.y = 24.0;
+                                let username_id = Id::new("sign_in_username");
+                                let password_id = Id::new("sign_in_password");
+                                let username = ui.add_enabled(
+                                    !state.submitting,
+                                    TextField::new(username_id, &mut state.form.username)
+                                        .label("Username")
+                                        .hint("Enter your username"),
+                                );
+                                let autofocus = ui.id().with("username_autofocus");
+                                if !state.submitting
+                                    && !ui.ctx().data(|data| {
+                                        data.get_temp::<bool>(autofocus).unwrap_or(false)
+                                    })
+                                {
+                                    username.request_focus();
+                                    ui.ctx().data_mut(|data| data.insert_temp(autofocus, true));
+                                }
                                 ui.add_enabled(
                                     !state.submitting,
-                                    egui::Checkbox::new(
+                                    TextField::new(password_id, &mut state.form.password)
+                                        .label("Password")
+                                        .hint("Enter your password")
+                                        .password(true),
+                                );
+                                ui.add_enabled(
+                                    !state.submitting,
+                                    Checkbox::new(
                                         &mut state.form.remember_password,
                                         "Remember password",
                                     ),
                                 );
+                                ui.add_space(4.0);
+                                let can_sign_in = state.can_submit();
+                                let submit_from_field = ui.memory(|memory| {
+                                    memory.has_focus(username_id) || memory.has_focus(password_id)
+                                }) && ui
+                                    .input(|input| input.key_pressed(egui::Key::Enter));
+                                let label = if state.submitting {
+                                    "Signing in..."
+                                } else {
+                                    "Sign in"
+                                };
+                                let clicked = ui
+                                    .add_enabled(
+                                        can_sign_in,
+                                        Button::new(label)
+                                            .id(Id::new("sign_in_submit"))
+                                            .kind(ButtonKind::Primary)
+                                            .icon(Icon::Quest)
+                                            .min_size(egui::vec2(0.0, 42.0))
+                                            .full_width(),
+                                    )
+                                    .clicked();
+                                if clicked || (can_sign_in && submit_from_field) {
+                                    message = Some(Message::SignIn);
+                                }
                             });
-
-                            ui.add_space(8.0);
-                            let can_sign_in = state.can_submit();
-                            let enter_pressed =
-                                ui.input(|input| input.key_pressed(egui::Key::Enter));
-                            let width = ui.available_width();
-                            let label = if state.submitting {
-                                "Signing in..."
-                            } else {
-                                "Sign in"
-                            };
-                            let clicked =
-                                theme::primary_button(ui, label, can_sign_in, width).clicked();
-                            if clicked || (can_sign_in && enter_pressed) {
-                                message = Some(Message::SignIn);
-                            }
-                        });
-                    });
+                    },
+                );
             });
             let height = content.response.rect.height();
             if content_height.is_none_or(|previous| (previous - height).abs() > 0.5) {
@@ -142,93 +189,86 @@ fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
 
 fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
     let mut message = None;
-
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new("Choose your character")
-                    .size(20.0)
-                    .strong(),
-            );
-            ui.add_space(1.0);
-            ui.label(
-                egui::RichText::new(format!("Signed in as {}", state.form.username.trim()))
-                    .size(12.0)
-                    .color(theme::TEXT_WEAK),
-            );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_enabled(state.is_idle(), egui::Button::new("Sign out"))
-                .clicked()
-            {
-                message = Some(Message::SignOut);
-            }
-        });
+    ui.heading("Character selection");
+    ui.horizontal_wrapped(|ui| {
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("Signed in as {}", state.form.username.trim())).weak(),
+            )
+            .wrap(),
+        );
+        if ui
+            .add_enabled(state.is_idle(), Button::new("Sign out"))
+            .clicked()
+        {
+            message = Some(Message::SignOut);
+        }
     });
-    ui.add_space(4.0);
-    ui.separator();
-    ui.add_space(4.0);
+    ui.add_space(8.0);
 
     egui::Panel::bottom("character_actions")
         .show_separator_line(false)
-        .frame(egui::Frame::new().fill(theme::BG))
+        .frame(egui::Frame::NONE)
         .show(ui, |ui| {
-            ui.separator();
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let status = match state.operation {
+                CharacterOperation::CreatingCharacter => Some("Creating character..."),
+                CharacterOperation::DeletingCharacter => Some("Deleting character..."),
+                _ => None,
+            };
+            if let Some(status) = status {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.weak(status);
+                });
+            }
+            ui.columns(2, |columns| {
                 let deletion_target = state.selected_deletable_character_id();
-                if ui
+                if columns[0]
                     .add_enabled(
                         deletion_target.is_some(),
-                        egui::Button::new(egui::RichText::new("Delete").color(theme::ERROR_TEXT)),
+                        Button::new("Delete")
+                            .id(Id::new("delete_character"))
+                            .kind(ButtonKind::Danger)
+                            .full_width(),
                     )
                     .clicked()
                     && let Some(character_id) = deletion_target
                 {
                     message = Some(Message::DeleteCharacter(character_id));
                 }
-
-                let status = match state.operation {
-                    CharacterOperation::CreatingCharacter => Some("Creating character..."),
-                    CharacterOperation::DeletingCharacter => Some("Deleting character..."),
-                    _ => None,
-                };
-                if let Some(status) = status {
-                    ui.add_space(6.0);
-                    ui.add(egui::Spinner::new().size(16.0).color(theme::ACCENT));
-                    ui.label(
-                        egui::RichText::new(status)
-                            .size(12.5)
-                            .color(theme::TEXT_WEAK),
-                    );
+                if columns[1]
+                    .add_enabled(
+                        state.can_launch(),
+                        Button::new("Launch game")
+                            .id(Id::new("launch_game"))
+                            .kind(ButtonKind::Primary)
+                            .icon(Icon::Sword)
+                            .full_width(),
+                    )
+                    .clicked()
+                {
+                    message = Some(Message::Launch);
                 }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::primary_button(ui, "Launch game", state.can_launch(), 150.0).clicked()
-                    {
-                        message = Some(Message::Launch);
-                    }
-                });
             });
-            ui.add_space(2.0);
         });
 
-    let (up, down, enter, delete) = ui.input(|input| {
-        (
-            input.key_pressed(egui::Key::ArrowUp),
-            input.key_pressed(egui::Key::ArrowDown),
-            input.key_pressed(egui::Key::Enter),
-            input.key_pressed(egui::Key::Delete),
-        )
-    });
-    if state.is_idle() {
+    if state.is_idle() && message.is_none() {
+        let focused_control = ui.memory(|memory| memory.focused().is_some());
+        let (up, down, enter, delete) = ui.input(|input| {
+            (
+                input.key_pressed(egui::Key::ArrowUp),
+                input.key_pressed(egui::Key::ArrowDown),
+                input.key_pressed(egui::Key::Enter),
+                input.key_pressed(egui::Key::Delete),
+            )
+        });
         if (up || down)
             && let Some(selection) = adjacent_selection(state, down)
         {
             message = Some(Message::Select(selection));
         }
-        if enter && state.can_launch() {
+        if enter && !focused_control && state.can_launch() {
             message = Some(Message::Launch);
         }
         if delete && let Some(character_id) = state.selected_deletable_character_id() {
@@ -237,257 +277,142 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
     }
 
     egui::ScrollArea::vertical()
+        .id_salt("characters")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if state.sign_in.entrance_servers.is_empty() {
-                theme::warning_banner(ui, "No Entrance service is currently available.");
-                ui.add_space(4.0);
+                show_notice(
+                    ui,
+                    NoticeKind::Warning,
+                    "No Entrance service is currently available.",
+                );
             }
             if let Some(error) = state.error.as_deref() {
-                theme::error_banner(ui, error);
-                ui.add_space(4.0);
+                show_notice(ui, NoticeKind::Danger, error);
             }
-
             for character in state
                 .sign_in
                 .characters
                 .iter()
                 .filter(|character| !character.is_new)
             {
-                if let Some(card_message) = character_card(state, character, ui) {
-                    message = Some(card_message);
+                let selection = CharacterSelection::Existing(character.id);
+                let response = character_card(state, character, ui);
+                if matches!(message, Some(Message::Select(target)) if target == selection) {
+                    response.scroll_to_me(None);
                 }
-                ui.add_space(6.0);
+                if let Some(action) = card_message(state, selection, &response, state.is_idle()) {
+                    message = Some(action);
+                }
             }
-            if let Some(card_message) = character_slot_card(state, ui) {
-                message = Some(card_message);
-            }
-        });
-
-    if let Some(character_id) = state.deletion_target() {
-        let name = state
-            .sign_in
-            .characters
-            .iter()
-            .find(|character| character.id == character_id)
-            .map(character_name)
-            .unwrap_or_default();
-        egui::Modal::new(egui::Id::new("confirm_character_deletion")).show(ui.ctx(), |ui| {
-            ui.set_width(320.0);
-            ui.label(egui::RichText::new("Delete character?").size(16.0).strong());
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(format!(
-                    "{name} will be permanently deleted. This cannot be undone."
-                ))
-                .color(theme::TEXT_WEAK),
+            let response = ui.add_enabled(
+                state.is_idle() && state.has_new_slot(),
+                Button::new(if state.has_new_slot() {
+                    "New character"
+                } else {
+                    "All 16 character slots are in use"
+                })
+                .id(Id::new("new_character"))
+                .icon(Icon::Quest)
+                .selected(state.selection == CharacterSelection::New)
+                .min_size(egui::vec2(0.0, 52.0))
+                .full_width(),
             );
-            ui.add_space(16.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(egui::Button::new("Cancel").min_size(egui::vec2(90.0, 0.0)))
-                    .clicked()
-                {
-                    message = Some(Message::CancelDeletion);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Delete")
-                                    .strong()
-                                    .color(egui::Color32::WHITE),
-                            )
-                            .fill(theme::ERROR)
-                            .min_size(egui::vec2(100.0, 0.0)),
-                        )
-                        .clicked()
-                    {
-                        message = Some(Message::ConfirmDeletion);
-                    }
-                });
-            });
+            if matches!(message, Some(Message::Select(CharacterSelection::New))) {
+                response.scroll_to_me(None);
+            }
+            if let Some(action) = card_message(
+                state,
+                CharacterSelection::New,
+                &response,
+                state.is_idle() && state.has_new_slot(),
+            ) {
+                message = Some(action);
+            }
         });
-        if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-            message = Some(Message::CancelDeletion);
-        }
-    }
-
     message
-}
-
-fn show_closing(ui: &mut egui::Ui) {
-    ui.add_space(ui.available_height() * 0.4);
-    ui.vertical_centered(|ui| {
-        ui.add(egui::Spinner::new().size(28.0).color(theme::ACCENT));
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new("Launching game...")
-                .size(15.0)
-                .color(theme::TEXT_WEAK),
-        );
-    });
 }
 
 fn character_card(
     state: &Characters,
     character: &SignCharacter,
     ui: &mut egui::Ui,
-) -> Option<Message> {
-    let selection = CharacterSelection::Existing(character.id);
-    let selected = state.selection == selection;
-    let fill = if selected {
-        theme::ACCENT.gamma_multiply(0.10)
-    } else {
-        theme::CARD_BG
-    };
-    let stroke = if selected {
-        egui::Stroke::new(1.5, theme::ACCENT)
-    } else {
-        egui::Stroke::new(1.0, theme::BORDER)
-    };
-
-    let (weapon_name, weapon_color) = weapon_style(character.weapon_type);
-    let gender = match character.gender {
-        Gender::Male => "Male",
-        Gender::Female => "Female",
-    };
-    let inner = egui::Frame::new()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(10)
-        .inner_margin(egui::Margin::symmetric(14, 9))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 3.0;
-
-            // Explicit heights avoid egui's 34 px minimum interaction row height.
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 20.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(character_name(character))
-                            .size(15.5)
-                            .strong(),
+) -> egui::Response {
+    let selected = state.selection == CharacterSelection::Existing(character.id);
+    ui.push_id(character.id, |ui| {
+        ui.add_enabled_ui(state.is_idle(), |ui| {
+            let card = Panel::new("")
+                .surface(if selected {
+                    Surface::Parchment
+                } else {
+                    Surface::Leather
+                })
+                .show(ui, |ui| {
+                    let button = ui.add(
+                        Button::new(&character_name(character))
+                            .icon(Icon::Sword)
+                            .selected(selected)
+                            .full_width(),
                     );
-                },
-            );
-
-            let details = match character.last_sign_in_at {
-                Some(last_sign_in_at) => format!(
-                    "HR {} · GR {} · {} · Last sign-in {}",
-                    character.hr,
-                    character.gr,
-                    gender,
-                    format_local_date(last_sign_in_at)
-                ),
-                None => format!("HR {} · GR {} · {}", character.hr, character.gr, gender),
-            };
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 15.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = 5.0;
-                    ui.label(
-                        egui::RichText::new(weapon_name)
-                            .size(12.0)
-                            .strong()
-                            .color(weapon_color),
+                    let gender = match character.gender {
+                        Gender::Male => "Male",
+                        Gender::Female => "Female",
+                    };
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "{} · HR {} · GR {} · {gender}",
+                                weapon_name(character.weapon_type),
+                                character.hr,
+                                character.gr,
+                            ))
+                            .small()
+                            .weak(),
+                        )
+                        .wrap(),
                     );
-                    ui.label(
-                        egui::RichText::new(format!("· {details}"))
-                            .size(11.5)
-                            .color(theme::TEXT_WEAK),
-                    );
-                },
-            );
-        });
-
-    let response = inner
-        .response
-        .interact(egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    if response.hovered() && !selected && state.is_idle() {
-        ui.painter().rect_stroke(
-            response.rect,
-            10,
-            egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.55)),
-            egui::StrokeKind::Inside,
-        );
-    }
-    let rect = response.rect;
-    ui.painter().rect_filled(
-        egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 2.0, rect.top() + 7.0),
-            egui::pos2(rect.left() + 5.0, rect.bottom() - 7.0),
-        ),
-        1.5,
-        weapon_color,
-    );
-
-    card_message(state, selection, &response, state.is_idle())
+                    if let Some(timestamp) = character.last_sign_in_at {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!(
+                                    "Last sign-in {}",
+                                    format_local_date(timestamp)
+                                ))
+                                .small()
+                                .weak(),
+                            )
+                            .wrap(),
+                        );
+                    }
+                    button
+                });
+            card.inner
+                .union(card.response.interact(egui::Sense::CLICK))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+        })
+        .inner
+    })
+    .inner
 }
 
-/// The account's new-character slot, whether or not Sign has already created
-/// the pending character behind it.
-fn character_slot_card(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
-    let selection = CharacterSelection::New;
-    let available = state.has_new_slot();
-    let selected = state.selection == selection;
-    let clickable = state.is_idle() && available;
+fn show_notice(ui: &mut egui::Ui, kind: NoticeKind, text: &str) {
+    egui::ScrollArea::vertical()
+        .id_salt(("notice", kind as u8))
+        .max_height(104.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            notice(ui, kind, text);
+        });
+}
 
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 52.0),
-        if clickable {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
-    let hovered = clickable && response.hovered();
-    let response = if hovered {
-        response.on_hover_cursor(egui::CursorIcon::PointingHand)
-    } else {
-        response
-    };
-
-    if selected {
-        ui.painter()
-            .rect_filled(rect, 10, theme::ACCENT.gamma_multiply(0.10));
-    }
-    let border = if selected {
-        egui::Stroke::new(1.5, theme::ACCENT)
-    } else if hovered {
-        egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.55))
-    } else {
-        egui::Stroke::new(1.0, theme::BORDER)
-    };
-    ui.painter()
-        .rect_stroke(rect, 10, border, egui::StrokeKind::Inside);
-
-    let label = if available {
-        "New character"
-    } else {
-        "All 16 character slots are in use"
-    };
-    let color = if !available {
-        theme::TEXT_WEAK.gamma_multiply(0.7)
-    } else if selected || hovered {
-        theme::ACCENT
-    } else {
-        theme::TEXT_WEAK
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        color,
-    );
-
-    card_message(state, selection, &response, clickable)
+fn show_closing(ui: &mut egui::Ui) {
+    ui.add_space((ui.available_height() * 0.4).max(0.0));
+    Panel::new("Departure").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Launching game...");
+        });
+    });
 }
 
 fn card_message(
@@ -499,7 +424,15 @@ fn card_message(
     if !interactive {
         return None;
     }
-    if response.double_clicked() && state.selection == selection && state.can_launch() {
+    let keyboard_activation = response.clicked()
+        && response.has_focus()
+        && response
+            .ctx
+            .input(|input| input.key_pressed(egui::Key::Enter));
+    if (response.double_clicked() || keyboard_activation)
+        && state.selection == selection
+        && state.can_launch()
+    {
         return Some(Message::Launch);
     }
     response.clicked().then_some(Message::Select(selection))
@@ -530,22 +463,22 @@ fn adjacent_selection(state: &Characters, forward: bool) -> Option<CharacterSele
     selections().nth(index)
 }
 
-fn weapon_style(weapon_type: WeaponType) -> (&'static str, egui::Color32) {
+fn weapon_name(weapon_type: WeaponType) -> &'static str {
     match weapon_type {
-        WeaponType::SwordAndShield => ("Sword & Shield", egui::Color32::from_rgb(143, 163, 191)),
-        WeaponType::HeavyBowgun => ("Heavy Bowgun", egui::Color32::from_rgb(95, 158, 110)),
-        WeaponType::Hammer => ("Hammer", egui::Color32::from_rgb(201, 162, 39)),
-        WeaponType::GreatSword => ("Great Sword", egui::Color32::from_rgb(224, 108, 91)),
-        WeaponType::Lance => ("Lance", egui::Color32::from_rgb(111, 168, 220)),
-        WeaponType::LightBowgun => ("Light Bowgun", egui::Color32::from_rgb(155, 194, 91)),
-        WeaponType::LongSword => ("Long Sword", egui::Color32::from_rgb(217, 79, 112)),
-        WeaponType::DualBlades => ("Dual Blades", egui::Color32::from_rgb(232, 152, 90)),
-        WeaponType::HuntingHorn => ("Hunting Horn", egui::Color32::from_rgb(169, 139, 224)),
-        WeaponType::Gunlance => ("Gunlance", egui::Color32::from_rgb(91, 168, 160)),
-        WeaponType::Bow => ("Bow", egui::Color32::from_rgb(127, 176, 105)),
-        WeaponType::Tonfa => ("Tonfa", egui::Color32::from_rgb(124, 140, 228)),
-        WeaponType::SwitchAxe => ("Switch Axe", egui::Color32::from_rgb(208, 105, 158)),
-        WeaponType::MagnetSpike => ("Magnet Spike", egui::Color32::from_rgb(154, 163, 178)),
+        WeaponType::SwordAndShield => "Sword & Shield",
+        WeaponType::HeavyBowgun => "Heavy Bowgun",
+        WeaponType::Hammer => "Hammer",
+        WeaponType::GreatSword => "Great Sword",
+        WeaponType::Lance => "Lance",
+        WeaponType::LightBowgun => "Light Bowgun",
+        WeaponType::LongSword => "Long Sword",
+        WeaponType::DualBlades => "Dual Blades",
+        WeaponType::HuntingHorn => "Hunting Horn",
+        WeaponType::Gunlance => "Gunlance",
+        WeaponType::Bow => "Bow",
+        WeaponType::Tonfa => "Tonfa",
+        WeaponType::SwitchAxe => "Switch Axe",
+        WeaponType::MagnetSpike => "Magnet Spike",
     }
 }
 
@@ -570,11 +503,16 @@ mod tests {
 
     #[test]
     fn long_errors_keep_sign_in_reachable_at_default_and_minimum_window_sizes() {
-        for size in [egui::vec2(500.0, 520.0), egui::vec2(440.0, 430.0)] {
+        for size in [
+            egui::vec2(680.0, 520.0),
+            egui::vec2(500.0, 520.0),
+            egui::vec2(440.0, 430.0),
+        ] {
             let context = egui::Context::default();
-            theme::install(&context);
+            shrimpman_mhf_launcher::font::install(&context);
+            egui_hunter::Theme::default().apply(&context);
+            let mut view = View::default();
             let mut model = Model::sign_in(None, Some("网络错误 network-error/".repeat(100)));
-            let mut output = egui::FullOutput::default();
             for frame in 0..10 {
                 let events = if frame == 3 {
                     vec![
@@ -589,7 +527,7 @@ mod tests {
                 } else {
                     Vec::new()
                 };
-                output = context.run_ui(
+                let mut output = context.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                         time: Some(f64::from(frame) * 0.1),
@@ -597,31 +535,183 @@ mod tests {
                         ..Default::default()
                     },
                     |ui| {
-                        let _ = show(&mut model, ui);
+                        let _ = view.show(&mut model, ui);
                     },
                 );
                 output.textures_delta.clear();
             }
-            let (clip, button) = output
-                .shapes
-                .iter()
-                .find_map(|clipped| {
-                    if let egui::Shape::Text(text) = &clipped.shape
-                        && text.galley.job.text == "Sign in"
-                    {
-                        Some((
-                            clipped.clip_rect,
-                            text.galley.rect.translate(text.pos.to_vec2()),
-                        ))
-                    } else {
-                        None
-                    }
-                })
+            let button = context
+                .read_response(Id::new("sign_in_submit"))
                 .expect("sign-in button was not rendered");
+            assert!(button.rect.height() >= 42.0);
             assert!(
-                clip.contains_rect(button),
-                "button is clipped at {size:?}: {button:?} in {clip:?}"
+                button.interact_rect.contains_rect(button.rect),
+                "button is clipped at {size:?}: {:?} in {:?}",
+                button.rect,
+                button.interact_rect,
             );
         }
+    }
+
+    #[test]
+    fn keyboard_sign_in_respects_focus_and_submission_state() {
+        let context = egui::Context::default();
+        shrimpman_mhf_launcher::font::install(&context);
+        egui_hunter::Theme::default().apply(&context);
+        let mut view = View::default();
+        let mut model = Model::sign_in(
+            Some(shrimpman_mhf_launcher::PasswordCredentials {
+                username: "hunter".to_owned(),
+                password: "secret".to_owned(),
+            }),
+            None,
+        );
+        for _ in 0..2 {
+            frame(&context, &mut view, &mut model, vec![]);
+        }
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(Id::new("sign_in_username"))
+        );
+
+        frame(&context, &mut view, &mut model, key(egui::Key::Tab));
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(Id::new("sign_in_password"))
+        );
+        assert!(matches!(
+            frame(&context, &mut view, &mut model, key(egui::Key::Enter)),
+            Some(Message::SignIn)
+        ));
+
+        frame(&context, &mut view, &mut model, key(egui::Key::Tab));
+        assert!(frame(&context, &mut view, &mut model, key(egui::Key::Enter)).is_none());
+        let Model::SignIn(state) = &model else {
+            panic!("expected sign-in page");
+        };
+        assert!(!state.form.remember_password);
+
+        frame(&context, &mut view, &mut model, key(egui::Key::Tab));
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(Id::new("sign_in_submit"))
+        );
+        assert!(matches!(
+            frame(&context, &mut view, &mut model, key(egui::Key::Enter)),
+            Some(Message::SignIn)
+        ));
+        model = model.update(Message::SignIn).0;
+        assert!(frame(&context, &mut view, &mut model, key(egui::Key::Enter)).is_none());
+    }
+
+    #[test]
+    fn deletion_dialog_defaults_to_cancel_and_restores_focus() {
+        use shrimpman_domain::{account::CourseRights, character::CharacterId};
+        use shrimpman_mhf_launcher::{IssuedSignSession, SignInSuccess};
+        let context = egui::Context::default();
+        shrimpman_mhf_launcher::font::install(&context);
+        egui_hunter::Theme::default().apply(&context);
+        let mut view = View::default();
+        let id = CharacterId::from(7);
+        let timestamp = "2026-09-07T00:00:00Z".parse().unwrap();
+        let mut model = Model::Characters(Characters {
+            form: Default::default(),
+            sign_in: SignInSuccess {
+                session: IssuedSignSession {
+                    session_id: 11.into(),
+                    token: *b"0123456789abcdef",
+                    issued_at: timestamp,
+                },
+                entrance_servers: vec!["127.0.0.1:53310".parse().unwrap()],
+                characters: vec![SignCharacter {
+                    id,
+                    name: "Hunter".into(),
+                    gr: 2,
+                    hr: 3,
+                    weapon_type: WeaponType::GreatSword,
+                    gender: Gender::Female,
+                    last_sign_in_at: None,
+                    is_new: false,
+                }],
+                notices: vec![],
+                last_character_id: None,
+                rights: CourseRights::empty(),
+                return_expires_at: timestamp,
+                festa: None,
+            },
+            selection: CharacterSelection::Existing(id),
+            operation: CharacterOperation::Idle,
+            error: None,
+        });
+        for _ in 0..2 {
+            frame(&context, &mut view, &mut model, vec![]);
+        }
+        context.memory_mut(|memory| memory.request_focus(Id::new("delete_character")));
+        let message = frame(&context, &mut view, &mut model, key(egui::Key::Enter));
+        assert!(matches!(message, Some(Message::DeleteCharacter(target)) if target == id));
+        model = model.update(message.unwrap()).0;
+        for _ in 0..2 {
+            frame(&context, &mut view, &mut model, vec![]);
+        }
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(Id::new("cancel_character_deletion"))
+        );
+        let message = frame(&context, &mut view, &mut model, key(egui::Key::Enter));
+        assert!(matches!(message, Some(Message::CancelDeletion)));
+        model = model.update(message.unwrap()).0;
+        for _ in 0..2 {
+            frame(&context, &mut view, &mut model, vec![]);
+        }
+        assert!(!view.deletion_dialog.is_open());
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(Id::new("delete_character"))
+        );
+
+        model = model.update(Message::DeleteCharacter(id)).0;
+        for _ in 0..2 {
+            frame(&context, &mut view, &mut model, vec![]);
+        }
+        assert!(matches!(
+            frame(&context, &mut view, &mut model, key(egui::Key::Escape)),
+            Some(Message::CancelDeletion)
+        ));
+    }
+
+    fn key(key: egui::Key) -> Vec<egui::Event> {
+        [true, false]
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .into()
+    }
+
+    fn frame(
+        context: &egui::Context,
+        view: &mut View,
+        model: &mut Model,
+        events: Vec<egui::Event>,
+    ) -> Option<Message> {
+        let mut message = None;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(680.0, 520.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                message = view.show(model, ui);
+            },
+        );
+        output.textures_delta.clear();
+        message
     }
 }

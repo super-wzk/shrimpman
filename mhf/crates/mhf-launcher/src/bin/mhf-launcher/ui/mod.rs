@@ -1,5 +1,4 @@
 mod model;
-mod theme;
 mod view;
 
 use crate::{credentials::CredentialStore, http};
@@ -22,7 +21,7 @@ pub(crate) fn run(
     let app = EframeApp::new(client, credential_store, &mut launch_request);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([500.0, 520.0])
+            .with_inner_size([680.0, 520.0])
             .with_min_inner_size([440.0, 430.0]),
         centered: true,
         ..Default::default()
@@ -31,7 +30,8 @@ pub(crate) fn run(
         "Shrimpman MHF Launcher",
         options,
         Box::new(move |creation_context| {
-            theme::install(&creation_context.egui_ctx);
+            shrimpman_mhf_launcher::font::install(&creation_context.egui_ctx);
+            egui_hunter::Theme::default().apply(&creation_context.egui_ctx);
             Ok(Box::new(app))
         }),
     )
@@ -41,6 +41,7 @@ pub(crate) fn run(
 
 struct EframeApp<'a> {
     model: Model,
+    view: view::View,
     client: http::Client,
     credential_store: CredentialStore,
     messages: Receiver<Message>,
@@ -61,6 +62,7 @@ impl<'a> EframeApp<'a> {
         };
         Self {
             model,
+            view: view::View::default(),
             client,
             credential_store,
             messages,
@@ -173,7 +175,7 @@ impl eframe::App for EframeApp<'_> {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if let Some(message) = view::show(&mut self.model, ui) {
+        if let Some(message) = self.view.show(&mut self.model, ui) {
             self.dispatch(message, ui.ctx());
         }
     }
