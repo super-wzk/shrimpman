@@ -9,6 +9,26 @@
 let
   inherit (lib) getExe mkDefault;
   host = pkgs.stdenv.hostPlatform;
+  llvm = pkgs.llvmPackages;
+  windowsSdk = pkgs.windows.sdk.overrideAttrs (previous: {
+    src = previous.src.overrideAttrs {
+      xwinArgs = [
+        "--manifest=${pkgs.path}/pkgs/os-specific/windows/msvcSdk/manifest.json"
+        "--accept-license"
+        "--cache-dir=${placeholder "out"}"
+        "--arch=x86"
+        "download"
+      ];
+      outputHash = (lib.importJSON (pkgs.path + "/pkgs/os-specific/windows/msvcSdk/hashes.json")).x86;
+      passthru.arch = "x86";
+    };
+  });
+  windowsCFlags = lib.concatStringsSep " " [
+    "/imsvc${windowsSdk}/crt/include"
+    "/imsvc${windowsSdk}/sdk/include/ucrt"
+    "/imsvc${windowsSdk}/sdk/include/shared"
+    "/imsvc${windowsSdk}/sdk/include/um"
+  ];
   command =
     name: text:
     mkCommand {
@@ -33,7 +53,6 @@ in
   };
   config = {
     development.packages = [
-      pkgs.cargo-xwin
       pkgs.llvmPackages.clang
       pkgs.llvmPackages.lld
       pkgs.llvmPackages.llvm
@@ -41,11 +60,25 @@ in
     ++ lib.optionals (host.system == "x86_64-linux") [
       pkgs.wineWow64Packages.stable
     ];
+    development.environment = {
+      CC_i686_pc_windows_msvc = "${llvm.clang-unwrapped}/bin/clang-cl";
+      CXX_i686_pc_windows_msvc = "${llvm.clang-unwrapped}/bin/clang-cl";
+      AR_i686_pc_windows_msvc = "${llvm.llvm}/bin/llvm-lib";
+      RANLIB_i686_pc_windows_msvc = "${llvm.llvm}/bin/llvm-ranlib";
+      CFLAGS_i686_pc_windows_msvc = windowsCFlags;
+      CXXFLAGS_i686_pc_windows_msvc = windowsCFlags;
+      CARGO_TARGET_I686_PC_WINDOWS_MSVC_LINKER = "${llvm.lld}/bin/lld-link";
+      CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = lib.concatStringsSep " " [
+        "-Lnative=${windowsSdk}/crt/lib/x86"
+        "-Lnative=${windowsSdk}/sdk/lib/um/x86"
+        "-Lnative=${windowsSdk}/sdk/lib/ucrt/x86"
+      ];
+    };
     development.commands = {
       mhf-build = mkDefault (
         command "mhf-build" ''
-          exec cargo xwin build -p shrimpman-mhf-launcher --release \
-            --target i686-pc-windows-msvc --xwin-arch x86 --locked "$@"
+          exec cargo build -p shrimpman-mhf-launcher --release \
+            --target i686-pc-windows-msvc --locked "$@"
         ''
       );
       mhf-launcher = mkDefault (
@@ -64,7 +97,7 @@ in
             # shellcheck disable=SC2016
             configDirectory=${shellPath config.development.stateDirectory}/config
             ${pkgs.coreutils}/bin/mkdir -p "$configDirectory"
-            export MHF_CONFIG="$configDirectory/${builtins.baseNameOf config.generatedFiles."mhf/mhf.toml"}"
+            export MHF_CONFIG="$configDirectory/${baseNameOf config.generatedFiles."mhf/mhf.toml"}"
             if [[ ! -e "$MHF_CONFIG" ]]; then
               ${pkgs.coreutils}/bin/install -m 600 ${config.generatedFiles."mhf/mhf.toml"} "$MHF_CONFIG"
             fi

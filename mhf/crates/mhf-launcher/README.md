@@ -177,8 +177,12 @@ nix run --impure .#mhf-launcher
 nix run .#mhf-build
 ```
 
-`mhf-build` 在全部受支持的 Nix 主机上使用 `cargo-xwin --xwin-arch x86`，
-由 flake 提供 LLVM 工具。当前 flake 的输出仅覆盖
+`mhf-build` 使用普通 `cargo build`。Flake 提供 LLVM 和 x86 Windows SDK/CRT，
+并设置 `i686-pc-windows-msvc` 专用编译、归档和链接环境变量；进入 `nix develop`
+后也可在 `mhf/` 直接执行 `cargo check --workspace --all-targets`。
+RustRover 需继承该开发环境，再重新加载 Cargo 项目，无需 Cargo wrapper。
+SDK 由 Nixpkgs 的 xwin 构建步骤准备，项目的 Nix 配置接受其 Microsoft 软件许可。
+当前 flake 的输出仅覆盖
 macOS/Linux；原生 Windows 使用上面的 Cargo 和 EXE 命令，WSL 使用 Linux 输出。
 Cargo 会判断构建输入是否变化并复用未变化的产物。游戏目录由 `development.mhf.gameDirectory`
 提供；Nix 默认使用 `$PROJECT_STATE/config/` 下生成配置的可写副本；脱离 Nix 时使用 `mhf/mhf.toml`，`MHF_CONFIG` 中的相对路径以 `mhf/` 为基准。

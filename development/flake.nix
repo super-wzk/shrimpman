@@ -71,6 +71,10 @@ in
       _module.args.pkgs = import nixpkgs {
         inherit system;
         overlays = [ rust-overlay.overlays.default ];
+        config = {
+          microsoftVisualStudioLicenseAccepted = true;
+          allowUnfreePredicate = package: (package.meta.license.shortName or "") == "msvc";
+        };
       };
 
       process-compose.shrimpman-dev.imports = modules ++ localModules;
