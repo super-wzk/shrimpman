@@ -1,12 +1,5 @@
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use shrimpman_domain::{
-    account::CourseRights,
-    character::{CharacterId, Gender, WeaponType},
-    mezeporta::MezeportaFesta,
-    session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
-};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::Ipv4Addr;
 
 #[derive(Clone, Copy)]
 pub struct MhfLaunchProfile<'a> {
@@ -16,15 +9,6 @@ pub struct MhfLaunchProfile<'a> {
     pub instance_mutex_prefix: &'a str,
     pub ready_mutex_prefix: &'a str,
     pub host_message: &'a str,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct Config {
-    pub credentials: PasswordCredentials,
-    pub sign_in: SignInSuccess,
-    pub selected_character_id: CharacterId,
-    pub translation: Option<TranslationConfig>,
-    pub mhf: MhfConfig,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -42,84 +26,6 @@ pub enum MissingTranslation {
     Original,
     Key,
     Empty,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct PasswordCredentials {
-    pub username: String,
-    pub password: String,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct IssuedSignSession {
-    pub session_id: SignSessionId,
-    pub token: [u8; SIGN_SESSION_TOKEN_LEN],
-    pub issued_at: Timestamp,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct SignCharacter {
-    pub id: CharacterId,
-    pub name: String,
-    pub gr: u16,
-    pub hr: u16,
-    pub weapon_type: WeaponType,
-    pub gender: Gender,
-    pub last_sign_in_at: Option<Timestamp>,
-    pub is_new: bool,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct SignInSuccess {
-    pub session: IssuedSignSession,
-    pub entrance_servers: Vec<SocketAddrV4>,
-    pub characters: Vec<SignCharacter>,
-    pub notices: Vec<String>,
-    pub last_character_id: Option<CharacterId>,
-    pub rights: CourseRights,
-    pub return_expires_at: Timestamp,
-    pub festa: Option<MezeportaFesta>,
-}
-
-impl SignInSuccess {
-    pub(crate) fn selected_character(
-        &self,
-        selected_character_id: CharacterId,
-    ) -> Result<&SignCharacter, String> {
-        if self.entrance_servers.is_empty() {
-            return Err("sign-in result has no entrance server".to_owned());
-        }
-        if self
-            .entrance_servers
-            .iter()
-            .any(|server| server.port() == 0)
-        {
-            return Err("sign-in result contains an entrance server with port 0".to_owned());
-        }
-        if self.characters.len() > 16 {
-            return Err(format!(
-                "sign-in result has {} characters; at most 16 are supported",
-                self.characters.len(),
-            ));
-        }
-        if u32::from(self.session.session_id) == 0 {
-            return Err("sign session ID must not be 0".to_owned());
-        }
-        if self
-            .characters
-            .iter()
-            .any(|character| u32::from(character.id) == 0)
-        {
-            return Err("character IDs must not be 0".to_owned());
-        }
-
-        self.characters
-            .iter()
-            .find(|character| character.id == selected_character_id)
-            .ok_or_else(|| {
-                "selected_character_id does not identify an authenticated character".to_owned()
-            })
-    }
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -378,7 +284,7 @@ impl Default for MhfFontConfig {
         Self {
             quality: FontQuality::default(),
             weight: 400,
-            name: "JetBrains Maple Mono NF NL HT".to_owned(),
+            name: crate::font::FAMILY_NAME.to_owned(),
         }
     }
 }

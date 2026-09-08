@@ -1,4 +1,10 @@
-# MHF launcher
+# MHF launchers
+
+同一个 package 提供两个独立 bin：`mhf-launcher` 负责登录和角色选择，
+`mhf-debug-launcher` 直接启动离线任务。`login`、`debug` 特性分别控制两条入口；
+默认仅启用 `login`。独立调试构建不编译或链接登录界面、eframe/wgpu、Sign HTTP
+客户端与凭据存储，也不要求 `[sign]` 配置。游戏内调试 Overlay、字体、汉化、
+几何扩展及 INI 配置桥接仍保留。
 
 这个 Windows PE32 应用使用 egui/eframe 提供登录和角色选择界面，通过 Sign HTTP
 API 获取真实会话和角色数据，再启动 `mhfo.dll` 或 `mhfo-hd.dll`。Sign API 地址由
@@ -79,12 +85,82 @@ INI、汉化/GDI、D3D9 和 DirectInput 分别持有自己的 hook 组，共用 
 每次启动都保持 `mhf_mutex_number = 0`，并用当前进程 ID 创建独立的
 `MHF_MASTER` 与 `MHF_MASTER_READY` 互斥量，因此允许多开。
 
+HD 启动会安装独立的 [`mhf-geometry`](../geometry/README.md) 模块，将模型加载后的
+顶点索引、三角条带和绘制批次计数扩展为 32 位，并更新四条原生绘制路径。原有 FMOD
+资源无需转换；模型分配和释放仍由原生生命周期管理。模块目前针对已核对的 ZZ HD DLL，
+不匹配的指令签名会在启动前报错；标准画质客户端不安装此扩展。
+
+## 离线任务调试
+
+直接运行 `mhf-debug-launcher`，在内存中生成临时猎人，默认加载极驱迅龙使用的
+**古迹大地图**，从营地 460 出生。任务 BIN 内嵌在启动器中，无需另行下载或提供任务文件；
+加载时将任务标题、目标、成败条件、委托人与说明替换为中文 UTF-8 文本。
+也可用 `--quest <BIN>` 加载指定任务，保留该文件的文本和出生配置。
+目前实现针对当前 ZZ HD 客户端，接受编号 40000 以上的活动任务；文件可为原始 BIN
+或 JKR 类型 3 压缩文件，解压内容不得超过游戏的 32 KiB 任务缓冲区。
+
+在项目的开发环境中，例如：
+
+```sh
+rtk proxy direnv exec /Users/wzk/Projects/RustProjects/shrimpman mhf-debug-launcher
+```
+
+传入自定义 BIN 时，当前 macOS Wine 环境使用 `Z:\...` 路径；原生 Windows 使用本地路径。
+游戏目录和 TOML 配置沿用 `--game-dir`、`--config` 及开发环境配置。
+
+游戏内调试窗口默认打开，按 **F7** 显示或隐藏。**F8** 仍是现有组件验证窗口。
+窗口随游戏画面限制最大尺寸，内容在窗口内滚动；下拉列表按上下剩余空间限制高度。
+
+- **装备**：按武器种类或防具部位筛选、搜索名称或编号，点击“换装”后重载当前任务。
+  装备名称与编号来自已加载的 DAT；操作只修改当前进程中的临时角色。
+- **实际招式**：选择任意招式来源武器，点击“触发”调用原生招式状态机。
+  跨武器时保留当前装备记录，在重载任务期间切换本地猎人的招式分类，让后续原生加载器
+  载入对应的动作资源；加载完成后触发选中的招式。“招式跟随装备”恢复正常对应关系。
+  招式列表使用客户端动作目录中的编号，未确认名称的招式不推测名称。
+- **状态**：显示装备类型、招式来源、状态类别与编号、动作阶段、动画编号、当前帧和位置。
+- **一键换区**：窗口顶部选择当前地图内的目标区域后点击“一键换区”，无需走到出口。
+  默认古迹地图可在营地 460 与战斗区 461 间切换；优先使用任务入口的落点，没有返回
+  入口的区域使用客户端原生出生点。变身时会携带所选怪物，并在载入后恢复操控。
+- **怪物变身**：从完整中文种类列表选择，点击“变身并操控”后重载当前地图、加载所选
+  怪物的模型与动作资源，保留原任务怪物，再单独生成并接管一个受控实例。无需场上已有
+  该种类；即使与任务目标同种，也不会接管或替换目标。受控实例不注册为主任务目标。
+  其他怪物保留 AI，并通过同步到怪物位置的玩家代理锁定你。猎人只在绘制时隐藏；
+  攻击玩家代理的命中交给受控怪物的身体与伤害状态处理，受控怪物的攻击可命中其他
+  怪物，并排除自己及玩家代理。敌对命中还会放行身体部位对怪物攻击类型的过滤，
+  使用独立受击数据副本，保留原来的形状、部位和免疫状态。伤害和受击反应沿用原生逻辑。
+  窗口顶部的“交战状态”显示双方原生 HP、命中检查次数、确认命中次数和最近一次
+  实际扣血；命中计数与扣血分别记录，以区分受击判定和后续生命值结算。
+  选择种类后立即显示其真实招式目录，支持筛选、直接触发和绑定快捷键 1–4；
+  尚未变身时，触发招式会先加载对应怪物，再执行所选招式。
+  点击游戏区域使焦点离开调试窗口后，W/S 相对镜头前后移动、A/D 相对镜头左右移动、Q/E 调试升降、
+  Shift 加速；窗口可以保持打开。调试窗口或其他 Overlay 控件有键盘焦点时暂停操控。
+  变身镜头默认拉远至至少 1200、俯视 20°，可在“操控设置与说明”里调整距离和
+  垂直角度（−60° 至 80°，正值俯视、0° 平视、负值仰视）；恢复猎人后使用原生镜头。
+  进入任务原生出口的水平范围可换区；在怪物碰撞处理前探测入口，站在跳崖入口上方
+  也会直接触发，不要求继续移动、面朝入口或处于特定高度。入口下方不会反向触发；
+  多个入口上下重叠时选择最近的下方入口。目标区域、落点与朝向来自任务入口记录。
+  加载期间暂停操控，完成后在新区的原生落点继续使用
+  所选怪物，并重新应用镜头距离与垂直角度。怪物自动朝移动方向转身，斜向移动不加速；
+  移动方向取镜头朝向在地面上的投影，调整俯仰角不会改变移动速度。
+  猎人模型隐藏期间仍同步区域、朝向，并更新原生地图坐标，使地图位置箭头跟随怪物。
+  “原生选招”位于折叠的操控设置中，R 可执行一次选招，不是显示招式目录的前置步骤。
+  Backspace 或“恢复猎人”重载原始任务，恢复原有装备和猎人操控。
+  变身任务副本只存在于内存，原始 BIN 不变。客户端最多同时载入 6 种怪物资源；
+  资源槽已满时选择已载入种类，或恢复猎人后换一个任务。特殊巨型怪物、机关及部分形态仍依赖
+  对应地图与任务脚本；当前招式目录只收录能从客户端明确提取或运行中观察到的编号。
+- **任务控制**：“重开任务”重新加载同一文件；“结束调试”通知原生主循环退出。
+
+UI 只发送命令并读取快照，所有角色、装备、动作和场景变更均在原生任务调度线程执行。
+离线 hook 随此次启动安装，并拦截 `connect` / `WSAConnect`；普通在线启动不安装它们。
+跨武器招式混用属于实验调试功能：此实现没有为每种混搭补齐专属武器计量槽、弹药或附属对象，
+这些调试行为尚未逐项进行游戏内验证。
+
 ## 代码结构
 
 - `src/abi.rs`：32 位 `repr(C)` 结构、函数签名和布局断言。
-- `src/model.rs`：定义游戏 `MhfConfig`、启动时的 Sign 登录结果和启动 profile；角色、
-  会话与权限复用 workspace 领域类型。
+- `src/model.rs`：定义共用的游戏 `MhfConfig` 和启动 profile。
 - `src/launcher.rs`：负责领域模型到 ABI 的映射及 Win32 启动流程。
+- `src/debug/`：离线任务解压、原生调试 hook、游戏线程命令与快照、内嵌调试窗口。
 - `src/text/`：接管原生 UTF-8 分词、编辑、标记展开、换行和字形缓存；光标与容量仍
   以字节计，排版使用 Unicode 显示列数，Win32 绘制和剪贴板使用 UTF-16。IME 提交与
   普通 `WM_CHAR` 都按 Unicode 输入，删除、选区和滚动不会拆开 UTF-8 字符。
@@ -105,11 +181,13 @@ INI、汉化/GDI、D3D9 和 DirectInput 分别持有自己的 hook 组，共用 
 - `src/bin/mhf-launcher/http/`：Sign HTTP 客户端及按 API 命名空间组织的请求、响应
   模型。
 - `src/bin/mhf-launcher/ui/`：按 Elm 结构组织状态更新、界面渲染和 eframe 适配。
-- `src/bin/mhf-launcher/config.rs`：解析 `[sign.http]`、`[translation]` 和强类型
+- `src/runtime/config.rs`：共用 `[translation]` 和强类型
   `MhfConfig`，并将后者映射到 TOML 持久化格式；原始 `toml::Table` 只封装在私有
-  `Store` 中。
-- `src/bin/mhf-launcher/ini_hook.rs`：把 Win32 Profile API 代理到 TOML。
-- `src/bin/mhf-launcher/runtime.rs`：准备游戏目录与配置，并在 UI 退出后执行游戏启动。
+  `Store` 中；只有正常启动入口才读取并校验 `[sign.http]`。
+- `src/runtime/ini_hook.rs`：把 Win32 Profile API 代理到 TOML。
+- `src/runtime/mod.rs`：共用目录解析、字体注册、INI Hook 和启动清理。
+- `src/bin/mhf-debug-launcher/main.rs`：解析离线任务参数，直接启动调试会话。
+- `src/sign.rs`：仅 `login` 特性编译的 Sign 会话与角色类型。
 - `translations/`：`resources.json` 定义带稳定 `id` 的资源表及客户端运行时绑定；
   每个 UTF-8 JSONL 对应一个 locale，也可以为空。`build.rs` 根据 layout 生成资源 hook、
   校验翻译键，并把各 locale 的稀疏 UTF-8 覆盖编译成直接嵌入 EXE 的二进制字典；生成的
@@ -122,7 +200,8 @@ profile 只使用 Rust 的 `&str`；DLL 名、INI 名、互斥量前缀和宿主
 长度 token；DLL 所需的原始 `u32` 只出现在 ABI 映射边界。crate 只支持 i686
 Windows。
 
-游戏文本和 Sign/Entrance 协议一起使用 UTF-8，需要配套的 Shrimpman 服务端。固定
+游戏文本和 Sign/Entrance 协议一起使用 UTF-8，联网启动需要配套的 Shrimpman 服务端；
+离线调试不连接这些服务。固定
 字段保留原字节容量，例如 Sign 角色名字段为 16 字节（含结尾 NUL），不会为了编码
 迁移扩展协议包。原生游戏目录参数仍限制为 ASCII；更改文本编码不改变这个路径约束。
 
@@ -132,7 +211,8 @@ DLL 均为 32 位，因此必须构建 i686 版本。原生 Windows 安装 MSVC 
 Windows SDK 后使用 Cargo，直接运行生成的 EXE，不需要 cargo-xwin 或 Wine：
 
 ```text
-cargo build -p shrimpman-mhf-launcher --release --target i686-pc-windows-msvc
+cargo build -p shrimpman-mhf-launcher --bin mhf-launcher --release --target i686-pc-windows-msvc
+cargo build -p shrimpman-mhf-launcher --bin mhf-debug-launcher --no-default-features --features debug --release --target i686-pc-windows-msvc
 ```
 
 启动器使用 clap 解析独立选项。未提供 `-c/--config` 时读取启动器同目录的
@@ -145,6 +225,8 @@ mhf-launcher.exe
 mhf-launcher.exe --config mhf.toml --game-dir D:\\mhf
 mhf-launcher.exe -d D:\\mhf
 mhf-launcher.exe --help
+mhf-debug-launcher.exe --config mhf.toml --game-dir D:\mhf
+mhf-debug-launcher.exe --quest quest.bin --config mhf.toml --game-dir D:\mhf
 ```
 
 在 macOS/Linux 的仓库根目录进入 flake 开发环境后，用开发命令构建和启动：
@@ -153,6 +235,8 @@ mhf-launcher.exe --help
 nix develop --impure
 mhf-build
 mhf-launcher
+mhf-debug-build
+mhf-debug-launcher
 MHF_CONFIG=mhf.local.toml mhf-launcher
 ```
 
@@ -175,24 +259,31 @@ Direnv 自动加载可选本地模块。手动使用本地模块时，从仓库�
 nix develop --impure
 nix run --impure .#mhf-launcher
 nix run .#mhf-build
+nix run .#mhf-debug-build
+nix run --impure .#mhf-debug-launcher
 ```
 
-`mhf-build` 使用普通 `cargo build`。Flake 提供 LLVM 和 x86 Windows SDK/CRT，
+`mhf-build` 和 `mhf-debug-build` 分别只构建自己的 bin，显式选择 `login` 或 `debug` 特性，使用普通 `cargo build`。Flake 提供 LLVM 和 x86 Windows SDK/CRT，
 并设置 `i686-pc-windows-msvc` 专用编译、归档和链接环境变量；进入 `nix develop`
-后也可在 `mhf/` 直接执行 `cargo check --workspace --all-targets`。
+后也可在 `mhf/` 直接执行 `cargo check --workspace --all-features --all-targets`。
 RustRover 需继承该开发环境，再重新加载 Cargo 项目，无需 Cargo wrapper。
 SDK 由 Nixpkgs 的 xwin 构建步骤准备，项目的 Nix 配置接受其 Microsoft 软件许可。
 当前 flake 的输出仅覆盖
 macOS/Linux；原生 Windows 使用上面的 Cargo 和 EXE 命令，WSL 使用 Linux 输出。
 Cargo 会判断构建输入是否变化并复用未变化的产物。游戏目录由 `development.mhf.gameDirectory`
-提供；Nix 默认使用 `$PROJECT_STATE/config/` 下生成配置的可写副本；脱离 Nix 时使用 `mhf/mhf.toml`，`MHF_CONFIG` 中的相对路径以 `mhf/` 为基准。
+提供。Nix 使用 `$PROJECT_STATE/config/mhf.toml` 作为可写配置，默认路径为
+`.state/config/mhf.toml`；同目录的 `mhf.generated.toml` 保存上次 Nix 原始生成内容。
+启动时按生成内容与快照比较：内容相同则复用可写配置，保留游戏回写的设置；内容变化时
+刷新两份文件，并重置此前游戏回写的设置。文件名固定，不再按哈希积累历史配置。
+设置 `MHF_CONFIG` 可使用独立管理的配置，其相对路径以 `mhf/` 为基准；脱离 Nix 时
+使用 `mhf/mhf.toml`。
 启动方式独立选择：macOS/Linux 默认使用 Wine；检测到 WSL 的 Windows 互操作
 已启用时直接执行 EXE，通过 `wslpath` 转换配置和游戏目录，并通过 `WSLENV`
 转发 `MHF_*` 环境变量。显式设置 `development.mhf.runner`
 可指定 Wine 可执行文件，设为空字符串则直接执行 EXE；`WINEPREFIX` 默认为
 `$PROJECT_STATE/wine`，公共状态目录默认是仓库的 `.state/`。原生 Windows 直接执行 EXE。
 MHF 配置副本和 Wine 默认环境仅在启动器运行时准备，进入开发环境或编译时不会初始化。
-Sign HTTP 地址默认使用开发环境的 Nix 选项 `development.ports.signHttp`（53001），可通过
+正常启动器的 Sign HTTP 地址默认使用开发环境的 Nix 选项 `development.ports.signHttp`（53001），可通过
 `MHF_SIGN__HTTP__BASE_URL` 覆盖。`shrimpman-dev up` 启动服务端和 etcd；启动器也可
 在 process-compose 的 TUI 中手动启动。命令和环境变量覆盖详见仓库根目录 README。
 

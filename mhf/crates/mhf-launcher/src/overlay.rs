@@ -11,9 +11,15 @@ use mhf_overlay::{
 
 pub(crate) unsafe fn install(
     module: windows::Win32::Foundation::HMODULE,
+    #[cfg(feature = "debug")] debug: Option<std::sync::Arc<crate::debug::DebugControl>>,
 ) -> Result<OverlayHook, String> {
     let adapter = unsafe { ime::GameIme::new(module) }?;
-    let renderer = unsafe { D3d9Hook::install_with_ime(GameOverlay::default(), adapter.clone()) }
+    let ui = GameOverlay {
+        validation: Default::default(),
+        #[cfg(feature = "debug")]
+        debug: debug.map(crate::debug::DebugWindow::new),
+    };
+    let renderer = unsafe { D3d9Hook::install_with_ime(ui, adapter.clone()) }
         .map_err(|error| format!("failed to install D3D9 overlay: {error}"))?;
     let input = unsafe { input::install(renderer.input_capture()) }?;
     let ime = unsafe { adapter.install(renderer.input_capture()) }?;
@@ -47,9 +53,10 @@ impl OverlayHook {
     }
 }
 
-#[derive(Default)]
 struct GameOverlay {
     validation: validation::ValidationPage,
+    #[cfg(feature = "debug")]
+    debug: Option<crate::debug::DebugWindow>,
 }
 
 impl Overlay for GameOverlay {
@@ -61,11 +68,23 @@ impl Overlay for GameOverlay {
     fn ui(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx();
         self.validation.show(context);
+        #[cfg(feature = "debug")]
+        if let Some(debug) = &mut self.debug {
+            debug.show(
+                context,
+                self.validation.input_policy().keyboard != mhf_overlay::InputCapture::Block,
+            );
+        }
         draw_cursor(context);
     }
 
     fn input_policy(&self, _context: &Context) -> InputPolicy {
-        self.validation.input_policy()
+        let policy = self.validation.input_policy();
+        #[cfg(feature = "debug")]
+        if self.debug.is_some() && policy.keyboard != mhf_overlay::InputCapture::Block {
+            return InputPolicy::default();
+        }
+        policy
     }
 }
 

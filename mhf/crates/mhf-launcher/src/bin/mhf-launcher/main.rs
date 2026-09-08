@@ -1,23 +1,10 @@
 use clap::Parser;
-use shrimpman_mhf_launcher::MhfLaunchProfile;
+use shrimpman_mhf_launcher::runtime::{self, PROFILE};
 use std::{path::PathBuf, process::ExitCode};
 
-mod config;
 mod credentials;
-mod font;
 mod http;
-mod ini_hook;
-mod runtime;
 mod ui;
-
-const PROFILE: MhfLaunchProfile<'static> = MhfLaunchProfile {
-    mhfo_dll: "mhfo.dll",
-    mhfo_hd_dll: "mhfo-hd.dll",
-    ini_name: "mhf.ini",
-    instance_mutex_prefix: "Monster Hunter Frontier Z MHF_MASTER",
-    ready_mutex_prefix: "Monster Hunter Frontier Z MHF_MASTER_READY",
-    host_message: "Host protection service is unavailable",
-};
 
 #[derive(Parser)]
 #[command(about = "Monster Hunter Frontier launcher", version)]
@@ -49,9 +36,9 @@ fn main() -> ExitCode {
 
 fn run(config_path: Option<PathBuf>, game_dir: Option<PathBuf>) -> Result<Option<i32>, String> {
     let prepared = runtime::prepare(config_path, game_dir)?;
-    let credential_store = credentials::CredentialStore::new(prepared.sign_http_base_url());
-    let client =
-        http::Client::new(prepared.sign_http_base_url()).map_err(|error| error.to_string())?;
+    let sign_http_base_url = prepared.sign_http_base_url()?;
+    let credential_store = credentials::CredentialStore::new(&sign_http_base_url);
+    let client = http::Client::new(&sign_http_base_url).map_err(|error| error.to_string())?;
     let Some(request) = ui::run(client, credential_store)? else {
         return Ok(None);
     };
@@ -63,4 +50,25 @@ fn run(config_path: Option<PathBuf>, game_dir: Option<PathBuf>) -> Result<Option
             request.selected_character_id,
         )
         .map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_launcher_accepts_paths_and_rejects_debug_mode() {
+        let args = Args::try_parse_from([
+            "mhf-launcher",
+            "--config",
+            "online.toml",
+            "--game-dir",
+            "game",
+        ])
+        .unwrap();
+        assert_eq!(args.config_path, Some(PathBuf::from("online.toml")));
+        assert_eq!(args.game_dir, Some(PathBuf::from("game")));
+        assert!(Args::try_parse_from(["mhf-launcher", "--debug-quest"]).is_err());
+        assert!(Args::try_parse_from(["mhf-launcher", "--quest", "quest.bin"]).is_err());
+    }
 }

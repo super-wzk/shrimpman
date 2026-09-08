@@ -1,36 +1,69 @@
 use crate::{
-    Config, GraphicsVersion, MhfConfig, MhfLaunchParams32, MhfLaunchProfile, SignInSuccess,
+    GraphicsVersion, MhfConfig, MhfLaunchParams32, MhfLaunchProfile,
     abi::{
         GameMain, HostServices32, MhfGlobalData32, MhfHostData32, copy_ascii_c_string,
         copy_utf8_c_string, function32, ptr32,
     },
 };
+#[cfg(feature = "login")]
+use crate::{SignInSuccess, sign::Config};
 use std::{
     ffi::{CStr, CString, c_char, c_void},
     sync::atomic::{AtomicPtr, Ordering},
+};
+#[cfg(feature = "login")]
+use windows::{
+    Win32::System::Memory::{GlobalLock, GlobalUnlock},
+    core::Error,
 };
 use windows::{
     Win32::{
         Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HGLOBAL, HINSTANCE, HMODULE},
         System::{
             LibraryLoader::{GetModuleHandleA, GetProcAddress, LoadLibraryA},
-            Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock},
+            Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc},
             Threading::{CreateMutexA, GetCurrentProcessId},
         },
         UI::Input::KeyboardAndMouse::GetKeyboardLayout,
     },
-    core::{Error, Owned, PCSTR},
+    core::{Owned, PCSTR},
 };
 
 const MHFO_MAIN: &CStr = c"mhDLL_Main";
 
 static HOST_MESSAGE: AtomicPtr<c_char> = AtomicPtr::new(std::ptr::null_mut());
 
-pub fn launch_mhfo(
+pub(crate) enum LaunchMode<'a> {
+    #[cfg(feature = "login")]
+    Online(&'a Config),
+    #[cfg(feature = "debug")]
+    Debug {
+        settings: &'a MhfConfig,
+        translation: Option<&'a crate::TranslationConfig>,
+        session: crate::debug::DebugSession,
+    },
+}
+
+pub(crate) fn launch(
     profile: &MhfLaunchProfile<'_>,
     game_dir: &str,
-    config: &Config,
+    mode: LaunchMode<'_>,
 ) -> Result<i32, String> {
+    let (settings, translation) = match &mode {
+        #[cfg(feature = "login")]
+        LaunchMode::Online(config) => (&config.mhf, config.translation.as_ref()),
+        #[cfg(feature = "debug")]
+        LaunchMode::Debug {
+            settings,
+            translation,
+            ..
+        } => {
+            if settings.video.graphics_version != GraphicsVersion::HighDefinition {
+                return Err("离线调试目前需要 HD 客户端".into());
+            }
+            (*settings, *translation)
+        }
+    };
     let _host_message = set_host_message(profile.host_message)?;
 
     let process_id = unsafe { GetCurrentProcessId() };
@@ -66,7 +99,7 @@ pub fn launch_mhfo(
         ..Default::default()
     };
     fill_launcher_fields(&mut data.params, profile, game_dir, &mutex_name_text)?;
-    apply_config(&mut data.params, &config.mhf)?;
+    apply_config(&mut data.params, settings)?;
     copy_ascii_c_string(
         "ready mutex name",
         &mut data.ready_mutex_name,
@@ -74,22 +107,62 @@ pub fn launch_mhfo(
     )?;
 
     let game_global_alloc = allocate_global()?;
-    initialize_global_data(*game_global_alloc, &config.sign_in)?;
     data.params.global_alloc = *game_global_alloc;
-    apply_sign_in(&mut data.params, config)?;
+    match &mode {
+        #[cfg(feature = "login")]
+        LaunchMode::Online(config) => {
+            initialize_global_data(*game_global_alloc, &config.sign_in)?;
+            apply_sign_in(&mut data.params, config)?;
+        }
+        #[cfg(feature = "debug")]
+        LaunchMode::Debug { .. } => {
+            data.params.selected_character_id_1 = 1;
+            data.params.selected_character_id_2 = 1;
+            data.params.character_ids[0] = 1;
+            data.params.fixed_1d58_one = 1;
+            data.params.fixed_200c_one = 1;
+            copy_ascii_c_string(
+                "debug hunter",
+                &mut data.params.selected_character_name,
+                "Debug",
+            )?;
+        }
+    }
 
-    let game_name = match config.mhf.video.graphics_version {
+    let game_name = match settings.video.graphics_version {
         GraphicsVersion::Standard => profile.mhfo_dll,
         GraphicsVersion::HighDefinition => profile.mhfo_hd_dll,
     };
     let game = MhfoModule::load(game_name)?;
     let entry = game.main()?;
+    let mut geometry = if settings.video.graphics_version == GraphicsVersion::HighDefinition {
+        Some(unsafe { mhf_geometry::install(game.handle()) }?)
+    } else {
+        None
+    };
     // Resource ingress always converts legacy text, even without a translation.
-    let mut localization =
-        unsafe { crate::localization::install(game.handle(), config.translation.as_ref()) }?;
+    let mut localization = unsafe { crate::localization::install(game.handle(), translation) }?;
     data.mhfo_module = game.handle();
     data.mhfo_main = Some(entry);
-    let overlay = unsafe { crate::overlay::install(game.handle()) }?;
+    #[cfg(feature = "debug")]
+    let debug = match mode {
+        #[cfg(feature = "login")]
+        LaunchMode::Online(_) => None,
+        LaunchMode::Debug { session, .. } => Some(session),
+    };
+    #[cfg(feature = "debug")]
+    let control = debug.as_ref().map(crate::debug::DebugSession::control);
+    #[cfg(feature = "debug")]
+    let mut debug = debug
+        .map(|session| unsafe { crate::debug::install(game.handle(), session) })
+        .transpose()?;
+    let overlay = unsafe {
+        crate::overlay::install(
+            game.handle(),
+            #[cfg(feature = "debug")]
+            control,
+        )
+    }?;
     let mut text = unsafe { crate::text::install(game.handle(), &data.params.font_name) }?;
     let code = unsafe { entry(&mut data.params) };
 
@@ -97,11 +170,20 @@ pub fn launch_mhfo(
     // module and translated buffers until cleanup (including DllMain) finishes.
     let overlay_cleanup = overlay.uninstall().map_err(|error| error.to_string());
     let text_cleanup = text.uninstall();
+    #[cfg(feature = "debug")]
+    let debug_cleanup = debug.as_mut().map(|debug| debug.uninstall()).transpose();
+    let geometry_cleanup = geometry
+        .as_mut()
+        .map(|geometry| geometry.uninstall())
+        .transpose();
     let localization_cleanup = localization.uninstall();
     drop(game);
     let errors = [
         overlay_cleanup.err(),
         text_cleanup.err(),
+        #[cfg(feature = "debug")]
+        debug_cleanup.err(),
+        geometry_cleanup.err(),
         localization_cleanup.err(),
     ]
     .into_iter()
@@ -163,6 +245,7 @@ fn apply_config(params: &mut MhfLaunchParams32, config: &MhfConfig) -> Result<()
     Ok(())
 }
 
+#[cfg(feature = "login")]
 fn apply_sign_in(params: &mut MhfLaunchParams32, config: &Config) -> Result<(), String> {
     let sign_in = &config.sign_in;
     let character = sign_in.selected_character(config.selected_character_id)?;
@@ -231,11 +314,13 @@ fn apply_sign_in(params: &mut MhfLaunchParams32, config: &Config) -> Result<(), 
     Ok(())
 }
 
+#[cfg(feature = "login")]
 fn unix_timestamp32(field: &str, timestamp: &jiff::Timestamp) -> Result<u32, String> {
     u32::try_from(timestamp.as_second())
         .map_err(|_| format!("{field} is outside the unsigned 32-bit Unix timestamp range"))
 }
 
+#[cfg(feature = "login")]
 fn initialize_global_data(global_alloc: HGLOBAL, sign_in: &SignInSuccess) -> Result<(), String> {
     let pointer = unsafe { GlobalLock(global_alloc) };
     if pointer.is_null() {
@@ -253,6 +338,7 @@ fn initialize_global_data(global_alloc: HGLOBAL, sign_in: &SignInSuccess) -> Res
     }
 }
 
+#[cfg(feature = "login")]
 fn apply_global_sign_in(data: &mut MhfGlobalData32, sign_in: &SignInSuccess) -> Result<(), String> {
     let notice_slots = data.notices.len();
     let notice_bytes = data.notices[0].len();
@@ -420,7 +506,7 @@ extern "C" fn host_message() -> *const c_char {
     HOST_MESSAGE.load(Ordering::Relaxed)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "login"))]
 mod tests {
     use super::*;
     use crate::{IssuedSignSession, PasswordCredentials, SignCharacter, SignInSuccess};

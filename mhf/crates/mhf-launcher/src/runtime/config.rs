@@ -1,8 +1,7 @@
+use crate::{FontQuality, GraphicsVersion, Language, MhfConfig, ScreenMode, TranslationConfig};
+#[cfg(feature = "login")]
 use ::config::{Config as LayeredConfig, Environment, File, FileFormat};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use shrimpman_mhf_launcher::{
-    FontQuality, GraphicsVersion, Language, MhfConfig, ScreenMode, TranslationConfig,
-};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -336,55 +335,29 @@ fn parse_ini_u32(value: &str) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| format!("integer {value} is outside the u32 range"))
 }
 
-pub(crate) struct Store {
+pub(super) struct Store {
     path: PathBuf,
     document: Table,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Settings {
-    pub(crate) sign: sign::Settings,
-    pub(crate) translation: Option<TranslationConfig>,
+pub(super) struct Settings {
+    pub(super) translation: Option<TranslationConfig>,
     #[serde(flatten)]
-    pub(crate) mhf: MhfConfig,
+    pub(super) mhf: MhfConfig,
 }
 
-pub(crate) mod sign {
-    use serde::Deserialize;
-
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub(crate) struct Settings {
-        pub(crate) http: http::Settings,
-    }
-
-    pub(crate) mod http {
-        use serde::Deserialize;
-
-        #[derive(Debug, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        pub(crate) struct Settings {
-            pub(crate) base_url: String,
-        }
-    }
-}
-
-pub(crate) fn load(path: PathBuf) -> Result<(Settings, Store), String> {
+pub(super) fn load(path: PathBuf) -> Result<(Settings, Store), String> {
     let source = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let document: Table = toml::from_str(&source)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-    let mut settings = decode(&document)
+    let settings = decode(&document)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-    settings.sign = load_sign(&source, sign_environment()).map_err(|error| {
-        format!(
-            "failed to resolve [sign] configuration from {}: {error}",
-            path.display()
-        )
-    })?;
     Ok((settings, Store { path, document }))
 }
 
+#[cfg(feature = "login")]
 fn sign_environment() -> Environment {
     Environment::with_prefix("MHF")
         .prefix_separator("_")
@@ -392,19 +365,44 @@ fn sign_environment() -> Environment {
         .try_parsing(true)
 }
 
-fn load_sign(
+#[cfg(feature = "login")]
+fn load_sign_base_url(
     source: &str,
     environment: Environment,
-) -> Result<sign::Settings, ::config::ConfigError> {
+) -> Result<String, ::config::ConfigError> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SignSettings {
+        http: HttpSettings,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct HttpSettings {
+        base_url: String,
+    }
+
     LayeredConfig::builder()
         .add_source(File::from_str(source, FileFormat::Toml))
         .add_source(environment)
         .build()?
-        .get(SIGN_SECTION)
+        .get::<SignSettings>(SIGN_SECTION)
+        .map(|settings| settings.http.base_url)
 }
 
 impl Store {
-    pub(crate) fn value(&self, section: &str, key: &str) -> Option<String> {
+    #[cfg(feature = "login")]
+    pub(super) fn sign_http_base_url(&self) -> Result<String, String> {
+        let source = toml::to_string(&self.document).map_err(|error| error.to_string())?;
+        load_sign_base_url(&source, sign_environment()).map_err(|error| {
+            format!(
+                "failed to resolve [sign] configuration from {}: {error}",
+                self.path.display()
+            )
+        })
+    }
+
+    pub(super) fn value(&self, section: &str, key: &str) -> Option<String> {
         let values = profile_section(&self.document, section)?;
         if let Some(field) = ini_field(section, key) {
             return field
@@ -419,7 +417,7 @@ impl Store {
             .map(ToOwned::to_owned)
     }
 
-    pub(crate) fn section_names(&self) -> Vec<String> {
+    pub(super) fn section_names(&self) -> Vec<String> {
         self.document
             .iter()
             .filter(|(name, value)| launcher_section_name(name).is_none() && value.is_table())
@@ -427,7 +425,7 @@ impl Store {
             .collect()
     }
 
-    pub(crate) fn key_names(&self, section: &str) -> Vec<String> {
+    pub(super) fn key_names(&self, section: &str) -> Vec<String> {
         let Some(values) = profile_section(&self.document, section) else {
             return Vec::new();
         };
@@ -444,7 +442,7 @@ impl Store {
         names
     }
 
-    pub(crate) fn set_value(
+    pub(super) fn set_value(
         &mut self,
         section: String,
         key: String,
@@ -482,7 +480,7 @@ impl Store {
         })
     }
 
-    pub(crate) fn remove_key(&mut self, section: &str, key: &str) -> Result<(), String> {
+    pub(super) fn remove_key(&mut self, section: &str, key: &str) -> Result<(), String> {
         reject_launcher_section(section)?;
         let field = ini_field(section, key);
         self.update(|document| {
@@ -505,7 +503,7 @@ impl Store {
         })
     }
 
-    pub(crate) fn remove_section(&mut self, section: &str) -> Result<(), String> {
+    pub(super) fn remove_section(&mut self, section: &str) -> Result<(), String> {
         reject_launcher_section(section)?;
         self.update(|document| {
             if let Some(section) = section_name(document, section) {
@@ -611,8 +609,10 @@ fn section_name(document: &Table, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shrimpman_mhf_launcher::MissingTranslation;
-    use std::{collections::HashMap, net::Ipv4Addr};
+    use crate::MissingTranslation;
+    #[cfg(feature = "login")]
+    use std::collections::HashMap;
+    use std::net::Ipv4Addr;
 
     const SOURCE: &str = r#"
 [sign.http]
@@ -650,11 +650,10 @@ value = "preserved"
 
     #[test]
     fn example_config_uses_the_domain_types() {
-        let document = toml::from_str(include_str!("../../../../../mhf.toml"))
+        let document = toml::from_str(include_str!("../../../../mhf.toml"))
             .expect("example config should parse");
         let config = decode(&document).expect("example config should be valid");
 
-        assert_eq!(config.sign.http.base_url, "http://127.0.0.1:53001");
         assert_eq!(config.mhf.screen.mode, ScreenMode::Windowed);
         assert_eq!(
             config.mhf.video.graphics_version,
@@ -679,6 +678,7 @@ value = "preserved"
         assert_eq!(config.mhf.screen.window_resolution.width, 1280);
     }
 
+    #[cfg(feature = "login")]
     #[test]
     fn environment_overrides_only_the_sign_configuration() {
         let environment = sign_environment().source(Some(HashMap::from([
@@ -689,9 +689,10 @@ value = "preserved"
             ("MHF_WINE".to_owned(), "winecx24".to_owned()),
         ])));
 
-        let sign = load_sign(SOURCE, environment).expect("sign configuration should load");
+        let base_url =
+            load_sign_base_url(SOURCE, environment).expect("sign configuration should load");
 
-        assert_eq!(sign.http.base_url, "http://127.0.0.1:60000");
+        assert_eq!(base_url, "http://127.0.0.1:60000");
         assert_eq!(
             document()["sign"]["http"]["base_url"].as_str(),
             Some("http://127.0.0.1:53313")
@@ -706,6 +707,25 @@ value = "preserved"
         let config = decode(&document).expect("config without a translation section should load");
 
         assert!(config.translation.is_none());
+    }
+
+    #[test]
+    fn game_configuration_does_not_require_sign_settings() {
+        let mut document = document();
+        document.remove(SIGN_SECTION);
+        let settings = decode(&document).expect("offline game settings must not require Sign");
+        assert_eq!(settings.mhf.screen.mode, ScreenMode::Windowed);
+        assert_eq!(settings.translation.unwrap().locale, "zh-CN");
+        // An unrelated, invalid Sign configuration must not block offline use.
+        document.insert(SIGN_SECTION.into(), Value::String("unused".into()));
+        assert!(decode(&document).is_ok());
+    }
+
+    #[cfg(feature = "login")]
+    #[test]
+    fn online_launch_still_requires_valid_sign_settings() {
+        let environment = sign_environment().source(Some(HashMap::new()));
+        assert!(load_sign_base_url("[screen]\nmode = \"windowed\"", environment).is_err());
     }
 
     #[test]

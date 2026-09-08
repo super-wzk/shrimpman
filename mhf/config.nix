@@ -39,7 +39,7 @@ in
       font = {
         name = "JetBrains Maple Mono NF NL HT";
         quality = "antialiased";
-        weight = 700;
+        weight = 600;
       };
       launch = {
         proxy_address = "127.0.0.1";

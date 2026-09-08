@@ -14,7 +14,7 @@ type GetPrivateProfileStringA =
     unsafe extern "system" fn(PCSTR, PCSTR, PCSTR, PSTR, u32, PCSTR) -> u32;
 type WritePrivateProfileStringA = unsafe extern "system" fn(PCSTR, PCSTR, PCSTR, PCSTR) -> BOOL;
 
-pub(crate) struct HookState {
+pub(super) struct HookState {
     file_name: Vec<u8>,
     store: Mutex<Store>,
     get_int: GetPrivateProfileIntA,
@@ -30,7 +30,7 @@ impl HookState {
 
 static STATE: HookSlot<HookState> = HookSlot::new();
 
-pub(crate) fn install(ini_name: &str, store: Store) -> Result<HookGuard<HookState>, String> {
+pub(super) fn install(ini_name: &str, store: Store) -> Result<HookGuard<HookState>, String> {
     if !ini_name.is_ascii() || ini_name.as_bytes().contains(&0) {
         return Err("INI file name must contain non-NUL ASCII bytes only".to_owned());
     }

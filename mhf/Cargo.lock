@@ -1495,6 +1495,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mhf-geometry"
+version = "0.1.0"
+dependencies = [
+ "mhf-hooks",
+ "windows",
+]
+
+[[package]]
 name = "mhf-hooks"
 version = "0.1.0"
 dependencies = [
@@ -2512,6 +2520,7 @@ dependencies = [
  "egui",
  "egui-hunter",
  "jiff",
+ "mhf-geometry",
  "mhf-hooks",
  "mhf-overlay",
  "serde",

@@ -3,32 +3,56 @@ name = "shrimpman-mhf-launcher"
 version.workspace = true
 edition.workspace = true
 publish = false
+default-run = "mhf-launcher"
+
+[features]
+default = ["login"]
+login = [
+    "dep:config",
+    "dep:eframe",
+    "dep:jiff",
+    "dep:shrimpman-common",
+    "dep:shrimpman-domain",
+    "dep:ureq",
+    "windows/Win32_Security_Credentials",
+]
+debug = []
+
+[[bin]]
+name = "mhf-launcher"
+path = "src/bin/mhf-launcher/main.rs"
+required-features = ["login"]
+
+[[bin]]
+name = "mhf-debug-launcher"
+path = "src/bin/mhf-debug-launcher/main.rs"
+required-features = ["debug"]
 
 [dependencies]
 bumpalo = "3.20.3"
 clap = { version = "4", features = ["derive"] }
-config = { version = "0.15", default-features = false, features = ["toml"] }
+config = { version = "0.15", default-features = false, features = ["toml"], optional = true }
 egui.workspace = true
 egui-hunter = { path = "../egui-hunter" }
-eframe = { version = "0.36.1", default-features = false, features = ["wgpu"] }
-jiff = { version = "0.2", features = ["serde"] }
+eframe = { version = "0.36.1", default-features = false, features = ["wgpu"], optional = true }
+jiff = { version = "0.2", features = ["serde"], optional = true }
 mhf-hooks = { path = "../hooks" }
+mhf-geometry = { path = "../geometry" }
 mhf-overlay = { path = "../overlay" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shrimpman-common = { path = "../../../shrimpman/crates/common" }
-shrimpman-domain = { path = "../../../shrimpman/crates/domain" }
+shrimpman-common = { path = "../../../shrimpman/crates/common", optional = true }
+shrimpman-domain = { path = "../../../shrimpman/crates/domain", optional = true }
 toml = "1"
 unicode-width = { version = "0.2", features = ["cjk"] }
 unicode-segmentation = "1.13.3"
-ureq = "3.4"
+ureq = { version = "3.4", optional = true }
 windows = { workspace = true, features = [
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Graphics_Direct3D9",
     "Win32_Security",
-    "Win32_Security_Credentials",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
