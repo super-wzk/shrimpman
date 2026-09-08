@@ -20,7 +20,7 @@ let
     ../shrimpman/default.nix
     ../mhf/default.nix
     ({ config, lib, ... }: {
-      mhf.sign.http.base_url = lib.mkDefault "http://127.0.0.1:${toString config.development.ports.signHttp}";
+      mhf.sign.endpoint = lib.mkDefault "http://127.0.0.1:${toString config.development.ports.signHttp}";
     })
   ];
 in

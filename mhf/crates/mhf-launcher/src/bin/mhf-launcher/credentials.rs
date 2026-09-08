@@ -23,8 +23,8 @@ pub(crate) struct CredentialStore {
 }
 
 impl CredentialStore {
-    pub(crate) fn new(sign_http_base_url: &str) -> Self {
-        let base_url = sign_http_base_url.trim().trim_end_matches('/');
+    pub(crate) fn new(sign_endpoint: &str) -> Self {
+        let endpoint = sign_endpoint.trim().trim_end_matches('/');
         // Wine bridges domain-password credentials to the host keychain. On native Windows this
         // is an application credential, so the generic type matches its semantics.
         let credential_type = if is_wine() {
@@ -33,7 +33,7 @@ impl CredentialStore {
             CRED_TYPE_GENERIC
         };
         Self {
-            target: format!("{TARGET_PREFIX}{base_url}"),
+            target: format!("{TARGET_PREFIX}{endpoint}"),
             credential_type,
         }
     }

@@ -6,12 +6,14 @@ mod abi;
 pub mod debug;
 pub mod font;
 mod launcher;
+#[cfg(feature = "translation")]
 mod localization;
 mod model;
 mod overlay;
 pub mod runtime;
 #[cfg(feature = "login")]
 mod sign;
+#[cfg(feature = "translation")]
 mod text;
 
 pub use abi::MhfLaunchParams32;

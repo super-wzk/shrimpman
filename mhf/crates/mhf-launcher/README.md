@@ -1,34 +1,62 @@
 # MHF launchers
 
 同一个 package 提供两个独立 bin：`mhf-launcher` 负责登录和角色选择，
-`mhf-debug-launcher` 直接启动离线任务。`login`、`debug` 特性分别控制两条入口；
-默认仅启用 `login`。独立调试构建不编译或链接登录界面、eframe/wgpu、Sign HTTP
-客户端与凭据存储，也不要求 `[sign]` 配置。游戏内调试 Overlay、字体、汉化、
-几何扩展及 INI 配置桥接仍保留。
+`mhf-debug-launcher` 直接启动离线任务。`login`、`debug` 特性分别控制两条入口，
+`translation` 控制语言 Hook、内嵌译文和缺失译文策略；默认启用 `login`、`translation`。
+独立调试构建不编译或链接登录界面、eframe/wgpu、Sign HTTP/TCP 客户端与凭据存储，
+也不要求 `[sign]` 配置。游戏内调试 Overlay、字体注册、几何扩展及 INI 配置桥接仍保留。
+关闭 `translation` 时不编译或安装资源转换、原生文本及 GDI 语言 Hook，
+也不读取资源 layout 或 JSONL 词典，游戏保留原生文本处理。
+已有 `[translation]` 配置会忽略并原样保留。
 
 这个 Windows PE32 应用使用 egui/eframe 提供登录和角色选择界面，通过 Sign HTTP
-API 获取真实会话和角色数据，再启动 `mhfo.dll` 或 `mhfo-hd.dll`。Sign API 地址由
-`mhf.toml` 的 `[sign.http] base_url` 配置，登录界面不接受临时覆盖。
+或 TCP 获取真实会话和角色数据，再启动 `mhfo.dll` 或 `mhfo-hd.dll`。
+`mhf.toml` 只使用 `[sign] endpoint` 配置服务地址，由 URI 协议选择 HTTP、HTTPS
+或 TCP，例如 `http://127.0.0.1:53001`、`https://sign.example.com` 或
+`tcp://127.0.0.1:53000`。TCP 必须指定端口，支持主机名、IPv4 和 `[IPv6]:port`；
+HTTP/HTTPS 可以包含 API 基础路径。启动时校验协议和地址，登录界面不接受临时覆盖。
+
+`[sign] encoding` 默认 `utf8`（Shrimpman）；连接 Erupe 时使用 `shift_jis`。
+它用于编码输入框中的凭据，以及解码界面显示的角色名。TCP 返回的角色名、公告和
+会话令牌保留原始字节并传给 DLL，不做 UTF-8、ASCII 或字符串结束符校验。
+名字显示采用宽容解码，不改写原始字节；凭据仍须能用指定编码准确表示。
+HTTP JSON 始终使用 UTF-8，响应中的文本在 JSON 解析后保存为字节数组。
+
+```toml
+[sign]
+endpoint = "tcp://127.0.0.1:53312"
+encoding = "shift_jis"
+```
+
+过滤表按 u16 长度前缀读取，CAPLINK 按标志读取可选字段，解析完整响应后才更新会话。
 
 Sign 请求在后台线程执行，连接超时为 5 秒，从 DNS 解析到完整读取响应的总超时为
-10 秒，覆盖登录、创建和删除角色。超时后界面恢复操作，保留当前输入；简短提示显示在
-界面中，完整错误输出到 stderr。错误提示自动换行，长内容和小窗口支持滚动查看。
+10 秒，覆盖登录、创建和删除角色。超时后界面恢复操作并保留当前输入。操作错误使用
+底部浮层消息，显示 6 秒，只保留最新一条，不抢焦点、不拦截点击，也不改变表单布局。
+浮层最多显示 240 个字符；完整错误输出到 stderr。
 
-登录成功后，角色列表来自 `POST /sign-in` 的响应；“New character”调用
-`POST /characters` 创建待初始化角色并自动选中。选择角色并点击“Launch game”后，
+HTTP 模式通过 `POST /sign-in` 登录、`POST /characters` 创建待初始化角色，
+通过 `DELETE /characters/{id}` 删除角色。TCP 模式使用 8 字节初始化数据和共用的
+MHF 加密分帧，通过 `DSGN:100` 登录、`DELETE:100` 删除角色（Erupe 9.2 要求 `100` 后缀）；首次登录由服务端
+自动补充待初始化角色。“New character”通过用户名追加 `+` 重新登录，成功后更新
+整份角色列表和新签发的会话，再启动待初始化角色。`+` 是 TCP 协议保留后缀，
+该模式拒绝以 `+` 结尾的账号名以及包含 NUL 的凭据。
+TCP 删除失败时当前服务端不发送错误响应，启动器会在总超时后恢复操作。
+
+选择角色并点击“Launch game”后，
 启动器先关闭 UI，再安装 INI hook 并把当前会话、角色和 Entrance 地址映射到游戏 ABI。
 用户名、密码、会话和角色不写入 `mhf.toml`。勾选 “Remember password” 后，只有登录
 成功的用户名和密码会保存到系统凭据库；原生 Windows 使用 Credential Manager，
 WineCX 使用其凭据桥接写入 macOS Keychain。取消勾选并成功登录会删除此前保存的凭据。
 
-UTF-8 `mhf.toml` 保存 Sign API 地址和游戏设置，但不保存任何登录数据。凭据按 Sign
-API 地址隔离，目标名称为 `Shrimpman MHF — <Sign API 地址>`，可由遵守相同凭据
+UTF-8 `mhf.toml` 保存 Sign 地址和游戏设置，但不保存任何登录数据。凭据按 Sign
+端点隔离，目标名称为 `Shrimpman MHF — <HTTP URL 或 tcp://host:port>`，可由遵守相同凭据
 约定的其他 Shrimpman MHF 客户端复用；会话和角色始终只保留在当前进程中。已建模配置
 使用小写下划线的领域命名，不需要 `ini.` 前缀：
 
 ```toml
-[sign.http]
-base_url = "http://127.0.0.1:53001"
+[sign]
+endpoint = "tcp://127.0.0.1:53000"
 
 [translation]
 locale = "zh-CN"
@@ -54,8 +82,9 @@ language = "japanese"
 section/key 仍以 string 原样保留。`[sign]` 与 `[translation]` 是启动器配置命名空间，
 不会暴露给游戏的 Win32 Profile API。`[translation] locale` 选择按同名 JSONL 文件
 编译到 EXE 内嵌字典的额外翻译；locale ID 就是文件名，不限定语言代码格式。每个 locale
-地位相同，空 JSONL 表示没有覆盖。只有显式配置 `[translation]` 才会应用翻译覆盖；
-省略该 section 时仍将原始资源转为 UTF-8，显示原文。资源结构和合法 key 由 resource layout 定义，
+地位相同，空 JSONL 表示没有覆盖。只有启用 `translation` feature 并显式配置
+`[translation]` 才会应用翻译覆盖；启用 feature 但省略该 section 时，
+仍将原始资源转为 UTF-8，显示原文。资源结构和合法 key 由 resource layout 定义，
 每个 locale 只包含自己的实际覆盖。
 `missing` 默认为 `original`，也可设为 `key` 或 `empty`。layout、key 和翻译文件格式见
 [`translations/README.md`](translations/README.md)。
@@ -94,7 +123,8 @@ HD 启动会安装独立的 [`mhf-geometry`](../geometry/README.md) 模块，将
 
 直接运行 `mhf-debug-launcher`，在内存中生成临时猎人，默认加载极驱迅龙使用的
 **古迹大地图**，从营地 460 出生。任务 BIN 内嵌在启动器中，无需另行下载或提供任务文件；
-加载时将任务标题、目标、成败条件、委托人与说明替换为中文 UTF-8 文本。
+启用 `translation` 时，加载会将任务标题、目标、成败条件、委托人与说明替换为中文 UTF-8 文本；
+关闭时保留 BIN 内原始日文文本。调试 Overlay 中的装备名称也按原始 CP932 解码显示。
 也可用 `--quest <BIN>` 加载指定任务，保留该文件的文本和出生配置。
 目前实现针对当前 ZZ HD 客户端，接受编号 40000 以上的活动任务；文件可为原始 BIN
 或 JKR 类型 3 压缩文件，解压内容不得超过游戏的 32 KiB 任务缓冲区。
@@ -108,7 +138,7 @@ rtk proxy direnv exec /Users/wzk/Projects/RustProjects/shrimpman mhf-debug-launc
 传入自定义 BIN 时，当前 macOS Wine 环境使用 `Z:\...` 路径；原生 Windows 使用本地路径。
 游戏目录和 TOML 配置沿用 `--game-dir`、`--config` 及开发环境配置。
 
-游戏内调试窗口默认打开，按 **F7** 显示或隐藏。**F8** 仍是现有组件验证窗口。
+游戏内调试窗口默认打开，按 **F7** 显示或隐藏。
 窗口随游戏画面限制最大尺寸，内容在窗口内滚动；下拉列表按上下剩余空间限制高度。
 
 - **装备**：按武器种类或防具部位筛选、搜索名称或编号，点击“换装”后重载当前任务。
@@ -161,7 +191,7 @@ UI 只发送命令并读取快照，所有角色、装备、动作和场景变�
 - `src/model.rs`：定义共用的游戏 `MhfConfig` 和启动 profile。
 - `src/launcher.rs`：负责领域模型到 ABI 的映射及 Win32 启动流程。
 - `src/debug/`：离线任务解压、原生调试 hook、游戏线程命令与快照、内嵌调试窗口。
-- `src/text/`：接管原生 UTF-8 分词、编辑、标记展开、换行和字形缓存；光标与容量仍
+- `src/text/`：仅在启用 `translation` 时编译，接管原生 UTF-8 分词、编辑、标记展开、换行和字形缓存；光标与容量仍
   以字节计，排版使用 Unicode 显示列数，Win32 绘制和剪贴板使用 UTF-16。IME 提交与
   普通 `WM_CHAR` 都按 Unicode 输入，删除、选区和滚动不会拆开 UTF-8 字符。
   `printf` 的字符串宽度按显示列数补白；精度保留 C 的字节读取上限，并在 UTF-8
@@ -177,21 +207,23 @@ UI 只发送命令并读取快照，所有角色、装备、动作和场景变�
   PAC 提前缓存的文本指针，后续别名自然继承新指针。`native/layout.rs` 按记录步长
   解析 GR/HR 表及房间指针字段，`native/bindings.rs` 只保留零散编译常量的引用绑定；
   两者统一接入 JSONL 翻译键、语言选择和缺失译文策略。
-  省略翻译配置也会转换原文；运行时不解析 JSONL，不使用虚拟字形码表。
-- `src/bin/mhf-launcher/http/`：Sign HTTP 客户端及按 API 命名空间组织的请求、响应
-  模型。
+  仅在启用 `translation` 时编译；启用 feature 但省略翻译配置时仍转换原文。
+  运行时不解析 JSONL，不使用虚拟字形码表。
+- `src/bin/mhf-launcher/sign/`：统一 Sign 客户端、错误和响应校验；`http/` 保留 JSON
+  API，`tcp/` 复用 `shrimpman-transport`，编码 Sign TCP 请求并解析 Shrimpman 和 Erupe 响应。
 - `src/bin/mhf-launcher/ui/`：按 Elm 结构组织状态更新、界面渲染和 eframe 适配。
 - `src/runtime/config.rs`：共用 `[translation]` 和强类型
   `MhfConfig`，并将后者映射到 TOML 持久化格式；原始 `toml::Table` 只封装在私有
-  `Store` 中；只有正常启动入口才读取并校验 `[sign.http]`。
+  `Store` 中；只有正常启动入口才读取并校验 `[sign]`。
 - `src/runtime/ini_hook.rs`：把 Win32 Profile API 代理到 TOML。
 - `src/runtime/mod.rs`：共用目录解析、字体注册、INI Hook 和启动清理。
 - `src/bin/mhf-debug-launcher/main.rs`：解析离线任务参数，直接启动调试会话。
 - `src/sign.rs`：仅 `login` 特性编译的 Sign 会话与角色类型。
 - `translations/`：`resources.json` 定义带稳定 `id` 的资源表及客户端运行时绑定；
-  每个 UTF-8 JSONL 对应一个 locale，也可以为空。`build.rs` 根据 layout 生成资源 hook、
-  校验翻译键，并把各 locale 的稀疏 UTF-8 覆盖编译成直接嵌入 EXE 的二进制字典；生成的
-  类型化 locale 注册表负责运行时查询。
+  每个 UTF-8 JSONL 对应一个 locale，也可以为空。启用 `translation` 时，`build.rs` 根据 layout 生成
+  `resources.rs` 资源 hook，校验 JSONL 翻译键，并生成
+  `translations.rs` locale 注册表和内嵌的 `translations.bin` UTF-8 词典。关闭 feature
+  后不编译生成器，也无需提供资源 layout 或 JSONL 文件。
 
 profile 只使用 Rust 的 `&str`；DLL 名、INI 名、互斥量前缀和宿主提示文本由
 `main` 传入，`CString`/`PCSTR` 转换留在 Win32 边界。固定的 `mhDLL_Main` ABI
@@ -200,10 +232,12 @@ profile 只使用 Rust 的 `&str`；DLL 名、INI 名、互斥量前缀和宿主
 长度 token；DLL 所需的原始 `u32` 只出现在 ABI 映射边界。crate 只支持 i686
 Windows。
 
-游戏文本和 Sign/Entrance 协议一起使用 UTF-8，联网启动需要配套的 Shrimpman 服务端；
-离线调试不连接这些服务。固定
-字段保留原字节容量，例如 Sign 角色名字段为 16 字节（含结尾 NUL），不会为了编码
-迁移扩展协议包。原生游戏目录参数仍限制为 ASCII；更改文本编码不改变这个路径约束。
+启用 `translation` 时游戏文本使用 UTF-8，关闭时保留原生文本处理。
+Shrimpman 的 Sign/Entrance 协议使用 UTF-8；Sign 的 `encoding` 选项
+用于启动器凭据和名字显示，不转换响应中传给 DLL 的原字节，也不改变后续
+Entrance/World 连接的文本编码。离线调试不连接这些服务。
+DLL 字符串按字节复制，仅按目标缓冲区容量限制长度；角色名超过容量时复制前 15 字节，
+第 16 字节保留 NUL，不按字符边界截断。登录响应中的完整名字仍保留供界面显示。
 
 ## 构建和启动
 
@@ -212,6 +246,13 @@ Windows SDK 后使用 Cargo，直接运行生成的 EXE，不需要 cargo-xwin �
 
 ```text
 cargo build -p shrimpman-mhf-launcher --bin mhf-launcher --release --target i686-pc-windows-msvc
+cargo build -p shrimpman-mhf-launcher --bin mhf-debug-launcher --no-default-features --features debug,translation --release --target i686-pc-windows-msvc
+```
+
+不编译翻译支持时，显式关闭默认 features，仅启用所需入口：
+
+```text
+cargo build -p shrimpman-mhf-launcher --bin mhf-launcher --no-default-features --features login --release --target i686-pc-windows-msvc
 cargo build -p shrimpman-mhf-launcher --bin mhf-debug-launcher --no-default-features --features debug --release --target i686-pc-windows-msvc
 ```
 
@@ -263,7 +304,10 @@ nix run .#mhf-debug-build
 nix run --impure .#mhf-debug-launcher
 ```
 
-`mhf-build` 和 `mhf-debug-build` 分别只构建自己的 bin，显式选择 `login` 或 `debug` 特性，使用普通 `cargo build`。Flake 提供 LLVM 和 x86 Windows SDK/CRT，
+`mhf-build` 和 `mhf-debug-build` 分别只构建自己的 bin，显式选择 `login` 或 `debug`，
+默认同时启用 `translation`。在 `local/default.nix` 设置
+`development.mhf.translation.enable = false;` 可以为两种启动器关闭语言 Hook 和翻译编译。
+这些命令使用普通 `cargo build`。Flake 提供 LLVM 和 x86 Windows SDK/CRT，
 并设置 `i686-pc-windows-msvc` 专用编译、归档和链接环境变量；进入 `nix develop`
 后也可在 `mhf/` 直接执行 `cargo check --workspace --all-features --all-targets`。
 RustRover 需继承该开发环境，再重新加载 Cargo 项目，无需 Cargo wrapper。
@@ -283,43 +327,25 @@ Cargo 会判断构建输入是否变化并复用未变化的产物。游戏目�
 可指定 Wine 可执行文件，设为空字符串则直接执行 EXE；`WINEPREFIX` 默认为
 `$PROJECT_STATE/wine`，公共状态目录默认是仓库的 `.state/`。原生 Windows 直接执行 EXE。
 MHF 配置副本和 Wine 默认环境仅在启动器运行时准备，进入开发环境或编译时不会初始化。
-正常启动器的 Sign HTTP 地址默认使用开发环境的 Nix 选项 `development.ports.signHttp`（53001），可通过
-`MHF_SIGN__HTTP__BASE_URL` 覆盖。`shrimpman-dev up` 启动服务端和 etcd；启动器也可
+正常启动器的默认 endpoint 是 HTTP，端口来自 Nix 选项
+`development.ports.signHttp`（53001）。在 `local/default.nix` 中设置
+`mhf.sign.endpoint = "tcp://127.0.0.1:53000";` 即可使用 TCP 登录；需要跟随服务端
+端口配置时可引用 `config.development.ports.signTcp`。
+环境变量 `MHF_SIGN__ENDPOINT` 覆盖完整地址，`MHF_SIGN__ENCODING` 覆盖 TCP 文本编码。
+Erupe 的本地 Nix 配置可设置 `mhf.sign.encoding = "shift_jis";`。例如：
+
+```sh
+MHF_SIGN__ENDPOINT=tcp://127.0.0.1:53000 mhf-launcher
+```
+
+`shrimpman-dev up` 启动服务端和 etcd；启动器也可
 在 process-compose 的 TUI 中手动启动。命令和环境变量覆盖详见仓库根目录 README。
 
-### 游戏内组件验证页
+### 游戏内 Overlay 与输入法
 
-游戏启动后按 **F8** 显示或隐藏 `egui-hunter` 验证页。页面通过已有 D3D9 Overlay
-渲染，复用启动器内嵌的中文字体；包含一万条虚拟列表记录、文本输入、确认框、
-锚定菜单和排队通知。普通通知以轻量提示自动消失，不抢焦点、不拦截鼠标；
-需要作出选择时才打开确认框。验证页最外层使用原生 Modal 隔离 egui 背景交互，
-内部面板只负责标题和布局；窄窗口会切换为单列布局。
-
-键盘打开后直接聚焦「滚动与选择」列表。Tab / Shift+Tab 沿用 egui 原生顺序，
-遍历列表、表单、按钮和页面关闭入口；整个列表只占一个焦点，Tab 一次离开列表。
-列表内用方向键、PageUp / PageDown、Home / End 导航，Enter 直接选择。
-鼠标单次点击内部控件即可操作，标题和面板背景只负责展示。
-所有业务上可用的区域和控件保持可操作，不需要先确认进入框。
-
-页面另外声明可选的手柄 `FocusEngagement`：方向先选择整个区域，A 进入上次可用控件，
-这次按键不会同时执行控件；进入后操作内部内容，B 退出区域。RB / LB 在区域层切区，
-进入后切内部控件。该规则只处理有来源标记的手柄动作，不改变物理键盘行为。
-当前 Overlay 未采集真实手柄，启用这些操作需要宿主通过 `NavigationInput` 接入
-`GamepadState`，并在转换为 egui Key 前安装 `EngagementPlugin` 保留来源与路由。
-
-键盘 Esc 先由文本编辑、子菜单和弹层处理，剩余的 Esc 关闭验证页；手柄 B 另有退出
-Engagement 区域的步骤。关闭确认框或菜单后恢复入口焦点，长按手柄确认或取消不会
-连续跨层。F8 或页面关闭按钮会清除弹层、通知和输入焦点；重新打开保留文本、
-列表选择和滚动位置。这些数据仅存在于当前进程内存中。
-
-公共 `DialogInteraction` 负责最外层 Modal 的关闭和入口焦点恢复，
-`FocusEngagement::begin/show/navigate` 只衔接可选的手柄区域。
-Modal 隔离 egui 背景交互，各区域共用页面边界，不为每个框创建 Modal。
-游戏输入仍由调用处选择 `mhf-overlay::InputPolicy`：
-隐藏时鼠标和键盘都穿透，显示期间持续阻断鼠标和键盘，即使当前控件已失焦或鼠标
-位于内容面板外。策略变化期间，已按下的鼠标按钮和按键会保持原来的接收方直到松开。
-其他调用方可分别选择 `Auto`、`Block`、`PassThrough`；通知对后方 egui 控件的穿透则
-通过 `Notifications::set_pass_through` 配置。
+普通启动器的 Overlay 负责游戏原生输入法适配，不显示额外面板，鼠标和键盘始终
+穿透给游戏。离线调试启动器通过同一宿主显示 F7 调试窗口，按 egui 的交互状态
+自动决定输入捕获。输入策略改变时，已按下的按钮和按键保持原接收方直到松开。
 
 MHF 输入适配层拦截 [`GetDeviceState`](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee417897(v=vs.85))
 返回的鼠标和键盘状态，使用与窗口消息相同的策略和原始按键归属。鼠标支持 16/20 字节
@@ -327,8 +353,8 @@ MHF 输入适配层拦截 [`GetDeviceState`](https://learn.microsoft.com/en-us/p
 数据长度必须匹配，手柄、未知格式和失败调用保留原样。Hook 地址从运行时设备虚表
 获取，不依赖游戏 DLL 的固定地址，并在 `mhDLL_Main` 返回后先于 D3D9 Overlay 卸载。
 
-验证页只调用通用组件，不读写游戏数据。D3D9 渲染、窗口输入和游戏本身的输入接收
-需要在实际游戏环境中检查。游戏原生输入框和 Overlay 使用同一个 IME 管理器与
+D3D9 渲染、窗口输入和游戏本身的输入接收需要在实际游戏环境中检查。
+游戏原生输入框和 Overlay 使用同一个 IME 管理器与
 输入上下文，由文本焦点选择唯一接收方。没有文本焦点时会解除窗口的输入法关联，
 让按键用于游戏操作；进入输入框后重新使用保留中英文状态的共享上下文。
 Overlay 有键盘输入权时，游戏输入框及其

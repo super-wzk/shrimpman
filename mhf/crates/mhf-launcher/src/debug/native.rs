@@ -14,6 +14,8 @@ use std::{
     },
 };
 use windows::Win32::Foundation::HMODULE;
+#[cfg(not(feature = "translation"))]
+use windows::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 
 static SLOT: HookSlot<State> = HookSlot::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -421,7 +423,29 @@ unsafe fn text(pointer: usize) -> Option<String> {
         return None;
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer as *const u8, length) };
-    Some(String::from_utf8_lossy(bytes).into_owned())
+    decode_catalog_text(bytes)
+}
+
+fn decode_catalog_text(bytes: &[u8]) -> Option<String> {
+    #[cfg(feature = "translation")]
+    {
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+    #[cfg(not(feature = "translation"))]
+    {
+        // Without language hooks, the supported Japanese DAT keeps its CP932 text.
+        let length = unsafe { MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes, None) };
+        if length <= 0 {
+            return None;
+        }
+        let mut utf16 = vec![0; length as usize];
+        let written =
+            unsafe { MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes, Some(&mut utf16)) };
+        if written != length {
+            return None;
+        }
+        String::from_utf16(&utf16).ok()
+    }
 }
 
 unsafe fn catalog(state: &State) -> Catalog {
@@ -768,5 +792,34 @@ unsafe extern "C" fn dispatch() -> i32 {
             state.session.control.publish(snapshot(state, &runtime));
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::decode_catalog_text;
+
+    #[test]
+    fn catalog_preserves_ascii_names() {
+        assert_eq!(decode_catalog_text(b"Iron Sword").unwrap(), "Iron Sword");
+    }
+
+    #[cfg(not(feature = "translation"))]
+    #[test]
+    fn catalog_decodes_original_cp932_without_translation() {
+        assert_eq!(
+            decode_catalog_text(b"\x83\x65\x83\x58\x83\x67").unwrap(),
+            "テスト"
+        );
+        assert!(decode_catalog_text(b"\x83").is_none());
+    }
+
+    #[cfg(feature = "translation")]
+    #[test]
+    fn catalog_decodes_utf8_with_translation() {
+        assert_eq!(
+            decode_catalog_text("铁剑・テスト".as_bytes()).unwrap(),
+            "铁剑・テスト"
+        );
     }
 }

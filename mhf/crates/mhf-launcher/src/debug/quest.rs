@@ -14,6 +14,7 @@ pub(super) struct MonsterQuest {
 impl Quest {
     pub(super) fn test_map() -> Result<Self, String> {
         let mut quest = Self::parse(include_bytes!("quests/55921d0.bin"))?;
+        #[cfg(feature = "translation")]
         quest.set_texts([
             "≪古迹·G★8 迁悠任务≫\n疾风撕裂长空",
             "讨伐 1 头迅龙",
@@ -38,6 +39,7 @@ impl Quest {
 
     /// Append UTF-8 strings before native relocation. Only the eight text
     /// pointers change; all other sections retain their original offsets.
+    #[cfg(feature = "translation")]
     fn set_texts(&mut self, texts: [&str; 8]) -> Result<(), String> {
         let table = u32_at(&self.bytes, self.properties + 0x28)? as usize;
         if table == 0
@@ -298,13 +300,19 @@ fn decode_lz(input: &[u8], size: usize) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
-    fn text_at(bytes: &[u8], table: usize, index: usize) -> &str {
+    fn text_bytes_at(bytes: &[u8], table: usize, index: usize) -> &[u8] {
         let offset = u32_at(bytes, table + index * 4).unwrap() as usize;
         let bytes = &bytes[offset..];
         let end = bytes.iter().position(|byte| *byte == 0).unwrap();
-        std::str::from_utf8(&bytes[..end]).unwrap()
+        &bytes[..end]
     }
 
+    #[cfg(feature = "translation")]
+    fn text_at(bytes: &[u8], table: usize, index: usize) -> &str {
+        std::str::from_utf8(text_bytes_at(bytes, table, index)).unwrap()
+    }
+
+    #[cfg(feature = "translation")]
     #[test]
     fn embedded_quest_localizes_all_text_and_preserves_the_camp_and_other_sections() {
         let original = Quest::parse(include_bytes!("quests/55921d0.bin")).unwrap();
@@ -345,6 +353,36 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "translation"))]
+    #[test]
+    fn embedded_quest_preserves_original_text_without_translation() {
+        let original = Quest::parse(include_bytes!("quests/55921d0.bin")).unwrap();
+        let quest = Quest::test_map().unwrap();
+        assert_eq!(quest.id, original.id);
+        assert_eq!(quest.bytes.len(), original.bytes.len());
+        let table = u32_at(&original.bytes, original.properties + 0x28).unwrap() as usize;
+        assert_eq!(
+            u32_at(&quest.bytes, quest.properties + 0x28).unwrap() as usize,
+            table
+        );
+        assert_eq!(
+            &quest.bytes[table..table + 32],
+            &original.bytes[table..table + 32]
+        );
+        for index in 0..8 {
+            assert_eq!(
+                text_bytes_at(&quest.bytes, table, index),
+                text_bytes_at(&original.bytes, table, index)
+            );
+        }
+        assert_eq!(quest.bytes[93], 0);
+        let hunters = u32_at(&quest.bytes, 4).unwrap() as usize;
+        for index in 0..4 {
+            assert_eq!(u16_at(&quest.bytes, hunters + index * 16).unwrap(), 460);
+        }
+    }
+
+    #[cfg(feature = "translation")]
     #[test]
     fn invalid_text_tables_are_rejected_before_mutation() {
         for table in [0, 3232 - 31, u32::MAX] {
@@ -356,6 +394,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn invalid_text_and_capacity_overflow_are_rejected_before_mutation() {
         let mut quest = Quest::test_map().unwrap();

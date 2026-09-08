@@ -1,8 +1,7 @@
 use crate::{
     GraphicsVersion, MhfConfig, MhfLaunchParams32, MhfLaunchProfile,
     abi::{
-        GameMain, HostServices32, MhfGlobalData32, MhfHostData32, copy_ascii_c_string,
-        copy_utf8_c_string, function32, ptr32,
+        GameMain, HostServices32, MhfGlobalData32, MhfHostData32, copy_c_string, function32, ptr32,
     },
 };
 #[cfg(feature = "login")]
@@ -49,7 +48,7 @@ pub(crate) fn launch(
     game_dir: &str,
     mode: LaunchMode<'_>,
 ) -> Result<i32, String> {
-    let (settings, translation) = match &mode {
+    let (settings, _translation) = match &mode {
         #[cfg(feature = "login")]
         LaunchMode::Online(config) => (&config.mhf, config.translation.as_ref()),
         #[cfg(feature = "debug")]
@@ -100,10 +99,10 @@ pub(crate) fn launch(
     };
     fill_launcher_fields(&mut data.params, profile, game_dir, &mutex_name_text)?;
     apply_config(&mut data.params, settings)?;
-    copy_ascii_c_string(
+    copy_c_string(
         "ready mutex name",
         &mut data.ready_mutex_name,
-        &ready_name_text,
+        ready_name_text.as_bytes(),
     )?;
 
     let game_global_alloc = allocate_global()?;
@@ -121,10 +120,10 @@ pub(crate) fn launch(
             data.params.character_ids[0] = 1;
             data.params.fixed_1d58_one = 1;
             data.params.fixed_200c_one = 1;
-            copy_ascii_c_string(
+            copy_c_string(
                 "debug hunter",
                 &mut data.params.selected_character_name,
-                "Debug",
+                b"Debug",
             )?;
         }
     }
@@ -140,8 +139,8 @@ pub(crate) fn launch(
     } else {
         None
     };
-    // Resource ingress always converts legacy text, even without a translation.
-    let mut localization = unsafe { crate::localization::install(game.handle(), translation) }?;
+    #[cfg(feature = "translation")]
+    let mut localization = unsafe { crate::localization::install(game.handle(), _translation) }?;
     data.mhfo_module = game.handle();
     data.mhfo_main = Some(entry);
     #[cfg(feature = "debug")]
@@ -163,12 +162,14 @@ pub(crate) fn launch(
             control,
         )
     }?;
+    #[cfg(feature = "translation")]
     let mut text = unsafe { crate::text::install(game.handle(), &data.params.font_name) }?;
     let code = unsafe { entry(&mut data.params) };
 
     // Stop hooks before unloading the DLL. The localization guard retains the
     // module and translated buffers until cleanup (including DllMain) finishes.
     let overlay_cleanup = overlay.uninstall().map_err(|error| error.to_string());
+    #[cfg(feature = "translation")]
     let text_cleanup = text.uninstall();
     #[cfg(feature = "debug")]
     let debug_cleanup = debug.as_mut().map(|debug| debug.uninstall()).transpose();
@@ -176,14 +177,17 @@ pub(crate) fn launch(
         .as_mut()
         .map(|geometry| geometry.uninstall())
         .transpose();
+    #[cfg(feature = "translation")]
     let localization_cleanup = localization.uninstall();
     drop(game);
     let errors = [
         overlay_cleanup.err(),
+        #[cfg(feature = "translation")]
         text_cleanup.err(),
         #[cfg(feature = "debug")]
         debug_cleanup.err(),
         geometry_cleanup.err(),
+        #[cfg(feature = "translation")]
         localization_cleanup.err(),
     ]
     .into_iter()
@@ -202,10 +206,18 @@ fn fill_launcher_fields(
     game_dir: &str,
     mutex_name: &str,
 ) -> Result<(), String> {
-    copy_ascii_c_string("game directory", &mut params.game_dir, game_dir)?;
-    copy_ascii_c_string("launcher directory", &mut params.launcher_dir, game_dir)?;
-    copy_ascii_c_string("mutex name", &mut params.mutex_name, mutex_name)?;
-    copy_ascii_c_string("INI name", &mut params.ini_name, profile.ini_name)
+    copy_c_string("game directory", &mut params.game_dir, game_dir.as_bytes())?;
+    copy_c_string(
+        "launcher directory",
+        &mut params.launcher_dir,
+        game_dir.as_bytes(),
+    )?;
+    copy_c_string("mutex name", &mut params.mutex_name, mutex_name.as_bytes())?;
+    copy_c_string(
+        "INI name",
+        &mut params.ini_name,
+        profile.ini_name.as_bytes(),
+    )
 }
 
 fn apply_config(params: &mut MhfLaunchParams32, config: &MhfConfig) -> Result<(), String> {
@@ -229,16 +241,20 @@ fn apply_config(params: &mut MhfLaunchParams32, config: &MhfConfig) -> Result<()
     params.language = config.localization.language.into();
     params.font_quality = config.font.quality.into();
     params.font_weight = u32::from(config.font.weight);
-    copy_utf8_c_string("font name", &mut params.font_name, &config.font.name)?;
+    copy_c_string(
+        "font name",
+        &mut params.font_name,
+        config.font.name.as_bytes(),
+    )?;
     params.draw_skip = u32::from(config.option.draw_skip);
     params.clog_disabled = u32::from(config.option.clog_disabled);
     params.use_proxy = u32::from(config.launch.use_proxy);
     params.use_ie_proxy = u32::from(config.launch.use_ie_proxy);
     params.proxy_configured = u32::from(config.launch.proxy_configured);
-    copy_ascii_c_string(
+    copy_c_string(
         "proxy address",
         &mut params.proxy_address,
-        &config.launch.proxy_address.to_string(),
+        config.launch.proxy_address.to_string().as_bytes(),
     )?;
     params.proxy_port = u32::from(config.launch.proxy_port);
     params.server_selection = config.launch.server_selection;
@@ -256,35 +272,35 @@ fn apply_sign_in(params: &mut MhfLaunchParams32, config: &Config) -> Result<(), 
     let entrance_host = entrance_server.ip().to_string();
     let alternate_address = format!("{}:8080", entrance_server.ip());
 
-    copy_utf8_c_string(
-        "selected character name",
-        &mut params.selected_character_name,
-        &character.name,
-    )?;
-    copy_utf8_c_string(
+    let name = &mut params.selected_character_name;
+    name.fill(0);
+    // This legacy launch field is a byte prefix; keep its final NUL.
+    let length = character.name.len().min(name.len() - 1);
+    name[..length].copy_from_slice(&character.name[..length]);
+    copy_c_string(
         "username",
         &mut params.username,
-        &config.credentials.username,
+        &config.sign_encoding.encode(&config.credentials.username)?,
     )?;
-    copy_utf8_c_string(
+    copy_c_string(
         "password",
         &mut params.password,
-        &config.credentials.password,
+        &config.sign_encoding.encode(&config.credentials.password)?,
     )?;
-    copy_ascii_c_string(
+    copy_c_string(
         "entrance server host",
         &mut params.entrance_server_host,
-        &entrance_host,
+        entrance_host.as_bytes(),
     )?;
-    copy_ascii_c_string(
+    copy_c_string(
         "entrance server address",
         &mut params.entrance_server_address,
-        &entrance_server.to_string(),
+        entrance_server.to_string().as_bytes(),
     )?;
-    copy_ascii_c_string(
+    copy_c_string(
         "alternate entrance server address",
         &mut params.alternate_entrance_server_address,
-        &alternate_address,
+        alternate_address.as_bytes(),
     )?;
 
     let character_id = u32::from(character.id);
@@ -353,18 +369,14 @@ fn apply_global_sign_in(data: &mut MhfGlobalData32, sign_in: &SignInSuccess) -> 
         .iter()
         .enumerate()
         .map(|(index, notice)| {
-            let encoded = notice.as_bytes();
-            if encoded.contains(&0) {
-                return Err(format!("sign-in notice {} contains a NUL byte", index + 1));
-            }
-            if encoded.len() > notice_bytes {
+            if notice.len() > notice_bytes {
                 return Err(format!(
-                    "sign-in notice {} is {} encoded bytes; at most {notice_bytes} bytes are supported",
+                    "sign-in notice {} is {} bytes; at most {notice_bytes} bytes are supported",
                     index + 1,
-                    encoded.len()
+                    notice.len()
                 ));
             }
-            Ok(encoded)
+            Ok(notice.as_slice())
         })
         .collect::<Result<Vec<_>, String>>()?;
 
@@ -509,7 +521,9 @@ extern "C" fn host_message() -> *const c_char {
 #[cfg(all(test, feature = "login"))]
 mod tests {
     use super::*;
-    use crate::{IssuedSignSession, PasswordCredentials, SignCharacter, SignInSuccess};
+    use crate::{
+        IssuedSignSession, PasswordCredentials, SignCharacter, SignInSuccess, runtime::SignEncoding,
+    };
     use jiff::{SignedDuration, Timestamp};
     use shrimpman_domain::{
         TimeRange,
@@ -522,11 +536,12 @@ mod tests {
     #[test]
     fn sign_in_domain_maps_to_the_mhfo_abi() {
         let issued_at = Timestamp::new(1_700_000_000, 0).expect("valid test timestamp");
-        let config = Config {
+        let mut config = Config {
             credentials: PasswordCredentials {
                 username: "账号é".to_owned(),
                 password: "密碼🙂".to_owned(),
             },
+            sign_encoding: SignEncoding::Utf8,
             sign_in: SignInSuccess {
                 session: IssuedSignSession {
                     session_id: SignSessionId::from(1),
@@ -536,7 +551,7 @@ mod tests {
                 entrance_servers: vec!["127.0.0.1:53310".parse().expect("valid entrance server")],
                 characters: vec![SignCharacter {
                     id: CharacterId::from(1),
-                    name: "啊啊🙂".to_owned(),
+                    name: "啊啊🙂".as_bytes().to_vec(),
                     gr: 50,
                     hr: 999,
                     weapon_type: WeaponType::GreatSword,
@@ -544,7 +559,7 @@ mod tests {
                     last_sign_in_at: Some(issued_at),
                     is_new: false,
                 }],
-                notices: vec!["Welcome".to_owned(), "テスト".to_owned()],
+                notices: vec![b"Welcome".to_vec(), "テスト".as_bytes().to_vec()],
                 last_character_id: Some(CharacterId::from(1)),
                 rights: CourseRights::from_bits_retain(12),
                 return_expires_at: Timestamp::new(i64::from(u32::MAX), 0)
@@ -601,5 +616,51 @@ mod tests {
         let global_alloc = allocate_global().expect("global Sign data should allocate");
         initialize_global_data(*global_alloc, &config.sign_in)
             .expect("global Sign data should initialize");
+
+        for (name, expected) in [
+            ("角色名字测试".as_bytes(), "角色名字测".as_bytes()),
+            (
+                b"1234567890123456".as_slice(),
+                b"123456789012345".as_slice(),
+            ),
+            (
+                "12345678901234啊".as_bytes(),
+                b"12345678901234\xE5".as_slice(),
+            ),
+            (
+                b"\x83\x6e\x83\x93\xff\0tail".as_slice(),
+                b"\x83\x6e\x83\x93\xff\0tail".as_slice(),
+            ),
+            ("短".as_bytes(), "短".as_bytes()),
+            (b"".as_slice(), b"".as_slice()),
+        ] {
+            config.sign_in.characters[0].name = name.to_vec();
+            apply_sign_in(&mut params, &config).expect("character name should be truncated");
+            assert_eq!(&params.selected_character_name[..expected.len()], expected);
+            assert!(
+                params.selected_character_name[expected.len()..]
+                    .iter()
+                    .all(|&byte| byte == 0)
+            );
+            assert_eq!(config.sign_in.characters[0].name, name);
+            assert_eq!(params.character_ids[0], 1);
+        }
+
+        config.sign_encoding = SignEncoding::ShiftJis;
+        config.credentials.username = "ハンター".to_owned();
+        config.credentials.password = "パスワード".to_owned();
+        config.sign_in.session.token = [0xff; 16];
+        config.sign_in.session.token[0] = 0;
+        apply_sign_in(&mut params, &config).expect("copy native credentials and opaque token");
+        assert_eq!(&params.username[..9], b"\x83\x6e\x83\x93\x83\x5e\x81\x5b\0");
+        assert_eq!(
+            &params.password[..11],
+            b"\x83\x70\x83\x58\x83\x8f\x81\x5b\x83\x68\0"
+        );
+        assert_eq!(params.sign_session_token, config.sign_in.session.token);
+        config.sign_in.notices = vec![b"\xff\0\x83\x6e\0".to_vec()];
+        apply_global_sign_in(&mut global_data, &config.sign_in).expect("copy opaque notice");
+        assert_eq!(global_data.notice_lengths[0], 5);
+        assert_eq!(&global_data.notices[0][..5], b"\xff\0\x83\x6e\0");
     }
 }

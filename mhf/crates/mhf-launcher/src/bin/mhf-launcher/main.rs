@@ -3,7 +3,7 @@ use shrimpman_mhf_launcher::runtime::{self, PROFILE};
 use std::{path::PathBuf, process::ExitCode};
 
 mod credentials;
-mod http;
+mod sign;
 mod ui;
 
 #[derive(Parser)]
@@ -36,10 +36,11 @@ fn main() -> ExitCode {
 
 fn run(config_path: Option<PathBuf>, game_dir: Option<PathBuf>) -> Result<Option<i32>, String> {
     let prepared = runtime::prepare(config_path, game_dir)?;
-    let sign_http_base_url = prepared.sign_http_base_url()?;
-    let credential_store = credentials::CredentialStore::new(&sign_http_base_url);
-    let client = http::Client::new(&sign_http_base_url).map_err(|error| error.to_string())?;
-    let Some(request) = ui::run(client, credential_store)? else {
+    let settings = prepared.sign_settings()?;
+    let client = sign::Client::new(&settings.endpoint, settings.encoding)
+        .map_err(|error| error.to_string())?;
+    let credential_store = credentials::CredentialStore::new(&client.credential_target());
+    let Some(request) = ui::run(client, credential_store, settings.encoding)? else {
         return Ok(None);
     };
     prepared

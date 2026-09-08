@@ -209,7 +209,7 @@ impl WindowBinding {
         });
         drop(route);
 
-        // Disable idle IME before returning when installed on the window thread.
+        // Apply initial IME ownership before returning on the window thread.
         // A rendering thread must dispatch initialization to that owning thread.
         unsafe {
             if GetWindowThreadProcessId(hwnd, None) == GetCurrentThreadId() {

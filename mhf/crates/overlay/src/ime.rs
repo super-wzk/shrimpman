@@ -80,7 +80,7 @@ struct State {
     requested: Option<Target>,
     block_host: bool,
     applied: Option<Target>,
-    /// Allocated once and retained while no editor is active.
+    /// Retained while the broker owns native input or blocks host input.
     native: Option<NativeContext>,
     caret: Caret,
     owns_messages: bool,
@@ -141,7 +141,7 @@ impl Ime {
             let changed = state.requested != target
                 || state.applied != target
                 || state.block_host != block_host
-                || state.native.is_none()
+                || (state.native.is_none() && (self.host.is_some() || block_host))
                 || state.interrupt;
             state.requested = target;
             state.block_host = block_host;
@@ -232,6 +232,7 @@ impl Ime {
                     cursor: target.cursor_rect,
                 })
         };
+        let release_context = closing || (self.host.is_none() && !block_host);
         let changed_owner =
             target.map(|target| target.owner) != previous.map(|target| target.owner);
         if changed_owner || interrupt {
@@ -255,8 +256,8 @@ impl Ime {
             self.emit(previous.owner, clear_preedit(), &mut events);
         }
 
-        if !closing {
-            // Idle windows must disable IME before any editor has been opened.
+        if !release_context {
+            // A host adapter owns idle input too; blocking overlays suspend it.
             // Claim late IME messages before native association can reenter us.
             self.lock().owns_messages = true;
             if native.is_none() {
@@ -265,7 +266,7 @@ impl Ime {
         }
 
         let Some(target) = target else {
-            let restored = if closing {
+            let restored = if release_context {
                 let restored = native.as_mut().is_some_and(|native| native.restore(hwnd));
                 if let Some(native) = native.take() {
                     native.destroy(hwnd);
@@ -282,7 +283,7 @@ impl Ime {
             state.native = native;
             state.caret = caret;
             state.applied = None;
-            state.owns_messages = !closing;
+            state.owns_messages = !release_context;
             state.composing = false;
             state.pending_high_surrogate = None;
             return (events, restored);

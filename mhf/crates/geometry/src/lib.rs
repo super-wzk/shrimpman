@@ -6,6 +6,8 @@
 compile_error!("the MHF geometry adapter requires i686 Windows");
 
 #[cfg(any(test, all(windows, target_arch = "x86")))]
+mod equipment_cache;
+#[cfg(any(test, all(windows, target_arch = "x86")))]
 mod fmod;
 #[cfg(any(test, all(windows, target_arch = "x86")))]
 mod mesh;

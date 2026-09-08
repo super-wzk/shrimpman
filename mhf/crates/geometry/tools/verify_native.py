@@ -149,12 +149,12 @@ def coff_functions(path):
             name = data[offset:data.index(b"\0", offset)]
         name = name.rstrip(b"\0").decode(errors="replace")
         if section > 0 and "mhf_geometry" in name and "abi" in name:
-            for function in ["load_detour", "build_detour", "load_original", "build_original", "schedule", "convert_vertices", "source_query"]:
-                if function in name:
+            for function in ["load_detour", "build_detour", "load_original", "build_original", "schedule", "convert_vertices", "source_query", "equipment_cache_load_detour", "equipment_part_load_detour", "read_equipment_file"]:
+                if f"{len(function)}{function}" in name:
                     size, offset = spans[section - 1]
                     result[function] = data[offset + value:offset + size]
         index += 1 + auxiliaries
-    assert len(result) == 7, result.keys()
+    assert len(result) == 10, result.keys()
     return result
 
 
@@ -162,22 +162,30 @@ def verify_abi(path):
     for name, code in coff_functions(path).items():
         uc = cpu()
         code = bytearray(code)
+        call_site = name in ("equipment_cache_load_detour", "equipment_part_load_detour")
         if name.endswith("detour"):
             calls = [i for i in DISASM.disasm(code, CODE) if i.mnemonic == "call"]
             assert len(calls) == 1 and calls[0].bytes[0] == 0xE8
             offset = calls[0].address - CODE
             struct.pack_into("<i", code, offset + 1, STUB - (CODE + offset + 5))
             arguments = [0x12345678, 0x22334455]
+            if call_site:
+                assert code[:2] == b"\xff\x35", "expected saved call-site continuation"
+                struct.pack_into("<I", code, 2, DATA + 0x100)
+                uc.mem_write(DATA + 0x100, struct.pack("<I", STOP))
         elif name == "convert_vertices":
             arguments = [STUB, DATA + 0x2000, DATA + 0x3000, 0x152, 70001, 0x35]
         elif name == "schedule":
             arguments = [STUB, 0x12345678, DATA + 0x3000]
         elif name == "source_query":
             arguments = [STUB, DATA + 0x3000]
+        elif name == "read_equipment_file":
+            arguments = [STUB, DATA + 0x2000, DATA + 0x3000]
         else:
             arguments = [STUB, 70001 if name == "load_original" else DATA + 0x2000, DATA + 0x3000, DATA + 0x4000]
         sp = uc.reg_read(reg.UC_X86_REG_ESP)
-        uc.mem_write(sp, struct.pack("<" + "I" * (1 + len(arguments)), STOP, *arguments))
+        stack = arguments if call_site else [STOP, *arguments]
+        uc.mem_write(sp, struct.pack("<" + "I" * len(stack), *stack))
         uc.mem_write(CODE, bytes(code))
         preserved = {r: uc.reg_read(r) for r in [reg.UC_X86_REG_EBX, reg.UC_X86_REG_ESI, reg.UC_X86_REG_EDI, reg.UC_X86_REG_EBP]}
         calls = []
@@ -203,6 +211,9 @@ def verify_abi(path):
                 assert [emu.reg_read(r) for r in [reg.UC_X86_REG_EDI, reg.UC_X86_REG_ESI]] == arguments[1:]
             elif name == "source_query":
                 assert emu.reg_read(reg.UC_X86_REG_EAX) == arguments[1]
+            elif name == "read_equipment_file":
+                assert emu.reg_read(reg.UC_X86_REG_EAX) == arguments[1]
+                assert stack(0) == arguments[2]
             emu.reg_write(reg.UC_X86_REG_EAX, 0x76543210)
             emu.reg_write(reg.UC_X86_REG_ECX, 0x11223344)
             emu.reg_write(reg.UC_X86_REG_EDX, 0x22334455)
@@ -212,12 +223,12 @@ def verify_abi(path):
         uc.emu_start(CODE, STOP, count=1000)
         assert len(calls) == 1, name
         assert uc.reg_read(reg.UC_X86_REG_EAX) == 0x76543210, name
-        assert uc.reg_read(reg.UC_X86_REG_ESP) == sp + 4, name
+        assert uc.reg_read(reg.UC_X86_REG_ESP) == sp + (0 if call_site else 4), name
         for r, value in preserved.items():
             assert uc.reg_read(r) == value, (name, r)
         if name.endswith("detour"):
             assert uc.reg_read(reg.UC_X86_REG_EFLAGS) == 0x202
-    print("PASS: 7 compiled x86 adapters preserve the native argument, register and stack ABI")
+    print("PASS: 10 compiled x86 adapters preserve the native argument, register and stack ABI")
 
 
 def block(kind, count, payload):

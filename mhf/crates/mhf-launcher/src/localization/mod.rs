@@ -1,10 +1,12 @@
-use crate::{MissingTranslation, TranslationConfig};
+#[cfg(feature = "translation")]
+use crate::MissingTranslation;
+use crate::TranslationConfig;
 use bumpalo::Bump;
 use mhf_hooks::{HookGuard, HookSlot};
 use std::{
     collections::HashMap,
     ffi::{CStr, c_void},
-    fmt::{self, Write as _},
+    fmt,
     mem::size_of,
     ptr,
     sync::{
@@ -21,8 +23,12 @@ use windows::{
     core::PCSTR,
 };
 
+#[cfg(feature = "translation")]
 use dictionary::{CompiledDictionary, CompiledLocale, RuntimeLocale};
+#[cfg(feature = "translation")]
+use std::fmt::Write as _;
 
+#[cfg(feature = "translation")]
 mod dictionary;
 #[cfg(test)]
 mod extra_resource_tests;
@@ -30,6 +36,7 @@ mod native;
 mod resource;
 mod tlk;
 
+#[cfg(feature = "translation")]
 static EMPTY_RECORD: [u8; 1] = [0];
 
 const MAX_RESOURCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
@@ -80,11 +87,13 @@ impl fmt::Display for TranslationKey {
 #[derive(Default)]
 struct TextArena {
     storage: Bump,
+    #[cfg(feature = "translation")]
     scratch: String,
     originals: HashMap<u32, HashMap<Vec<u8>, usize>>,
 }
 
 impl TextArena {
+    #[cfg(feature = "translation")]
     fn store_key(&mut self, key: TranslationKey) -> *const u8 {
         self.scratch.clear();
         self.scratch.push('[');
@@ -232,6 +241,8 @@ macro_rules! define_main_resource_detour {
     };
 }
 
+include!(concat!(env!("OUT_DIR"), "/resources.rs"));
+#[cfg(feature = "translation")]
 include!(concat!(env!("OUT_DIR"), "/translations.rs"));
 
 #[derive(Clone, Copy)]
@@ -252,7 +263,9 @@ pub(crate) struct HookState {
     // Release the DLL before the buffers it may still reference in DllMain.
     _module: ModuleReference,
     module_base: usize,
+    #[cfg(feature = "translation")]
     locale: Option<RuntimeLocale>,
+    #[cfg(feature = "translation")]
     missing: MissingTranslation,
     text: Mutex<TextArena>,
     current_stage: AtomicU16,
@@ -311,11 +324,13 @@ impl Drop for ModuleReference {
 /// the naked shims use their trampolines outside the Rust callback invocation.
 pub(crate) unsafe fn install(
     module: HMODULE,
-    translation: Option<&TranslationConfig>,
+    _translation: Option<&TranslationConfig>,
 ) -> Result<HookGuard<HookState>, String> {
     let mut hooks = HOOK_STATE.prepare()?;
+    #[cfg(feature = "translation")]
     let dictionary = &TRANSLATION_DICTIONARY;
-    let locale = translation
+    #[cfg(feature = "translation")]
+    let locale = _translation
         .map(|translation| {
             dictionary.locale(&translation.locale).ok_or_else(|| {
                 let available = dictionary.locale_ids().collect::<Vec<_>>().join(", ");
@@ -374,13 +389,25 @@ pub(crate) unsafe fn install(
         hook.original.store(trampoline as usize, Ordering::Release);
     }
 
-    let missing = translation.map_or(MissingTranslation::Original, |config| config.missing);
-    let native = unsafe { native::install(module_base, image_size, locale.as_ref(), missing) }?;
+    #[cfg(feature = "translation")]
+    let missing = _translation.map_or(MissingTranslation::Original, |config| config.missing);
+    let native = unsafe {
+        native::install(
+            module_base,
+            image_size,
+            #[cfg(feature = "translation")]
+            locale.as_ref(),
+            #[cfg(feature = "translation")]
+            missing,
+        )
+    }?;
     let state = HookState {
         _native: Some(native),
         _module: retained_module,
         module_base,
+        #[cfg(feature = "translation")]
         locale,
+        #[cfg(feature = "translation")]
         missing,
         text: Mutex::new(TextArena::default()),
         current_stage: AtomicU16::new(tlk::UNKNOWN_STAGE),
@@ -389,15 +416,17 @@ pub(crate) unsafe fn install(
 }
 
 fn replacement_for_key(
-    state: &HookState,
+    _state: &HookState,
     text: &mut TextArena,
     key: TranslationKey,
     source: &CStr,
     code_page: u32,
 ) -> Result<*const u8, String> {
-    replacement_for_locale(
-        state.locale.as_ref(),
-        state.missing,
+    replacement(
+        #[cfg(feature = "translation")]
+        _state.locale.as_ref(),
+        #[cfg(feature = "translation")]
+        _state.missing,
         text,
         key,
         source,
@@ -405,22 +434,26 @@ fn replacement_for_key(
     )
 }
 
-fn replacement_for_locale(
-    locale: Option<&RuntimeLocale>,
-    missing: MissingTranslation,
+fn replacement(
+    #[cfg(feature = "translation")] locale: Option<&RuntimeLocale>,
+    #[cfg(feature = "translation")] missing: MissingTranslation,
     text: &mut TextArena,
-    key: TranslationKey,
+    _key: TranslationKey,
     source: &CStr,
     code_page: u32,
 ) -> Result<*const u8, String> {
-    if let Some(translation) = locale.and_then(|locale| locale.translation(key)) {
-        return Ok(translation.as_ptr());
+    #[cfg(feature = "translation")]
+    {
+        if let Some(translation) = locale.and_then(|locale| locale.translation(_key)) {
+            return Ok(translation.as_ptr());
+        }
+        match missing {
+            MissingTranslation::Original => {}
+            MissingTranslation::Empty => return Ok(EMPTY_RECORD.as_ptr()),
+            MissingTranslation::Key => return Ok(text.store_key(_key)),
+        }
     }
-    match missing {
-        MissingTranslation::Original => text.original(source, code_page),
-        MissingTranslation::Empty => Ok(EMPTY_RECORD.as_ptr()),
-        MissingTranslation::Key => Ok(text.store_key(key)),
-    }
+    text.original(source, code_page)
 }
 
 unsafe extern "C" fn patch_resource_dispatch(resource_index: u32) {
@@ -493,15 +526,17 @@ fn signature_size(signature: &[(usize, u8)]) -> usize {
 }
 
 #[cfg(test)]
-fn test_state(locale: Option<RuntimeLocale>, missing: MissingTranslation) -> HookState {
+fn test_state() -> HookState {
     let module =
         unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleA(PCSTR::null()) }.unwrap();
     HookState {
         _native: None,
         _module: unsafe { ModuleReference::acquire(module) }.unwrap(),
         module_base: module.0 as usize,
-        locale,
-        missing,
+        #[cfg(feature = "translation")]
+        locale: None,
+        #[cfg(feature = "translation")]
+        missing: MissingTranslation::Original,
         text: Mutex::new(TextArena::default()),
         current_stage: AtomicU16::new(tlk::UNKNOWN_STAGE),
     }
@@ -513,6 +548,7 @@ mod tests {
 
     use super::{TextArena, TranslationKey, decode_source, source_code_page};
 
+    #[cfg(feature = "translation")]
     fn resource_key(record_id: u32) -> TranslationKey {
         TranslationKey::Resource {
             resource_id: "mhfdat",
@@ -523,6 +559,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn resource_arena_keeps_originals_and_missing_keys_stable() {
         let mut arena = TextArena::default();

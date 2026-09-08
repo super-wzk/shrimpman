@@ -707,10 +707,7 @@ fn window_binding_routes_ime_and_restores_host_synchronously() {
     let capture = InputCaptureState::default();
     let state = Arc::new(WindowState::new(hwnd, capture.clone(), None));
     let binding = WindowBinding::install(hwnd, Arc::clone(&state)).unwrap();
-    assert!(
-        current_context(hwnd).is_invalid(),
-        "install must suspend IME before the first editor or control message"
-    );
+    assert_eq!(current_context(hwnd), host_context);
     assert_eq!(send(hwnd, WM_KEYDOWN, 0x57, 0x0011_0001), LRESULT(71));
     assert_eq!(
         send(hwnd, WM_KEYUP, 0x57, 0xc011_0001u32 as isize),
@@ -718,18 +715,17 @@ fn window_binding_routes_ime_and_restores_host_synchronously() {
     );
     assert_eq!(HOST_KEY.load(Ordering::Relaxed), 2);
     assert_eq!(capture.scan_code_owner(0x11), None);
-    assert_eq!(send(hwnd, WM_IME_STARTCOMPOSITION, 0, 0), LRESULT(0));
-    assert_eq!(send(hwnd, WM_IME_CHAR, 0x4f60, 0), LRESULT(0));
-    assert_eq!(send(hwnd, WM_IME_COMPOSITION, 0, 0), LRESULT(0));
+    assert_eq!(send(hwnd, WM_IME_CHAR, 0x4f60, 0), LRESULT(71));
+    assert_eq!(send(hwnd, WM_IME_COMPOSITION, 0, 0), LRESULT(71));
     assert_eq!(
         send(hwnd, WM_IME_NOTIFY, IMN_OPENCANDIDATE as usize, 1),
-        LRESULT(0)
+        LRESULT(71)
     );
     assert!(!state.ime.composing());
-    assert!(current_context(hwnd).is_invalid());
-    assert_eq!(HOST_IME_CHAR.load(Ordering::Relaxed), 0);
-    assert_eq!(HOST_COMPOSITION.load(Ordering::Relaxed), 0);
-    assert_eq!(HOST_IME_NOTIFY.load(Ordering::Relaxed), 0);
+    assert_eq!(current_context(hwnd), host_context);
+    assert_eq!(HOST_IME_CHAR.swap(0, Ordering::Relaxed), 1);
+    assert_eq!(HOST_COMPOSITION.swap(0, Ordering::Relaxed), 1);
+    assert_eq!(HOST_IME_NOTIFY.swap(0, Ordering::Relaxed), 1);
     assert!(take_overlay_ime(&state).is_empty());
 
     activate_editor(&state, hwnd);
@@ -809,29 +805,36 @@ fn window_binding_routes_ime_and_restores_host_synchronously() {
         )
     }));
 
-    state.clear_capture();
+    state.ime.update(hwnd, None, None, 1.0, true);
     send(hwnd, control_message().unwrap(), 0, 0);
     assert!(current_context(hwnd).is_invalid());
     assert_eq!(input_mode(private), mode);
+    activate_editor(&state, hwnd);
+    assert_eq!(current_context(hwnd), private);
+    assert_eq!(input_mode(private), mode);
+
+    state.clear_capture();
+    send(hwnd, control_message().unwrap(), 0, 0);
+    assert_eq!(current_context(hwnd), host_context);
     assert_eq!(send(hwnd, WM_KEYDOWN, 0x57, 0x0011_0001), LRESULT(71));
     assert_eq!(
         send(hwnd, WM_KEYUP, 0x57, 0xc011_0001u32 as isize),
         LRESULT(71)
     );
     assert_eq!(HOST_KEY.load(Ordering::Relaxed), 4);
-    assert_eq!(send(hwnd, WM_IME_CHAR, 0x4f60, 0), LRESULT(0));
-    assert_eq!(send(hwnd, WM_IME_COMPOSITION, 0, 0), LRESULT(0));
+    assert_eq!(send(hwnd, WM_IME_CHAR, 0x4f60, 0), LRESULT(71));
+    assert_eq!(send(hwnd, WM_IME_COMPOSITION, 0, 0), LRESULT(71));
     assert_eq!(
         send(hwnd, WM_IME_NOTIFY, IMN_OPENCANDIDATE as usize, 1),
-        LRESULT(0)
+        LRESULT(71)
     );
-    assert_eq!(HOST_IME_CHAR.load(Ordering::Relaxed), 0);
-    assert_eq!(HOST_COMPOSITION.load(Ordering::Relaxed), 0);
-    assert_eq!(HOST_IME_NOTIFY.load(Ordering::Relaxed), 0);
+    assert_eq!(HOST_IME_CHAR.load(Ordering::Relaxed), 1);
+    assert_eq!(HOST_COMPOSITION.load(Ordering::Relaxed), 1);
+    assert_eq!(HOST_IME_NOTIFY.load(Ordering::Relaxed), 1);
 
     activate_editor(&state, hwnd);
-    assert_eq!(current_context(hwnd), private);
-    assert_eq!(input_mode(private), mode);
+    assert!(!current_context(hwnd).is_invalid());
+    assert_ne!(current_context(hwnd), host_context);
     drop(binding);
     assert!(window_route().is_none());
     assert_eq!(current_context(hwnd), host_context);

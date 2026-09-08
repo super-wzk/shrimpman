@@ -1,10 +1,10 @@
 mod model;
 mod view;
 
-use crate::{credentials::CredentialStore, http};
+use crate::{credentials::CredentialStore, sign};
 use model::{Effect, Message, Model};
 use shrimpman_domain::character::CharacterId;
-use shrimpman_mhf_launcher::{PasswordCredentials, SignInSuccess};
+use shrimpman_mhf_launcher::{PasswordCredentials, SignInSuccess, runtime::SignEncoding};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 pub(crate) struct LaunchRequest {
@@ -14,11 +14,12 @@ pub(crate) struct LaunchRequest {
 }
 
 pub(crate) fn run(
-    client: http::Client,
+    client: sign::Client,
     credential_store: CredentialStore,
+    encoding: SignEncoding,
 ) -> Result<Option<LaunchRequest>, String> {
     let mut launch_request = None;
-    let app = EframeApp::new(client, credential_store, &mut launch_request);
+    let output = &mut launch_request;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([680.0, 520.0])
@@ -32,7 +33,13 @@ pub(crate) fn run(
         Box::new(move |creation_context| {
             shrimpman_mhf_launcher::font::install(&creation_context.egui_ctx);
             egui_hunter::Theme::default().apply(&creation_context.egui_ctx);
-            Ok(Box::new(app))
+            Ok(Box::new(EframeApp::new(
+                client,
+                credential_store,
+                encoding,
+                output,
+                &creation_context.egui_ctx,
+            )))
         }),
     )
     .map_err(|error| format!("failed to run launcher UI: {error}"))?;
@@ -42,7 +49,7 @@ pub(crate) fn run(
 struct EframeApp<'a> {
     model: Model,
     view: view::View,
-    client: http::Client,
+    client: sign::Client,
     credential_store: CredentialStore,
     messages: Receiver<Message>,
     message_sender: Sender<Message>,
@@ -51,18 +58,28 @@ struct EframeApp<'a> {
 
 impl<'a> EframeApp<'a> {
     fn new(
-        client: http::Client,
+        client: sign::Client,
         credential_store: CredentialStore,
+        encoding: SignEncoding,
         launch_request: &'a mut Option<LaunchRequest>,
+        context: &egui::Context,
     ) -> Self {
         let (message_sender, messages) = mpsc::channel();
+        let mut view = view::View::new(encoding);
         let model = match credential_store.read() {
-            Ok(credentials) => Model::sign_in(credentials, None),
-            Err(error) => Model::sign_in(None, Some(error)),
+            Ok(credentials) => Model::sign_in(credentials),
+            Err(error) => {
+                eprintln!("{error}");
+                view.notify_error(
+                    context,
+                    "Could not read the saved password. Enter your credentials to continue.",
+                );
+                Model::default()
+            }
         };
         Self {
             model,
-            view: view::View::default(),
+            view,
             client,
             credential_store,
             messages,
@@ -81,6 +98,7 @@ impl<'a> EframeApp<'a> {
 
     fn execute(&mut self, effect: Effect, context: &egui::Context) {
         match effect {
+            Effect::NotifyError(message) => self.view.notify_error(context, &message),
             Effect::SignIn {
                 credentials,
                 remember_password,
@@ -120,17 +138,21 @@ impl<'a> EframeApp<'a> {
                 }
             }
             Effect::CreateCharacter {
+                credentials,
                 session_id,
                 session_token,
             } => {
                 let sender = self.message_sender.clone();
                 let repaint_context = context.clone();
-                let result =
-                    self.client
-                        .create_character(session_id, session_token, move |result| {
-                            let _ = sender.send(Message::CharacterCreated(result));
-                            repaint_context.request_repaint();
-                        });
+                let result = self.client.create_character(
+                    &credentials,
+                    session_id,
+                    session_token,
+                    move |result| {
+                        let _ = sender.send(Message::CharacterCreated(result));
+                        repaint_context.request_repaint();
+                    },
+                );
                 if let Err(error) = result {
                     self.dispatch(Message::CharacterCreated(Err(error)), context);
                 }

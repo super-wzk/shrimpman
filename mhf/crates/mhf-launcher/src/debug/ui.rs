@@ -48,7 +48,7 @@ impl DebugWindow {
     fn send(&mut self, command: DebugCommand) {
         self.error = self.control.send(command).err().unwrap_or_default();
     }
-    pub(crate) fn show(&mut self, context: &Context, allow_control: bool) {
+    pub(crate) fn show(&mut self, context: &Context) {
         if context.input_mut(|input| {
             let pressed = input.events.iter().any(|event| {
                 matches!(event,
@@ -216,7 +216,7 @@ impl DebugWindow {
                 }
             }
         }
-        self.keyboard(context, &snapshot, allow_control);
+        self.keyboard(context, &snapshot);
     }
 
     fn area_controls(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
@@ -411,13 +411,9 @@ impl DebugWindow {
             });
     }
 
-    fn keyboard(&mut self, context: &Context, snapshot: &DebugSnapshot, allow_control: bool) {
+    fn keyboard(&mut self, context: &Context, snapshot: &DebugSnapshot) {
         let mut movement = MonsterInput::default();
-        if snapshot.controlling_monster
-            && !self.focused
-            && !context.egui_wants_keyboard_input()
-            && allow_control
-        {
+        if snapshot.controlling_monster && !self.focused && !context.egui_wants_keyboard_input() {
             context.input(|input| {
                 if !input.focused {
                     return;

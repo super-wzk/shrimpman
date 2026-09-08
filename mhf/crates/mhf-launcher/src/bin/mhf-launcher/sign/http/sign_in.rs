@@ -48,17 +48,11 @@ struct Festa {
 
 impl Response {
     pub(super) fn into_domain(self) -> Result<SignInSuccess, Error> {
-        if self.session.session_id == 0 {
-            return Err(Error::invalid_response("Sign session ID must not be 0"));
-        }
-        if !self.session.token.is_ascii() || self.session.token.len() != SIGN_SESSION_TOKEN_LEN {
-            return Err(Error::invalid_response(format!(
-                "Sign session token must contain exactly {SIGN_SESSION_TOKEN_LEN} ASCII bytes"
-            )));
-        }
-
-        let mut token = [0; SIGN_SESSION_TOKEN_LEN];
-        token.copy_from_slice(self.session.token.as_bytes());
+        let token = self.session.token.into_bytes().try_into().map_err(|_| {
+            Error::invalid_response(format!(
+                "Sign session token must contain exactly {SIGN_SESSION_TOKEN_LEN} bytes"
+            ))
+        })?;
         let entrance_servers = self
             .entrance_servers
             .into_iter()
@@ -75,36 +69,9 @@ impl Response {
             .into_iter()
             .map(character::Response::into_domain)
             .collect::<Result<Vec<_>, _>>()?;
-        if characters.len() > 16 {
-            return Err(Error::invalid_response(format!(
-                "{} characters were returned; at most 16 are supported",
-                characters.len()
-            )));
-        }
-        for (index, character) in characters.iter().enumerate() {
-            if characters[..index]
-                .iter()
-                .any(|other| other.id == character.id)
-            {
-                return Err(Error::invalid_response(format!(
-                    "duplicate character ID {}",
-                    u32::from(character.id)
-                )));
-            }
-        }
-
         let last_character_id = self.last_character_id.map(CharacterId::from);
-        if let Some(last_character_id) = last_character_id
-            && !characters
-                .iter()
-                .any(|character| character.id == last_character_id)
-        {
-            return Err(Error::invalid_response(
-                "last_character_id does not identify a returned character",
-            ));
-        }
 
-        Ok(SignInSuccess {
+        super::super::validate_sign_in(SignInSuccess {
             session: IssuedSignSession {
                 session_id: SignSessionId::from(self.session.session_id),
                 token,
@@ -112,7 +79,7 @@ impl Response {
             },
             entrance_servers,
             characters,
-            notices: self.notices,
+            notices: self.notices.into_iter().map(String::into_bytes).collect(),
             last_character_id,
             rights: CourseRights::from_bits_retain(self.rights),
             return_expires_at: self.return_expires_at,
@@ -138,13 +105,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_notices_and_festa_into_the_launcher_domain() {
+    fn maps_notices_non_ascii_token_and_festa_into_the_launcher_domain() {
         let starts_at = Timestamp::new(1_800_000_000, 0).unwrap();
         let expires_at = Timestamp::new(1_800_003_600, 0).unwrap();
         let response = Response {
             session: Session {
                 session_id: 1,
-                token: "0123456789ABCDEF".to_owned(),
+                token: "令牌0123456789".to_owned(),
                 issued_at: starts_at,
             },
             entrance_servers: vec!["127.0.0.1:53310".to_owned()],
@@ -164,7 +131,8 @@ mod tests {
         };
 
         let sign_in = response.into_domain().unwrap();
-        assert_eq!(sign_in.notices, ["Welcome"]);
+        assert_eq!(sign_in.session.token, "令牌0123456789".as_bytes());
+        assert_eq!(sign_in.notices, [b"Welcome".to_vec()]);
         assert_eq!(
             sign_in.festa,
             Some(MezeportaFesta {

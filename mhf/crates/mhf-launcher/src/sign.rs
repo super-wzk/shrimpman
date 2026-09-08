@@ -1,4 +1,4 @@
-use crate::{MhfConfig, TranslationConfig};
+use crate::{MhfConfig, TranslationConfig, runtime::SignEncoding};
 use jiff::Timestamp;
 use shrimpman_domain::{
     account::CourseRights,
@@ -11,6 +11,7 @@ use std::net::SocketAddrV4;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Config {
     pub credentials: PasswordCredentials,
+    pub sign_encoding: SignEncoding,
     pub sign_in: SignInSuccess,
     pub selected_character_id: CharacterId,
     pub translation: Option<TranslationConfig>,
@@ -33,7 +34,7 @@ pub struct IssuedSignSession {
 #[derive(Debug, PartialEq, Eq)]
 pub struct SignCharacter {
     pub id: CharacterId,
-    pub name: String,
+    pub name: Vec<u8>,
     pub gr: u16,
     pub hr: u16,
     pub weapon_type: WeaponType,
@@ -47,7 +48,7 @@ pub struct SignInSuccess {
     pub session: IssuedSignSession,
     pub entrance_servers: Vec<SocketAddrV4>,
     pub characters: Vec<SignCharacter>,
-    pub notices: Vec<String>,
+    pub notices: Vec<Vec<u8>>,
     pub last_character_id: Option<CharacterId>,
     pub rights: CourseRights,
     pub return_expires_at: Timestamp,

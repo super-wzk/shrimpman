@@ -18,6 +18,10 @@
 - `patches.rs`：四个原生绘制函数中的 94 处定点适配，覆盖长度读取、材质/变体偏移
   和批次指针步进。修改保持指令跨度不变，跳转地址保持有效。材质和骨骼标识仍遵循
   原生参数宽度；扩展的是几何索引与计数。
+- `equipment_cache.rs`：武器与六个角色部件的同步、异步源文件缓存按实际文件长度增长，
+  包含读取器追加的路径和 NUL，替代原有每槽 128 KiB 的静态空间。异步请求在执行时
+  绑定缓存，保留排队与完成通知；同步读取继续经过原有的资源及本地化入口。
+  33 处消费者引用随缓存迁移，旧分配保留到游戏线程停止，卸载时恢复原始引用。
 
 支持 32 位索引的 D3D9 设备使用 `D3DFMT_INDEX32`。仅支持 16 位索引的设备仍可上传
 原本的小模型，其 CPU 批次计数仍为 32 位；超过实际 `MaxVertexIndex` 或
@@ -35,6 +39,7 @@
 | `10007B60` | 动态构建模型、批次、包围体和 D3D9 缓冲 |
 | `10018D30`、`1001A1E0`、`1001B210`、`1001BC70` | 读取扩展批次表，保留原生材质与绘制逻辑 |
 | `10007120`、`1158FFD0` | 通过核对过的寄存器适配器调用顶点转换和线程调度 |
+| `108E22CB`、`108E2338`、`115904C0` | 防具/武器同步读取及异步请求执行前扩展源文件缓存 |
 
 安装和卸载都要求游戏调用线程已停止。原生模型对象不保存指向 Rust 容器的指针，
 由游戏原有的释放路径回收。
@@ -58,13 +63,18 @@ Windows 上还可运行 `supported_client_installs_and_restores_geometry -- --ig
 
 `tools/verify_native.py` 使用开发环境中的 `unicorn` 和 `capstone`，只读取指定 DLL，
 在隔离的模拟内存中执行指令。它可以验证全部 94 处修改、真实原生静态/蒙皮转换器，
-以及实际编译出的 7 个 x86 汇编适配器；这些 Python 包不是项目运行依赖：
+以及实际编译出的 10 个 x86 汇编适配器；这些 Python 包不是项目运行依赖：
 
 ```sh
 rtk cargo xwin rustc -p mhf-geometry --lib --target i686-pc-windows-msvc --xwin-arch x86 -- -C codegen-units=1 --emit=obj
 rtk proxy python tools/verify_native.py /path/to/mhfo-hd.dll \
   --object ../../target/i686-pc-windows-msvc/debug/deps/mhf_geometry-<hash>.o --converters
+rtk proxy python tools/verify_equipment_cache.py /path/to/mhfo-hd.dll
 ```
 
-第二条命令在 `crates/geometry/` 中执行。这些验证不代替游戏内检查；实际高模的材质、
+两条 Python 命令在 `crates/geometry/` 中执行。这些验证不代替游戏内检查；实际高模的材质、
 动画、阴影、不同画质及进出区域后的资源释放仍需在运行中的客户端验证。
+
+装备缓存验证会复现旧缓存读取 130 KiB 文件时覆盖相邻内存，并执行真实加载器、
+异步模式 2/7 和 33 处引用指令，覆盖 128 KiB 前后、130 KiB、1 MiB、尾部路径和
+失败资源标记。文件/资源包 I/O 与系统事件使用模拟实现。

@@ -3,6 +3,9 @@
 mod config;
 mod ini_hook;
 
+#[cfg(feature = "login")]
+pub use config::{SignEncoding, SignSettings};
+
 use crate::{
     MhfConfig, MhfLaunchProfile, TranslationConfig,
     launcher::{self, LaunchMode},
@@ -58,8 +61,8 @@ pub fn prepare(
 
 impl PreparedLaunch {
     #[cfg(feature = "login")]
-    pub fn sign_http_base_url(&self) -> Result<String, String> {
-        self.store.sign_http_base_url()
+    pub fn sign_settings(&self) -> Result<SignSettings, String> {
+        self.store.sign_settings()
     }
 
     #[cfg(feature = "login")]
@@ -70,9 +73,11 @@ impl PreparedLaunch {
         sign_in: crate::SignInSuccess,
         selected_character_id: shrimpman_domain::character::CharacterId,
     ) -> Result<i32, String> {
+        let sign_encoding = self.sign_settings()?.encoding;
         self.with_game(profile, |game_dir, mhf, translation| {
             let config = crate::sign::Config {
                 credentials,
+                sign_encoding,
                 sign_in,
                 selected_character_id,
                 translation,

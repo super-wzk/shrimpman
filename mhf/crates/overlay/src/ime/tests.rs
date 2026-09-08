@@ -27,7 +27,7 @@ fn current_context(hwnd: HWND) -> HIMC {
 // Keep the native lifecycle in one test: DummyWindow's registered class and
 // IMM's default context are shared resources on their owning window thread.
 #[test]
-fn private_context_suspends_without_text_focus_and_restores_host_on_teardown() {
+fn private_context_suspends_during_capture_and_restores_native_input_afterward() {
     let window = DummyWindow::create().expect("native test requires a working window driver");
     let hwnd = window.hwnd();
     let previous_focus = unsafe { GetFocus() };
@@ -43,9 +43,20 @@ fn private_context_suspends_without_text_focus_and_restores_host_on_teardown() {
     let (events, restored) = ime.sync(hwnd);
     assert!(events.is_empty());
     assert!(!restored);
+    assert_eq!(current_context(hwnd), host);
+    assert!(ime.lock().native.is_none());
+    assert!(
+        ime.handle_message(WM_IME_SETCONTEXT, LPARAM(ISC_SHOWUIALL as isize))
+            .is_none(),
+        "native IME messages must pass through before the overlay captures input"
+    );
+    ime.lock().block_host = true;
+    let (events, restored) = ime.sync(hwnd);
+    assert!(events.is_empty());
+    assert!(!restored);
     assert!(
         current_context(hwnd).is_invalid(),
-        "IME must be suspended before the first editor receives focus"
+        "a blocking overlay must suspend IME before an editor receives focus"
     );
     let reply = ime
         .handle_message(WM_IME_SETCONTEXT, LPARAM(ISC_SHOWUIALL as isize))
@@ -163,6 +174,34 @@ fn private_context_suspends_without_text_focus_and_restores_host_on_teardown() {
     let (_, restored) = ime.sync(hwnd);
     assert!(!restored);
     assert_eq!(current_context(hwnd), private);
+    ime.handle_message(WM_IME_STARTCOMPOSITION, LPARAM(0))
+        .unwrap();
+    {
+        let mut state = ime.lock();
+        state.requested = None;
+        state.block_host = false;
+    }
+    let (events, restored) = ime.sync(hwnd);
+    assert_eq!(events, vec![clear_preedit()]);
+    assert!(restored);
+    assert_eq!(current_context(hwnd), host);
+    assert!(ime.lock().native.is_none());
+    assert!(!ime.composing());
+    assert!(ime.handle_message(WM_IME_CHAR, LPARAM(0)).is_none());
+    let (events, restored) = ime.sync(hwnd);
+    assert!(events.is_empty());
+    assert!(!restored);
+    assert_eq!(current_context(hwnd), host);
+
+    {
+        let mut state = ime.lock();
+        state.requested = Some(target);
+        state.block_host = true;
+    }
+    let (_, restored) = ime.sync(hwnd);
+    assert!(!restored);
+    assert!(!current_context(hwnd).is_invalid());
+    assert_ne!(current_context(hwnd), host);
     let (_, restored) = ime.stop(hwnd, true);
     assert!(restored);
     assert_eq!(current_context(hwnd), host);

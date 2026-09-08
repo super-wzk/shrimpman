@@ -34,7 +34,8 @@ pub struct DebugSession {
 }
 
 impl DebugSession {
-    /// The embedded Chinese UTF-8 quest, starting at the Historical Site camp.
+    /// The embedded quest, starting at the Historical Site camp.
+    /// Chinese UTF-8 text is applied only with the `translation` feature.
     pub fn test_map() -> Result<Self, String> {
         Ok(Self::from_quest(quest::Quest::test_map()?))
     }

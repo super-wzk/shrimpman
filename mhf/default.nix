@@ -29,6 +29,7 @@ let
     "/imsvc${windowsSdk}/sdk/include/shared"
     "/imsvc${windowsSdk}/sdk/include/um"
   ];
+  translationFeature = lib.optionalString config.development.mhf.translation.enable ",translation";
   command =
     name: text:
     mkCommand {
@@ -121,6 +122,11 @@ in
   imports = [ ./config.nix ];
 
   options.development.mhf = {
+    translation.enable =
+      lib.mkEnableOption "MHF language hooks and embedded translation dictionaries"
+      // {
+        default = true;
+      };
     gameDirectory = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -159,14 +165,14 @@ in
       mhf-build = mkDefault (
         command "mhf-build" ''
           exec cargo build -p shrimpman-mhf-launcher --bin mhf-launcher --release \
-            --no-default-features --features login \
+            --no-default-features --features login${translationFeature} \
             --target i686-pc-windows-msvc --locked "$@"
         ''
       );
       mhf-debug-build = mkDefault (
         command "mhf-debug-build" ''
           exec cargo build -p shrimpman-mhf-launcher --bin mhf-debug-launcher --release \
-            --no-default-features --features debug \
+            --no-default-features --features debug${translationFeature} \
             --target i686-pc-windows-msvc --locked "$@"
         ''
       );

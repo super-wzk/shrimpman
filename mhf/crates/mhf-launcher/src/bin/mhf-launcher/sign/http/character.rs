@@ -30,7 +30,7 @@ impl Response {
 
         Ok(SignCharacter {
             id: CharacterId::from(self.id),
-            name: self.name,
+            name: self.name.into_bytes(),
             gr: self.gr,
             hr: self.hr,
             weapon_type: self.weapon_type,

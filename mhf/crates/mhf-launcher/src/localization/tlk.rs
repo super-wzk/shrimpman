@@ -458,17 +458,22 @@ mod tests {
         MemoryRange, UNKNOWN_STAGE, parse_stage_path, patch_tlk_image, relative_pointer,
         resolve_relative_pointer, tlk_image_size, tlk_sections,
     };
+    use crate::localization::test_state;
+    #[cfg(feature = "translation")]
     use crate::{
         MissingTranslation,
-        localization::{CompiledDictionary, CompiledLocale, test_state},
+        localization::{CompiledDictionary, CompiledLocale},
     };
     use std::ffi::CStr;
 
+    #[cfg(feature = "translation")]
     static TRANSLATIONS: &[u8] = &[
         0, 0, 0, 0, 125, 0, 0, 0, 1, 0, 23, 0, 20, 0, 0, 0, 7, 0, 0, 0, 0xE4, 0xB8, 0xAD, 0xE6,
         0x96, 0x87, 0,
     ];
+    #[cfg(feature = "translation")]
     static LOCALES: [CompiledLocale; 1] = [CompiledLocale::new("test", 0, 1)];
+    #[cfg(feature = "translation")]
     static DICTIONARY: CompiledDictionary = CompiledDictionary::new(TRANSLATIONS, &LOCALES);
 
     struct TlkImage {
@@ -523,9 +528,11 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn converts_every_record_with_sparse_overrides_and_preserves_utf8_on_repeat() {
-        let state = test_state(DICTIONARY.locale("test"), MissingTranslation::Original);
+        let mut state = test_state();
+        state.locale = DICTIONARY.locale("test");
         let image = TlkImage::new(&[(23, &[b"ASCII", b"\x93\xFA\x96\x7B", b"\x93\xFA"])]);
 
         unsafe { patch_tlk_image(&state, image.range(), 125, 932) };
@@ -540,9 +547,12 @@ mod tests {
         assert_eq!(image.text(0, 2).to_str().unwrap(), "日");
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn converts_originals_when_stage_is_unknown_without_applying_missing_policy() {
-        let state = test_state(DICTIONARY.locale("test"), MissingTranslation::Key);
+        let mut state = test_state();
+        state.locale = DICTIONARY.locale("test");
+        state.missing = MissingTranslation::Key;
         let image = TlkImage::new(&[(23, &[b"\x93\xFA\x96\x7B", b"\x93\xFA"])]);
 
         unsafe { patch_tlk_image(&state, image.range(), UNKNOWN_STAGE, 932) };
@@ -553,7 +563,7 @@ mod tests {
 
     #[test]
     fn language_overlays_convert_all_records_using_their_source_code_page() {
-        let state = test_state(None, MissingTranslation::Original);
+        let state = test_state();
         for (code_page, source, expected) in [
             (949, b"\xC7\xD1\xB1\xDB".as_slice(), "한글"),
             (950, b"\xC1\x63\xC5\xE9".as_slice(), "繁體"),
@@ -565,9 +575,11 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn duplicate_ids_translate_only_the_first_directory_entry() {
-        let state = test_state(DICTIONARY.locale("test"), MissingTranslation::Original);
+        let mut state = test_state();
+        state.locale = DICTIONARY.locale("test");
         let records: &[&[u8]] = &[b"ASCII", b"\x93\xFA\x96\x7B"];
         let mut image = TlkImage::new(&[(23, records), (23, records)]);
         // Directory order, rather than the sections' physical byte order,
@@ -583,7 +595,7 @@ mod tests {
 
     #[test]
     fn a_string_cannot_use_the_next_sections_pointer_table_as_its_terminator() {
-        let state = test_state(None, MissingTranslation::Original);
+        let state = test_state();
         let mut image = TlkImage::new(&[(23, &[b"\x93\xFA"]), (24, &[b"\x93\xFA"])]);
         image.bytes[image.sections[1] - 1] = b'!';
         let source = image.pointer(0, 0);
@@ -596,7 +608,7 @@ mod tests {
 
     #[test]
     fn malformed_directories_and_pointer_tables_are_not_patched() {
-        let state = test_state(None, MissingTranslation::Original);
+        let state = test_state();
         for invalid_offset in [0, u32::MAX] {
             let mut image = TlkImage::new(&[(23, &[b"\x93\xFA"])]);
             image.write_u32(4, invalid_offset);

@@ -1,19 +1,49 @@
 use super::model::{CharacterOperation, CharacterSelection, Characters, Message, Model, SignIn};
 use egui::{Align, Id, Layout, RichText};
 use egui_hunter::{
-    Button, ButtonKind, Checkbox, Dialog, DialogState, Icon, NoticeKind, Panel, Surface, TextField,
-    notice,
+    Button, ButtonKind, Checkbox, Dialog, DialogState, Icon, NoticeKind, Notifications, Panel,
+    Surface, TextField, notice,
 };
 use jiff::Timestamp;
 use shrimpman_domain::character::{Gender, WeaponType};
-use shrimpman_mhf_launcher::SignCharacter;
+use shrimpman_mhf_launcher::{SignCharacter, runtime::SignEncoding};
+use std::borrow::Cow;
 
-#[derive(Default)]
 pub(super) struct View {
+    encoding: SignEncoding,
     deletion_dialog: DialogState,
+    notifications: Notifications,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self::new(SignEncoding::Utf8)
+    }
 }
 
 impl View {
+    pub(super) fn new(encoding: SignEncoding) -> Self {
+        Self {
+            encoding,
+            deletion_dialog: DialogState::default(),
+            notifications: Notifications::with_capacity(Id::new("sign-notifications"), 1),
+        }
+    }
+
+    pub(super) fn notify_error(&mut self, context: &egui::Context, message: &str) {
+        let mut chars = message.chars();
+        let mut text = chars.by_ref().take(240).collect::<String>();
+        if chars.next().is_some() {
+            text.push('…');
+        }
+        self.notifications.push_for(
+            context,
+            NoticeKind::Danger,
+            text,
+            std::time::Duration::from_secs(6),
+        );
+    }
+
     pub(super) fn show(&mut self, model: &mut Model, ui: &mut egui::Ui) -> Option<Message> {
         let mut message = egui::CentralPanel::default()
             .frame(
@@ -23,7 +53,7 @@ impl View {
             )
             .show(ui, |ui| match model {
                 Model::SignIn(state) => show_sign_in(state, ui),
-                Model::Characters(state) => show_characters(state, ui),
+                Model::Characters(state) => show_characters(state, self.encoding, ui),
                 Model::Closing => {
                     show_closing(ui);
                     None
@@ -38,7 +68,7 @@ impl View {
                     .characters
                     .iter()
                     .find(|character| character.id == id)
-                    .map(character_name)
+                    .map(|character| character_name(character, self.encoding))
                     .unwrap_or_default()
             }),
             _ => None,
@@ -86,6 +116,7 @@ impl View {
         if matches!(message, Some(Message::DeleteCharacter(_))) {
             self.deletion_dialog.open(ui.ctx());
         }
+        self.notifications.show(ui.ctx());
         message
     }
 }
@@ -113,9 +144,6 @@ fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
                         Panel::new("Sign in")
                             .surface(Surface::Parchment)
                             .show(ui, |ui| {
-                                if let Some(error) = state.error.as_deref() {
-                                    show_notice(ui, NoticeKind::Danger, error);
-                                }
                                 ui.add_space(4.0);
                                 let username_id = Id::new("sign_in_username");
                                 let password_id = Id::new("sign_in_password");
@@ -187,7 +215,11 @@ fn show_sign_in(state: &mut SignIn, ui: &mut egui::Ui) -> Option<Message> {
     message
 }
 
-fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
+fn show_characters(
+    state: &Characters,
+    encoding: SignEncoding,
+    ui: &mut egui::Ui,
+) -> Option<Message> {
     let mut message = None;
     ui.heading("Character selection");
     ui.horizontal_wrapped(|ui| {
@@ -287,9 +319,6 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
                     "No Entrance service is currently available.",
                 );
             }
-            if let Some(error) = state.error.as_deref() {
-                show_notice(ui, NoticeKind::Danger, error);
-            }
             for character in state
                 .sign_in
                 .characters
@@ -297,7 +326,7 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
                 .filter(|character| !character.is_new)
             {
                 let selection = CharacterSelection::Existing(character.id);
-                let response = character_card(state, character, ui);
+                let response = character_card(state, character, encoding, ui);
                 if matches!(message, Some(Message::Select(target)) if target == selection) {
                     response.scroll_to_me(None);
                 }
@@ -336,6 +365,7 @@ fn show_characters(state: &Characters, ui: &mut egui::Ui) -> Option<Message> {
 fn character_card(
     state: &Characters,
     character: &SignCharacter,
+    encoding: SignEncoding,
     ui: &mut egui::Ui,
 ) -> egui::Response {
     let selected = state.selection == CharacterSelection::Existing(character.id);
@@ -349,7 +379,7 @@ fn character_card(
                 })
                 .show(ui, |ui| {
                     let button = ui.add(
-                        Button::new(&character_name(character))
+                        Button::new(&character_name(character, encoding))
                             .icon(Icon::Sword)
                             .selected(selected)
                             .full_width(),
@@ -489,11 +519,17 @@ fn format_local_date(timestamp: Timestamp) -> String {
         .to_string()
 }
 
-fn character_name(character: &SignCharacter) -> String {
-    if character.name.is_empty() {
-        format!("Character #{}", u32::from(character.id))
+fn character_name(character: &SignCharacter, encoding: SignEncoding) -> Cow<'_, str> {
+    let end = character
+        .name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(character.name.len());
+    let bytes = &character.name[..end];
+    if bytes.is_empty() {
+        format!("Character #{}", u32::from(character.id)).into()
     } else {
-        character.name.clone()
+        encoding.decode(bytes)
     }
 }
 
@@ -502,36 +538,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn long_errors_keep_sign_in_reachable_at_default_and_minimum_window_sizes() {
-        for size in [
-            egui::vec2(680.0, 520.0),
-            egui::vec2(500.0, 520.0),
-            egui::vec2(440.0, 430.0),
+    fn character_names_decode_for_display_without_changing_raw_bytes() {
+        for (encoding, bytes, expected) in [
+            (
+                SignEncoding::Utf8,
+                "日本日本日本".as_bytes(),
+                "日本日本日本",
+            ),
+            (
+                SignEncoding::ShiftJis,
+                &b"\x93\xfa\x96\x7b\0\xff"[..],
+                "日本",
+            ),
+            (SignEncoding::Utf8, &b"Hunter\xff"[..], "Hunter\u{fffd}"),
+            (SignEncoding::Utf8, &b"\0padding"[..], "Character #7"),
+            (SignEncoding::Utf8, &b""[..], "Character #7"),
         ] {
+            let character = SignCharacter {
+                id: 7.into(),
+                name: bytes.to_vec(),
+                gr: 0,
+                hr: 0,
+                weapon_type: WeaponType::GreatSword,
+                gender: Gender::Female,
+                last_sign_in_at: None,
+                is_new: false,
+            };
+
+            assert_eq!(character_name(&character, encoding), expected);
+            assert_eq!(character.name, bytes);
+        }
+    }
+
+    #[test]
+    fn error_notifications_do_not_move_the_form_or_take_focus() {
+        for size in [egui::vec2(680.0, 520.0), egui::vec2(440.0, 430.0)] {
             let context = egui::Context::default();
             shrimpman_mhf_launcher::font::install(&context);
             egui_hunter::Theme::default().apply(&context);
             let mut view = View::default();
-            let mut model = Model::sign_in(None, Some("网络错误 network-error/".repeat(100)));
-            for frame in 0..10 {
-                let events = if frame == 3 {
-                    vec![
-                        egui::Event::PointerMoved(egui::pos2(size.x - 22.0, size.y - 24.0)),
-                        egui::Event::MouseWheel {
-                            unit: egui::MouseWheelUnit::Point,
-                            delta: egui::vec2(0.0, -1000.0),
-                            phase: egui::TouchPhase::Move,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ]
-                } else {
-                    Vec::new()
-                };
+            let mut model = Model::sign_in(Some(shrimpman_mhf_launcher::PasswordCredentials {
+                username: "hunter".into(),
+                password: "secret".into(),
+            }));
+            let mut before = None;
+            for step in 0..6 {
+                if step == 3 {
+                    view.notify_error(&context, &"网络错误 network-error/".repeat(100));
+                }
                 let mut output = context.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                        time: Some(f64::from(frame) * 0.1),
-                        events,
+                        time: Some(f64::from(step) * 0.1),
                         ..Default::default()
                     },
                     |ui| {
@@ -539,17 +597,20 @@ mod tests {
                     },
                 );
                 output.textures_delta.clear();
+                let button = context.read_response(Id::new("sign_in_submit")).unwrap();
+                if step == 2 {
+                    before = Some(button.rect);
+                }
+                if step > 2 {
+                    assert_eq!(Some(button.rect), before);
+                    assert_eq!(
+                        context.memory(|m| m.focused()),
+                        Some(Id::new("sign_in_username"))
+                    );
+                    assert!(button.interact_rect.contains_rect(button.rect));
+                    assert!(!view.notifications.is_empty());
+                }
             }
-            let button = context
-                .read_response(Id::new("sign_in_submit"))
-                .expect("sign-in button was not rendered");
-            assert!(button.rect.height() >= 42.0);
-            assert!(
-                button.interact_rect.contains_rect(button.rect),
-                "button is clipped at {size:?}: {:?} in {:?}",
-                button.rect,
-                button.interact_rect,
-            );
         }
     }
 
@@ -559,13 +620,10 @@ mod tests {
         shrimpman_mhf_launcher::font::install(&context);
         egui_hunter::Theme::default().apply(&context);
         let mut view = View::default();
-        let mut model = Model::sign_in(
-            Some(shrimpman_mhf_launcher::PasswordCredentials {
-                username: "hunter".to_owned(),
-                password: "secret".to_owned(),
-            }),
-            None,
-        );
+        let mut model = Model::sign_in(Some(shrimpman_mhf_launcher::PasswordCredentials {
+            username: "hunter".to_owned(),
+            password: "secret".to_owned(),
+        }));
         for _ in 0..2 {
             frame(&context, &mut view, &mut model, vec![]);
         }
@@ -625,7 +683,7 @@ mod tests {
                 entrance_servers: vec!["127.0.0.1:53310".parse().unwrap()],
                 characters: vec![SignCharacter {
                     id,
-                    name: "Hunter".into(),
+                    name: b"Hunter".to_vec(),
                     gr: 2,
                     hr: 3,
                     weapon_type: WeaponType::GreatSword,
@@ -641,7 +699,6 @@ mod tests {
             },
             selection: CharacterSelection::Existing(id),
             operation: CharacterOperation::Idle,
-            error: None,
         });
         for _ in 0..2 {
             frame(&context, &mut view, &mut model, vec![]);

@@ -407,7 +407,9 @@ mod tests {
         MemoryRange, QuestTableLayout, RecordCount, RecordTableLayout, patch_quest_table,
         patch_record_table, read_image_string, relocated_resource_magic, resolve_image_pointer,
     };
-    use crate::{MissingTranslation, localization::test_state};
+    #[cfg(feature = "translation")]
+    use crate::MissingTranslation;
+    use crate::localization::test_state;
 
     fn pointer(buffer: &mut [u8], offset: usize, target: usize) {
         buffer[offset..offset + 4].copy_from_slice(&(target as u32).to_le_bytes());
@@ -449,9 +451,11 @@ mod tests {
         assert_eq!(unsafe { super::record_count(image, count) }, None);
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn table_segments_keep_their_own_zero_based_translation_ids() {
-        let state = test_state(None, MissingTranslation::Key);
+        let mut state = test_state();
+        state.missing = MissingTranslation::Key;
         let mut text = state.text.lock().unwrap();
         let mut buffer = vec![0u8; 128];
         let base = buffer.as_ptr() as usize;
@@ -502,7 +506,7 @@ mod tests {
 
     #[test]
     fn nested_tables_obey_outer_counts_and_preserve_relocated_empty_slots() {
-        let state = test_state(None, MissingTranslation::Original);
+        let state = test_state();
         let mut text = state.text.lock().unwrap();
         let mut buffer = vec![0u8; 256];
         let base = buffer.as_ptr() as usize;
@@ -553,6 +557,7 @@ mod tests {
         assert_eq!(read_pointer(&buffer, 64), translated);
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn headerless_resources_use_fixed_encoding_and_the_shared_translation_policy() {
         for (locale, missing, expected) in [
@@ -562,7 +567,9 @@ mod tests {
             (Some("ja-JP"), MissingTranslation::Original, "赤"),
         ] {
             let locale = locale.map(|id| super::super::TRANSLATION_DICTIONARY.locale(id).unwrap());
-            let state = test_state(locale, missing);
+            let mut state = test_state();
+            state.locale = locale;
+            state.missing = missing;
             let mut buffer = vec![0u8; 512];
             let base = buffer.as_ptr() as usize;
             pointer(&mut buffer, 28, base + 128);
@@ -590,7 +597,7 @@ mod tests {
 
     #[test]
     fn converts_all_declared_record_parts_without_a_translation_locale() {
-        let state = test_state(None, MissingTranslation::Original);
+        let state = test_state();
         let mut text = state.text.lock().unwrap();
         let mut buffer = vec![0u8; 96];
         let base = buffer.as_ptr() as usize;
@@ -636,7 +643,7 @@ mod tests {
 
     #[test]
     fn keyconfig_header_declares_utf8_after_its_resource_text_is_converted() {
-        let state = test_state(None, MissingTranslation::Original);
+        let state = test_state();
         let mut text = state.text.lock().unwrap();
         let mut buffer = vec![0u8; 512];
         let base = buffer.as_ptr() as usize;
@@ -677,7 +684,7 @@ mod tests {
 
     #[test]
     fn converts_quest_parts_from_the_runtime_category_counts() {
-        let state = test_state(None, MissingTranslation::Original);
+        let state = test_state();
         let mut text = state.text.lock().unwrap();
         let mut buffer = vec![0u8; 224];
         let base = buffer.as_ptr() as usize;

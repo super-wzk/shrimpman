@@ -164,6 +164,12 @@ input is needed, and local edits never change `flake.lock`.
 
 Ports are typed options under `development.ports`: `etcdClient`, `etcdPeer`,
 `signTcp`, `signHttp`, `entranceTcp`, `worldLand1` and `worldLand2`.
+The launcher uses one `mhf.sign.endpoint` URI. Its default is HTTP and follows
+`development.ports.signHttp`. Set `mhf.sign.endpoint = "tcp://127.0.0.1:53000";`
+in the local module, or `MHF_SIGN__ENDPOINT=tcp://127.0.0.1:53000` when launching,
+to use TCP. The URI scheme selects HTTP, HTTPS or TCP. The launcher README
+documents each transport.
+
 Services, readiness probes and the launcher read these options directly; the
 old port helper environment variables are no longer used. Existing environment
 variables still take precedence over `development.environment` defaults for application inputs.
@@ -173,7 +179,9 @@ environment instead of placing them in module source.
 The launcher uses a writable copy of the generated MHF configuration and the Sign HTTP port above.
 `MHF_CONFIG` is relative to `mhf/`; `development.mhf.gameDirectory` is absolute or
 relative to the repository root. Runner paths outside `PATH` should be absolute.
-`MHF_SIGN__HTTP__BASE_URL` overrides the Sign URL.
+`MHF_SIGN__ENDPOINT` overrides the complete Sign endpoint URI. For Erupe, set
+`mhf.sign.encoding = "shift_jis";` or `MHF_SIGN__ENCODING=shift_jis`; Shrimpman
+defaults to `utf8`. This encoding setting applies only to the Sign TCP connection.
 
 All supported Nix hosts use Cargo Xwin. Execution is selected separately:
 
@@ -225,7 +233,11 @@ not accumulate configuration history. Export `MHF_CONFIG` to use a separately
 managed file. The committed default MHF file is for use outside Nix; copy it
 before running if you want to preserve it unchanged.
 
-Translation hooks are disabled in the public MHF defaults (no `translation`
-section). To enable Chinese translation locally, set
+Translation overrides are disabled in the public MHF defaults (no `translation`
+section). The `translation` Cargo feature is enabled by default for both Nix
+launcher commands. Set `development.mhf.translation.enable = false;` to compile
+without language hooks or embedded dictionaries. Resource layouts, JSONL files,
+and `[translation]` settings are then ignored; the game keeps its native text handling.
+To enable Chinese translation locally, keep the feature enabled and set
 `mhf.translation = { locale = "zh-CN"; missing = "key"; };` in
 `local/default.nix`.

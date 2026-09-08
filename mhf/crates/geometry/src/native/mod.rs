@@ -1,4 +1,5 @@
 mod abi;
+mod equipment_cache;
 mod memory;
 
 use crate::{
@@ -12,7 +13,10 @@ use std::{
     mem::{size_of, transmute},
     panic::{AssertUnwindSafe, catch_unwind},
     ptr, slice,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use windows::{
     Win32::{
@@ -37,6 +41,8 @@ static SLOT: HookSlot<State> = HookSlot::new();
 struct State {
     module: Module,
     load_original: usize,
+    cache_dispatch_original: usize,
+    equipment_caches: Arc<Mutex<equipment_cache::Caches>>,
 }
 
 impl State {
@@ -91,12 +97,17 @@ pub struct GeometryHooks {
     // Restore instructions while the hook state still retains the native DLL.
     patches: CodePatches,
     hooks: HookGuard<State>,
+    equipment_caches: Arc<Mutex<equipment_cache::Caches>>,
 }
 
 impl GeometryHooks {
     /// Stop native game callers before removing the extension.
     pub fn uninstall(&mut self) -> Result<(), String> {
         self.hooks.uninstall()?;
+        self.equipment_caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restore()?;
         self.patches.restore()
     }
 }
@@ -118,6 +129,7 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
     let mut hooks = SLOT.prepare()?;
     let base = module.0 as usize;
     unsafe { memory::validate(base) }?;
+    unsafe { equipment_cache::validate(base) }?;
     let retained = unsafe { Module::retain(module) }?;
     let load_original = unsafe {
         hooks.create(
@@ -133,15 +145,50 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
             abi::build_detour as *mut c_void,
         )
     }?;
+    // The general file loader already belongs to localization. Intercept only
+    // equipment call sites, and the queued dispatcher before a file job starts.
+    unsafe {
+        hooks.create(
+            "equipment source cache loading",
+            (base + equipment_cache::SYNC_LOAD) as _,
+            abi::equipment_cache_load_detour as *mut c_void,
+        )
+    }?;
+    unsafe {
+        hooks.create(
+            "armor source cache loading",
+            (base + equipment_cache::SYNC_PART_LOAD) as _,
+            abi::equipment_part_load_detour as *mut c_void,
+        )
+    }?;
+    let cache_dispatch_original = unsafe {
+        hooks.create(
+            "queued equipment source cache loading",
+            (base + equipment_cache::DISPATCH) as _,
+            equipment_cache::dispatch as *mut c_void,
+        )
+    }?;
+    let equipment_caches = Arc::new(Mutex::new(equipment_cache::Caches::new(base)));
+    equipment_cache::SYNC_RETURN.store(base + equipment_cache::SYNC_LOAD + 5, Ordering::Release);
+    equipment_cache::SYNC_PART_RETURN.store(
+        base + equipment_cache::SYNC_PART_LOAD + 5,
+        Ordering::Release,
+    );
     let patches = unsafe { CodePatches::install(base) }?;
     BASE.store(base, Ordering::Release);
     let hooks = unsafe {
         hooks.install(State {
             module: retained,
             load_original: load_original as usize,
+            cache_dispatch_original: cache_dispatch_original as usize,
+            equipment_caches: Arc::clone(&equipment_caches),
         })
     }?;
-    Ok(GeometryHooks { patches, hooks })
+    Ok(GeometryHooks {
+        patches,
+        hooks,
+        equipment_caches,
+    })
 }
 
 /// Temporary FMOD conversion output, owned and freed by the original caller.
@@ -619,6 +666,8 @@ mod tests {
             hooks.uninstall().expect("restore geometry hooks");
             unsafe { memory::validate(module.0 as usize) }
                 .expect("all original instructions restored");
+            unsafe { equipment_cache::validate(module.0 as usize) }
+                .expect("all original equipment cache references restored");
         }
     }
 }

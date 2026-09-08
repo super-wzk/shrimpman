@@ -342,6 +342,7 @@ pub(super) struct Store {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct Settings {
+    #[cfg_attr(not(feature = "translation"), serde(skip_deserializing))]
     pub(super) translation: Option<TranslationConfig>,
     #[serde(flatten)]
     pub(super) mhf: MhfConfig,
@@ -366,35 +367,64 @@ fn sign_environment() -> Environment {
 }
 
 #[cfg(feature = "login")]
-fn load_sign_base_url(
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignEncoding {
+    #[default]
+    Utf8,
+    ShiftJis,
+}
+
+#[cfg(feature = "login")]
+impl SignEncoding {
+    pub fn decode(self, bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Utf8 => String::from_utf8_lossy(bytes),
+            Self::ShiftJis => encoding_rs::SHIFT_JIS.decode_without_bom_handling(bytes).0,
+        }
+    }
+
+    pub fn encode(self, text: &str) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+        if self == Self::Utf8 || text.is_empty() {
+            return Ok(std::borrow::Cow::Borrowed(text.as_bytes()));
+        }
+        let (bytes, _, replaced) = encoding_rs::SHIFT_JIS.encode(text);
+        // Typed credentials must still identify the same account after encoding.
+        if replaced || self.decode(&bytes) != text {
+            return Err(
+                "The username or password cannot be represented exactly in Shift-JIS".into(),
+            );
+        }
+        Ok(bytes)
+    }
+}
+
+#[cfg(feature = "login")]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignSettings {
+    pub endpoint: String,
+    #[serde(default)]
+    pub encoding: SignEncoding,
+}
+
+#[cfg(feature = "login")]
+fn load_sign_settings(
     source: &str,
     environment: Environment,
-) -> Result<String, ::config::ConfigError> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct SignSettings {
-        http: HttpSettings,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct HttpSettings {
-        base_url: String,
-    }
-
+) -> Result<SignSettings, ::config::ConfigError> {
     LayeredConfig::builder()
         .add_source(File::from_str(source, FileFormat::Toml))
         .add_source(environment)
         .build()?
         .get::<SignSettings>(SIGN_SECTION)
-        .map(|settings| settings.http.base_url)
 }
 
 impl Store {
     #[cfg(feature = "login")]
-    pub(super) fn sign_http_base_url(&self) -> Result<String, String> {
+    pub(super) fn sign_settings(&self) -> Result<SignSettings, String> {
         let source = toml::to_string(&self.document).map_err(|error| error.to_string())?;
-        load_sign_base_url(&source, sign_environment()).map_err(|error| {
+        load_sign_settings(&source, sign_environment()).map_err(|error| {
             format!(
                 "failed to resolve [sign] configuration from {}: {error}",
                 self.path.display()
@@ -609,14 +639,15 @@ fn section_name(document: &Table, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "translation")]
     use crate::MissingTranslation;
     #[cfg(feature = "login")]
     use std::collections::HashMap;
     use std::net::Ipv4Addr;
 
     const SOURCE: &str = r#"
-[sign.http]
-base_url = "http://127.0.0.1:53313"
+[sign]
+endpoint = "http://127.0.0.1:53313"
 
 [translation]
 locale = "zh-CN"
@@ -669,9 +700,14 @@ value = "preserved"
 
         assert_eq!(config.mhf.video.graphics_version, GraphicsVersion::Standard);
         assert_eq!(config.mhf.localization.language, Language::Japanese);
-        let translation = config.translation.as_ref().unwrap();
-        assert_eq!(translation.locale, "zh-CN");
-        assert_eq!(translation.missing, MissingTranslation::Key);
+        #[cfg(feature = "translation")]
+        {
+            let translation = config.translation.as_ref().unwrap();
+            assert_eq!(translation.locale, "zh-CN");
+            assert_eq!(translation.missing, MissingTranslation::Key);
+        }
+        #[cfg(not(feature = "translation"))]
+        assert!(config.translation.is_none());
         assert_eq!(config.mhf.font.name, "ＭＳ ゴシック");
         assert_eq!(config.mhf.font.weight, 0x190);
         assert_eq!(config.mhf.launch.proxy_address, Ipv4Addr::new(10, 0, 0, 1));
@@ -683,20 +719,54 @@ value = "preserved"
     fn environment_overrides_only_the_sign_configuration() {
         let environment = sign_environment().source(Some(HashMap::from([
             (
-                "MHF_SIGN__HTTP__BASE_URL".to_owned(),
+                "MHF_SIGN__ENDPOINT".to_owned(),
                 "http://127.0.0.1:60000".to_owned(),
             ),
             ("MHF_WINE".to_owned(), "winecx24".to_owned()),
         ])));
 
-        let base_url =
-            load_sign_base_url(SOURCE, environment).expect("sign configuration should load");
+        let settings =
+            load_sign_settings(SOURCE, environment).expect("sign configuration should load");
 
-        assert_eq!(base_url, "http://127.0.0.1:60000");
+        assert_eq!(settings.endpoint, "http://127.0.0.1:60000");
+        assert_eq!(settings.encoding, SignEncoding::Utf8);
         assert_eq!(
-            document()["sign"]["http"]["base_url"].as_str(),
+            document()["sign"]["endpoint"].as_str(),
             Some("http://127.0.0.1:53313")
         );
+    }
+
+    #[cfg(feature = "login")]
+    #[test]
+    fn tcp_endpoint_can_be_selected_by_config_or_environment() {
+        let environment = sign_environment().source(Some(HashMap::from([(
+            "MHF_SIGN__ENDPOINT".into(),
+            "tcp://localhost:60001".into(),
+        )])));
+        assert_eq!(
+            load_sign_settings(SOURCE, environment).unwrap().endpoint,
+            "tcp://localhost:60001"
+        );
+        let environment = sign_environment().source(Some(HashMap::new()));
+        assert_eq!(
+            load_sign_settings("[sign]\nendpoint = 'tcp://[::1]:53000'", environment)
+                .unwrap()
+                .endpoint,
+            "tcp://[::1]:53000",
+        );
+    }
+
+    #[cfg(feature = "login")]
+    #[test]
+    fn sign_configuration_requires_one_endpoint() {
+        for source in [
+            "[sign]",
+            "[sign]\nendpoint = 'tcp://localhost:53000'\ntransport = 'tcp'",
+            "[sign.http]\nbase_url = 'http://localhost:53001'",
+        ] {
+            let environment = sign_environment().source(Some(HashMap::new()));
+            assert!(load_sign_settings(source, environment).is_err(), "{source}");
+        }
     }
 
     #[test]
@@ -709,13 +779,46 @@ value = "preserved"
         assert!(config.translation.is_none());
     }
 
+    #[cfg(not(feature = "translation"))]
+    #[test]
+    fn disabled_translation_ignores_its_config_and_preserves_it_on_save() {
+        let mut document = document();
+        document.insert(
+            TRANSLATION_SECTION.into(),
+            Value::String("not compiled".into()),
+        );
+        let settings = decode(&document).expect("disabled translation must not be parsed");
+        assert!(settings.translation.is_none());
+        let path = std::env::temp_dir().join(format!(
+            "shrimpman-mhf-no-translation-{}.toml",
+            std::process::id()
+        ));
+        let mut store = Store {
+            path: path.clone(),
+            document,
+        };
+        store
+            .set_value("SCREEN".into(), "WIDTH".into(), "1920".into())
+            .unwrap();
+        let (settings, saved) = load(path.clone()).unwrap();
+        assert!(settings.translation.is_none());
+        assert_eq!(
+            saved.document[TRANSLATION_SECTION].as_str(),
+            Some("not compiled")
+        );
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn game_configuration_does_not_require_sign_settings() {
         let mut document = document();
         document.remove(SIGN_SECTION);
         let settings = decode(&document).expect("offline game settings must not require Sign");
         assert_eq!(settings.mhf.screen.mode, ScreenMode::Windowed);
+        #[cfg(feature = "translation")]
         assert_eq!(settings.translation.unwrap().locale, "zh-CN");
+        #[cfg(not(feature = "translation"))]
+        assert!(settings.translation.is_none());
         // An unrelated, invalid Sign configuration must not block offline use.
         document.insert(SIGN_SECTION.into(), Value::String("unused".into()));
         assert!(decode(&document).is_ok());
@@ -725,7 +828,7 @@ value = "preserved"
     #[test]
     fn online_launch_still_requires_valid_sign_settings() {
         let environment = sign_environment().source(Some(HashMap::new()));
-        assert!(load_sign_base_url("[screen]\nmode = \"windowed\"", environment).is_err());
+        assert!(load_sign_settings("[screen]\nmode = \"windowed\"", environment).is_err());
     }
 
     #[test]
@@ -849,7 +952,7 @@ value = "preserved"
         let source = fs::read_to_string(&path).expect("updated config should be readable");
         let document: Table = toml::from_str(&source).expect("updated config should remain TOML");
         assert!(!source.contains("[server]"));
-        assert!(source.contains("[sign.http]"));
+        assert!(source.contains("[sign]"));
         assert!(source.contains("[translation]"));
         assert!(source.contains("locale = \"zh-CN\""));
         assert!(source.contains("missing = \"key\""));

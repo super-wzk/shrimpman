@@ -6,17 +6,28 @@ publish = false
 default-run = "mhf-launcher"
 
 [features]
-default = ["login"]
+default = ["login", "translation"]
 login = [
+    "dep:binrw",
+    "dep:bytes",
     "dep:config",
     "dep:eframe",
+    "dep:encoding_rs",
+    "dep:futures-util",
     "dep:jiff",
     "dep:shrimpman-common",
     "dep:shrimpman-domain",
+    "dep:shrimpman-transport",
+    "dep:tokio",
     "dep:ureq",
     "windows/Win32_Security_Credentials",
 ]
 debug = []
+translation = [
+    "dep:bumpalo",
+    "dep:unicode-segmentation",
+    "dep:unicode-width",
+]
 
 [[bin]]
 name = "mhf-launcher"
@@ -29,23 +40,29 @@ path = "src/bin/mhf-debug-launcher/main.rs"
 required-features = ["debug"]
 
 [dependencies]
-bumpalo = "3.20.3"
+binrw = { version = "0.15", optional = true }
+bumpalo = { version = "3.20.3", optional = true }
+bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"] }
 config = { version = "0.15", default-features = false, features = ["toml"], optional = true }
-egui.workspace = true
-egui-hunter = { path = "../egui-hunter" }
 eframe = { version = "0.36.1", default-features = false, features = ["wgpu"], optional = true }
+egui-hunter = { path = "../egui-hunter" }
+egui.workspace = true
+encoding_rs = { version = "0.8", optional = true }
+futures-util = { version = "0.3", features = ["sink"], optional = true }
 jiff = { version = "0.2", features = ["serde"], optional = true }
-mhf-hooks = { path = "../hooks" }
 mhf-geometry = { path = "../geometry" }
+mhf-hooks = { path = "../hooks" }
 mhf-overlay = { path = "../overlay" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shrimpman-common = { path = "../../../shrimpman/crates/common", optional = true }
 shrimpman-domain = { path = "../../../shrimpman/crates/domain", optional = true }
+shrimpman-transport = { path = "../../../shrimpman/crates/transport", optional = true }
+tokio = { version = "1", features = ["net", "rt", "time"], optional = true }
 toml = "1"
-unicode-width = { version = "0.2", features = ["cjk"] }
-unicode-segmentation = "1.13.3"
+unicode-segmentation = { version = "1.13.3", optional = true }
+unicode-width = { version = "0.2", features = ["cjk"], optional = true }
 ureq = { version = "3.4", optional = true }
 windows = { workspace = true, features = [
     "Win32_Devices_HumanInterfaceDevice",

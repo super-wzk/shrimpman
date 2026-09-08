@@ -108,12 +108,15 @@ for testing; the D3D9 backend is Windows-only.
 
 ## Input methods
 
-The backend creates one private IMM32 context for the game window and retains it
-until the window binding is removed. Egui and an optional native host editor use
-that same handle. With no focused text editor, the window is associated with a null
-context so IME does not consume gameplay keys. This also applies before the first
-editor is opened and while a modal has no text focus. The private context remains
-cached with its input mode for the next editor. Only removing the window binding
+The backend uses a private IMM32 context while the overlay captures keyboard input.
+Without a host adapter, releasing keyboard capture restores the original native
+context and forwards IME messages to the game, including before the first overlay
+editor opens. A blocking modal with no text focus temporarily suspends IME.
+
+With a native host adapter, egui and the native editor share one private context
+until the window binding is removed. With no focused editor, the window is associated
+with a null context so IME does not consume gameplay keys; the private context keeps
+its input mode for the next editor. Returning input ownership or removing the binding
 restores the exact original association, including an originally null context.
 
 Use `D3d9Hook::install_with_ime(overlay, Arc<dyn HostIme>)` to connect native text

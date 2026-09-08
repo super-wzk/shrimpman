@@ -142,8 +142,7 @@ impl NativeContext {
         })
     }
 
-    /// Restore the association captured before our first idle/active transition.
-    /// Used only when removing the window binding.
+    /// Restore the association captured before the broker took input ownership.
     pub(super) fn restore(&mut self, hwnd: HWND) -> bool {
         let current = current_context(hwnd);
         let original = HIMC(self.original as *mut _);
@@ -156,7 +155,7 @@ impl NativeContext {
         current_context(hwnd) == original
     }
 
-    /// Release the cached context when the overlay binding is torn down.
+    /// Release the cached context when the broker returns input to the host.
     pub(super) fn destroy(mut self, hwnd: HWND) {
         self.restore(hwnd);
         // Never destroy an input context that remains associated after failure.

@@ -1,10 +1,10 @@
 use super::LaunchRequest;
-use crate::http;
+use crate::sign;
 use shrimpman_domain::{
     character::CharacterId,
     session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
 };
-use shrimpman_mhf_launcher::{PasswordCredentials, SignCharacter, SignInSuccess};
+use shrimpman_mhf_launcher::{PasswordCredentials, SignInSuccess};
 
 pub(super) enum Model {
     SignIn(SignIn),
@@ -14,14 +14,13 @@ pub(super) enum Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self::sign_in(None, None)
+        Self::sign_in(None)
     }
 }
 
 pub(super) struct SignIn {
     pub(super) form: CredentialsForm,
     pub(super) submitting: bool,
-    pub(super) error: Option<String>,
 }
 
 impl SignIn {
@@ -66,7 +65,6 @@ pub(super) struct Characters {
     pub(super) sign_in: SignInSuccess,
     pub(super) selection: CharacterSelection,
     pub(super) operation: CharacterOperation,
-    pub(super) error: Option<String>,
 }
 
 const CHARACTER_LIMIT: usize = 16;
@@ -180,16 +178,16 @@ impl Characters {
 pub(super) enum Message {
     SignIn,
     SignedIn {
-        result: Result<SignInSuccess, http::Error>,
+        result: Result<SignInSuccess, sign::Error>,
         credential_error: Option<String>,
     },
     SignOut,
     Select(CharacterSelection),
-    CharacterCreated(Result<SignCharacter, http::Error>),
+    CharacterCreated(Result<sign::CharacterCreated, sign::Error>),
     DeleteCharacter(CharacterId),
     ConfirmDeletion,
     CancelDeletion,
-    CharacterDeleted(Result<CharacterId, http::Error>),
+    CharacterDeleted(Result<CharacterId, sign::Error>),
     Launch,
 }
 
@@ -199,6 +197,7 @@ pub(super) enum Effect {
         remember_password: bool,
     },
     CreateCharacter {
+        credentials: PasswordCredentials,
         session_id: SignSessionId,
         session_token: [u8; SIGN_SESSION_TOKEN_LEN],
     },
@@ -207,15 +206,15 @@ pub(super) enum Effect {
         session_token: [u8; SIGN_SESSION_TOKEN_LEN],
         character_id: CharacterId,
     },
+    NotifyError(String),
     Launch(LaunchRequest),
 }
 
 impl Model {
-    pub(super) fn sign_in(credentials: Option<PasswordCredentials>, error: Option<String>) -> Self {
+    pub(super) fn sign_in(credentials: Option<PasswordCredentials>) -> Self {
         Self::SignIn(SignIn {
             form: credentials.map_or_else(CredentialsForm::default, CredentialsForm::remembered),
             submitting: false,
-            error,
         })
     }
 
@@ -229,7 +228,6 @@ impl Model {
                 let credentials = state.form.to_credentials();
                 let remember_password = state.form.remember_password;
                 state.submitting = true;
-                state.error = None;
                 (
                     Self::SignIn(state),
                     Some(Effect::SignIn {
@@ -267,9 +265,13 @@ impl Model {
                         sign_in,
                         selection,
                         operation: CharacterOperation::Idle,
-                        error: credential_error,
                     }),
-                    None,
+                    credential_error.map(|error| {
+                        eprintln!("{error}");
+                        Effect::NotifyError(
+                            "Signed in, but could not update the saved password.".into(),
+                        )
+                    }),
                 )
             }
             (
@@ -279,14 +281,15 @@ impl Model {
                 },
             ) => {
                 state.submitting = false;
-                state.error = Some(http_error_message(&error));
-                (Self::SignIn(state), None)
+                (
+                    Self::SignIn(state),
+                    Some(Effect::NotifyError(sign_error_message(&error))),
+                )
             }
             (Self::Characters(state), Message::SignOut) if state.is_idle() => (
                 Self::SignIn(SignIn {
                     form: state.form,
                     submitting: false,
-                    error: None,
                 }),
                 None,
             ),
@@ -296,18 +299,37 @@ impl Model {
                 }
                 (Self::Characters(state), None)
             }
-            (Self::Characters(mut state), Message::CharacterCreated(Ok(character))) => {
-                let selected_character_id = character.id;
-                if let Some(existing) = state
-                    .sign_in
-                    .characters
-                    .iter_mut()
-                    .find(|existing| existing.id == character.id)
-                {
-                    *existing = character;
-                } else {
-                    state.sign_in.characters.push(character);
-                }
+            (Self::Characters(mut state), Message::CharacterCreated(Ok(created))) => {
+                let selected_character_id = match created {
+                    sign::CharacterCreated::Character(character) => {
+                        let id = character.id;
+                        if let Some(existing) = state
+                            .sign_in
+                            .characters
+                            .iter_mut()
+                            .find(|existing| existing.id == id)
+                        {
+                            *existing = character;
+                        } else {
+                            state.sign_in.characters.push(character);
+                        }
+                        id
+                    }
+                    sign::CharacterCreated::SignedIn(sign_in) => {
+                        let Some(character) =
+                            sign_in.characters.iter().find(|character| character.is_new)
+                        else {
+                            return Self::Characters(state).update(Message::CharacterCreated(Err(
+                                sign::Error::invalid_response(
+                                    "character creation returned no pending character",
+                                ),
+                            )));
+                        };
+                        let id = character.id;
+                        state.sign_in = sign_in;
+                        id
+                    }
+                };
                 let request = state.into_launch_request(selected_character_id);
                 (Self::Closing, Some(Effect::Launch(request)))
             }
@@ -332,7 +354,6 @@ impl Model {
                     character_id,
                 };
                 state.operation = CharacterOperation::DeletingCharacter;
-                state.error = None;
                 (Self::Characters(state), Some(effect))
             }
             (Self::Characters(mut state), Message::CharacterDeleted(Ok(character_id))) => {
@@ -354,28 +375,28 @@ impl Model {
                             CharacterSelection::Existing(character.id)
                         });
                 }
-                state.error = None;
                 (Self::Characters(state), None)
             }
             (
                 Self::Characters(mut state),
                 Message::CharacterCreated(Err(error)) | Message::CharacterDeleted(Err(error)),
             ) => {
-                let error_message = http_error_message(&error);
+                let error_message = sign_error_message(&error);
                 if error.code() == Some("invalid_session") {
                     return (
                         Self::SignIn(SignIn {
                             form: state.form,
                             submitting: false,
-                            error: Some(error_message),
                         }),
-                        None,
+                        Some(Effect::NotifyError(error_message)),
                     );
                 }
 
                 state.operation = CharacterOperation::Idle;
-                state.error = Some(error_message);
-                (Self::Characters(state), None)
+                (
+                    Self::Characters(state),
+                    Some(Effect::NotifyError(error_message)),
+                )
             }
             (Self::Characters(mut state), Message::Launch) => match state.launch_action() {
                 Some(LaunchAction::UseCharacter(selected_character_id)) => {
@@ -384,11 +405,11 @@ impl Model {
                 }
                 Some(LaunchAction::CreateCharacter) => {
                     let effect = Effect::CreateCharacter {
+                        credentials: state.form.to_credentials(),
                         session_id: state.sign_in.session.session_id,
                         session_token: state.sign_in.session.token,
                     };
                     state.operation = CharacterOperation::CreatingCharacter;
-                    state.error = None;
                     (Self::Characters(state), Some(effect))
                 }
                 None => (Self::Characters(state), None),
@@ -398,20 +419,20 @@ impl Model {
     }
 }
 
-fn http_error_message(error: &http::Error) -> String {
+fn sign_error_message(error: &sign::Error) -> String {
     eprintln!("{error}");
     match error {
-        http::Error::Transport(ureq::Error::Timeout(_)) => {
+        sign::Error::Timeout | sign::Error::Http(ureq::Error::Timeout(_)) => {
             return format!(
                 "The request timed out ({} seconds maximum). Check your connection and try again.",
-                http::REQUEST_TIMEOUT.as_secs(),
+                sign::REQUEST_TIMEOUT.as_secs(),
             );
         }
-        http::Error::Transport(_) => {
+        sign::Error::Http(_) | sign::Error::Tcp(_) => {
             return "Cannot reach the sign service. Check your connection and try again."
                 .to_owned();
         }
-        http::Error::InvalidResponse(_) => {
+        sign::Error::InvalidResponse(_) => {
             return "The sign service returned an invalid response. Please try again.".to_owned();
         }
         _ => {}
@@ -437,37 +458,39 @@ mod tests {
         account::CourseRights,
         character::{Gender, WeaponType},
     };
-    use shrimpman_mhf_launcher::IssuedSignSession;
+    use shrimpman_mhf_launcher::{IssuedSignSession, SignCharacter};
     use std::net::{Ipv4Addr, SocketAddrV4};
 
     #[test]
     fn timed_out_sign_in_preserves_credentials_and_allows_retry() {
-        let (model, _) = sign_in_model().update(Message::SignIn);
-        let (model, effect) = model.update(Message::SignedIn {
-            result: Err(http::Error::Transport(ureq::Error::Timeout(
-                ureq::Timeout::Global,
-            ))),
-            credential_error: None,
-        });
-        assert!(effect.is_none());
-        let Model::SignIn(state) = model else {
-            panic!("timeout must keep the sign-in form open");
-        };
-        assert!(state.can_submit());
-        assert_eq!(state.form.username, "  hunter  ");
-        assert_eq!(state.form.password, "secret");
-        assert!(state.error.as_deref().unwrap().contains("timed out"));
+        for error in [
+            sign::Error::Timeout,
+            sign::Error::Http(ureq::Error::Timeout(ureq::Timeout::Global)),
+        ] {
+            let (model, _) = sign_in_model().update(Message::SignIn);
+            let (model, effect) = model.update(Message::SignedIn {
+                result: Err(error),
+                credential_error: None,
+            });
+            let Some(Effect::NotifyError(message)) = effect else {
+                panic!("timeout must emit an error notification");
+            };
+            let Model::SignIn(state) = model else {
+                panic!("timeout must keep the sign-in form open");
+            };
+            assert!(state.can_submit());
+            assert_eq!(state.form.username, "  hunter  ");
+            assert_eq!(state.form.password, "secret");
+            assert!(message.contains("timed out"));
+        }
     }
 
     #[test]
     fn saved_credentials_prefill_the_sign_in_form() {
-        let model = Model::sign_in(
-            Some(PasswordCredentials {
-                username: "hunter".to_owned(),
-                password: "secret".to_owned(),
-            }),
-            None,
-        );
+        let model = Model::sign_in(Some(PasswordCredentials {
+            username: "hunter".to_owned(),
+            password: "secret".to_owned(),
+        }));
 
         let Model::SignIn(state) = model else {
             panic!("saved credentials did not open the sign-in page");
@@ -487,7 +510,7 @@ mod tests {
             remember_password,
         }) = effect
         else {
-            panic!("sign-in did not emit an HTTP effect");
+            panic!("sign-in did not emit a Sign effect");
         };
         assert_eq!(credentials.username, "hunter");
         assert_eq!(credentials.password, "secret");
@@ -526,7 +549,7 @@ mod tests {
             remember_password, ..
         }) = effect
         else {
-            panic!("sign-in did not emit an HTTP effect");
+            panic!("sign-in did not emit a Sign effect");
         };
         assert!(remember_password);
     }
@@ -538,9 +561,10 @@ mod tests {
         let Some(Effect::CreateCharacter {
             session_id,
             session_token,
+            ..
         }) = effect
         else {
-            panic!("character creation did not emit an HTTP effect");
+            panic!("character creation did not emit a Sign effect");
         };
         assert_eq!(session_id, SignSessionId::from(11));
         assert_eq!(session_token, *b"0123456789abcdef");
@@ -549,8 +573,9 @@ mod tests {
         };
         assert_eq!(state.operation, CharacterOperation::CreatingCharacter);
 
-        let (model, effect) =
-            Model::Characters(state).update(Message::CharacterCreated(Ok(new_character(8))));
+        let (model, effect) = Model::Characters(state).update(Message::CharacterCreated(Ok(
+            sign::CharacterCreated::Character(new_character(8)),
+        )));
         assert!(matches!(model, Model::Closing));
         let Some(Effect::Launch(request)) = effect else {
             panic!("created character was not launched");
@@ -563,6 +588,24 @@ mod tests {
                 .iter()
                 .any(|character| character.id == CharacterId::from(8))
         );
+    }
+
+    #[test]
+    fn tcp_character_creation_launches_with_the_refreshed_session() {
+        let mut refreshed = sign_in_success();
+        refreshed.session.session_id = SignSessionId::from(99);
+        refreshed.session.token = *b"fedcba9876543210";
+        refreshed.characters.push(new_character(8));
+        let (model, effect) = Model::Characters(characters()).update(Message::CharacterCreated(
+            Ok(sign::CharacterCreated::SignedIn(refreshed)),
+        ));
+        assert!(matches!(model, Model::Closing));
+        let Some(Effect::Launch(request)) = effect else {
+            panic!("created character was not launched");
+        };
+        assert_eq!(request.selected_character_id, CharacterId::from(8));
+        assert_eq!(request.sign_in.session.session_id, SignSessionId::from(99));
+        assert_eq!(request.sign_in.session.token, *b"fedcba9876543210");
     }
 
     #[test]
@@ -615,7 +658,7 @@ mod tests {
             character_id,
         }) = effect
         else {
-            panic!("character deletion did not emit an HTTP effect");
+            panic!("character deletion did not emit a Sign effect");
         };
         assert_eq!(session_id, SignSessionId::from(11));
         assert_eq!(session_token, *b"0123456789abcdef");
@@ -654,21 +697,20 @@ mod tests {
     #[test]
     fn invalid_session_returns_to_sign_in() {
         let (model, _) = Model::Characters(empty_characters()).update(Message::Launch);
-        let error = http::Error::Response {
+        let error = sign::Error::HttpResponse {
             status: 401,
             code: Some("invalid_session".to_owned()),
         };
         let (model, effect) = model.update(Message::CharacterCreated(Err(error)));
 
-        assert!(effect.is_none());
+        let Some(Effect::NotifyError(message)) = effect else {
+            panic!("invalid session must emit an error notification");
+        };
         let Model::SignIn(state) = model else {
             panic!("invalid session did not return to sign-in");
         };
         assert_eq!(state.form.username, "  hunter  ");
-        assert_eq!(
-            state.error.as_deref(),
-            Some("The Sign session expired. Sign in again.")
-        );
+        assert_eq!(message, "The Sign session expired. Sign in again.");
     }
 
     #[test]
@@ -688,7 +730,6 @@ mod tests {
         Model::SignIn(SignIn {
             form: credentials_form(),
             submitting: false,
-            error: None,
         })
     }
 
@@ -698,7 +739,6 @@ mod tests {
             sign_in: sign_in_success(),
             selection: CharacterSelection::Existing(CharacterId::from(7)),
             operation: CharacterOperation::Idle,
-            error: None,
         }
     }
 
@@ -712,7 +752,7 @@ mod tests {
     fn new_character(id: u32) -> SignCharacter {
         SignCharacter {
             id: CharacterId::from(id),
-            name: String::new(),
+            name: Vec::new(),
             gr: 0,
             hr: 1,
             weapon_type: WeaponType::SwordAndShield,
@@ -740,7 +780,7 @@ mod tests {
             entrance_servers: vec![SocketAddrV4::new(Ipv4Addr::LOCALHOST, 53310)],
             characters: vec![SignCharacter {
                 id: CharacterId::from(7),
-                name: "Hunter".to_owned(),
+                name: b"Hunter".to_vec(),
                 gr: 2,
                 hr: 3,
                 weapon_type: WeaponType::GreatSword,

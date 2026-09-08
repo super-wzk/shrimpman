@@ -16,10 +16,13 @@ use windows::Win32::{
 };
 
 mod layout;
+#[cfg(feature = "translation")]
+use super::dictionary::RuntimeLocale;
 use super::{
-    MemoryRange, ModuleReference, NATIVE_GROUPS, TextArena, TranslationKey,
-    dictionary::RuntimeLocale, replacement_for_locale, resource::read_image_string,
+    MemoryRange, ModuleReference, NATIVE_GROUPS, TextArena, TranslationKey, replacement,
+    resource::read_image_string,
 };
+#[cfg(feature = "translation")]
 use crate::MissingTranslation;
 use layout::{LITERALS, Literal, TABLES, Table};
 
@@ -58,12 +61,21 @@ pub(super) struct NativeTextGuard {
 pub(super) unsafe fn install(
     base: usize,
     size: usize,
-    locale: Option<&RuntimeLocale>,
-    missing: MissingTranslation,
+    #[cfg(feature = "translation")] locale: Option<&RuntimeLocale>,
+    #[cfg(feature = "translation")] missing: MissingTranslation,
 ) -> Result<NativeTextGuard, String> {
     let mut text = TextArena::default();
     let mut resolve = |group, id, source: &CStr| {
-        replacement_for_locale(locale, missing, &mut text, key(group, id), source, 932)
+        replacement(
+            #[cfg(feature = "translation")]
+            locale,
+            #[cfg(feature = "translation")]
+            missing,
+            &mut text,
+            key(group, id),
+            source,
+            932,
+        )
     };
     let mut patches = unsafe { prepare(base, size, LITERALS, &mut resolve) }?;
     patches.extend(unsafe { prepare_tables(base, size, TABLES, &mut resolve) }?);
@@ -322,6 +334,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "translation")]
     #[test]
     fn native_keys_share_locale_selection_and_missing_policy() {
         let locale = super::super::TRANSLATION_DICTIONARY
@@ -330,7 +343,7 @@ mod tests {
         let mut arena = TextArena::default();
         let original = c"\x82\xc6";
         for (group, id, expected) in [("rank", 4, "ＧＲ"), ("room", 0, "空き")] {
-            let pointer = replacement_for_locale(
+            let pointer = replacement(
                 Some(&locale),
                 MissingTranslation::Empty,
                 &mut arena,
@@ -350,8 +363,7 @@ mod tests {
             (MissingTranslation::Key, "[native:rank:0]"),
         ] {
             let pointer =
-                replacement_for_locale(None, missing, &mut arena, key("rank", 0), original, 932)
-                    .unwrap();
+                replacement(None, missing, &mut arena, key("rank", 0), original, 932).unwrap();
             assert_eq!(
                 unsafe { CStr::from_ptr(pointer.cast()) }.to_str().unwrap(),
                 expected

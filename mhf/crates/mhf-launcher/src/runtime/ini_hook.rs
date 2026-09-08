@@ -333,8 +333,8 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let config_path = directory.join("mhf.toml");
         let source = r#"
-[sign.http]
-base_url = "http://127.0.0.1:53001"
+[sign]
+endpoint = "http://127.0.0.1:53001"
 [hook_test]
 value = "42"
 "#;

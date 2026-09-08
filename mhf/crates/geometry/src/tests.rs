@@ -261,4 +261,18 @@ fn instruction_edits_match_the_actual_client() {
         );
         previous_end = patch.rva + patch.original.len();
     }
+    for reference in crate::equipment_cache::CACHE_REFERENCES {
+        let &(rva, _, offset) = sections
+            .iter()
+            .find(|&&(rva, size, _)| (rva..rva + size).contains(&reference.rva))
+            .unwrap();
+        let offset = offset + reference.rva - rva;
+        assert_eq!(
+            &bytes[offset..offset + reference.original.len()],
+            reference.original
+        );
+        let restored =
+            reference.bytes(0x10000000 + crate::equipment_cache::CACHE_RVAS[reference.cache]);
+        assert_eq!(&restored[..reference.original.len()], reference.original);
+    }
 }

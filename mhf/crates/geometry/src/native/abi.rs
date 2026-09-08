@@ -39,6 +39,47 @@ pub(super) unsafe extern "C" fn build_detour() {
     );
 }
 
+/// The hook replaces a CALL instruction, so recreate its return address first.
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn equipment_cache_load_detour() {
+    core::arch::naked_asm!(
+        "push dword ptr [{resume}]",
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        resume = sym super::equipment_cache::SYNC_RETURN,
+        dispatch = sym super::equipment_cache::load,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn equipment_part_load_detour() {
+    core::arch::naked_asm!(
+        "push dword ptr [{resume}]",
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        resume = sym super::equipment_cache::SYNC_PART_RETURN,
+        dispatch = sym super::equipment_cache::load,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn read_equipment_file(
+    _target: usize,
+    _path: *const u8,
+    _buffer: *mut u8,
+) -> u32 {
+    core::arch::naked_asm!(
+        "push ebp",
+        "mov ebp, esp",
+        "mov eax, [ebp + 12]",
+        "push dword ptr [ebp + 16]",
+        "call dword ptr [ebp + 8]",
+        "add esp, 4",
+        "pop ebp",
+        "ret",
+    );
+}
+
 #[unsafe(naked)]
 pub(super) unsafe extern "C" fn load_original(
     _target: usize,

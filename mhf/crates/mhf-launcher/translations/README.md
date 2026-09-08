@@ -1,6 +1,11 @@
 # MHF translation dictionaries
 
 翻译源文件是无 BOM 的 UTF-8 JSON Lines。每个文件独立定义一个 locale，文件可以为空。
+`translation` Cargo feature 默认启用，控制语言 Hook、资源 layout 和 JSONL 读取、词典生成与运行时译文查询。
+使用 `--no-default-features --features login` 或 `--no-default-features --features debug`
+构建时不编译或安装资源转换、原生文本及 GDI 语言 Hook，也无需 `resources.json` 或 JSONL 文件。
+游戏保留原生文本处理。
+禁用 feature 后已有 `[translation]` 配置会被忽略，游戏回写其他设置时保留该配置。
 文件名就是 locale ID，不要求采用特定语言代码格式；例如 `zh-CN.jsonl` 对应：
 
 ```toml
@@ -295,7 +300,8 @@ UTF-8，不依赖字典列出了哪些 key。若目录重复使用 section ID，
 
 翻译覆盖与游戏原生 `[localization] language` 相互独立。以日文资源制作的字典通常仍让
 游戏语言保持 `japanese`，这样 `missing = "original"` 会回退到日文。
-省略 `[translation]` 会关闭译文覆盖，资源的 UTF-8 转换仍启用。
+启用 `translation` feature 但省略 `[translation]` 时，只关闭译文覆盖，资源仍转换为 UTF-8。
+关闭 feature 时不编译或安装语言 Hook，资源和 DLL 文本也不再转换为 UTF-8，游戏保留原生文本处理。
 
 ### Native image text
 

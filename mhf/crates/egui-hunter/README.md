@@ -249,7 +249,7 @@ DialogInteraction::default()
     });
 ```
 
-原生 Modal 提供背景交互隔离和模态层优先级，`UiBuilder::closable()` / `ui.close()` 表达向所属容器请求关闭，`EventFilter` 让当前控件保留特定按键。手柄 Engagement 独立于这些生命周期能力，不增加通用 `FocusScope`。Modal 只隔离 egui 内部输入，游戏输入仍由 Overlay 宿主仲裁：独占验证页显示时阻断鼠标和键盘，隐藏时全部穿透。
+原生 Modal 提供背景交互隔离和模态层优先级，`UiBuilder::closable()` / `ui.close()` 表达向所属容器请求关闭，`EventFilter` 让当前控件保留特定按键。手柄 Engagement 独立于这些生命周期能力，不增加通用 `FocusScope`。Modal 只隔离 egui 内部输入，游戏输入仍由 Overlay 宿主仲裁：需要独占输入的界面显示时阻断鼠标和键盘，关闭后恢复穿透。
 
 ```rust
 let anchor = ui.add(Button::new("营地行动"));

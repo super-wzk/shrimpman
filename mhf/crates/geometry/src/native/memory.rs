@@ -100,7 +100,7 @@ pub(super) unsafe fn validate(base: usize) -> Result<(), String> {
     Ok(())
 }
 
-unsafe fn check(address: usize, bytes: &[u8]) -> Result<(), String> {
+pub(super) unsafe fn check(address: usize, bytes: &[u8]) -> Result<(), String> {
     if unsafe { std::slice::from_raw_parts(address as *const u8, bytes.len()) } != bytes {
         return Err(format!(
             "unsupported or already modified geometry instruction at {address:#010x}"
@@ -146,7 +146,7 @@ impl Drop for CodePatches {
     }
 }
 
-unsafe fn write(base: usize, rva: usize, bytes: &[u8]) -> Result<(), String> {
+pub(super) unsafe fn write(base: usize, rva: usize, bytes: &[u8]) -> Result<(), String> {
     let address = (base + rva) as *mut c_void;
     let mut previous = PAGE_PROTECTION_FLAGS::default();
     unsafe { VirtualProtect(address, bytes.len(), PAGE_EXECUTE_READWRITE, &mut previous) }

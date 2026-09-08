@@ -1,19 +1,18 @@
 mod character;
 mod sign_in;
 
+use super::{Error, REQUEST_TIMEOUT};
 use serde::{Serialize, de::DeserializeOwned};
 use shrimpman_domain::{
     character::CharacterId,
     session::{SIGN_SESSION_TOKEN_LEN, SignSessionId},
 };
 use shrimpman_mhf_launcher::{PasswordCredentials, SignCharacter, SignInSuccess};
-use std::{fmt, time::Duration};
+use std::time::Duration;
 use ureq::http::Method;
 
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 pub(crate) struct Client {
-    base_url: String,
+    pub(super) base_url: String,
     agent: ureq::Agent,
 }
 
@@ -126,7 +125,7 @@ impl Client {
             .spawn(move || {
                 let result = agent
                     .run(request)
-                    .map_err(Error::Transport)
+                    .map_err(Error::Http)
                     .and_then(require_success);
                 on_done(result);
             })
@@ -141,55 +140,13 @@ fn session_request(
     session_id: SignSessionId,
     session_token: &[u8; SIGN_SESSION_TOKEN_LEN],
 ) -> Result<character::SessionRequest<'_>, Error> {
-    let session_token = std::str::from_utf8(session_token)
-        .map_err(|_| Error::InvalidRequest("Sign session token is not valid ASCII".to_owned()))?;
+    let session_token = std::str::from_utf8(session_token).map_err(|_| {
+        Error::InvalidRequest("Sign session token is not valid UTF-8 for JSON".to_owned())
+    })?;
     Ok(character::SessionRequest {
         session_id: session_id.into(),
         session_token,
     })
-}
-
-#[derive(Debug)]
-pub(crate) enum Error {
-    InvalidRequest(String),
-    Transport(ureq::Error),
-    Response { status: u16, code: Option<String> },
-    InvalidResponse(String),
-}
-
-impl Error {
-    pub(crate) fn code(&self) -> Option<&str> {
-        match self {
-            Self::Response { code, .. } => code.as_deref(),
-            _ => None,
-        }
-    }
-
-    pub(super) fn invalid_response(message: impl Into<String>) -> Self {
-        Self::InvalidResponse(message.into())
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidRequest(message) => formatter.write_str(message),
-            Self::Transport(message) => write!(formatter, "Sign HTTP request failed: {message}"),
-            Self::Response {
-                status,
-                code: Some(code),
-            } => write!(formatter, "Sign HTTP returned {status} ({code})"),
-            Self::Response { status, code: None } => {
-                write!(formatter, "Sign HTTP returned status {status}")
-            }
-            Self::InvalidResponse(message) => {
-                write!(
-                    formatter,
-                    "Sign HTTP returned an invalid response: {message}"
-                )
-            }
-        }
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -199,15 +156,12 @@ struct ErrorResponse {
 
 fn require_success(mut response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, Error> {
     let status = response.status();
-    let bytes = response
-        .body_mut()
-        .read_to_vec()
-        .map_err(Error::Transport)?;
+    let bytes = response.body_mut().read_to_vec().map_err(Error::Http)?;
     if !status.is_success() {
         let code = serde_json::from_slice::<ErrorResponse>(&bytes)
             .ok()
             .map(|response| response.error);
-        return Err(Error::Response {
+        return Err(Error::HttpResponse {
             status: status.as_u16(),
             code,
         });
@@ -312,7 +266,7 @@ mod tests {
                             .recv_timeout(REQUEST_TIMEOUT + Duration::from_secs(3))
                             .unwrap();
                         assert!(
-                            matches!(result, Err(Error::Transport(ureq::Error::Timeout(_)))),
+                            matches!(result, Err(Error::Http(ureq::Error::Timeout(_)))),
                             "{operation}: {result:?}"
                         );
                         assert!(started.elapsed() < REQUEST_TIMEOUT + Duration::from_secs(3));

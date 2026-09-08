@@ -6,25 +6,11 @@ const LOGIN_NOTICE_SLOTS: usize = 4;
 const LOGIN_NOTICE_BYTES: usize = 0x1000;
 const FESTA_STALL_SLOTS: usize = 8;
 
-pub(crate) fn copy_ascii_c_string(
+pub(crate) fn copy_c_string(
     field: &str,
     destination: &mut [u8],
-    value: &str,
+    value: &[u8],
 ) -> Result<(), String> {
-    if !value.is_ascii() {
-        return Err(format!("{field} must contain ASCII bytes only"));
-    }
-    copy_utf8_c_string(field, destination, value)
-}
-
-pub(crate) fn copy_utf8_c_string(
-    field: &str,
-    destination: &mut [u8],
-    value: &str,
-) -> Result<(), String> {
-    if value.as_bytes().contains(&0) {
-        return Err(format!("{field} must not contain a NUL byte"));
-    }
     if value.len() >= destination.len() {
         return Err(format!(
             "{field} is {} bytes; at most {} bytes are supported",
@@ -33,7 +19,7 @@ pub(crate) fn copy_utf8_c_string(
         ));
     }
     destination.fill(0);
-    destination[..value.len()].copy_from_slice(value.as_bytes());
+    destination[..value.len()].copy_from_slice(value);
     Ok(())
 }
 
