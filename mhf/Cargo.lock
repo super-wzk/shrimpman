@@ -1551,6 +1551,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "mhf-launcher"
+version = "0.1.0"
+dependencies = [
+ "binrw",
+ "bumpalo",
+ "bytes",
+ "clap",
+ "config",
+ "eframe",
+ "egui",
+ "egui-hunter",
+ "encoding_rs",
+ "futures-util",
+ "jiff",
+ "mhf-geometry",
+ "mhf-hooks",
+ "mhf-overlay",
+ "serde",
+ "serde_json",
+ "shrimpman-common",
+ "shrimpman-domain",
+ "shrimpman-transport",
+ "tokio",
+ "toml",
+ "unicode-segmentation",
+ "unicode-width",
+ "ureq",
+ "windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "mhf-overlay"
 version = "0.1.0"
 dependencies = [
@@ -2604,38 +2636,6 @@ dependencies = [
  "derive_more",
  "jiff",
  "serde",
-]
-
-[[package]]
-name = "shrimpman-mhf-launcher"
-version = "0.1.0"
-dependencies = [
- "binrw",
- "bumpalo",
- "bytes",
- "clap",
- "config",
- "eframe",
- "egui",
- "egui-hunter",
- "encoding_rs",
- "futures-util",
- "jiff",
- "mhf-geometry",
- "mhf-hooks",
- "mhf-overlay",
- "serde",
- "serde_json",
- "shrimpman-common",
- "shrimpman-domain",
- "shrimpman-transport",
- "tokio",
- "toml",
- "unicode-segmentation",
- "unicode-width",
- "ureq",
- "windows",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

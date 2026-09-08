@@ -3,7 +3,7 @@
 The repository contains two Rust workspaces:
 
 - [`shrimpman/`](shrimpman/README.md): Sign, Entrance, World and persistence.
-- [`mhf/`](mhf/crates/mhf-launcher/README.md): the 32-bit Windows MHF launchers and overlay.
+- [`mhf/`](mhf/crates/launcher/README.md): the 32-bit Windows MHF launchers and overlay.
 
 ## Development environment
 
@@ -236,8 +236,14 @@ before running if you want to preserve it unchanged.
 Translation overrides are disabled in the public MHF defaults (no `translation`
 section). The `translation` Cargo feature is enabled by default for both Nix
 launcher commands. Set `development.mhf.translation.enable = false;` to compile
-without language hooks or embedded dictionaries. Resource layouts, JSONL files,
-and `[translation]` settings are then ignored; the game keeps its native text handling.
+without embedded dictionaries. JSONL files and `[translation]` settings are then
+ignored; the independent `unicode` feature still converts original resources and
+supports Unicode input and rendering. Also set `development.mhf.unicode.enable = false;`
+to keep native text handling. Font registration and layout corrections remain available.
 To enable Chinese translation locally, keep the feature enabled and set
 `mhf.translation = { locale = "zh-CN"; missing = "key"; };` in
 `local/default.nix`.
+
+The offline launcher uses the `offline` feature. Its optional `debug` tools have
+their own hooks and input controller; pass `--no-debug` to run only the offline
+quest, or set `development.mhf.debug.enable = false;` to omit those tools at build time.

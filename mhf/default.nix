@@ -29,7 +29,11 @@ let
     "/imsvc${windowsSdk}/sdk/include/shared"
     "/imsvc${windowsSdk}/sdk/include/um"
   ];
-  translationFeature = lib.optionalString config.development.mhf.translation.enable ",translation";
+  textFeatures = lib.concatStringsSep "" [
+    (lib.optionalString config.development.mhf.unicode.enable ",unicode")
+    (lib.optionalString config.development.mhf.translation.enable ",translation")
+  ];
+  debugFeature = lib.optionalString config.development.mhf.debug.enable ",debug";
   command =
     name: text:
     mkCommand {
@@ -122,8 +126,14 @@ in
   imports = [ ./config.nix ];
 
   options.development.mhf = {
+    debug.enable = lib.mkEnableOption "MHF offline debugging tools and control window" // {
+      default = true;
+    };
+    unicode.enable = lib.mkEnableOption "MHF Unicode resource conversion, text rendering and input" // {
+      default = true;
+    };
     translation.enable =
-      lib.mkEnableOption "MHF language hooks and embedded translation dictionaries"
+      lib.mkEnableOption "MHF embedded translation dictionaries (requires Unicode text)"
       // {
         default = true;
       };
@@ -164,22 +174,22 @@ in
     development.commands = {
       mhf-build = mkDefault (
         command "mhf-build" ''
-          exec cargo build -p shrimpman-mhf-launcher --bin mhf-launcher --release \
-            --no-default-features --features login${translationFeature} \
+          exec cargo build -p mhf-launcher --bin mhf-launcher --release \
+            --no-default-features --features login${textFeatures} \
             --target i686-pc-windows-msvc --locked "$@"
         ''
       );
+      mhf-launcher = mkDefault (launcherCommand "mhf-launcher" config.development.commands.mhf-build);
       mhf-debug-build = mkDefault (
         command "mhf-debug-build" ''
-          exec cargo build -p shrimpman-mhf-launcher --bin mhf-debug-launcher --release \
-            --no-default-features --features debug${translationFeature} \
+          exec cargo build -p mhf-launcher --bin mhf-debug-launcher --release \
+            --no-default-features --features offline${debugFeature}${textFeatures} \
             --target i686-pc-windows-msvc --locked "$@"
         ''
       );
       mhf-debug-launcher = mkDefault (
         launcherCommand "mhf-debug-launcher" config.development.commands.mhf-debug-build
       );
-      mhf-launcher = mkDefault (launcherCommand "mhf-launcher" config.development.commands.mhf-build);
     };
     settings.processes.mhf-debug-launcher = {
       command = mkDefault "exec ${getExe config.development.commands.mhf-debug-launcher}";

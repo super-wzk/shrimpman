@@ -52,7 +52,7 @@
 ```sh
 rtk cargo test -p mhf-geometry --target aarch64-apple-darwin
 rtk cargo xwin clippy -p mhf-geometry --target i686-pc-windows-msvc --xwin-arch x86 --all-targets -- -D warnings
-rtk cargo xwin build -p shrimpman-mhf-launcher --release --target i686-pc-windows-msvc --xwin-arch x86 --locked
+rtk cargo xwin build -p mhf-launcher --release --target i686-pc-windows-msvc --xwin-arch x86 --locked
 ```
 
 测试覆盖旧模型绕序、65535/65536 顶点索引、70000 长度条带、合并超限批次、大量
