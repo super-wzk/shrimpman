@@ -3,7 +3,8 @@ use super::{
 };
 use egui::{Context, Key, Modifiers};
 use egui_hunter::{
-    Button, ButtonKind, Icon, NavigationState, NoticeKind, Tab, Tabs, Tokens, notice,
+    Button, ButtonKind, Field, FormLayout, Icon, LabelPlacement, NavigationState, NoticeKind,
+    SelectField, Tab, Tabs, Tokens, notice,
 };
 use std::sync::Arc;
 
@@ -337,7 +338,6 @@ impl DebugWindow {
                 .find(|area| *area != snapshot.area)
                 .or_else(|| snapshot.areas.first().copied());
         }
-        let row_width = ui.available_width();
         let action_width = ui
             .painter()
             .layout_no_wrap(
@@ -349,68 +349,89 @@ impl DebugWindow {
             .x
             + ui.spacing().button_padding.x * 2.0;
         ui.add_enabled_ui(snapshot.ready, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let field_label = ui.label(egui::RichText::new("区域").small().weak());
-                let label = |area| match (snapshot.map, area) {
-                    (44, 245) => "营地 · 245".to_owned(),
-                    (44, 246) => "树海顶部 · 246".to_owned(),
-                    (97, 460) => "营地 · 460".to_owned(),
-                    (97, 461) => "古迹 · 461".to_owned(),
-                    _ => format!("区域 {area}"),
-                };
-                let selection = egui::ComboBox::from_id_salt("debug-area")
-                    .width(
-                        (row_width
-                            - field_label.rect.width()
-                            - action_width
-                            - ui.spacing().item_spacing.x * 2.0)
-                            .floor()
-                            .max(80.0),
-                    )
-                    .height(menu_height(ui))
-                    .selected_text(
-                        self.selected_area
-                            .map(label)
-                            .unwrap_or_else(|| "目标区域".into()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for area in &snapshot.areas {
-                            ui.selectable_value(&mut self.selected_area, Some(*area), label(*area));
+            let id = egui::Id::new("debug-area");
+            FormLayout::new(id.with("form"))
+                .label_placement(LabelPlacement::Left)
+                .show(ui, &[Field::new(id).label("区域")], |ui, _| {
+                    ui.horizontal_wrapped(|ui| {
+                        let label = |area| match (snapshot.map, area) {
+                            (44, 245) => "营地 · 245".to_owned(),
+                            (44, 246) => "树海顶部 · 246".to_owned(),
+                            (97, 460) => "营地 · 460".to_owned(),
+                            (97, 461) => "古迹 · 461".to_owned(),
+                            _ => format!("区域 {area}"),
+                        };
+                        let mut field = SelectField::new(
+                            id,
+                            self.selected_area
+                                .map(label)
+                                .unwrap_or_else(|| "目标区域".into()),
+                        );
+                        field.native = field
+                            .native
+                            .width(
+                                (ui.available_width() - action_width - ui.spacing().item_spacing.x)
+                                    .floor()
+                                    .max(80.0),
+                            )
+                            .height(menu_height(ui));
+                        let selection = field.show_ui(ui, |ui| {
+                            for area in &snapshot.areas {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.selected_area,
+                                        Some(*area),
+                                        label(*area),
+                                    )
+                                    .clicked()
+                                {
+                                    ui.close();
+                                }
+                            }
+                        });
+                        if ui
+                            .add_enabled(
+                                self.selected_area.is_some_and(|area| area != snapshot.area),
+                                Button::new("换区"),
+                            )
+                            .clicked()
+                        {
+                            self.send(DebugCommand::ChangeArea(self.selected_area.unwrap()));
                         }
-                    });
-                selection.response.labelled_by(field_label.id);
-                if ui
-                    .add_enabled(
-                        self.selected_area.is_some_and(|area| area != snapshot.area),
-                        Button::new("换区"),
-                    )
-                    .clicked()
-                {
-                    self.send(DebugCommand::ChangeArea(self.selected_area.unwrap()));
-                }
-            });
+                        selection.response
+                    })
+                    .inner
+                });
         });
     }
 
     fn equipment(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, list_height: f32) {
         filter_field(ui, "筛选装备", &mut self.filter, "装备名称或编号");
-        ui.horizontal_wrapped(|ui| {
-            let label = ui.label(egui::RichText::new("部位").small().weak());
-            let slot = egui::ComboBox::from_id_salt("debug-slot")
-                .height(menu_height(ui))
-                .width(80.0)
-                .selected_text(slot_name(self.slot))
-                .show_ui(ui, |ui| {
-                    for kind in [6, 0, 2, 3, 4, 5] {
-                        ui.selectable_value(&mut self.slot, kind, slot_name(kind));
+        let id = egui::Id::new("debug-slot");
+        FormLayout::new(id.with("form"))
+            .label_placement(LabelPlacement::Left)
+            .show(ui, &[Field::new(id).label("部位")], |ui, _| {
+                ui.horizontal_wrapped(|ui| {
+                    let mut field = SelectField::new(id, slot_name(self.slot));
+                    field.native = field.native.height(menu_height(ui)).width(80.0);
+                    let slot = field.show_ui(ui, |ui| {
+                        for kind in [6, 0, 2, 3, 4, 5] {
+                            if ui
+                                .selectable_value(&mut self.slot, kind, slot_name(kind))
+                                .clicked()
+                            {
+                                ui.close();
+                            }
+                        }
+                    });
+                    if self.slot == 6 {
+                        ui.label(egui::RichText::new("武器").small().weak());
+                        weapon_selector(ui, "debug-weapon", &mut self.weapon);
                     }
-                });
-            egui_hunter::scroll_on_focus(&slot.response.labelled_by(label.id));
-            if self.slot == 6 {
-                ui.label(egui::RichText::new("武器").small().weak());
-                weapon_selector(ui, "debug-weapon", &mut self.weapon);
-            }
-        });
+                    slot.response
+                })
+                .inner
+            });
         let filter = self.filter.trim().to_lowercase();
         let items = snapshot
             .catalog
@@ -603,53 +624,60 @@ impl DebugWindow {
     ) {
         filter_field(ui, "筛选怪物", &mut self.monster_filter, "怪物中文名或编号");
         let mut species = input.species();
-        ui.horizontal_wrapped(|ui| {
-            let label = ui.label(egui::RichText::new("目标").small().weak());
-            let filter = self.monster_filter.trim();
-            let monster = egui::ComboBox::from_id_salt("debug-monster-species")
-                .width(140.0)
-                .truncate()
-                .selected_text(format!(
-                    "{} · {}",
-                    species,
-                    super::monsters::NAMES[species as usize]
-                ))
-                .height(menu_height(ui))
-                .show_ui(ui, |ui| {
-                    for monster in &snapshot.catalog.monsters {
-                        if filter.is_empty()
-                            || monster.name.contains(filter)
-                            || monster.id.to_string().contains(filter)
-                        {
-                            ui.selectable_value(
-                                &mut species,
-                                monster.id,
-                                format!("{} · {}", monster.id, monster.name),
-                            );
+        let id = egui::Id::new("debug-monster-species");
+        FormLayout::new(id.with("form"))
+            .label_placement(LabelPlacement::Left)
+            .show(ui, &[Field::new(id).label("目标")], |ui, _| {
+                ui.horizontal_wrapped(|ui| {
+                    let filter = self.monster_filter.trim();
+                    let mut field = SelectField::new(
+                        id,
+                        format!("{} · {}", species, super::monsters::NAMES[species as usize]),
+                    );
+                    field.native = field.native.width(140.0).height(menu_height(ui));
+                    let monster = field.show_ui(ui, |ui| {
+                        for monster in &snapshot.catalog.monsters {
+                            if !filter.is_empty()
+                                && !monster.name.contains(filter)
+                                && !monster.id.to_string().contains(filter)
+                            {
+                                continue;
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut species,
+                                    monster.id,
+                                    format!("{} · {}", monster.id, monster.name),
+                                )
+                                .clicked()
+                            {
+                                ui.close();
+                            }
                         }
+                    });
+                    input.select_species(species);
+                    if ui
+                        .add_enabled(
+                            snapshot.ready,
+                            Button::new("变身并操控").kind(ButtonKind::Primary),
+                        )
+                        .clicked()
+                    {
+                        self.send(DebugCommand::Transform(species));
                     }
-                });
-            egui_hunter::scroll_on_focus(&monster.response.labelled_by(label.id));
-            input.select_species(species);
-            if ui
-                .add_enabled(
-                    snapshot.ready,
-                    Button::new("变身并操控").kind(ButtonKind::Primary),
-                )
-                .clicked()
-            {
-                self.send(DebugCommand::Transform(species));
-            }
-            if ui
-                .add_enabled(
-                    snapshot.monster.is_some() && (snapshot.ready || snapshot.scene == 5),
-                    Button::new("恢复猎人").kind(ButtonKind::Quiet),
-                )
-                .clicked()
-            {
-                self.send(DebugCommand::RestoreHunter);
-            }
-        });
+                    if ui
+                        .add_enabled(
+                            snapshot.monster.is_some() && (snapshot.ready || snapshot.scene == 5),
+                            Button::new("恢复猎人").kind(ButtonKind::Quiet),
+                        )
+                        .clicked()
+                    {
+                        self.send(DebugCommand::RestoreHunter);
+                    }
+                    monster.response
+                })
+                .inner
+            });
         filter_field(
             ui,
             "招式筛选",
