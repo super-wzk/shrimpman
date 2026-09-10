@@ -1624,6 +1624,7 @@ dependencies = [
  "mhf-font",
  "mhf-geometry",
  "mhf-mod-host",
+ "mhf-monster",
  "mhf-quest",
  "mhf-ui",
  "serde",
@@ -1813,6 +1814,15 @@ version = "0.1.0"
 dependencies = [
  "mhf-mod-api",
  "safer-ffi",
+]
+
+[[package]]
+name = "mhf-monster"
+version = "0.1.0"
+dependencies = [
+ "mhf-hooks",
+ "mhf-mod-host",
+ "windows",
 ]
 
 [[package]]

@@ -2,16 +2,18 @@ use crate::{MhfConfig, register_config};
 use mhf_font::FontMod;
 use mhf_geometry::GeometryMod;
 use mhf_mod_host::{Context, Module, Result};
+use mhf_monster::MonsterMod;
 use mhf_quest::QuestMod;
 use mhf_ui::{OverlayRegistry, UiMod};
 use std::{cell::RefCell, rc::Rc};
 
-/// One runtime owner for game settings, fonts, UI, geometry and quest services.
+/// One runtime owner for game settings, fonts, UI, geometry, monsters and quests.
 /// Children retain their callback storage until the host releases the game DLL.
 pub struct BaseMod {
     quest: QuestMod,
     font: FontMod,
     geometry: GeometryMod,
+    monster: MonsterMod,
     ui: UiMod,
     registry: OverlayRegistry,
 }
@@ -25,6 +27,7 @@ impl BaseMod {
             quest: QuestMod::new(),
             font: FontMod::new(settings.font.name.clone(), None)?,
             geometry: GeometryMod::default(),
+            monster: MonsterMod::default(),
             ui: UiMod::new(registry.clone(), ime_adapter, capture),
             registry,
         })
@@ -68,6 +71,9 @@ impl Module for BaseMod {
         self.geometry
             .attach(context)
             .map_err(|error| format!("geometry: {error}"))?;
+        self.monster
+            .attach(context)
+            .map_err(|error| format!("monster: {error}"))?;
         self.ui
             .attach(context)
             .map_err(|error| format!("UI: {error}"))?;
@@ -97,6 +103,9 @@ impl Module for BaseMod {
         self.geometry
             .detach(context)
             .map_err(|error| format!("geometry: {error}"))?;
+        self.monster
+            .detach(context)
+            .map_err(|error| format!("monster: {error}"))?;
         self.ui
             .detach(context)
             .map_err(|error| format!("UI: {error}"))
@@ -108,6 +117,9 @@ impl Module for BaseMod {
             .map_err(|error| format!("quest: {error}"))?;
         self.geometry
             .prepare_release(context)
-            .map_err(|error| format!("geometry: {error}"))
+            .map_err(|error| format!("geometry: {error}"))?;
+        self.monster
+            .prepare_release(context)
+            .map_err(|error| format!("monster: {error}"))
     }
 }

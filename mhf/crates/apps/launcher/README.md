@@ -5,7 +5,7 @@
 登录由 [`mhf.login`](../../mods/login/README.md) 提供，临时猎人及调试工具由
 [`mhf.debug`](../../mods/debug/README.md) 提供；启动器没有另一套运行模式设置。
 
-[`mhf.base`](../../mods/base/README.md) 汇集字体、UI、Geometry 和 Quest，
+[`mhf.base`](../../mods/base/README.md) 统一管理原生支持组件，
 独立 [`mhf.config`](../../mods/config/README.md) 提供配置与通用 INI 桥。
 Quest 是 Base 的内部组件，普通 Login 不激活本地任务 Hook。准备阶段结束后，宿主优先选择普通启动提供方；
 没有普通提供方时使用 fallback。有效层必须恰好有一个提供方，否则在启动回调前报错。取消登录正常结束启动。

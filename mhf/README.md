@@ -5,7 +5,7 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| [`crates/mods/`](crates/mods/) | Config、Base、Login、Debug 运行 Mod，Font／UI／Quest／Geometry 组件，以及暂未接入的 Unicode／Translation crate |
+| [`crates/mods/`](crates/mods/) | Config、Base、Login、Debug 运行 Mod，Font／UI／Quest／Geometry／Monster 组件，以及暂未接入的 Unicode／Translation crate |
 | [`crates/runtime/`](crates/runtime/) | 游戏会话、Mod 生命周期、公共 C 协议、Rust SDK、Hook 管理、包发现与依赖解析 |
 | [`crates/shared/`](crates/shared/) | 跨应用复用的 [`egui-hunter`](crates/shared/egui-hunter/README.md) 组件 |
 | [`crates/apps/`](crates/apps/) | 唯一游戏入口 [`launcher`](crates/apps/launcher/README.md) 及独立管理器 [`mod-manager`](crates/apps/mod-manager/README.md) |
@@ -31,13 +31,14 @@ Cargo 会合并 features；API 与 provider 可以同时启用，provider 在 AP
 | 当前离线任务后端 | [`mhf-quest`](crates/mods/quest/README.md) |
 | 游戏线程调试工具 | [`mhf-debug-tools`](crates/mods/debug-tools/README.md) |
 | 几何扩展 | [`mhf-geometry`](crates/mods/geometry/README.md) |
+| 怪物种类上限补丁 | [`mhf-monster`](crates/mods/monster/README.md) |
 
 [`BuiltinCatalog`](crates/runtime/mod-package/src/profile.rs) 提供启动应用与管理器共用的内置清单。
 应用的 [`builtins.rs`](crates/apps/launcher/src/builtins.rs) 组装 Factory；通用游戏宿主只接收已解析的 Mod。
 运行清单只有 `mhf.config`、`mhf.base`、`mhf.login`、`mhf.debug`。
 Config 独立提供通用配置注册、存储与 INI 映射，不依赖消费者 schema。
-Base 统一 Font、UI、Geometry 和 Quest 的生命周期，提供字体、界面及任务能力。Quest 只在 Debug 请求本地会话后安装任务 Hook。
-组件 crate 保留各自 API 与实现，不再各自成为可选择的运行 Mod。
+Base 统一 Font、UI、Geometry、Monster 和 Quest 的生命周期，提供字体、界面及任务能力。Quest 只在 Debug 请求本地会话后安装任务 Hook。
+组件 crate 保留各自 API 与实现，不单独参与 Mod 选择。
 Base 提交游戏字段与 INI 映射，Login 自己注册并解析 Sign 配置。游戏资源和任务保留原始文本。
 
 Login 是默认 fallback 启动提供方；启用 Debug 自动覆盖登录流程。两者都通过公开启动接口填充宿主借用的

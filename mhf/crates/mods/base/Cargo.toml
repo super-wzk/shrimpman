@@ -13,6 +13,7 @@ toml = "1"
 [target.'cfg(windows)'.dependencies]
 mhf-font = { path = "../font", features = ["provider"] }
 mhf-geometry = { path = "../geometry", features = ["provider"] }
+mhf-monster = { path = "../monster", features = ["provider"] }
 mhf-quest = { path = "../quest", features = ["provider"] }
 mhf-ui = { path = "../ui", features = ["provider"] }
 mhf-mod-host = { path = "../../runtime/mod-host" }

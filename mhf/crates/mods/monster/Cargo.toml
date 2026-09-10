@@ -1,0 +1,19 @@
+[package]
+name = "mhf-monster"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+provider = ["dep:mhf-hooks", "dep:mhf-mod-host", "dep:windows"]
+
+[target.'cfg(windows)'.dependencies]
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+windows = { workspace = true, optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
