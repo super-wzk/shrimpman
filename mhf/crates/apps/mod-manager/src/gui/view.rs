@@ -1,7 +1,10 @@
 use super::*;
 use crate::dialogs;
 use egui::{Align, Id, Layout, RichText};
-use egui_hunter::{Button, ButtonKind, Dialog, Panel, TextField, Tokens, Validation, notice};
+use egui_hunter::{
+    Button, ButtonKind, Dialog, Field, FormLayout, Panel, SelectField, TextField, Tokens,
+    Validation, notice,
+};
 use mhf_mod_package::{Candidate, Kind, Source};
 
 impl App {
@@ -363,15 +366,26 @@ impl App {
             });
             ui.add(egui::Label::new(RichText::new("自动：由启动器决定。").small().weak()).wrap());
             ui.add_space(8.0);
-            if ui.available_width() >= 440.0 {
-                ui.columns(2, |columns| {
-                    changed |= version_requirement(&mut columns[0], &id, draft);
-                    changed |= installed_versions(&mut columns[1], &id, draft, &candidates);
-                });
-            } else {
-                changed |= version_requirement(ui, &id, draft);
-                changed |= installed_versions(ui, &id, draft, &candidates);
-            }
+            let error = parse_version(&draft.version).err();
+            let fields = [
+                Field::new(Id::new(("version", &id)))
+                    .label("版本要求")
+                    .validation(error.as_deref().map(Validation::Error).unwrap_or_default()),
+                Field::new(Id::new(("installed_versions", &id))).label("已安装版本"),
+            ];
+            changed |= FormLayout::new(Id::new(("version_settings", &id)))
+                .max_columns(2)
+                .min_column_width(220.0)
+                .show(ui, &fields, |ui, index| match index {
+                    0 => ui.add(
+                        TextField::new(Id::new(("version", &id)), &mut draft.version)
+                            .hint("留空不限，如 ^1.2"),
+                    ),
+                    _ => installed_versions(ui, &id, draft, &candidates),
+                })
+                .inner
+                .iter()
+                .any(egui::Response::changed);
         });
         if changed {
             self.update_preview();
@@ -552,61 +566,52 @@ impl App {
     }
 }
 
-fn version_requirement(ui: &mut egui::Ui, id: &str, draft: &mut Draft) -> bool {
-    let error = parse_version(&draft.version).err();
-    ui.add(
-        TextField::new(Id::new(("version", id)), &mut draft.version)
-            .label("版本要求")
-            .hint("留空不限，如 ^1.2")
-            .validation(error.as_deref().map(Validation::Error).unwrap_or_default()),
-    )
-    .changed()
-}
-
 fn installed_versions(
     ui: &mut egui::Ui,
     id: &str,
     draft: &mut Draft,
     candidates: &[Candidate],
-) -> bool {
-    ui.label("已安装版本");
+) -> egui::Response {
     let versions = candidates
         .iter()
         .map(|candidate| candidate.manifest.version.to_string())
         .collect::<Vec<_>>()
         .join("、");
     let mut changed = false;
-    ui.scope(|ui| {
-        ui.spacing_mut().interact_size.y = 40.0;
-        egui::ComboBox::from_id_salt(("installed_versions", id))
-            .selected_text(if versions.is_empty() {
-                "未安装"
-            } else {
-                &versions
-            })
-            .width(ui.available_width())
-            .wrap_mode(egui::TextWrapMode::Truncate)
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(draft.version.is_empty(), "任意兼容版本")
-                    .clicked()
-                {
-                    changed |= !draft.version.is_empty();
-                    draft.version.clear();
-                }
-                for candidate in candidates {
-                    let version = format!("={}", candidate.manifest.version);
-                    if ui
-                        .selectable_label(draft.version == version, &version)
-                        .clicked()
-                    {
-                        changed |= draft.version != version;
-                        draft.version = version;
-                    }
-                }
-            });
-    });
-    changed
+    let mut response = SelectField::new(
+        Id::new(("installed_versions", id)),
+        if versions.is_empty() {
+            "未安装"
+        } else {
+            &versions
+        },
+    )
+    .show_ui(ui, |ui| {
+        if ui
+            .selectable_label(draft.version.is_empty(), "任意兼容版本")
+            .clicked()
+        {
+            changed |= !draft.version.is_empty();
+            draft.version.clear();
+            ui.close();
+        }
+        for candidate in candidates {
+            let version = format!("={}", candidate.manifest.version);
+            if ui
+                .selectable_label(draft.version == version, &version)
+                .clicked()
+            {
+                changed |= draft.version != version;
+                draft.version = version;
+                ui.close();
+            }
+        }
+    })
+    .response;
+    if changed {
+        response.mark_changed();
+    }
+    response
 }
 
 fn mod_row(

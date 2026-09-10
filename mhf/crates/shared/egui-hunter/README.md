@@ -23,7 +23,8 @@ src/
 │       └── list.rs               # VirtualList
 ├── theme/                        # Theme、tokens、icons、paint
 └── components/
-    ├── controls.rs / fields.rs / information.rs
+    ├── controls.rs / fields.rs / select.rs / information.rs
+    ├── form/                     # Field 字段说明、FormLayout 行列对齐
     ├── panel.rs / item_slot.rs / window.rs / scroll_panel.rs
     ├── tabs/ / dialog/ / popup/ / tooltip/
     │   ├── interaction.rs        # 组件专属状态、交互策略，无 Theme 依赖
@@ -130,6 +131,8 @@ Popup::new(&anchor)
 | 复选框 / 开关 | `Checkbox::new(...)` / `Toggle::new(...)` | 点击或 Space/Enter 切换，返回 `changed()` |
 | 搜索框 | `TextField::new(id, &mut text).hint(hint).icon(Icon::Search)` | 带搜索图标的输入字段，保留原生选择、剪贴板、IME |
 | 输入字段 | `TextField::new(id, &mut text).label(...).validation(...)` | 标签、占位、帮助、校验、密码、只读、禁用；单行 Enter 保留焦点，Tab 继续导航 |
+| 选择字段 | `SelectField::new(id, selected_text).show_ui(...)` | 全宽原生下拉框，统一字段高度、标签、帮助与校验；`native` 配置菜单 |
+| 通用字段 | `Field::new(id).label(...).show(ui, control)` | 为原生或自绘控件提供标签、必填标记、帮助、校验及标签关联 |
 | 富提示框 | `RichTooltip::new(&response, title).show(...)` | 延迟悬停或键盘聚焦显示，可组合说明、图标、属性；适配屏幕边缘 |
 | 属性列表 | `properties(ui, &[Property::new(label, value)])` | 标签/数值对齐、长文本换行、窄宽度上下排列，支持数值强调色 |
 | 滑块 | `egui::Slider::new(&mut value, range)` | 窄圆角拖动柄，保留原生拖拽与数值编辑 |
@@ -149,6 +152,7 @@ Popup::new(&anchor)
 | 对话框 | `Dialog::new(id, title)` + `DialogState` | 模态遮罩、初始焦点、确认/取消、Esc、可配置点击背景关闭 |
 | 弹出菜单 | `Popup::new(&anchor)` | 使用原生 Popup 开关状态，锚点点击切换、自动调整位置、点击外部关闭；内部通过 `ui.close()` 收起 |
 | 响应式分栏 | `ResponsiveColumns::new(id).min_column_width(400.0)` | 等宽分栏、窄屏堆叠；默认最多两栏，重排时保留子控件 ID |
+| 表单布局 | `FormLayout::new(id).show(ui, &fields, control)` | 共享标签列宽、同行标签高度与主控件起点；窄屏自动减少列数，左侧标签可移至上方 |
 | 页签容器 | `Tabs::new(id)` + `NavigationState` + `Tab` | 选中内容作用域、禁用页签、左右/Home/End 导航；移除当前页后自动回退 |
 | 导航栈 | `NavigationStack<Page>` | 压入页面、逐级返回、根页保护、返回后恢复入口焦点 |
 | 通知队列 | `Notifications` | 轻量浮动提示、有界 FIFO、逐条展示、自动消失；默认鼠标穿透，调用方可覆盖 |
@@ -302,6 +306,50 @@ RichTooltip::new(&item, "铁刀 · 锻造资料").show(|ui| {
 
 富提示框沿用 egui 的悬停延迟与定位，不开启菜单状态，也不主动改变焦点。禁用控件也可附上原因说明；`.on_focus(false)` 可关闭聚焦展示。给物品格附加富提示框时用 `.hover_text(false)` 关闭默认的纯文字提示。属性列表继承父面板的文字颜色；单位、差值和本地化文案由宿主格式化。极长内容应由调用方在提示框内组合滚动区域。
 
+### 表单字段与对齐
+
+`Field` 负责一个字段的标签、必填标记和说明；`FormLayout` 负责字段之间的列宽、行高与响应式布局。表单先测量标签文字，再绘制一次控件闭包，不通过重复运行控件测量尺寸。校验规则、提交和保存状态仍由宿主提供，`.required(true)` 只表达必填标记。
+
+```rust
+use egui_hunter::{Field, FormLayout, LabelPlacement, SelectField, TextField, Validation};
+
+let name_id = egui::Id::new("profile-name");
+let camp_id = egui::Id::new("profile-camp");
+let fields = [
+    Field::new(name_id).label("猎人姓名").required(true)
+        .validation(if name.trim().is_empty() {
+            Validation::Error("请填写猎人姓名")
+        } else {
+            Validation::None
+        }),
+    Field::new(camp_id).label("集合地点").help("选择队伍集合的营地"),
+];
+FormLayout::new(egui::Id::new("profile-form"))
+    .max_columns(2)
+    .min_column_width(280.0)
+    .label_placement(LabelPlacement::Left)
+    .label_align(egui::Align::Max)
+    .show(ui, &fields, |ui, index| match index {
+        0 => ui.add(TextField::new(name_id, &mut name)),
+        _ => SelectField::new(camp_id, camps[camp])
+            .show_ui(ui, |ui| {
+                for (index, label) in camps.iter().enumerate() {
+                    if ui.selectable_value(&mut camp, index, *label).clicked() {
+                        ui.close();
+                    }
+                }
+            }).response,
+    });
+```
+
+默认单列、标签在上。`.label_placement(LabelPlacement::Left)` 使用共同的标签列宽，`.label_width(...)` 可显式指定，`.label_align(...)` 控制标签文字在列内的左右位置。左侧标签默认对齐主控件中心；多行编辑器等高控件可在对应 `Field` 上设置 `.label_vertical_align(egui::Align::Min)`，让标签靠顶。可用宽度不足时，布局自动改为上方标签，避免标签挤占编辑区域。
+
+上方标签允许换行，同一行预留相同标签高度；没有标签的字段也保留该行标签槽。帮助和校验文字位于各自控件下方，不参与主控件居中，下一行按本行最大高度排列。字段作用域将原生 `interact_size.y` 下限设为 40 点，`TextField` 和 `SelectField` 使用该尺寸，并继承更大的局部样式；其他控件仍可通过自身 API 配置尺寸。复合字段可在闭包中组合输入框、单位与按钮，返回主控件的 `Response`，让标签关联和垂直对齐使用这个控件。
+
+`FormLayout` 使用字段的稳定 ID 建立作用域，调整宽度或字段顺序不会按列号重建原生控件身份。字段内部使用 `TextField`、`SelectField` 时只传控件内容，标签和校验统一放在外层 `Field` 上。布局不会增加 Tab 停靠点。独立使用时，两个字段控件也可继续直接调用 `.label(...)`、`.help(...)`、`.validation(...)`。
+
+`SelectField.native` 保留原生 `ComboBox` 配置，例如菜单高度和关闭策略。`show_ui` 返回原生的菜单结果和控件 `Response`；业务在菜单内处理 `selectable_value(...).changed()` 等选择事件，不根据打开菜单推断数据已改变。需要确认选项后收起时，在选项 `.clicked()` 分支调用 `ui.close()`，使鼠标和键盘确认都关闭菜单，包括确认当前已选项。关闭后复用 `Popup` 的入口焦点恢复规则；外部点击保留新位置的焦点。已打开的字段被禁用时，菜单关闭且不再执行选项闭包。
+
 ## 方向与手柄导航
 
 普通按钮直接使用 egui 原生方向导航即可，无需注册 FocusGroup。只有需要严格行列、边界停留或循环时才使用下面的分组规则：
@@ -416,9 +464,9 @@ cargo run -p egui-hunter --example gallery --target aarch64-apple-darwin -- \
   --screenshot /tmp/hunter-ui.png
 ```
 
-示例优先使用 `--font`，否则尝试常见的系统中文字体；字体不会打包进库。`--compact` 切换窄窗口，`--dialog` 打开任务确认弹窗。`--containers` 直接进入容器与导航页，`--popup` / `--window` 同时打开该页的弹出菜单 / 浮动窗口，`--notices` 播放消息队列。`--details` 进入信息与交互页，`--tooltip` 同时聚焦装备图标以展示富提示框，便于截图检查。
+示例优先使用 `--font`，否则尝试常见的系统中文字体；字体不会打包进库。`--compact` 切换窄窗口，`--dialog` 打开任务确认弹窗。`--containers` 直接进入容器与导航页，`--popup` / `--window` 同时打开该页的弹出菜单 / 浮动窗口，`--notices` 播放消息队列。`--details` 进入信息与交互页，`--form-labels-left` 同时将登记表切换为左侧标签，`--tooltip` 同时聚焦装备图标以展示富提示框，便于截图检查。
 
-组件页包含任务确认、背包分类/搜索/整理、道具消耗与体力更新、禁用状态、键鼠/手柄提示和 HUD。容器页包含三级营地菜单、一万条委托档案、浮动手记、行动菜单、确认对话框和消息队列；键盘 Tab 原生遍历控件，Enter 直接操作，Esc 关闭弹层或返回菜单。页面保留可选的手柄区域声明，需由采集手柄输入的宿主接入。信息页包含登记表、装备属性与富提示框、装备选择和只读/禁用/校验状态；装备选择下方的向上/向下按钮直接移动焦点并支持按住连发，确认后切换装备。示例未采集真实手柄。窄窗口自动堆叠面板并允许纵向滚动。
+组件页包含任务确认、背包分类/搜索/整理、道具消耗与体力更新、禁用状态、键鼠/手柄提示和 HUD。容器页包含三级营地菜单、一万条委托档案、浮动手记、行动菜单、确认对话框和消息队列；键盘 Tab 原生遍历控件，Enter 直接操作，Esc 关闭弹层或返回菜单。页面保留可选的手柄区域声明，需由采集手柄输入的宿主接入。信息页的登记表组合文本、密码和下拉字段，可切换标签在上或在左以检查响应式对齐；其余区域包含装备属性与富提示框、装备选择和只读/禁用/校验状态。装备选择下方的向上/向下按钮直接移动焦点并支持按住连发，确认后切换装备。示例未采集真实手柄。窄窗口自动堆叠面板并允许纵向滚动。
 
 ## 验证
 

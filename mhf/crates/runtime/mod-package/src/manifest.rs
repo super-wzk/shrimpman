@@ -30,7 +30,7 @@ pub struct Manifest {
 impl Manifest {
     pub fn parse(text: &str) -> Result<Self> {
         let manifest: Self = toml::from_str(text)
-            .map_err(|error| Error::new(format!("invalid mod.toml: {error}")))?;
+            .map_err(|error| Error::new(format!("解析 mod.toml 失败：{error}")))?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -38,13 +38,13 @@ impl Manifest {
     pub fn validate(&self) -> Result<()> {
         if self.schema != 1 {
             return Err(Error::new(format!(
-                "{}: unsupported schema {}",
+                "{}：不支持 mod.toml 的 schema 版本 {}",
                 self.id, self.schema
             )));
         }
         validate_id(&self.id)?;
         if self.name.trim().is_empty() {
-            return Err(Error::new(format!("{}: missing display name", self.id)));
+            return Err(Error::new(format!("{}：缺少显示名称", self.id)));
         }
         for dependency in self.dependencies.keys() {
             validate_id(dependency)?;
@@ -53,7 +53,7 @@ impl Manifest {
             relative_path(entry)?;
             if self.kind == Kind::Data {
                 return Err(Error::new(format!(
-                    "{}: a data mod cannot have a DLL entry",
+                    "{}：数据 Mod 不能设置 DLL 入口（entry）",
                     self.id
                 )));
             }
@@ -89,7 +89,7 @@ impl Candidate {
         let manifest = Manifest::parse(&fs::read_to_string(directory.join("mod.toml"))?)?;
         if manifest.kind == Kind::Native && manifest.entry.is_none() {
             return Err(Error::new(format!(
-                "{}: native package requires an entry",
+                "{}：原生 Mod 包必须设置入口字段 entry",
                 manifest.id
             )));
         }
@@ -97,7 +97,7 @@ impl Candidate {
             let path = directory.join(entry);
             if !path.is_file() || !path.canonicalize()?.starts_with(&directory) {
                 return Err(Error::new(format!(
-                    "{}: DLL entry is missing or outside the package",
+                    "{}：DLL 入口文件不存在或位于 Mod 包目录之外",
                     manifest.id
                 )));
             }
@@ -132,7 +132,7 @@ pub fn discover(mods_dir: impl AsRef<Path>) -> Result<Vec<Candidate>> {
                     != Some(candidate.manifest.version.to_string().as_str())
             {
                 return Err(Error::new(format!(
-                    "{}: package directory must match manifest id/version",
+                    "{}：Mod 包目录必须与 mod.toml 中的 id/version 一致",
                     version.path().display()
                 )));
             }
@@ -154,7 +154,7 @@ pub(crate) fn validate_id(id: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
     {
-        return Err(Error::new(format!("invalid mod id: {id}")));
+        return Err(Error::new(format!("Mod ID 无效：{id}")));
     }
     Ok(())
 }
@@ -163,7 +163,7 @@ pub(crate) fn validate_id(id: &str) -> Result<()> {
 pub(crate) fn relative_path(path: &Path) -> Result<&str> {
     let text = path
         .to_str()
-        .ok_or_else(|| Error::new("package path is not UTF-8"))?;
+        .ok_or_else(|| Error::new("Mod 包路径不是有效的 UTF-8"))?;
     if text.is_empty()
         || text.contains(['\\', ':'])
         || text
@@ -173,7 +173,7 @@ pub(crate) fn relative_path(path: &Path) -> Result<&str> {
             .components()
             .all(|part| matches!(part, Component::Normal(_)))
     {
-        return Err(Error::new(format!("invalid relative package path: {text}")));
+        return Err(Error::new(format!("Mod 包的相对路径无效：{text}")));
     }
     Ok(text)
 }

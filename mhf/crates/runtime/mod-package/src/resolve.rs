@@ -44,7 +44,7 @@ pub fn resolve(
         for pair in versions.windows(2) {
             if pair[0].manifest.version == pair[1].manifest.version {
                 return Err(Error::new(format!(
-                    "{} {}: multiple implementation sources",
+                    "{} {}：存在多个实现来源",
                     pair[0].manifest.id, pair[0].manifest.version
                 )));
             }
@@ -73,7 +73,7 @@ pub fn resolve(
             (
                 id,
                 vec![Requirement {
-                    from: "selection".into(),
+                    from: "当前选择".into(),
                     version,
                 }],
             )
@@ -100,12 +100,12 @@ fn choose<'a>(
     for (id, requirements) in &constraints {
         if selections.get(id).and_then(|s| s.enabled) == Some(false) {
             return Err(Error::new(format!(
-                "{id}: explicitly disabled, required by {}",
+                "{id}：已明确禁用，但仍被以下来源依赖：{}",
                 requirements
                     .iter()
                     .map(|r| r.from.as_str())
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join("、")
             )));
         }
         if let Some(candidate) = selected.get(id)
@@ -167,12 +167,12 @@ fn matches(
 
 fn conflict(id: &str, requirements: &[Requirement]) -> Error {
     Error::new(format!(
-        "{id}: no compatible version ({})",
+        "{id}：没有兼容版本（{}）",
         requirements
             .iter()
-            .map(|r| format!("{} requires {}", r.from, r.version))
+            .map(|r| format!("{} 要求版本 {}", r.from, r.version))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join("；")
     ))
 }
 
@@ -188,7 +188,7 @@ fn visit<'a>(
     }
     if let Some(start) = stack.iter().position(|item| item == id) {
         return Err(Error::new(format!(
-            "dependency cycle: {} -> {id}",
+            "存在循环依赖：{} -> {id}",
             stack[start..].join(" -> ")
         )));
     }

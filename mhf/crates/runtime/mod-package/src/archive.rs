@@ -51,7 +51,7 @@ pub fn export_archive(path: impl AsRef<Path>, selected: &[Candidate]) -> Result<
         let manifest = &candidate.manifest;
         if !ids.insert(&manifest.id) {
             return Err(Error::new(format!(
-                "{}: export requires one selected version",
+                "{}：每个 Mod 只能选择一个版本导出",
                 manifest.id
             )));
         }
@@ -59,7 +59,7 @@ pub fn export_archive(path: impl AsRef<Path>, selected: &[Candidate]) -> Result<
             let actual = Candidate::from_directory(directory)?;
             if actual.manifest != *manifest {
                 return Err(Error::new(format!(
-                    "{}: package changed after selection",
+                    "{}：Mod 包在选定后发生了变化",
                     manifest.id
                 )));
             }
@@ -77,7 +77,7 @@ pub fn export_archive(path: impl AsRef<Path>, selected: &[Candidate]) -> Result<
         });
     }
     let pack = toml::to_string_pretty(&Pack { schema: 1, mods })
-        .map_err(|error| Error::new(error.to_string()))?;
+        .map_err(|error| Error::new(format!("生成 pack.toml 失败：{error}")))?;
     // Refuse an existing output, avoiding accidental replacement of a package
     // being exported or another user archive.
     let output = File::options()
@@ -115,7 +115,7 @@ fn collect_files(
         let kind = entry.file_type()?;
         if kind.is_symlink() {
             return Err(Error::new(format!(
-                "{}: package symlinks are unsupported",
+                "{}：Mod 包不支持符号链接",
                 entry.path().display()
             )));
         }
@@ -125,13 +125,13 @@ fn collect_files(
             let path = entry.path();
             let relative = path
                 .strip_prefix(root)
-                .map_err(|error| Error::new(error.to_string()))?;
+                .map_err(|error| Error::new(format!("无法取得包内相对路径：{error}")))?;
             let portable = relative
                 .components()
                 .map(|part| {
                     part.as_os_str()
                         .to_str()
-                        .ok_or_else(|| Error::new("package path is not UTF-8"))
+                        .ok_or_else(|| Error::new("Mod 包路径不是有效的 UTF-8"))
                 })
                 .collect::<Result<Vec<_>>>()?
                 .join("/");
@@ -139,7 +139,7 @@ fn collect_files(
             files.push((format!("{prefix}/{portable}"), path));
         } else {
             return Err(Error::new(format!(
-                "{}: unsupported package file type",
+                "{}：Mod 包包含不支持的文件类型",
                 entry.path().display()
             )));
         }
@@ -164,15 +164,13 @@ pub fn import_archive(
         let name = file.name().trim_end_matches('/');
         relative_path(Path::new(name))?;
         if !names.insert(name.to_ascii_lowercase()) {
-            return Err(Error::new(format!("duplicate archive path: {name}")));
+            return Err(Error::new(format!("ZIP 包内路径重复：{name}")));
         }
         if file
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
-            return Err(Error::new(format!(
-                "archive symlink is unsupported: {name}"
-            )));
+            return Err(Error::new(format!("ZIP 包不支持符号链接：{name}")));
         }
         if name == "pack.toml" && !file.is_dir() {
             continue;
@@ -180,16 +178,15 @@ pub fn import_archive(
         let components = name.split('/').collect::<Vec<_>>();
         if components[0] != "mods" || (!file.is_dir() && components.len() < 4) {
             return Err(Error::new(format!(
-                "archive path must be mods/id/version/file: {name}"
+                "ZIP 包内路径必须采用 mods/id/version/file 格式：{name}"
             )));
         }
         if let Some(id) = components.get(1) {
             validate_id(id)?;
         }
         if let Some(version) = components.get(2) {
-            Version::parse(version).map_err(|error| {
-                Error::new(format!("invalid package directory version: {error}"))
-            })?;
+            Version::parse(version)
+                .map_err(|error| Error::new(format!("Mod 包目录中的版本号无效：{error}")))?;
         }
         let target = staging.0.join(name);
         if file.is_dir() {
@@ -206,7 +203,7 @@ pub fn import_archive(
             .as_ref()
             .is_none_or(|pack| pack.mods.is_empty() || pack.mods.iter().any(|item| !item.builtin))
     {
-        return Err(Error::new("archive contains no mod packages"));
+        return Err(Error::new("ZIP 包中没有 Mod 包"));
     }
     if let Some(pack) = &pack {
         validate_pack(pack, &candidates)?;
@@ -218,7 +215,7 @@ pub fn import_archive(
         match fs::symlink_metadata(&parent) {
             Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
                 return Err(Error::new(format!(
-                    "{}: expected an ordinary mod directory",
+                    "{}：应为普通的 Mod 目录，不允许符号链接",
                     parent.display()
                 )));
             }
@@ -230,7 +227,7 @@ pub fn import_archive(
         match fs::symlink_metadata(&target) {
             Ok(_) => {
                 return Err(Error::new(format!(
-                    "{} {} is already installed",
+                    "{} {} 已安装",
                     candidate.manifest.id, candidate.manifest.version
                 )));
             }
@@ -274,11 +271,11 @@ fn read_pack(archive: &mut ZipArchive<File>) -> Result<Option<Pack>> {
     };
     let mut text = String::new();
     file.read_to_string(&mut text)?;
-    let pack: Pack =
-        toml::from_str(&text).map_err(|error| Error::new(format!("invalid pack.toml: {error}")))?;
+    let pack: Pack = toml::from_str(&text)
+        .map_err(|error| Error::new(format!("解析 pack.toml 失败：{error}")))?;
     if pack.schema != 1 {
         return Err(Error::new(format!(
-            "unsupported pack schema {}",
+            "不支持 pack.toml 的 schema 版本 {}",
             pack.schema
         )));
     }
@@ -287,7 +284,7 @@ fn read_pack(archive: &mut ZipArchive<File>) -> Result<Option<Pack>> {
         validate_id(&entry.id)?;
         if !ids.insert(&entry.id) {
             return Err(Error::new(format!(
-                "{}: duplicate pack selection",
+                "{}：pack.toml 中重复选择了同一 Mod",
                 entry.id
             )));
         }
@@ -308,7 +305,7 @@ fn validate_pack(pack: &Pack, candidates: &[Candidate]) -> Result<()> {
         .collect();
     if expected != actual {
         return Err(Error::new(
-            "pack.toml selections do not match the packaged mod manifests",
+            "pack.toml 中选择的 Mod 及版本与 ZIP 包内的 Mod 清单不一致",
         ));
     }
     Ok(())

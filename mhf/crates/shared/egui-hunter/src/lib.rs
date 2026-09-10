@@ -20,9 +20,10 @@ pub mod primitives;
 pub mod theme;
 
 pub use components::{
-    Button, ButtonKind, Checkbox, Dialog, DialogState, ItemSlot, Meter, NoticeKind, Notifications,
-    Panel, Popup, Property, RichTooltip, ScrollPanel, Surface, Tab, Tabs, TextField, Toggle,
-    Validation, Window, key_hint, notice, properties,
+    Button, ButtonKind, Checkbox, Dialog, DialogState, Field, FormLayout, ItemSlot, LabelPlacement,
+    Meter, NoticeKind, Notifications, Panel, Popup, Property, RichTooltip, ScrollPanel,
+    SelectField, Surface, Tab, Tabs, TextField, Toggle, Validation, Window, key_hint, notice,
+    properties,
 };
 pub use input::{Direction, GamepadState, InputDevice, NavigationInput, consume_escape};
 pub use primitives::focus::{EngagementPlugin, FocusEngagement, FocusGroup, scroll_on_focus};

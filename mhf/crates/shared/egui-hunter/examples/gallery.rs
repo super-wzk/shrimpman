@@ -5,11 +5,11 @@ use egui::{
     Color32, FontSelection, Id, Rect, RichText, Sense, Stroke, TextStyle, Vec2, pos2, vec2,
 };
 use egui_hunter::{
-    Button, ButtonKind, Checkbox, Dialog, DialogState, Direction, FocusEngagement, FocusGroup,
-    Icon, ItemSlot, Meter, NavigationStack, NavigationState, NoticeKind, Notifications, Panel,
-    Popup, Property, ResponsiveColumns, RichTooltip, ScrollPanel, Surface, Tab, Tabs, TextField,
-    Theme, Toggle, Tokens, Validation, Window, key_hint, notice, properties, scroll_keyboard,
-    scroll_on_focus,
+    Button, ButtonKind, Checkbox, Dialog, DialogState, Direction, Field, FocusEngagement,
+    FocusGroup, FormLayout, Icon, ItemSlot, LabelPlacement, Meter, NavigationStack,
+    NavigationState, NoticeKind, Notifications, Panel, Popup, Property, ResponsiveColumns,
+    RichTooltip, ScrollPanel, SelectField, Surface, Tab, Tabs, TextField, Theme, Toggle, Tokens,
+    Validation, Window, key_hint, notice, properties, scroll_keyboard, scroll_on_focus,
 };
 
 fn highlight_region(ui: &mut egui::Ui, id: Id) {
@@ -31,6 +31,7 @@ struct Options {
     window: bool,
     notices: bool,
     details: bool,
+    form_labels_left: bool,
     tooltip: bool,
 }
 
@@ -49,6 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--containers" => options.containers = true,
             "--notices" => options.notices = true,
             "--details" => options.details = true,
+            "--form-labels-left" => {
+                options.details = true;
+                options.form_labels_left = true;
+            }
             "--tooltip" => {
                 options.details = true;
                 options.tooltip = true;
@@ -92,6 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if options.details {
                 gallery.page.select(Id::new("details"));
             }
+            gallery.form_labels_left = options.form_labels_left;
             gallery.preview_tooltip = options.tooltip;
             if options.popup {
                 egui::Popup::open_id(&cc.egui_ctx, Id::new("gallery-popup"));
@@ -210,6 +216,8 @@ struct Gallery {
     room_name: String,
     room_password: String,
     room_password_visible: bool,
+    room_region: usize,
+    form_labels_left: bool,
     guild_id: String,
     locked_title: String,
     camp_note: String,
@@ -315,6 +323,8 @@ impl Default for Gallery {
             room_name: "密林集会所".into(),
             room_password: "hunter42".into(),
             room_password_visible: false,
+            room_region: 0,
+            form_labels_left: false,
             guild_id: "HR-0042".into(),
             locked_title: "苍蓝之星".into(),
             camp_note: String::new(),
@@ -531,28 +541,76 @@ impl Gallery {
 
     fn registration(&mut self, ui: &mut egui::Ui) {
         Panel::new("01  猎人登记").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (left, label) in [(false, "标签在上"), (true, "标签在左")] {
+                    if ui
+                        .add(Button::new(label).selected(self.form_labels_left == left))
+                        .clicked()
+                    {
+                        self.form_labels_left = left;
+                    }
+                }
+            });
+            ui.add_space(6.0);
             let valid_name = !self.hunter_name.trim().is_empty();
-            ui.add(
-                TextField::new(Id::new("hunter-name"), &mut self.hunter_name)
+            let fields = [
+                Field::new(Id::new("hunter-name"))
                     .label("猎人姓名")
-                    .hint("为旅途留下一个名字")
+                    .required(true)
                     .validation(if valid_name {
                         Validation::Success("姓名可以使用")
                     } else {
                         Validation::Error("请填写猎人姓名")
                     }),
-            );
-            ui.add(
-                TextField::new(Id::new("room-name"), &mut self.room_name)
+                Field::new(Id::new("room-region"))
+                    .label("集合地点")
+                    .help("选择队伍集合的营地"),
+                Field::new(Id::new("room-name"))
                     .label("集会所名称")
                     .help("队友可通过名称找到你的集会所"),
-            );
-            ui.add(
-                TextField::new(Id::new("room-password"), &mut self.room_password)
+                Field::new(Id::new("room-password"))
                     .label("集会所口令")
-                    .password_visible(&mut self.room_password_visible)
                     .help("只向同行的猎人分享口令"),
-            );
+            ];
+            FormLayout::new(Id::new("registration-form"))
+                .max_columns(2)
+                .min_column_width(240.0)
+                .label_placement(if self.form_labels_left {
+                    LabelPlacement::Left
+                } else {
+                    LabelPlacement::Above
+                })
+                .label_align(if self.form_labels_left {
+                    egui::Align::Max
+                } else {
+                    egui::Align::Min
+                })
+                .show(ui, &fields, |ui, index| match index {
+                    0 => ui.add(
+                        TextField::new(Id::new("hunter-name"), &mut self.hunter_name)
+                            .hint("为旅途留下一个名字"),
+                    ),
+                    1 => {
+                        let regions = ["梅杰波尔坦", "密林营地", "峡谷营地"];
+                        SelectField::new(Id::new("room-region"), regions[self.room_region])
+                            .show_ui(ui, |ui| {
+                                for (index, label) in regions.into_iter().enumerate() {
+                                    if ui
+                                        .selectable_value(&mut self.room_region, index, label)
+                                        .clicked()
+                                    {
+                                        ui.close();
+                                    }
+                                }
+                            })
+                            .response
+                    }
+                    2 => ui.add(TextField::new(Id::new("room-name"), &mut self.room_name)),
+                    _ => ui.add(
+                        TextField::new(Id::new("room-password"), &mut self.room_password)
+                            .password_visible(&mut self.room_password_visible),
+                    ),
+                });
             if ui
                 .add_enabled(
                     valid_name,
