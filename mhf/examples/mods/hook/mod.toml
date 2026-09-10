@@ -1,0 +1,6 @@
+schema = 1
+id = "example.hook"
+name = "Hook 生命周期示例"
+version = "1.0.0"
+kind = "native"
+entry = "mod.dll"

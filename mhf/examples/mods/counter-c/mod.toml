@@ -1,0 +1,9 @@
+schema = 1
+id = "example.counter-c"
+name = "计数器 C 调用示例"
+version = "1.0.0"
+kind = "native"
+entry = "mod.dll"
+
+[dependencies]
+"example.counter" = "^1.0"

@@ -1,0 +1,25 @@
+[package]
+name = "mhf-quest"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+headers = ["mhf-mod-sdk/headers"]
+provider = ["dep:mhf-hooks", "dep:mhf-mod-host", "dep:windows"]
+
+[dependencies]
+mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
+safer-ffi = { workspace = true, features = ["dyn-traits"] }
+
+[target.'cfg(windows)'.dependencies]
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+windows = { workspace = true, optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+mhf-mod-package = { path = "../../runtime/mod-package" }

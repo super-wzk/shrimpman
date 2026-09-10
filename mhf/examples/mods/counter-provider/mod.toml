@@ -1,0 +1,6 @@
+schema = 1
+id = "example.counter"
+name = "计数器服务示例"
+version = "1.0.0"
+kind = "native"
+entry = "mod.dll"

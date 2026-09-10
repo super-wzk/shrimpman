@@ -1,0 +1,34 @@
+[package]
+name = "mhf-debug-tools"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+headers = ["mhf-mod-sdk/headers"]
+provider = [
+    "dep:egui", "dep:egui-hunter", "dep:mhf-font", "dep:mhf-hooks",
+    "dep:mhf-mod-host", "dep:mhf-quest", "dep:mhf-ui", "dep:windows",
+]
+
+[dependencies]
+mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
+safer-ffi = { workspace = true, features = ["dyn-traits"] }
+
+[target.'cfg(windows)'.dependencies]
+egui = { workspace = true, optional = true }
+egui-hunter = { path = "../../shared/egui-hunter", optional = true }
+mhf-font = { path = "../font", features = ["provider"], optional = true }
+mhf-ui = { path = "../ui", features = ["provider"], optional = true }
+mhf-quest = { path = "../quest", optional = true }
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+windows = { workspace = true, optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_LibraryLoader",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+mhf-quest = { path = "../quest", features = ["provider"] }

@@ -1,0 +1,11 @@
+[package]
+name = "example-counter-consumer"
+version = "1.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+example-counter-sdk = { path = "../counter-sdk" }
+mhf-mod-sdk = { path = "../../../crates/runtime/mod-sdk" }

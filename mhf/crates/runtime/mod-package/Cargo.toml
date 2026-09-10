@@ -1,0 +1,11 @@
+[package]
+name = "mhf-mod-package"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+semver = { version = "1.0.28", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }

@@ -1,0 +1,24 @@
+[package]
+name = "mhf-config"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+headers = ["mhf-mod-sdk/headers"]
+provider = ["dep:mhf-hooks", "dep:mhf-mod-host", "dep:windows-sys"]
+
+[dependencies]
+mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
+safer-ffi = { workspace = true, features = ["dyn-traits"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
+[target.'cfg(windows)'.dependencies]
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_WindowsProgramming",
+] }

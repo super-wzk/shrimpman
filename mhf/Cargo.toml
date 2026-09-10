@@ -1,12 +1,22 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/apps/*", "crates/mods/*", "crates/runtime/*", "crates/shared/*"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+# 0.1.13 shares its proc-macro features across host build dependencies and
+# target dependencies, so both need the headers metadata implementation.
+safer-ffi = { version = "0.1.13", default-features = false, features = ["headers"] }
 egui = { version = "=0.36.1", default-features = false }
 minhook = "=0.9.0"
 windows = "=0.62.2"
+
+#[profile.release]
+#opt-level = 3    # 优化目标：考虑速度的同时优化大小
+#lto = "fat"        # 启用最激进的链接时优化
+#codegen-units = 1  # 减少代码生成单元数量，提高优化效果
+#panic = "abort"    # 使用"abort"而非"unwind"处理恐慌
+#strip = "symbols"  # 删除符号信息但保留必要的调试信息

@@ -1,0 +1,13 @@
+[package]
+name = "mhf-debug"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+mhf-debug-tools = { path = "../debug-tools", features = ["provider"] }
+mhf-mod-host = { path = "../../runtime/mod-host" }
+mhf-quest = { path = "../quest" }
+mhf-ui = { path = "../ui", features = ["provider"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"

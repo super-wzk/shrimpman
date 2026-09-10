@@ -1,0 +1,9 @@
+schema = 1
+id = "example.counter-consumer"
+name = "计数器 Rust 调用示例"
+version = "1.0.0"
+kind = "native"
+entry = "mod.dll"
+
+[dependencies]
+"example.counter" = "^1.0"

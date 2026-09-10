@@ -1,0 +1,39 @@
+[package]
+name = "mhf-ui"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+headers = ["mhf-mod-sdk/headers"]
+provider = [
+    "dep:egui",
+    "dep:mhf-font",
+    "dep:mhf-mod-host",
+    "dep:mhf-hooks",
+    "dep:windows",
+    "dep:windows-numerics",
+]
+
+[dependencies]
+safer-ffi = { workspace = true, features = ["dyn-traits"] }
+mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
+egui = { workspace = true, features = ["default_fonts"], optional = true }
+mhf-font = { path = "../font", features = ["provider"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+windows = { workspace = true, optional = true, features = [
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D9",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-numerics = { version = "=0.3.1", optional = true }

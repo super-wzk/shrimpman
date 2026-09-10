@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.20)
+project(example_counter_c LANGUAGES C)
+add_library(counter_c SHARED mod.c)
+if(WIN32)
+    target_sources(counter_c PRIVATE mod.def)
+endif()
+set(MHF_SDK_INCLUDE_DIR "" CACHE PATH "Directory containing exported mhf_mod.h and counter.h")
+if(MHF_SDK_INCLUDE_DIR)
+    target_include_directories(counter_c PRIVATE "${MHF_SDK_INCLUDE_DIR}")
+else()
+    target_include_directories(counter_c PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../../crates/runtime/mod-api/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../counter-sdk")
+endif()
+set_target_properties(counter_c PROPERTIES OUTPUT_NAME mod PREFIX "" C_STANDARD 11)

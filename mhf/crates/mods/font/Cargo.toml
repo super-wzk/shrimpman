@@ -1,0 +1,23 @@
+[package]
+name = "mhf-font"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+headers = ["mhf-mod-sdk/headers"]
+provider = ["dep:egui", "dep:mhf-mod-host", "dep:mhf-hooks", "dep:windows-sys"]
+
+[dependencies]
+safer-ffi = { workspace = true, features = ["dyn-traits"] }
+mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
+egui = { workspace = true, features = ["default_fonts"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+] }

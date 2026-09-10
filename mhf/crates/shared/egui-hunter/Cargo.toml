@@ -1,0 +1,14 @@
+[package]
+name = "egui-hunter"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Modern hunter-themed widgets for egui"
+
+[dependencies]
+egui.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+egui = { workspace = true, features = ["default_fonts"] }
+eframe = { version = "=0.36.1", default-features = false, features = ["wgpu", "x11", "wayland"] }

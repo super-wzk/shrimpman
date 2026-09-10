@@ -1,0 +1,34 @@
+[package]
+name = "mhf-launcher"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = ["login", "debug"]
+login = ["dep:mhf-login"]
+debug = ["dep:mhf-debug"]
+
+[[bin]]
+name = "mhf-launcher"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+mhf-game = { path = "../../runtime/game" }
+mhf-mod-host = { path = "../../runtime/mod-host" }
+mhf-mod-package = { path = "../../runtime/mod-package" }
+mhf-base = { path = "../../mods/base" }
+mhf-config = { path = "../../mods/config", features = ["provider"] }
+mhf-login = { path = "../../mods/login", optional = true }
+mhf-debug = { path = "../../mods/debug", optional = true }
+
+[build-dependencies]
+mhf-mod-api = { path = "../../runtime/mod-api", features = ["headers"] }
+mhf-mod-host = { path = "../../runtime/mod-host", features = ["headers"] }
+mhf-font = { path = "../../mods/font", features = ["headers"] }
+mhf-quest = { path = "../../mods/quest", features = ["headers"] }
+mhf-debug-tools = { path = "../../mods/debug-tools", features = ["headers"] }
+mhf-ui = { path = "../../mods/ui", features = ["headers"] }
+
+mhf-config = { path = "../../mods/config", features = ["headers"] }

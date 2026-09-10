@@ -1,0 +1,18 @@
+[package]
+name = "example-hook"
+version = "1.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+safer-ffi = { version = "0.1.13", default-features = false, features = ["headers"] }
+mhf-mod-sdk = { path = "../../../crates/runtime/mod-sdk" }
+
+[build-dependencies]
+safer-ffi = { version = "0.1.13", default-features = false, features = ["headers"] }
+mhf-mod-sdk = { path = "../../../crates/runtime/mod-sdk", features = ["headers"] }
+
+[workspace]

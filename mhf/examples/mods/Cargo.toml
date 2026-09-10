@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["counter-sdk", "counter-provider", "counter-consumer"]

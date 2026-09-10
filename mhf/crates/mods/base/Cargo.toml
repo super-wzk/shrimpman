@@ -1,0 +1,21 @@
+[package]
+name = "mhf-base"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+mhf-config = { path = "../config" }
+mhf-font = { path = "../font" }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
+[target.'cfg(windows)'.dependencies]
+mhf-font = { path = "../font", features = ["provider"] }
+mhf-geometry = { path = "../geometry", features = ["provider"] }
+mhf-quest = { path = "../quest", features = ["provider"] }
+mhf-ui = { path = "../ui", features = ["provider"] }
+mhf-mod-host = { path = "../../runtime/mod-host" }
+
+[dev-dependencies]
+mhf-config = { path = "../config", features = ["provider"] }

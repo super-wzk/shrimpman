@@ -1,0 +1,33 @@
+[package]
+name = "mhf-login"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+binrw = "0.15"
+bytes = "1"
+config = { version = "0.15", default-features = false, features = ["toml"] }
+eframe = { version = "=0.36.1", default-features = false, features = ["wgpu"] }
+encoding_rs = "0.8"
+egui = { workspace = true }
+egui-hunter = { path = "../../shared/egui-hunter" }
+futures-util = { version = "0.3", features = ["sink"] }
+jiff = { version = "0.2", features = ["serde"] }
+mhf-config = { path = "../config" }
+mhf-font = { path = "../font", features = ["provider"] }
+mhf-mod-api = { path = "../../runtime/mod-api" }
+mhf-mod-host = { path = "../../runtime/mod-host" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shrimpman-common = { path = "../../../../shrimpman/crates/common" }
+shrimpman-domain = { path = "../../../../shrimpman/crates/domain" }
+shrimpman-transport = { path = "../../../../shrimpman/crates/transport" }
+tokio = { version = "1", features = ["net", "rt", "time"] }
+toml = "1.1"
+ureq = "3.4"
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security_Credentials",
+    "Win32_System_LibraryLoader",
+] }

@@ -1,0 +1,14 @@
+[package]
+name = "mhf-mod-api"
+version.workspace = true
+edition.workspace = true
+description = "Public C ABI for MHF mods and the mod host"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+headers = ["safer-ffi/headers"]
+
+[dependencies]
+safer-ffi.workspace = true

@@ -1,0 +1,35 @@
+[package]
+name = "mhf-mod-manager"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = ["gui", "login", "debug"]
+gui = ["dep:eframe", "dep:egui", "dep:egui-hunter", "dep:mhf-font"]
+login = []
+debug = []
+
+[[bin]]
+name = "mhf-mods"
+path = "src/main.rs"
+
+[dependencies]
+mhf-mod-package = { path = "../../runtime/mod-package" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+toml_edit = "0.25"
+eframe = { version = "=0.36.1", default-features = false, features = ["wgpu"], optional = true }
+egui = { workspace = true, optional = true }
+egui-hunter = { path = "../../shared/egui-hunter", optional = true }
+mhf-font = { path = "../../mods/font", features = ["provider"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+] }

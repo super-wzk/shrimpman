@@ -1,0 +1,161 @@
+{
+  "source_file": "MHF-ZZ client: dat/mhf.bin",
+  "source_file_sha256": "da8b99d9439ed3248b37d7f5a0daba36d68398348babafeada3279454af84012",
+  "archive_format": "u32 little-endian count, then count pairs of u32 offset and u32 byte length",
+  "entry_index_zero_based": 54,
+  "entry_offset_bytes": 1179276,
+  "entry_length_bytes": 89214,
+  "entry_format": "PNG",
+  "entry_dimensions": [
+    512,
+    1024
+  ],
+  "entry_png_sha256": "815730603786229ffbff3b8bbd61176c2e35f3e528afd48c5ccb31ecce64cbef",
+  "crop_origin": "top-left",
+  "crop_dimensions": [
+    64,
+    64
+  ],
+  "weapons": [
+    {
+      "name": "great-sword",
+      "enum": "GreatSword",
+      "x": 448,
+      "y": 448,
+      "width": 64,
+      "height": 64,
+      "file": "great-sword.png",
+      "png_sha256": "0b7394b8c5e7079711c801a13860a80be974bc56b43783d06f3c8a652e47c855"
+    },
+    {
+      "name": "long-sword",
+      "enum": "LongSword",
+      "x": 384,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "long-sword.png",
+      "png_sha256": "9812b37f69dfcdb4fc8e87036e5d88e91535b8ef83a28af0178a1d77193edb9b"
+    },
+    {
+      "name": "sword-and-shield",
+      "enum": "SwordAndShield",
+      "x": 192,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "sword-and-shield.png",
+      "png_sha256": "8a7295d73b9ff595747fc05921e673dd0c0de7ce09db6b0d396656f4122b9c1d"
+    },
+    {
+      "name": "dual-blades",
+      "enum": "DualBlades",
+      "x": 320,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "dual-blades.png",
+      "png_sha256": "42e0b25cb8a67630619cbe507a9ce8a737fbdd5f703fda5ed0033547c9378818"
+    },
+    {
+      "name": "hammer",
+      "enum": "Hammer",
+      "x": 64,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "hammer.png",
+      "png_sha256": "142ea09a0200e71326ac0e0e3e576fd7cc6edd995ea3ea9f08f581c1335e8018"
+    },
+    {
+      "name": "hunting-horn",
+      "enum": "HuntingHorn",
+      "x": 448,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "hunting-horn.png",
+      "png_sha256": "6cfbd679e70819b39d3328ee15f182473b3bda8d47908aa38873a0609e51f3c2"
+    },
+    {
+      "name": "lance",
+      "enum": "Lance",
+      "x": 128,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "lance.png",
+      "png_sha256": "7beae0e27d9ac5c6957c9473f216e25ed51af528aaeeeba1ca2090e7b51b2c16"
+    },
+    {
+      "name": "gunlance",
+      "enum": "Gunlance",
+      "x": 0,
+      "y": 576,
+      "width": 64,
+      "height": 64,
+      "file": "gunlance.png",
+      "png_sha256": "35280d976d2a05ee13b9f8de0468bf7b788b4ca8b4fa0de075f53cc201e85422"
+    },
+    {
+      "name": "light-bowgun",
+      "enum": "LightBowgun",
+      "x": 0,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "light-bowgun.png",
+      "png_sha256": "7d72044d7ec1bacdae6dfa88dc01b8ceb621beebef892a5d42a15b192dfdb6e6"
+    },
+    {
+      "name": "heavy-bowgun",
+      "enum": "HeavyBowgun",
+      "x": 256,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "heavy-bowgun.png",
+      "png_sha256": "f9bab75eee56a0b9c671d60052324bc98adcd491ad364ac6a14ff65b340b4724"
+    },
+    {
+      "name": "bow",
+      "enum": "Bow",
+      "x": 64,
+      "y": 576,
+      "width": 64,
+      "height": 64,
+      "file": "bow.png",
+      "png_sha256": "ab41d5ba6e56f16bf548416c7c5e3472ec8320d02836a839549fd043d80e71ba"
+    },
+    {
+      "name": "tonfa",
+      "enum": "Tonfa",
+      "x": 320,
+      "y": 704,
+      "width": 64,
+      "height": 64,
+      "file": "tonfa.png",
+      "png_sha256": "507276fa49bab8f9ab50073ab7933ab2b7cc7cda3f5bb257b4027791fc1c2d17"
+    },
+    {
+      "name": "switch-axe-f",
+      "enum": "SwitchAxe",
+      "x": 448,
+      "y": 832,
+      "width": 64,
+      "height": 64,
+      "file": "switch-axe-f.png",
+      "png_sha256": "c458cc70c69e6dbd3acc24fe097ad15ddabb3241d2285a009b6a1df9358c2bc1"
+    },
+    {
+      "name": "magnet-spike",
+      "enum": "MagnetSpike",
+      "x": 192,
+      "y": 896,
+      "width": 64,
+      "height": 64,
+      "file": "magnet-spike.png",
+      "png_sha256": "b9f05b15a649b7808efa8a2f671900a374027ead33a6f4824e69ad9154df9979"
+    }
+  ]
+}

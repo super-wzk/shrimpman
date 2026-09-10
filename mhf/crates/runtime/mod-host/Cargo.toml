@@ -1,0 +1,20 @@
+[package]
+name = "mhf-mod-host"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+headers = ["safer-ffi/headers", "mhf-mod-api/headers"]
+
+[dependencies]
+safer-ffi.workspace = true
+mhf-mod-api = { path = "../mod-api" }
+mhf-mod-package = { path = "../mod-package" }
+
+[target.'cfg(windows)'.dependencies]
+mhf-hooks = { path = "../hooks" }
+windows = { workspace = true, features = ["Win32_System_LibraryLoader"] }
+
+[dev-dependencies]
+example-counter-sdk = { path = "../../../examples/mods/counter-sdk" }

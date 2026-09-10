@@ -29,10 +29,6 @@ let
     "/imsvc${windowsSdk}/sdk/include/shared"
     "/imsvc${windowsSdk}/sdk/include/um"
   ];
-  textFeatures = lib.concatStringsSep "" [
-    (lib.optionalString config.development.mhf.unicode.enable ",unicode")
-    (lib.optionalString config.development.mhf.translation.enable ",translation")
-  ];
   debugFeature = lib.optionalString config.development.mhf.debug.enable ",debug";
   command =
     name: text:
@@ -40,86 +36,99 @@ let
       inherit name text;
       directory = "mhf";
     };
-  launcherCommand =
-    name: buildCommand:
-    command name ''
-      # shellcheck disable=SC2016,SC2089
-      gameDirectory=${lib.escapeShellArg config.development.mhf.gameDirectory}
-      if [[ -z "$gameDirectory" ]]; then
-        echo "Set development.mhf.gameDirectory in the local Nix module" >&2
-        exit 2
-      fi
-      case "$gameDirectory" in
-        /*|[[:alpha:]]:*|\\\\*) ;;
-        *) gameDirectory="$PROJECT_ROOT/$gameDirectory" ;;
-      esac
-      if [[ ! -v MHF_CONFIG ]]; then
-        # shellcheck disable=SC2016
-        configDirectory=${shellPath config.development.stateDirectory}/config
-        ${pkgs.coreutils}/bin/mkdir -p "$configDirectory"
-        export MHF_CONFIG="$configDirectory/mhf.toml"
-        generatedSnapshot="$configDirectory/mhf.generated.toml"
-        # Compare the generated snapshot, since the game writes to MHF_CONFIG.
-        if [[ ! -e "$MHF_CONFIG" ]] || ! ${pkgs.diffutils}/bin/cmp -s ${
-          config.generatedFiles."mhf/mhf.toml"
-        } "$generatedSnapshot"; then
-          ${pkgs.coreutils}/bin/install -m 600 ${config.generatedFiles."mhf/mhf.toml"} "$MHF_CONFIG"
-          ${pkgs.coreutils}/bin/install -m 600 ${
-            config.generatedFiles."mhf/mhf.toml"
-          } "$generatedSnapshot"
-        fi
-      fi
-      if [[ ! -v WINEPREFIX ]]; then
-        # shellcheck disable=SC2016
-        export WINEPREFIX=${shellPath config.development.stateDirectory}/wine
-      fi
-      runner=()
-      wslInterop=false
-      ${lib.optionalString host.isLinux ''
-        if [[ -r /proc/sys/fs/binfmt_misc/WSLInterop ]]; then
-          read -r interopStatus < /proc/sys/fs/binfmt_misc/WSLInterop
-          if [[ "$interopStatus" == enabled ]]; then
-            wslInterop=true
+  windowsCommand =
+    {
+      name,
+      buildCommand,
+      needsGame ? true,
+    }:
+    mkCommand {
+      inherit name;
+      text = ''
+        ${lib.optionalString needsGame ''
+          # shellcheck disable=SC2016,SC2089
+          gameDirectory=${lib.escapeShellArg config.development.mhf.gameDirectory}
+          if [[ -z "$gameDirectory" ]]; then
+            echo "Set development.mhf.gameDirectory in the local Nix module" >&2
+            exit 2
           fi
-        fi
-      ''}
-      ${
-        if config.development.mhf.runner == null then
-          ''
-            if [[ "$wslInterop" == false ]]; then
-              runner=(wine)
-            fi
-          ''
-        else
-          lib.optionalString (config.development.mhf.runner != "") ''
-            runner=(${lib.escapeShellArg config.development.mhf.runner})
-          ''
-      }
-
-      if [[ "$wslInterop" == true && ''${#runner[@]} == 0 ]]; then
-        windowsPath() {
-          case "$1" in
-            [[:alpha:]]:*|\\\\*) printf '%s\n' "$1" ;;
-            /*) wslpath -w "$1" ;;
-            *) wslpath -w "$PWD/$1" ;;
+          case "$gameDirectory" in
+            /*|[[:alpha:]]:*|\\\\*) ;;
+            *) gameDirectory="$PROJECT_ROOT/$gameDirectory" ;;
           esac
-        }
-        MHF_CONFIG="$(windowsPath "$MHF_CONFIG")"
-        gameDirectory="$(windowsPath "$gameDirectory")"
-        # WSL requires explicit forwarding of Linux environment variables.
-        for variable in "''${!MHF_@}"; do
-          case ":''${WSLENV:-}:" in
-            *":$variable:"*|*":$variable/"*) ;;
-            *) WSLENV="''${WSLENV:+$WSLENV:}$variable/w" ;;
+        ''}
+        hasConfigArg=false
+        for argument in "$@"; do
+          case "$argument" in
+            --config|--config=*|-c|-c?*) hasConfigArg=true; break ;;
+            --) break ;;
           esac
         done
-        export WSLENV
-      fi
-      ${getExe buildCommand}
-      exec "''${runner[@]}" \
-        "''${CARGO_TARGET_DIR:-target}/i686-pc-windows-msvc/release/${name}.exe" \
-        --config "$MHF_CONFIG" --game-dir "$gameDirectory" "$@"
-    '';
+        if [[ "$hasConfigArg" == false && ! -v MHF_CONFIG ]]; then
+          export MHF_CONFIG="$PWD/mhf.toml"
+        fi
+        if [[ ! -v WINEPREFIX ]]; then
+          # shellcheck disable=SC2016
+          export WINEPREFIX=${shellPath config.development.stateDirectory}/wine
+        fi
+        runner=()
+        wslInterop=false
+        ${lib.optionalString host.isLinux ''
+          if [[ -r /proc/sys/fs/binfmt_misc/WSLInterop ]]; then
+            read -r interopStatus < /proc/sys/fs/binfmt_misc/WSLInterop
+            if [[ "$interopStatus" == enabled ]]; then
+              wslInterop=true
+            fi
+          fi
+        ''}
+        ${
+          if config.development.mhf.runner == null then
+            ''
+              if [[ "$wslInterop" == false ]]; then
+                runner=(wine)
+              fi
+            ''
+          else
+            lib.optionalString (config.development.mhf.runner != "") ''
+              runner=(${lib.escapeShellArg config.development.mhf.runner})
+            ''
+        }
+
+        if [[ "$wslInterop" == true && ''${#runner[@]} == 0 ]]; then
+          windowsPath() {
+            case "$1" in
+              [[:alpha:]]:*|\\\\*) printf '%s\n' "$1" ;;
+              /*) wslpath -w "$1" ;;
+              *) wslpath -w "$PWD/$1" ;;
+            esac
+          }
+          if [[ -v MHF_CONFIG ]]; then
+            MHF_CONFIG="$(windowsPath "$MHF_CONFIG")"
+          fi
+          ${lib.optionalString needsGame ''gameDirectory="$(windowsPath "$gameDirectory")"''}
+          # WSL requires explicit forwarding of Linux environment variables.
+          for variable in "''${!MHF_@}"; do
+            case ":''${WSLENV:-}:" in
+              *":$variable:"*|*":$variable/"*) ;;
+              *) WSLENV="''${WSLENV:+$WSLENV:}$variable/w" ;;
+            esac
+          done
+          export WSLENV
+        fi
+        configArgs=()
+        if [[ "$hasConfigArg" == false && -v MHF_CONFIG ]]; then
+          configArgs=(--config "$MHF_CONFIG")
+        fi
+        ${getExe buildCommand}
+        targetDirectory="''${CARGO_TARGET_DIR:-target}"
+        if [[ "$targetDirectory" != /* ]]; then
+          targetDirectory="$PROJECT_ROOT/mhf/$targetDirectory"
+        fi
+        exec "''${runner[@]}" \
+          "$targetDirectory/i686-pc-windows-msvc/release/${name}.exe" \
+          "''${configArgs[@]}" ${lib.optionalString needsGame ''--game-dir "$gameDirectory"''} "$@"
+      '';
+    };
 
 in
 {
@@ -129,14 +138,6 @@ in
     debug.enable = lib.mkEnableOption "MHF offline debugging tools and control window" // {
       default = true;
     };
-    unicode.enable = lib.mkEnableOption "MHF Unicode resource conversion, text rendering and input" // {
-      default = true;
-    };
-    translation.enable =
-      lib.mkEnableOption "MHF embedded translation dictionaries (requires Unicode text)"
-      // {
-        default = true;
-      };
     gameDirectory = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -172,28 +173,30 @@ in
       ];
     };
     development.commands = {
+      mhf-mods-build = mkDefault (
+        command "mhf-mods-build" ''
+          exec cargo build -p mhf-mod-manager --bin mhf-mods --release \
+            --no-default-features --features gui,login${debugFeature} \
+            --target i686-pc-windows-msvc --locked "$@"
+        ''
+      );
+      # Both runtime commands preserve the caller's directory and configuration.
+      mhf-mods = mkDefault (windowsCommand {
+        name = "mhf-mods";
+        buildCommand = config.development.commands.mhf-mods-build;
+        needsGame = false;
+      });
       mhf-build = mkDefault (
         command "mhf-build" ''
           exec cargo build -p mhf-launcher --bin mhf-launcher --release \
-            --no-default-features --features login${textFeatures} \
+            --no-default-features --features login${debugFeature} \
             --target i686-pc-windows-msvc --locked "$@"
         ''
       );
-      mhf-launcher = mkDefault (launcherCommand "mhf-launcher" config.development.commands.mhf-build);
-      mhf-debug-build = mkDefault (
-        command "mhf-debug-build" ''
-          exec cargo build -p mhf-launcher --bin mhf-debug-launcher --release \
-            --no-default-features --features offline${debugFeature}${textFeatures} \
-            --target i686-pc-windows-msvc --locked "$@"
-        ''
-      );
-      mhf-debug-launcher = mkDefault (
-        launcherCommand "mhf-debug-launcher" config.development.commands.mhf-debug-build
-      );
-    };
-    settings.processes.mhf-debug-launcher = {
-      command = mkDefault "exec ${getExe config.development.commands.mhf-debug-launcher}";
-      disabled = mkDefault true;
+      mhf-launcher = mkDefault (windowsCommand {
+        name = "mhf-launcher";
+        buildCommand = config.development.commands.mhf-build;
+      });
     };
     settings.processes.mhf-launcher = {
       command = mkDefault "exec ${getExe config.development.commands.mhf-launcher}";

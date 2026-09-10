@@ -1,0 +1,49 @@
+[package]
+name = "mhf-unicode"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+provider = [
+    "dep:bumpalo", "dep:egui", "dep:mhf-font", "dep:mhf-ui",
+    "dep:mhf-hooks", "dep:mhf-mod-host", "dep:mhf-mod-sdk",
+    "dep:mhf-translation", "dep:safer-ffi", "dep:unicode-segmentation", "dep:unicode-width",
+    "dep:windows-sys", "windows/Win32_Graphics_Direct3D9",
+    "windows/Win32_System_Diagnostics_Debug", "windows/Win32_System_DataExchange",
+    "windows/Win32_System_LibraryLoader", "windows/Win32_System_Memory",
+    "windows/Win32_System_SystemInformation", "windows/Win32_System_Threading",
+    "windows/Win32_UI_Input_KeyboardAndMouse", "windows/Win32_UI_Input_Ime",
+    "windows/Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies]
+bumpalo = { version = "3.20.3", optional = true }
+egui = { workspace = true, optional = true }
+mhf-font = { path = "../font", features = ["provider"], optional = true }
+mhf-ui = { path = "../ui", features = ["provider"], optional = true }
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+mhf-mod-sdk = { path = "../../runtime/mod-sdk", optional = true }
+mhf-translation = { path = "../translation", optional = true }
+safer-ffi = { workspace = true, optional = true }
+unicode-segmentation = { version = "1.13.3", optional = true }
+unicode-width = { version = "0.2", features = ["cjk"], optional = true }
+
+[target.'cfg(not(windows))'.dependencies]
+encoding_rs = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization"] }
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Security",
+    "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming",
+] }
+
+[dev-dependencies]
+mhf-translation = { path = "../translation", features = ["provider"] }
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
