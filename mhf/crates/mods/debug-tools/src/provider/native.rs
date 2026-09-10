@@ -1,5 +1,6 @@
 mod area;
 mod combat;
+mod equipment;
 mod monster;
 
 use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Equipment};
@@ -110,6 +111,59 @@ const SIGNATURES: &[(usize, &[u8])] = &[
     (0x008b7b60, &[0x55, 0x8b, 0xec, 0x80, 0x3e, 0x00]),
     (0x00846ca0, &[0x55, 0x8b, 0xec, 0x56, 0x8b, 0xf0]),
     (0x00aa0d70, &[0x0f, 0xb7, 0x8a, 0x24, 0x06, 0x00, 0x00]),
+    (
+        0x00ba7160,
+        &[0x0f, 0xb7, 0xd0, 0x03, 0xd2, 0xf6, 0x84, 0xd1],
+    ),
+    (
+        0x00b9f080,
+        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x0c, 0x56],
+    ),
+    (
+        0x00a89cd0,
+        &[0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x81, 0xec],
+    ),
+    (
+        0x001c0780,
+        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08, 0x56],
+    ),
+    (
+        0x00b37680,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x20, 0x53, 0x56],
+    ),
+    (
+        0x00b9f820,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x8b],
+    ),
+    (
+        0x008f9960,
+        &[0x56, 0x8d, 0xb7, 0x00, 0x04, 0x00, 0x00, 0x6a],
+    ),
+    (
+        0x008fb7c0,
+        &[0x55, 0x8b, 0xec, 0x81, 0xec, 0x88, 0x00, 0x00],
+    ),
+    (
+        0x008fca00,
+        &[0x55, 0x8b, 0xec, 0x83, 0x7d, 0x08, 0x00, 0x57],
+    ),
+    (
+        0x0089f8c0,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x56],
+    ),
+    (
+        0x00a92d70,
+        &[0x55, 0x8b, 0xec, 0x51, 0x85, 0xf6, 0x74, 0x3b],
+    ),
+    // Skip the relocated absolute address in the first MOVSS instruction.
+    (
+        0x008ec098,
+        &[0x0f, 0x57, 0xc0, 0x53, 0x56, 0x57, 0x8b, 0xf8],
+    ),
+    (
+        0x00bba300,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x56, 0x57],
+    ),
 ];
 
 unsafe fn validate(base: usize) -> Result<(), String> {
@@ -390,33 +444,6 @@ unsafe fn initialize_catalog(state: &State, runtime: &mut Runtime) {
     }
 }
 
-unsafe fn equipment(state: &State, kind: u8, id: u16) -> Result<(), String> {
-    unsafe {
-        let save = state.read::<usize>(0x11a3ee2c);
-        let add: unsafe extern "C" fn(usize, u8, u16, u16) -> i16 =
-            transmute(state.address(0x10ba6b10));
-        let capacity: unsafe extern "C" fn(usize) -> i16 = transmute(state.address(0x10ba9ad0));
-        let count = i32::from(capacity(save)) * 100;
-        if !(1..=8000).contains(&count) {
-            return Err("装备箱状态无效".into());
-        }
-        let existing = (0..count as usize).find(|index| {
-            let item = save + 212 + index * 16;
-            get::<u8>(item) & 1 != 0 && get::<u8>(item + 1) == kind && get::<u16>(item + 2) == id
-        });
-        let index = existing.map_or_else(|| add(save, kind, id, 0), |index| index as i16);
-        if index < 0 {
-            return Err("临时装备箱已满".into());
-        }
-        // Equip uses AX=inventory index, ECX=save; rebuild uses EAX=save.
-        std::arch::asm!("call edx", in("edx") state.address(0x10ba7160),
-            inlateout("eax") index as u32 => _, in("ecx") save, clobber_abi("C"));
-        std::arch::asm!("call edx", in("edx") state.address(0x10ba7eb0),
-            inlateout("eax") save => _, clobber_abi("C"));
-    }
-    Ok(())
-}
-
 unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
     let mut snapshot = DebugSnapshot {
         quest_id: state.quest_id,
@@ -547,10 +574,9 @@ unsafe extern "C" fn dispatch() -> i32 {
                             .find(|item| (item.kind, item.id) == (kind, id))
                         {
                             let name = item.name.clone();
-                            equipment(state, kind, id).and_then(|()| {
+                            equipment::equip(state, runtime.moveset, kind, id).map(|()| {
                                 runtime.pending_action = None;
-                                restart(state, &mut runtime)?;
-                                Ok(format!("已选择 {name}，正在重新加载"))
+                                format!("已热替换为 {name}")
                             })
                         } else {
                             Err("装备编号无效".into())
