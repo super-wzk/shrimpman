@@ -415,7 +415,7 @@ impl DebugWindow {
                     let mut field = SelectField::new(id, slot_name(self.slot));
                     field.native = field.native.height(menu_height(ui)).width(80.0);
                     let slot = field.show_ui(ui, |ui| {
-                        for kind in [6, 0, 2, 3, 4, 5] {
+                        for kind in [6, 2, 3, 4, 5, 0] {
                             if ui
                                 .selectable_value(&mut self.slot, kind, slot_name(kind))
                                 .clicked()
@@ -989,11 +989,11 @@ fn menu_height(ui: &egui::Ui) -> f32 {
 
 fn slot_name(kind: u8) -> &'static str {
     match kind {
-        0 => "头部",
-        2 => "胸部",
-        3 => "腕部",
-        4 => "腰部",
-        5 => "腿部",
+        2 => "头部",
+        3 => "胸部",
+        4 => "腕部",
+        5 => "腰部",
+        0 => "腿部",
         _ => "武器",
     }
 }

@@ -314,15 +314,16 @@ unsafe fn catalog(state: &State) -> Catalog {
             })
             .collect();
         let dat = state.read::<usize>(0x1e77dcc4);
-        // Name-table extents match resources/layout.json for this ZZ DAT.
+        // Name-table extents match mhf-unicode/resources/layout.json for this ZZ DAT.
+        // Native 10A9C920 maps kinds 2/3/4/5/0 to head/body/arms/waist/legs.
         for (kind, root, count, specs, stride, class_offset) in [
             (6, 136, 17568, 124, 52, 3),
             (7, 132, 4223, 128, 60, 4),
-            (0, 100, 14594, 0, 0, 0),
-            (2, 104, 13462, 0, 0, 0),
-            (3, 108, 13452, 0, 0, 0),
-            (4, 112, 13708, 0, 0, 0),
-            (5, 116, 13514, 0, 0, 0),
+            (2, 100, 14594, 0, 0, 0),
+            (3, 104, 13462, 0, 0, 0),
+            (4, 108, 13452, 0, 0, 0),
+            (5, 112, 13708, 0, 0, 0),
+            (0, 116, 13514, 0, 0, 0),
         ] {
             let names = get::<usize>(dat + root);
             let specs = if specs == 0 {
