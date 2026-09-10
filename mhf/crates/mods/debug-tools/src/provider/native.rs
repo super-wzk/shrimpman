@@ -3,7 +3,7 @@ mod combat;
 mod equipment;
 mod monster;
 
-use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Equipment};
+use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Equipment, Transmogs};
 use mhf_hooks::{HookGuard, HookSlot, ModuleReference};
 use mhf_quest::QuestControl;
 use std::{
@@ -51,8 +51,9 @@ pub(crate) struct State {
 struct Runtime {
     catalog: Arc<Catalog>,
     catalog_ready: bool,
-    message: String,
+    message: Arc<str>,
     moveset: Option<u8>,
+    transmogs: Transmogs,
     pending_action: Option<Action>,
     ready_frames: u8,
     monster: Option<monster::Control>,
@@ -142,6 +143,10 @@ const SIGNATURES: &[(usize, &[u8])] = &[
     (
         0x008fb7c0,
         &[0x55, 0x8b, 0xec, 0x81, 0xec, 0x88, 0x00, 0x00],
+    ),
+    (
+        0x008fb1f0,
+        &[0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x83, 0xec, 0x1c, 0x53],
     ),
     (
         0x008fca00,
@@ -297,13 +302,15 @@ unsafe extern "C" fn initialize_players() -> i32 {
         let original: unsafe extern "C" fn() -> i32 = transmute(state.initialize_players);
         let result = original();
         let runtime = state.runtime.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(weapon) = runtime.moveset
-            && let Some(player) = monster::hunter(state)
+        if let Some(player) = monster::hunter(state)
             && get::<u8>(player) != 0
         {
-            // 1089DF70 loads the moveset after this constructor returns.
-            // Keep the save, equipment records and model IDs untouched.
-            put(player + 3, weapon);
+            // 1089DF70 loads motions and models after this constructor returns.
+            // Restore cosmetic armor IDs before those model loaders run.
+            equipment::apply_transmogs(player, &runtime.transmogs);
+            if let Some(weapon) = runtime.moveset {
+                put(player + 3, weapon);
+            }
         }
         result
     }
@@ -364,47 +371,49 @@ unsafe fn catalog(state: &State) -> Catalog {
             .map(|(id, name)| super::Monster {
                 id: id as u8,
                 name,
-                actions: super::monsters::actions(id as u8),
+                variants: super::monsters::variants(id as u8),
+                actions: Arc::new(super::monsters::actions(id as u8)),
             })
             .collect();
         let dat = state.read::<usize>(0x1e77dcc4);
+        catalog.appearances = equipment::appearance_options(dat);
         // Name-table extents match mhf-unicode/resources/layout.json for this ZZ DAT.
-        // Native 10A9C920 maps kinds 2/3/4/5/0 to head/body/arms/waist/legs.
+        // Native 10A9BDF0 resolves these spec tables and record strides.
+        // 10BAD8B0 reads weapon model +0; 108F9D00 reads armor male/female +0/+2.
         for (kind, root, count, specs, stride, class_offset) in [
-            (6, 136, 17568, 124, 52, 3),
-            (7, 132, 4223, 128, 60, 4),
-            (2, 100, 14594, 0, 0, 0),
-            (3, 104, 13462, 0, 0, 0),
-            (4, 108, 13452, 0, 0, 0),
-            (5, 112, 13708, 0, 0, 0),
-            (0, 116, 13514, 0, 0, 0),
+            (6, 136, 17568, 124, 52, Some(3)),
+            (7, 132, 4223, 128, 60, Some(4)),
+            (2, 100, 14594, 80, 72, None),
+            (3, 104, 13462, 84, 72, None),
+            (4, 108, 13452, 88, 72, None),
+            (5, 112, 13708, 92, 72, None),
+            (0, 116, 13514, 96, 72, None),
         ] {
             let names = get::<usize>(dat + root);
-            let specs = if specs == 0 {
-                0
-            } else {
-                get::<usize>(dat + specs)
-            };
-            if names == 0 {
+            let specs = get::<usize>(dat + specs);
+            if names == 0 || specs == 0 {
                 continue;
             }
             for id in 0..count {
-                let weapon = if specs == 0 {
-                    None
-                } else {
-                    Some(get::<u8>(specs + id * stride + class_offset))
-                };
+                let spec = specs + id * stride;
+                let weapon = class_offset.map(|offset| get::<u8>(spec + offset));
                 if weapon.is_some_and(|weapon| weapon >= 14) {
                     continue;
                 }
-                if let Some(name) = text(get::<usize>(names + id * 4)) {
-                    catalog.equipment.push(Equipment {
-                        kind,
-                        id: id as u16,
-                        weapon,
-                        name,
-                    });
-                }
+                let Some(name) = text(get::<usize>(names + id * 4)) else {
+                    continue;
+                };
+                catalog.equipment.push(Equipment {
+                    kind,
+                    id: id as u16,
+                    model_ids: if weapon.is_some() {
+                        [get::<u16>(spec); 2]
+                    } else {
+                        get::<[u16; 2]>(spec)
+                    },
+                    weapon,
+                    name,
+                });
             }
         }
         let directory = get::<usize>(dat + 389 * 4);
@@ -445,21 +454,40 @@ unsafe fn initialize_catalog(state: &State, runtime: &mut Runtime) {
 }
 
 unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
+    // Avoid constructing and discarding the default catalog/message Arcs each frame.
     let mut snapshot = DebugSnapshot {
         quest_id: state.quest_id,
-        catalog: runtime.catalog.clone(),
+        ready: false,
+        scene: 0,
+        area: 0,
+        map: 0,
+        areas: Vec::new(),
+        weapon: 0,
+        equipped_weapon: 0,
+        equipment: [None; 6],
+        transmogs: runtime.transmogs,
+        appearance: Default::default(),
+        action_group: 0,
+        action_id: 0,
+        action_stage: 0,
+        animation: 0,
+        frame: 0.0,
+        position: [0.0; 3],
         message: runtime.message.clone(),
-        monster: runtime.monster.as_ref().map(|control| control.species),
+        catalog: runtime.catalog.clone(),
+        monster: None,
+        monster_variant: 0,
         controlling_monster: state.controlled_monster.load(Ordering::Relaxed) != 0,
-        monster_actions: runtime
-            .monster
-            .as_ref()
-            .map(|control| control.actions.clone())
-            .unwrap_or_default(),
+        monster_actions: None,
         camera_distance: f32::from_bits(state.camera_distance.load(Ordering::Relaxed)),
         camera_pitch: f32::from_bits(state.camera_pitch.load(Ordering::Relaxed)),
-        ..Default::default()
+        combat: Default::default(),
     };
+    if let Some(control) = &runtime.monster {
+        snapshot.monster = Some(control.species);
+        snapshot.monster_variant = control.variant.id;
+        snapshot.monster_actions = Some(control.actions.clone());
+    }
     unsafe {
         let scene = state.read::<usize>(0x1e7fff3c);
         if scene == 0 {
@@ -493,18 +521,19 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
         snapshot.position = [get(actor + 172), get(actor + 176), get(actor + 180)];
         let save = state.read::<usize>(0x11a3ee2c);
         if save != 0 {
-            for slot in 0..6 {
-                snapshot.equipment.push((
+            snapshot.appearance = equipment::appearance(save);
+            snapshot.equipment = std::array::from_fn(|slot| {
+                Some((
                     get(save + 128441 + 16 * slot),
                     get(save + 128442 + 16 * slot),
-                ));
-            }
-            if let Some((kind, id)) = snapshot.equipment.first()
+                ))
+            });
+            if let Some((kind, id)) = snapshot.equipment[0]
                 && let Some(item) = runtime
                     .catalog
                     .equipment
                     .iter()
-                    .find(|item| (item.kind, item.id) == (*kind, *id))
+                    .find(|item| (item.kind, item.id) == (kind, id))
             {
                 snapshot.equipped_weapon = item.weapon.unwrap_or(snapshot.weapon);
             }
@@ -574,13 +603,41 @@ unsafe extern "C" fn dispatch() -> i32 {
                             .find(|item| (item.kind, item.id) == (kind, id))
                         {
                             let name = item.name.clone();
-                            equipment::equip(state, runtime.moveset, kind, id).map(|()| {
-                                runtime.pending_action = None;
-                                format!("已热替换为 {name}")
-                            })
+                            equipment::equip(state, runtime.moveset, &runtime.transmogs, kind, id)
+                                .map(|()| {
+                                    runtime.pending_action = None;
+                                    format!("已热替换为 {name}")
+                                })
                         } else {
                             Err("装备编号无效".into())
                         }
+                    }
+                    DebugCommand::Transmog { kind, id } if current.ready => runtime
+                        .transmogs
+                        .changed(kind, id, &runtime.catalog)
+                        .map_err(String::from)
+                        .and_then(|next| {
+                            equipment::change_transmog(state, &next)?;
+                            runtime.transmogs = next;
+                            runtime.pending_action = None;
+                            Ok(if id.is_some() {
+                                "已应用防具幻化".into()
+                            } else {
+                                "已恢复此部位的装备外观".into()
+                            })
+                        }),
+                    DebugCommand::Appearance(change) if current.ready => {
+                        equipment::change_appearance(
+                            state,
+                            runtime.moveset,
+                            &runtime.transmogs,
+                            &runtime.catalog.appearances,
+                            change,
+                        )
+                        .map(|()| {
+                            runtime.pending_action = None;
+                            "已热替换猎人外观与装备模型".into()
+                        })
                     }
                     DebugCommand::Action(action) if current.ready && runtime.monster.is_none() => {
                         if !runtime
@@ -605,11 +662,18 @@ unsafe extern "C" fn dispatch() -> i32 {
                             Ok(format!("已触发 {}", action.label()))
                         }
                     }
-                    DebugCommand::Transform(species) if current.ready => {
-                        monster::transform(state, &mut runtime, species, &current)
+                    DebugCommand::Transform { species, variant } if current.ready => {
+                        monster::transform(state, &mut runtime, species, variant, &current)
                     }
-                    DebugCommand::TransformAction { species, action } if current.ready => {
-                        if current.monster == Some(species) && current.controlling_monster {
+                    DebugCommand::TransformAction {
+                        species,
+                        variant,
+                        action,
+                    } if current.ready => {
+                        if current.monster == Some(species)
+                            && current.monster_variant == variant
+                            && current.controlling_monster
+                        {
                             monster::trigger(state, &runtime, action)
                         } else if runtime
                             .catalog
@@ -618,7 +682,7 @@ unsafe extern "C" fn dispatch() -> i32 {
                             .find(|monster| monster.id == species)
                             .is_some_and(|monster| monster.actions.contains(&action))
                         {
-                            monster::transform(state, &mut runtime, species, &current).map(
+                            monster::transform(state, &mut runtime, species, variant, &current).map(
                                 |message| {
                                     runtime.monster.as_mut().unwrap().pending_action = Some(action);
                                     format!("{message}，随后执行{}", action.label())
@@ -652,7 +716,7 @@ unsafe extern "C" fn dispatch() -> i32 {
                     }
                     _ => Err("等待猎人进入任务后再操作".into()),
                 };
-                runtime.message = result.unwrap_or_else(|error| error);
+                runtime.message = result.unwrap_or_else(|error| error).into();
             }
             monster::before_frame(state, &mut runtime);
         }
@@ -673,7 +737,8 @@ unsafe extern "C" fn dispatch() -> i32 {
                             "装备保持不变，已触发{}的{}",
                             super::NATIVE_WEAPON_NAMES[action.weapon as usize],
                             action.label()
-                        );
+                        )
+                        .into();
                     }
                 } else {
                     runtime.ready_frames = 0;

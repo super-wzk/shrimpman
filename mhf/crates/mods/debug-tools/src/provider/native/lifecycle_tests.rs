@@ -83,6 +83,7 @@ fn supported_client_keeps_quest_and_debug_hook_lifetimes_separate() {
         unsafe {
             control.prepare_monster_spawn(mhf_quest::MonsterSpawn {
                 species: 1,
+                variant: 0,
                 area: 461,
                 position: [0.0; 3],
                 yaw: 0,

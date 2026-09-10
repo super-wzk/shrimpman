@@ -1,3 +1,5 @@
+use crate::api::MonsterSpawn;
+
 const CAPACITY: usize = 0x8000;
 
 pub(super) struct Quest {
@@ -13,31 +15,39 @@ pub(super) struct MonsterQuest {
 }
 
 impl Quest {
-    /// Keep the original monster spawns and extend only their resource list.
+    /// Keep original monster spawns while preparing resources and a species variant.
     /// The debugger creates its own actor from a separate record after loading;
     /// it must not replace a quest target or enter the primary-target registry.
-    pub(super) fn with_monster(
-        &self,
-        species: u8,
-        area: u16,
-        position: [f32; 3],
-        yaw: u16,
-    ) -> Result<MonsterQuest, String> {
+    pub(super) fn with_monster(&self, spawn: MonsterSpawn) -> Result<MonsterQuest, String> {
+        let MonsterSpawn {
+            species,
+            variant,
+            area,
+            position,
+            yaw,
+        } = spawn;
         if species == 0 || species >= 177 || !position.iter().all(|v| v.is_finite()) {
             return Err("怪物种类或出生位置无效".into());
         }
-        let mut bytes = self.bytes.clone();
-        let section = u32_at(&bytes, 24)? as usize;
-        if section == 0 || section.checked_add(16).is_none_or(|end| end > bytes.len()) {
+        if variant > 16 {
+            return Err("怪物变种无效".into());
+        }
+        let original = &self.bytes;
+        let section = u32_at(original, 24)? as usize;
+        if section == 0
+            || section
+                .checked_add(16)
+                .is_none_or(|end| end > original.len())
+        {
             return Err("任务缺少怪物资源段".into());
         }
-        let original_ids = u32_at(&bytes, section + 8)? as usize;
+        let original_ids = u32_at(original, section + 8)? as usize;
         if original_ids == 0 || original_ids == u32::MAX as usize {
             return Err("任务缺少怪物资源列表".into());
         }
         let mut species_ids = Vec::new();
         for index in 0..6 {
-            let id = u32_at(&bytes, original_ids + index * 4)?;
+            let id = u32_at(original, original_ids + index * 4)?;
             if id == 0 || id == u32::MAX {
                 break;
             }
@@ -49,40 +59,66 @@ impl Quest {
             }
             species_ids.push(u32::from(species));
         }
-        let ids = (bytes.len() + 3) & !3;
-        let spawn = ids + 32;
-        let end = spawn + 60;
+        let properties = u32_at(original, 0)? as usize;
+        // Native 1087CB30 indexes variants by the resource-species slot. The
+        // leading byte at +0x90 is the reward mode, not a monster variant.
+        let variant_offsets = [0x91, 0x92, 0xb6, 0xb7, 0xb8];
+        let variant_slots = if u32_at(original, properties + 0x98)? & 0x2000 != 0 {
+            5
+        } else {
+            2
+        };
+        for (index, &id) in species_ids.iter().enumerate().skip(variant_slots) {
+            if id == u32::from(species) && variant != 0 {
+                return Err(format!(
+                    "任务的第 {} 个怪物资源槽不支持设置变种，请更换怪物种类较少的任务",
+                    index + 1
+                ));
+            }
+        }
+        let ids = (original.len() + 3) & !3;
+        let spawn_offset = ids + 32;
+        let end = spawn_offset + 60;
         if end > CAPACITY {
             return Err("任务缓冲区没有足够空间容纳变身数据".into());
         }
+        let mut bytes = Vec::with_capacity(end);
+        bytes.extend_from_slice(original);
+        for (&id, &offset) in species_ids.iter().zip(&variant_offsets[..variant_slots]) {
+            if id == u32::from(species) {
+                bytes[properties + offset] = variant;
+            }
+        }
         bytes.resize(end, 0);
         write_u32(&mut bytes, section + 8, ids as u32);
-        for offset in (ids..ids + 32).step_by(4) {
-            write_u32(&mut bytes, offset, u32::MAX);
-        }
+        bytes[ids..spawn_offset].fill(u8::MAX);
         for (index, id) in species_ids.into_iter().enumerate() {
             write_u32(&mut bytes, ids + index * 4, id);
         }
-        write_u16(&mut bytes, spawn, u16::from(species));
-        bytes[spawn + 4] = 1;
-        write_u16(&mut bytes, spawn + 8, area);
-        write_u32(&mut bytes, spawn + 28, u32::from(yaw));
+        write_u16(&mut bytes, spawn_offset, u16::from(species));
+        bytes[spawn_offset + 4] = 1;
+        write_u16(&mut bytes, spawn_offset + 8, area);
+        write_u32(&mut bytes, spawn_offset + 28, u32::from(yaw));
         for (index, coordinate) in position.into_iter().enumerate() {
-            write_u32(&mut bytes, spawn + 32 + index * 4, coordinate.to_bits());
+            write_u32(
+                &mut bytes,
+                spawn_offset + 32 + index * 4,
+                coordinate.to_bits(),
+            );
         }
-        write_u16(&mut bytes, spawn + 48, 100);
-        write_u16(&mut bytes, spawn + 50, u16::MAX);
-        bytes[spawn + 52] = u8::MAX;
-        bytes[spawn + 56] = u8::MAX;
+        write_u16(&mut bytes, spawn_offset + 48, 100);
+        write_u16(&mut bytes, spawn_offset + 50, u16::MAX);
+        bytes[spawn_offset + 52] = u8::MAX;
+        bytes[spawn_offset + 56] = u8::MAX;
         // +53 remains zero: 10AAA420 must not register this actor as a main
         // objective or overwrite quest +156/+3036 with the controlled instance.
 
         // Use a fixed hunter spawn in the same area so the new monster is visible
         // immediately. The actor is positioned after the native area initializer.
-        set_start_area(&mut bytes[..self.bytes.len()], area)?;
+        set_start_area(&mut bytes[..original.len()], area)?;
         Ok(MonsterQuest {
             bytes,
-            spawn_offset: spawn,
+            spawn_offset,
         })
     }
 
@@ -243,6 +279,7 @@ fn decode_lz(input: &[u8], size: usize) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fixtures::monster_spawn;
     use super::*;
 
     fn text_bytes_at(bytes: &[u8], table: usize, index: usize) -> &[u8] {
@@ -252,6 +289,113 @@ mod tests {
         &bytes[..end]
     }
 
+    fn quest_with_species(species: &[u32], extended: bool) -> Quest {
+        let mut bytes = super::super::fixtures::quest_bytes();
+        let properties = u32_at(&bytes, 0).unwrap() as usize;
+        let section = u32_at(&bytes, 24).unwrap() as usize;
+        let ids = u32_at(&bytes, section + 8).unwrap() as usize;
+        for (index, &id) in species.iter().chain([u32::MAX].iter()).enumerate() {
+            write_u32(&mut bytes, ids + index * 4, id);
+        }
+        if extended {
+            write_u32(&mut bytes, properties + 0x98, 0x2000);
+        }
+        Quest::parse(&bytes).unwrap()
+    }
+
+    #[test]
+    fn monster_variant_uses_resource_slot_and_preserves_other_quest_data() {
+        let mut quest = quest_with_species(&[163], false);
+        let properties = u32_at(&quest.bytes, 0).unwrap() as usize;
+        let section = u32_at(&quest.bytes, 24).unwrap() as usize;
+        quest.bytes[properties + 0x90..properties + 0x93].copy_from_slice(&[7, 10, 12]);
+        quest.bytes[properties + 0xb6..properties + 0xb9].copy_from_slice(&[13, 14, 15]);
+        quest.bytes[properties + 0x97..properties + 0x9b]
+            .copy_from_slice(&[0x08, 0x20, 0x03, 0x7f]);
+        write_u32(&mut quest.bytes, section + 12, 0x2c0);
+        quest.bytes[0x2c0..0x2fc].fill(0xa5);
+        let original = quest.bytes.clone();
+
+        let replacement = quest
+            .with_monster(MonsterSpawn {
+                position: [1.0, 2.0, 3.0],
+                yaw: 4,
+                ..monster_spawn(15, 16)
+            })
+            .unwrap();
+        let mut expected = original.clone();
+        let ids = (original.len() + 3) & !3;
+        write_u32(&mut expected, section + 8, ids as u32);
+        expected[properties + 0x92] = 16;
+        set_start_area(&mut expected, 461).unwrap();
+        assert_eq!(&replacement.bytes[..original.len()], expected);
+        assert_eq!(u32_at(&replacement.bytes, ids).unwrap(), 163);
+        assert_eq!(u32_at(&replacement.bytes, ids + 4).unwrap(), 15);
+        assert_eq!(u32_at(&replacement.bytes, ids + 8).unwrap(), u32::MAX);
+        assert_eq!(
+            u16_at(&replacement.bytes, replacement.spawn_offset).unwrap(),
+            15
+        );
+        assert_eq!(quest.bytes, original);
+
+        let normal = quest.with_monster(monster_spawn(163, 0)).unwrap();
+        assert_eq!(normal.bytes[properties + 0x91], 0);
+        assert_eq!(normal.bytes[properties + 0x92], 12);
+    }
+
+    #[test]
+    fn duplicate_species_receive_the_same_variant() {
+        let quest = quest_with_species(&[15, 15], false);
+        let properties = u32_at(&quest.bytes, 0).unwrap() as usize;
+        for variant in [0, 1, 11, 16] {
+            let replacement = quest.with_monster(monster_spawn(15, variant)).unwrap();
+            assert_eq!(replacement.bytes[properties + 0x91], variant);
+            assert_eq!(replacement.bytes[properties + 0x92], variant);
+        }
+        let mixed_slots = quest_with_species(&[15, 1, 15], false);
+        assert!(mixed_slots.with_monster(monster_spawn(15, 1)).is_err());
+    }
+
+    #[test]
+    fn variant_slots_follow_the_original_interception_flag() {
+        let offsets = [0x91, 0x92, 0xb6, 0xb7, 0xb8];
+        for extended in [false, true] {
+            let slot_count = if extended { 5 } else { 2 };
+            for index in 0..6 {
+                let species = [1, 11, 15, 17, 21, 48];
+                let selected = species[index] as u8;
+                let quest = quest_with_species(&species, extended);
+                let properties = u32_at(&quest.bytes, 0).unwrap() as usize;
+                let result = quest.with_monster(monster_spawn(selected, 16));
+                if index < slot_count {
+                    assert_eq!(result.unwrap().bytes[properties + offsets[index]], 16);
+                } else {
+                    assert!(result.is_err());
+                }
+                assert!(quest.with_monster(monster_spawn(selected, 0)).is_ok());
+
+                // Newly appended species obey the same slot limit.
+                let quest = quest_with_species(&species[..index], extended);
+                assert_eq!(
+                    quest.with_monster(monster_spawn(80, 1)).is_ok(),
+                    index < slot_count
+                );
+                assert!(quest.with_monster(monster_spawn(80, 0)).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_variants_and_full_resource_lists_are_rejected() {
+        let quest = quest_with_species(&[1, 11, 15, 17, 21, 48], true);
+        for variant in [0, 1, 16] {
+            assert!(quest.with_monster(monster_spawn(80, variant)).is_err());
+        }
+        for variant in [17, u8::MAX] {
+            assert!(quest.with_monster(monster_spawn(1, variant)).is_err());
+        }
+    }
+
     #[test]
     fn parsing_and_monster_variants_preserve_caller_text() {
         let bytes = super::super::fixtures::quest_bytes();
@@ -259,7 +403,7 @@ mod tests {
         assert_eq!(quest.bytes, bytes);
         let properties = u32_at(&bytes, 0).unwrap() as usize;
         let table = u32_at(&bytes, properties + 0x28).unwrap() as usize;
-        let variant = quest.with_monster(1, 461, [0.0; 3], 0).unwrap();
+        let variant = quest.with_monster(monster_spawn(1, 1)).unwrap();
         assert!(variant.spawn_offset >= bytes.len());
         assert!(variant.bytes.len() <= CAPACITY);
         for index in 0..8 {
@@ -280,9 +424,16 @@ mod tests {
             write_u32(&mut broken, offset, u32::MAX);
             assert!(Quest::parse(&broken).is_err());
         }
+        // Appended monster data must not complete a truncated hunter record.
+        let mut incomplete_hunters = original.bytes.clone();
+        let hunters = incomplete_hunters.len() - 32;
+        write_u32(&mut incomplete_hunters, 4, hunters as u32);
+        let quest = Quest::parse(&incomplete_hunters).unwrap();
+        assert!(quest.with_monster(monster_spawn(1, 0)).is_err());
+
         let mut full = original;
         full.bytes.resize(CAPACITY, 0);
-        assert!(full.with_monster(1, 461, [0.0; 3], 0).is_err());
+        assert!(full.with_monster(monster_spawn(1, 0)).is_err());
     }
 
     #[test]

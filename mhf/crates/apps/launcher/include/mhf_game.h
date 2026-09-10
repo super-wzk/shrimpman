@@ -106,12 +106,18 @@ typedef struct {
 } float_3_array_t;
 
 /** \brief
- *  Replacement resource species, spawn record and hunter start area. This
+ *  Replacement resource species and variant, spawn record and hunter start area. This
  *  prepares quest data; it does not create or control a running monster.
  */
 typedef struct QuestMonsterSpawn {
     /** <No documentation available> */
     uint8_t species;
+
+    /** \brief
+     *  Native species variant in 0..=16: 0 = normal, 1 = HC, 16 = Zenith.
+     *  Other values depend on the species. The caller verifies species support.
+     */
+    uint8_t variant;
 
     /** <No documentation available> */
     uint16_t area;
@@ -232,7 +238,7 @@ typedef VirtualPtr__Erased_ptr_QuestLaunchApiVTable_t QuestLaunchTable;
 
 #define MHF_QUEST_PROVIDER "mhf.base"
 #define MHF_QUEST_INTERFACE "mhf.quest.v1"
-#define MHF_QUEST_CONTROL_INTERFACE "mhf.quest.control.v1"
+#define MHF_QUEST_CONTROL_INTERFACE "mhf.quest.control.v2"
 #define MHF_QUEST_LAUNCH_INTERFACE "mhf.quest.launch.v1"
 /** \brief
  *  Simplified for lighter documentation, but the actual impls

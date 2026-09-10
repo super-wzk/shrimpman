@@ -1,6 +1,10 @@
 use super::{BASE, Runtime, SLOT, State, get, put, restart};
 use crate::provider::{DebugSnapshot, MonsterAction, MonsterInput};
-use std::{mem::transmute, sync::atomic::Ordering, time::Instant};
+use std::{
+    mem::transmute,
+    sync::{Arc, atomic::Ordering},
+    time::Instant,
+};
 
 pub(super) const POOL: usize = 0x1ed7ad2c;
 pub(super) const STRIDE: usize = 3824;
@@ -8,8 +12,9 @@ pub(super) const SLOTS: usize = 40;
 
 pub(super) struct Control {
     pub(super) species: u8,
+    pub(super) variant: crate::provider::monsters::Variant,
     pub(super) waiting: bool,
-    pub(super) actions: Vec<MonsterAction>,
+    pub(super) actions: Arc<Vec<MonsterAction>>,
     pub(super) pending_action: Option<MonsterAction>,
     pub(super) resume_at_arrival: bool,
     pub(super) instance: Option<(u8, u32)>,
@@ -84,6 +89,7 @@ pub(super) unsafe fn transform(
     state: &State,
     runtime: &mut Runtime,
     species: u8,
+    variant: u8,
     current: &DebugSnapshot,
 ) -> Result<String, String> {
     let selected = runtime
@@ -92,6 +98,7 @@ pub(super) unsafe fn transform(
         .iter()
         .find(|monster| monster.id == species)
         .ok_or("客户端没有此怪物种类")?;
+    let variant = selected.variant(variant).ok_or("此怪物不支持所选变种")?;
     let name = selected.name;
     let actions = selected.actions.clone();
     unsafe {
@@ -103,6 +110,7 @@ pub(super) unsafe fn transform(
             .session
             .prepare_monster_spawn(mhf_quest::MonsterSpawn {
                 species,
+                variant: variant.id,
                 area: current.area,
                 position: current.position,
                 yaw,
@@ -111,6 +119,7 @@ pub(super) unsafe fn transform(
         release(state, runtime);
         runtime.monster = Some(Control {
             species,
+            variant,
             waiting: true,
             actions,
             pending_action: None,
@@ -131,7 +140,7 @@ pub(super) unsafe fn transform(
         runtime.pending_action = None;
         restart(state, runtime)?;
     }
-    Ok(format!("正在载入{name}，重载后自动变身"))
+    Ok(format!("正在载入{name} · {}，重载后自动变身", variant.name))
 }
 
 pub(super) unsafe fn active_scene(state: &State) -> bool {
@@ -187,7 +196,7 @@ unsafe fn area_transition(state: &State, runtime: &mut Runtime) -> bool {
         let control = runtime.monster.as_mut().unwrap();
         control.waiting = true;
         control.resume_at_arrival = true;
-        runtime.message = format!("正在前往区域 {area}，载入后继续操控怪物");
+        runtime.message = format!("正在前往区域 {area}，载入后继续操控怪物").into();
         true
     }
 }
@@ -332,6 +341,18 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
                     && buffer != 0
                     && contains_spawn
                 {
+                    // Extended quests can expose only the current encounter's
+                    // resource slot. Do not create a normal actor while claiming
+                    // that a selected variant was loaded.
+                    let variant_active: unsafe extern "C" fn(u32, u8) -> i32 =
+                        transmute(state.address(0x1087cb30));
+                    if control.variant.id != 0
+                        && variant_active(u32::from(control.species), control.variant.id) == 0
+                    {
+                        control.waiting = false;
+                        runtime.message = "当前任务阶段未启用所选变种，请恢复猎人并更换任务".into();
+                        return;
+                    }
                     let create: unsafe extern "C" fn(usize, usize, u8) -> usize =
                         transmute(state.address(0x10aaa420));
                     let created = create(
@@ -386,9 +407,11 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
                 put(target + 164, u32::from(yaw));
                 state.controlled_monster.store(target, Ordering::Relaxed);
                 runtime.message = format!(
-                    "已变身为{} · 点击游戏区域即可操控",
-                    super::super::monsters::NAMES[control.species as usize]
-                );
+                    "已变身为{} · {} · 点击游戏区域即可操控",
+                    super::super::monsters::NAMES[control.species as usize],
+                    control.variant.name
+                )
+                .into();
             } else {
                 control.wait_frames = control.wait_frames.saturating_add(1);
                 if control.wait_frames >= 180 {
@@ -406,10 +429,9 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
                 id: get(control.actor + 20),
             };
             if action.group < 4 && !control.actions.contains(&action) {
-                control.actions.push(action);
-                control
-                    .actions
-                    .sort_by_key(|action| (action.group, action.id));
+                let actions = Arc::make_mut(&mut control.actions);
+                actions.push(action);
+                actions.sort_by_key(|action| (action.group, action.id));
             }
             sync_hunter(state, control);
         }
@@ -421,7 +443,9 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
             }
         });
         if let Some(action) = pending {
-            runtime.message = trigger(state, runtime, action).unwrap_or_else(|error| error);
+            runtime.message = trigger(state, runtime, action)
+                .unwrap_or_else(|error| error)
+                .into();
         }
     }
 }

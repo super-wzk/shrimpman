@@ -1,4 +1,16 @@
 //! Minimal caller-supplied data for parser and session tests, not a runtime preset.
+use crate::api::MonsterSpawn;
+
+pub(super) fn monster_spawn(species: u8, variant: u8) -> MonsterSpawn {
+    MonsterSpawn {
+        species,
+        variant,
+        area: 461,
+        position: [0.0; 3],
+        yaw: 0,
+    }
+}
+
 pub(super) fn quest_bytes() -> Vec<u8> {
     fn put(bytes: &mut [u8], offset: usize, value: u32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());

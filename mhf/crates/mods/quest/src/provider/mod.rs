@@ -9,14 +9,16 @@ mod module;
 mod native;
 mod service;
 
+use crate::api::MonsterSpawn;
 #[cfg(all(windows, target_arch = "x86"))]
 pub use module::QuestMod;
 #[cfg(all(windows, target_arch = "x86"))]
 pub use native::{State, install};
 pub use service::QuestService;
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
-
-use std::sync::{PoisonError, atomic::Ordering};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Prepared quest data shared by the offline runtime and optional debug tools.
 /// Original files are decompressed once; the runtime owns every replacement image.
@@ -74,17 +76,8 @@ impl Session {
 
     /// Build from the original quest and publish only a complete replacement.
     /// Call on the game thread before restarting the native quest loader.
-    pub(crate) fn prepare_monster_spawn(
-        &self,
-        species: u8,
-        area: u16,
-        position: [f32; 3],
-        yaw: u16,
-    ) -> Result<usize, String> {
-        let quest = self
-            .inner
-            .quest
-            .with_monster(species, area, position, yaw)?;
+    pub(crate) fn prepare_monster_spawn(&self, spawn: MonsterSpawn) -> Result<usize, String> {
+        let quest = self.inner.quest.with_monster(spawn)?;
         *self
             .inner
             .quest_override
@@ -124,7 +117,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::Session;
+    use super::{Session, fixtures::monster_spawn};
+    use crate::api::MonsterSpawn;
 
     #[test]
     fn session_clones_share_complete_overrides_without_accumulating_quest_data() {
@@ -134,18 +128,24 @@ mod tests {
         let original_id = session.quest_id();
         assert!(!observer.override_contains(0, 1));
 
-        let first_spawn = session.prepare_monster_spawn(1, 461, [0.0; 3], 0).unwrap();
+        let first_spawn = session.prepare_monster_spawn(monster_spawn(1, 1)).unwrap();
         let first_len = observer.quest_len();
         assert!(first_spawn >= original_len);
         assert!(observer.override_contains(first_spawn, 60));
         assert!(!observer.override_contains(first_spawn, 61));
         assert!(!observer.override_contains(usize::MAX, 60));
 
-        let next_spawn = observer.prepare_monster_spawn(2, 461, [1.0; 3], 1).unwrap();
+        let next_spawn = observer
+            .prepare_monster_spawn(MonsterSpawn {
+                position: [1.0; 3],
+                yaw: 1,
+                ..monster_spawn(2, 0)
+            })
+            .unwrap();
         assert_eq!(next_spawn, first_spawn);
         assert_eq!(session.quest_len(), first_len);
         let before = session.inner.quest_override.lock().unwrap().clone();
-        assert!(session.prepare_monster_spawn(0, 461, [0.0; 3], 0).is_err());
+        assert!(session.prepare_monster_spawn(monster_spawn(0, 0)).is_err());
         assert_eq!(*session.inner.quest_override.lock().unwrap(), before);
 
         observer.reset_quest();

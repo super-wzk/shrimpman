@@ -190,6 +190,168 @@ pub(super) const NAMES: [&str; 177] = [
     "奇面王",             // 176
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Variant {
+    pub(super) id: u8,
+    pub(super) name: &'static str,
+    /// Model suffix before quest-wide overrides.
+    pub(super) model_suffix: &'static str,
+}
+
+impl Variant {
+    const fn new(id: u8, name: &'static str, model_suffix: &'static str) -> Self {
+        Self {
+            id,
+            name,
+            model_suffix,
+        }
+    }
+}
+
+/// Native per-species variants, resolved through the quest resource roster by
+/// 1087CB30. Model paths follow 1087C030/1087B840/1087BB50/1087BB00 and
+/// 108FBA70. A numeric variant is meaningful only together with its species.
+pub(super) fn variants(species: u8) -> Vec<Variant> {
+    let mut variants = vec![Variant::new(0, "普通", "")];
+    if matches!(
+        species,
+        1 | 6
+            | 11
+            | 14
+            | 15
+            | 17
+            | 20
+            | 21
+            | 22
+            | 26
+            | 27
+            | 28
+            | 33
+            | 37
+            | 38
+            | 39
+            | 40
+            | 41
+            | 42
+            | 43
+            | 45
+            | 47
+            | 48
+            | 49
+            | 51
+            | 52
+            | 53
+            | 54
+            | 58
+            | 59
+            | 60
+            | 65
+            | 67
+            | 68
+            | 74
+            | 75
+            | 76
+            | 77
+            | 78
+            | 79
+            | 80
+            | 81
+            | 82
+            | 83
+            | 84
+            | 85
+            | 89
+            | 90
+            | 91
+            | 92
+            | 94
+            | 95
+            | 96
+            | 101
+            | 102
+            | 104
+    ) {
+        variants.push(Variant::new(
+            1,
+            "HC",
+            if matches!(species, 41 | 42) {
+                "_c"
+            } else {
+                "_b"
+            },
+        ));
+    }
+    // 10AA6DD0 records Supremacy hunts at 9. CEnemy146's 10E600B0 uses 11;
+    // 11313FA0 groups 146/155/166 with the native extreme individuals.
+    // Keep each special form's name and model beside its species, including
+    // unrelated event monsters that happen to share a numeric variant.
+    let special: &[Variant] = match species {
+        4 | 9 => &[Variant::new(6, "活动个体", "_b")],
+        6 | 101 => &[Variant::new(6, "活动个体", "_c")],
+        21 => &[Variant::new(12, "彼岸岛联动", "_c")],
+        42 => &[Variant::new(8, "特殊强化", "_c")],
+        53 => &[
+            Variant::new(8, "特殊强化", "_b"),
+            // 15 aliases the query for 8, but the model loader checks the raw
+            // value. It needs quest-wide HC to select _b for this form.
+            Variant::new(15, "特殊强化", ""),
+        ],
+        65 | 89 => &[Variant::new(9, "霸种", "_c")],
+        95 => &[
+            Variant::new(8, "特殊强化", "_b"),
+            Variant::new(9, "霸种", "_c"),
+            Variant::new(15, "特殊强化", "_c"),
+        ],
+        100 => &[Variant::new(9, "霸种", ""), Variant::new(13, "至天", "_d")],
+        106 => &[
+            Variant::new(9, "霸种", ""),
+            Variant::new(15, "特殊强化", ""),
+        ],
+        107 => &[Variant::new(13, "至天", "_d")],
+        113 => &[Variant::new(15, "无双袭击", "_b")],
+        119 | 120 => &[Variant::new(9, "霸种", "")],
+        146 => &[Variant::new(11, "极怪", "_b")],
+        154 => &[Variant::new(15, "极怪", "_d")],
+        155 => &[
+            Variant::new(11, "极怪", "_b"),
+            Variant::new(12, "SaGa联动", "_c"),
+        ],
+        // The bundled native extreme Nargacuga quest uses variant 10; its
+        // separate species already owns the extreme model and behavior.
+        163 => &[Variant::new(10, "极怪", "")],
+        166 => &[Variant::new(11, "极怪", "_d")],
+        _ => &[],
+    };
+    variants.extend_from_slice(special);
+    if matches!(
+        species,
+        11 | 15
+            | 17
+            | 21
+            | 48
+            | 51
+            | 74
+            | 76
+            | 80
+            | 83
+            | 95
+            | 99
+            | 103
+            | 109
+            | 110
+            | 111
+            | 112
+            | 121
+            | 129
+            | 140
+            | 141
+            | 142
+    ) {
+        variants.push(Variant::new(16, "辿异种", "_e"));
+    }
+    variants
+}
+
 pub(super) fn actions(species: u8) -> Vec<MonsterAction> {
     let masks: [[u64; 4]; 4] = match species {
         1 | 11 | 37 | 41 | 42 | 49 => [
@@ -795,4 +957,62 @@ pub(super) fn actions(species: u8) -> Vec<MonsterAction> {
         }
     }
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn variant(species: u8, id: u8) -> Variant {
+        variants(species)
+            .into_iter()
+            .find(|variant| variant.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn every_species_has_complete_ordered_variant_descriptions() {
+        for species in 1..NAMES.len() as u8 {
+            let variants = variants(species);
+            assert_eq!(variants[0].id, 0);
+            assert_eq!(variants[0].model_suffix, "");
+            assert!(variants.windows(2).all(|pair| pair[0].id < pair[1].id));
+            for variant in variants {
+                assert!(variant.id <= 16);
+                assert!(!variant.name.is_empty());
+                assert!(matches!(
+                    variant.model_suffix,
+                    "" | "_b" | "_c" | "_d" | "_e"
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_number_keeps_each_species_event_and_model() {
+        let higanjima = variant(21, 12);
+        let saga = variant(155, 12);
+        assert_ne!(higanjima.name, saga.name);
+        assert_eq!(higanjima.model_suffix, "_c");
+        assert_eq!(saga.model_suffix, "_c");
+        assert_eq!(variant(4, 6).model_suffix, "_b");
+        assert_eq!(variant(9, 6).model_suffix, "_b");
+        assert_eq!(variant(6, 6).model_suffix, "_c");
+        assert_eq!(variant(101, 6).model_suffix, "_c");
+        assert!(
+            variants(146)
+                .iter()
+                .all(|variant| !matches!(variant.id, 6 | 8 | 12 | 15))
+        );
+    }
+
+    #[test]
+    fn special_models_do_not_inherit_numeric_query_aliases() {
+        assert_eq!(variant(53, 8).model_suffix, "_b");
+        assert_eq!(variant(53, 15).model_suffix, "");
+        assert_eq!(variant(95, 8).model_suffix, "_b");
+        assert_eq!(variant(95, 15).model_suffix, "_c");
+        assert_eq!(variant(42, 8).model_suffix, "_c");
+        assert_eq!(variant(106, 15).model_suffix, "");
+    }
 }

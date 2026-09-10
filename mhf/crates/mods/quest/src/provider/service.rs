@@ -194,12 +194,7 @@ impl QuestControlApi for QuestState {
         out: &mut SpawnOffset,
     ) -> api::Status {
         call(|| {
-            let offset = self.session()?.prepare_monster_spawn(
-                spawn.species,
-                spawn.area,
-                spawn.position,
-                spawn.yaw,
-            )?;
+            let offset = self.session()?.prepare_monster_spawn(spawn)?;
             *out = SpawnOffset::from_byte_offset(offset as u32);
             Ok(())
         })
@@ -212,6 +207,7 @@ impl QuestControlApi for QuestState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fixtures::monster_spawn;
     use super::*;
 
     #[test]
@@ -225,17 +221,7 @@ mod tests {
         assert_eq!(unsafe { control.restart() }, api::ERROR);
         assert_eq!(unsafe { control.reset_quest() }, api::ERROR);
         let mut offset = SpawnOffset::from_byte_offset(77);
-        let status = unsafe {
-            control.prepare_monster_spawn(
-                MonsterSpawn {
-                    species: 1,
-                    area: 461,
-                    position: [0.0; 3],
-                    yaw: 0,
-                },
-                &mut offset,
-            )
-        };
+        let status = unsafe { control.prepare_monster_spawn(monster_spawn(1, 0), &mut offset) };
         assert_eq!(status, api::ERROR);
         assert_eq!(offset.byte_offset(), 77);
         assert!(service.session_for_attach().is_none());
@@ -301,37 +287,53 @@ mod tests {
     fn control_table_mutates_its_selected_provider_and_preserves_failed_overrides() {
         let first_session = Session::new(&super::super::fixtures::quest_bytes()).unwrap();
         let _first = QuestService::new(first_session.clone());
-        let second =
-            QuestService::new(Session::new(&super::super::fixtures::quest_bytes()).unwrap());
+        let mut original = super::super::fixtures::quest_bytes();
+        original[0x284..0x288].copy_from_slice(&15u32.to_le_bytes());
+        original[0x288..0x28c].copy_from_slice(&u32::MAX.to_le_bytes());
+        let second_session = Session::new(&original).unwrap();
+        let second = QuestService::new(second_session.clone());
         // No native readers exist in this isolated test; each binding is dropped
         // before the service and never invokes native restart operations.
         let control = unsafe { crate::api::bind_control(&second.control_api) };
         let original_size = control.snapshot().quest_size;
-        let spawn = MonsterSpawn {
-            species: 1,
-            area: 461,
-            position: [0.0; 3],
-            yaw: 0,
-        };
+        let spawn = monster_spawn(1, 11);
         let offset = unsafe { control.prepare_monster_spawn(spawn) }.unwrap();
         assert!(control.override_contains(offset, 60));
         assert!(!first_session.override_contains(offset.byte_offset(), 60));
         let changed_size = control.snapshot().quest_size;
         assert!(changed_size > original_size);
-        // Species zero cannot form a replacement quest. Domain validation must
-        // preserve the current data even though the field's integer type is valid.
-        let mut ignored = SpawnOffset::default();
-        let status = unsafe {
-            second.control_api.prepare_monster_spawn(
-                MonsterSpawn {
-                    species: 0,
-                    ..spawn
-                },
-                &mut ignored,
-            )
-        };
-        assert_eq!(status, api::ERROR);
-        assert_eq!(control.snapshot().quest_size, changed_size);
+        let prepared = second_session.inner.quest_override.lock().unwrap().clone();
+        assert_eq!(prepared.as_ref().unwrap()[0x80 + 0x91], 11);
+        // Invalid values and an unreadable third variant slot must preserve
+        // every published byte as well as the caller's output value.
+        for rejected in [
+            MonsterSpawn {
+                species: 0,
+                ..spawn
+            },
+            MonsterSpawn {
+                variant: 17,
+                ..spawn
+            },
+            MonsterSpawn {
+                species: 17,
+                ..spawn
+            },
+        ] {
+            let mut ignored = SpawnOffset::from_byte_offset(77);
+            let status = unsafe {
+                second
+                    .control_api
+                    .prepare_monster_spawn(rejected, &mut ignored)
+            };
+            assert_eq!(status, api::ERROR);
+            assert_eq!(ignored.byte_offset(), 77);
+            assert_eq!(control.snapshot().quest_size, changed_size);
+            assert_eq!(
+                *second_session.inner.quest_override.lock().unwrap(),
+                prepared
+            );
+        }
         unsafe { control.reset_quest() }.unwrap();
         assert_eq!(control.snapshot().quest_size, original_size);
         assert!(!control.override_contains(offset, 60));

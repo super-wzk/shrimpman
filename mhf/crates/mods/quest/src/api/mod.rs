@@ -14,7 +14,7 @@ use safer_ffi::{
 
 pub const PROVIDER_ID: &str = "mhf.base";
 pub const INTERFACE_ID: &str = "mhf.quest.v1";
-pub const CONTROL_INTERFACE_ID: &str = "mhf.quest.control.v1";
+pub const CONTROL_INTERFACE_ID: &str = "mhf.quest.control.v2";
 pub const LAUNCH_INTERFACE_ID: &str = "mhf.quest.launch.v1";
 
 #[derive_ReprC(rename = "QuestSnapshot")]
@@ -28,13 +28,16 @@ pub struct Snapshot {
     pub quest_size: usize,
 }
 
-/// Replacement resource species, spawn record and hunter start area. This
+/// Replacement resource species and variant, spawn record and hunter start area. This
 /// prepares quest data; it does not create or control a running monster.
 #[derive_ReprC(rename = "QuestMonsterSpawn")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MonsterSpawn {
     pub species: u8,
+    /// Native species variant in 0..=16: 0 = normal, 1 = HC, 16 = Zenith.
+    /// Other values depend on the species. The caller verifies species support.
+    pub variant: u8,
     pub area: u16,
     pub position: [f32; 3],
     pub yaw: u16,
@@ -313,6 +316,8 @@ mod tests {
         assert_eq!(offset_of!(Snapshot, hunter_initialized), 2);
         assert_eq!(offset_of!(Snapshot, quest_size), size_of::<usize>());
         assert_eq!(size_of::<MonsterSpawn>(), 20);
+        assert_eq!(offset_of!(MonsterSpawn, variant), 1);
+        assert_eq!(offset_of!(MonsterSpawn, area), 2);
         assert_eq!(offset_of!(MonsterSpawn, position), 4);
         assert_eq!(offset_of!(MonsterSpawn, yaw), 16);
         assert_eq!(size_of::<SpawnOffset>(), 4);

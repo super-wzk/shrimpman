@@ -196,7 +196,7 @@ CounterSnapshot snapshot = counter->vtable.snapshot(counter->ptr);
 | `mhf.config` | `mhf.config.v1` | 节注册、默认与固定值、TOML 读写及声明式 INI 映射 |
 | `mhf.base` | `mhf.font.v1` | 字体 family 字符串 |
 | `mhf.base` | `mhf.quest.v1` | 任务 ID、会话初始化状态、任务缓冲大小快照 |
-| `mhf.base` | `mhf.quest.control.v1` | 游戏线程任务验证、重启、重置、任务替换准备与范围查询 |
+| `mhf.base` | `mhf.quest.control.v2` | 游戏线程任务验证、重启、重置、任务替换准备与范围查询 |
 | `mhf.base` | `mhf.quest.launch.v1` | 校验并准备调用方提供的原始任务字节 |
 | `mhf.debug` | `mhf.debug-tools.v1` | 调试快照与游戏线程命令队列 |
 | `mhf.base` | `mhf.ui.v1` | Panel 注册／注销，label、button、checkbox 控件 |

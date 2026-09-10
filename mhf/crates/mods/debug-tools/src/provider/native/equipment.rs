@@ -1,26 +1,109 @@
 //! Refresh the local hunter through the native equipment loaders on the task thread.
 
 use super::{State, get, monster, put};
+use crate::provider::{Appearance, AppearanceChange, AppearanceOptions, Face, Transmogs};
 use std::mem::transmute;
 
-pub(super) unsafe fn equip(
-    state: &State,
-    moveset: Option<u8>,
-    kind: u8,
-    id: u16,
-) -> Result<(), String> {
+unsafe fn local_hunter(state: &State) -> Result<(usize, usize), String> {
     unsafe {
         let scene = state.read::<usize>(0x1e7fff3c);
         let player = monster::hunter(state).ok_or("猎人尚未初始化")?;
         // Other hunters can share motion allocations; only reload the offline
         // provider's single hunter in slot 0.
         if scene == 0 || get::<u8>(scene + 9208) != 0 || get::<u8>(scene + 9210) != 1 {
-            return Err("装备热替换仅支持本地单猎人调试任务".into());
+            return Err("热替换仅支持本地单猎人调试任务".into());
         }
         let save = state.read::<usize>(0x11a3ee2c);
         if save == 0 || get::<usize>(player + 3368) == 0 {
             return Err("猎人装备尚未初始化".into());
         }
+        Ok((player, save))
+    }
+}
+
+pub(super) unsafe fn appearance(save: usize) -> Appearance {
+    unsafe {
+        Appearance {
+            female: get::<u8>(save + 1) != 0,
+            face: get(save + 2),
+            hair: get(save + 3),
+        }
+    }
+}
+
+pub(super) unsafe fn appearance_options(dat: usize) -> [AppearanceOptions; 2] {
+    unsafe {
+        if dat == 0 {
+            return Default::default();
+        }
+        let header = get::<usize>(dat + 4 * 4);
+        let model_counts = get::<usize>(dat + 57 * 4);
+        let face_records = get::<usize>(dat + 200 * 4);
+        if header == 0 || model_counts == 0 || face_records == 0 {
+            return Default::default();
+        }
+        // 10B9F080 resolves a byte-sized face index through six-byte records.
+        let face_count = usize::from(get::<u16>(header + 220)).min(256);
+        std::array::from_fn(|gender| {
+            // 10A6B470 uses this model count and a one-based face model ID;
+            // 108FB1F0 loads its zero-based counterpart (record.model - 1).
+            let face_models = get::<u16>(model_counts + 2 * (7 * gender + 1));
+            let faces = (0..face_count)
+                .filter_map(|face| {
+                    let model = get::<u16>(face_records + 6 * face);
+                    (model != 0 && model <= face_models).then(|| Face {
+                        id: face as u8,
+                        model_id: model - 1,
+                    })
+                })
+                .collect();
+            // 10836340's hairstyle selector offers 0..=150 except 17..=26.
+            // 108F9D00 additionally bounds the head/hair ID with slot 2's
+            // gender-specific model count before selecting its resource file.
+            let hair_models = get::<u16>(model_counts + 2 * (7 * gender + 2));
+            let hair = (0..=150_u8)
+                .filter(|&hair| !(17..=26).contains(&hair) && u16::from(hair) < hair_models)
+                .collect();
+            AppearanceOptions { faces, hair }
+        })
+    }
+}
+
+pub(super) unsafe fn change_appearance(
+    state: &State,
+    moveset: Option<u8>,
+    transmogs: &Transmogs,
+    options: &[AppearanceOptions; 2],
+    change: AppearanceChange,
+) -> Result<(), String> {
+    unsafe {
+        let (player, save) = local_hunter(state)?;
+        let current = appearance(save);
+        let next = current.changed(change, options)?;
+        if next == current {
+            return Ok(());
+        }
+        reset_action(state, player);
+        // 10B9F080 copies these fields, resolving the face directory index into
+        // player+946 and the hairstyle into player+910. Keep the save in sync
+        // so later equipment changes and area loads retain the new appearance.
+        put(save + 1, u8::from(next.female));
+        put(save + 2, next.face);
+        put(save + 3, next.hair);
+        refresh(state, moveset, transmogs, player, save, true);
+    }
+    Ok(())
+}
+
+pub(super) unsafe fn equip(
+    state: &State,
+    moveset: Option<u8>,
+    transmogs: &Transmogs,
+    kind: u8,
+    id: u16,
+) -> Result<(), String> {
+    unsafe {
+        let (player, save) = local_hunter(state)?;
         let add: unsafe extern "C" fn(usize, u8, u16, u16) -> i16 =
             transmute(state.address(0x10ba6b10));
         let capacity: unsafe extern "C" fn(usize) -> i16 = transmute(state.address(0x10ba9ad0));
@@ -37,11 +120,7 @@ pub(super) unsafe fn equip(
             return Err("临时装备箱已满".into());
         }
 
-        // End the old action while its weapon class and resources still agree.
-        let change_action: unsafe extern "C" fn(usize, i16, i16, i16, u8) -> i16 =
-            transmute(state.address(0x10a80a00));
-        change_action(player, 0, 0, 2, 1);
-        put(player + 18, 0_u8);
+        reset_action(state, player);
 
         let equipped: u32;
         std::arch::asm!(
@@ -55,6 +134,118 @@ pub(super) unsafe fn equip(
             return Err("无法装备所选装备".into());
         }
 
+        refresh(state, moveset, transmogs, player, save, false);
+    }
+    Ok(())
+}
+
+pub(super) unsafe fn apply_transmogs(player: usize, transmogs: &Transmogs) {
+    unsafe {
+        // 108F9D00 resolves these equipment IDs through each armor DAT table.
+        // They are separate from the equipped records at player+928 and from
+        // the weapon's model/class. Slot 1 belongs to the face, not armor.
+        for kind in [0, 2, 3, 4, 5] {
+            put(player + 4012 + 2 * kind, transmogs.armor[kind]);
+        }
+    }
+}
+
+unsafe fn validate_transmogs(
+    dat: usize,
+    player: usize,
+    transmogs: &Transmogs,
+) -> Result<(), String> {
+    if dat == 0 {
+        return Err("防具目录尚未初始化".into());
+    }
+    unsafe {
+        let female = get::<u8>(player + 17) != 0;
+        let gender = if female { 2 } else { 1 };
+        for (kind, table) in [(0, 24), (2, 20), (3, 21), (4, 22), (5, 23)] {
+            let id = transmogs.armor[kind];
+            if id == 0 || get::<u16>(player + 4012 + 2 * kind) == id {
+                continue;
+            }
+            let equipped = get::<u16>(player + 930 + 16 * kind);
+            // 108F9D00's head branch uses hair directly when no helmet is worn.
+            if kind == 2 && equipped == 0 {
+                return Err("请先装备头部防具，再设置头部幻化".into());
+            }
+            let specs = get::<usize>(dat + 4 * table);
+            if specs == 0 {
+                return Err("防具目录尚未初始化".into());
+            }
+            // Native resolution checks the worn armor's gender before using
+            // its override; the helmet loader also checks the override itself.
+            if get::<u8>(specs + 72 * usize::from(equipped) + 4) & gender == 0 {
+                return Err("当前部位装备不支持猎人性别，请先更换防具".into());
+            }
+            if get::<u8>(specs + 72 * usize::from(id) + 4) & gender == 0 {
+                return Err("所选幻化防具不支持当前猎人性别".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) unsafe fn change_transmog(state: &State, transmogs: &Transmogs) -> Result<(), String> {
+    unsafe {
+        let (player, _) = local_hunter(state)?;
+        validate_transmogs(state.read(0x1e77dcc4), player, transmogs)?;
+        if [0, 2, 3, 4, 5]
+            .into_iter()
+            .all(|kind| get::<u16>(player + 4012 + 2 * kind) == transmogs.armor[kind])
+        {
+            return Ok(());
+        }
+        reset_action(state, player);
+        for kind in [0, 2, 3, 4, 5] {
+            if get::<u16>(player + 4012 + 2 * kind) != transmogs.armor[kind] {
+                // Different armor IDs can share a model but use different
+                // attached effects. Force that part's native release/load.
+                put(player + 3156 + 2 * kind, -1_i16);
+            }
+        }
+        apply_transmogs(player, transmogs);
+        // Keep weapon and motion allocations intact. Armor loading also rebuilds
+        // the selected parts' cosmetic effects through 10BAFF00/10BB0200.
+        let release: unsafe extern "thiscall" fn(usize) -> i32 =
+            transmute(state.address(0x108fb7c0));
+        let load: unsafe extern "C" fn(usize) = transmute(state.address(0x108fb1f0));
+        release(player);
+        load(player);
+        // The chest owns animation buffers. Bind them before the next native
+        // update, retaining the current weapon class and its loaded moveset.
+        bind_animations(
+            state.address(0x10a92d70),
+            state.address(0x108ec090),
+            state.address(0x10bba300),
+            player,
+        );
+        reset_action(state, player);
+    }
+    Ok(())
+}
+
+unsafe fn reset_action(state: &State, player: usize) {
+    unsafe {
+        // End the old action while its weapon class and resources still agree.
+        let change: unsafe extern "C" fn(usize, i16, i16, i16, u8) -> i16 =
+            transmute(state.address(0x10a80a00));
+        change(player, 0, 0, 2, 1);
+        put(player + 18, 0_u8);
+    }
+}
+
+unsafe fn refresh(
+    state: &State,
+    moveset: Option<u8>,
+    transmogs: &Transmogs,
+    player: usize,
+    save: usize,
+    reload_appearance: bool,
+) {
+    unsafe {
         // 10B9F080 also rebuilds the save's equipped records. 10B9FE90 would
         // overwrite the live item pouch, so refresh its equipment fields only.
         let copy_equipment: unsafe extern "C" fn(usize, usize) =
@@ -64,6 +255,9 @@ pub(super) unsafe fn equip(
         let update_skills: unsafe extern "C" fn(usize) = transmute(state.address(0x10a89cd0));
         let cache_skills: unsafe extern "C" fn(usize) = transmute(state.address(0x101c0780));
         copy_equipment(player, save);
+        // Copying equipment restores the save's native cosmetic fields, so
+        // reapply this debug session's selections before any model resolution.
+        apply_transmogs(player, transmogs);
         // EAX=player: refresh the equipped weapon's secret-book style.
         std::arch::asm!(
             "call edx",
@@ -79,6 +273,16 @@ pub(super) unsafe fn equip(
         // model's animation buffers; the actual model ID still comes from gear.
         let weapon = moveset.unwrap_or_else(|| get(player + 3));
         put(player + 3, weapon);
+
+        if reload_appearance {
+            // 108FA150 compares only numeric model IDs, although 108FB1F0 loads
+            // gender-specific files and face-dependent skin variants. Invalidate
+            // all six body/face/head IDs even when their numbers are unchanged.
+            // Retain resource handles/counts for 108FB7C0 to release them safely.
+            for part in 0..6 {
+                put(player + 3156 + 2 * part, -1_i16);
+            }
+        }
 
         // Diff the new equipment against the loaded model IDs, then synchronously
         // release/load just those models. Do not call 106A7FB0: it also frees
@@ -99,9 +303,8 @@ pub(super) unsafe fn equip(
             state.address(0x10bba300),
             player,
         );
-        change_action(player, 0, 0, 2, 1);
+        reset_action(state, player);
     }
-    Ok(())
 }
 
 /// Release weapon (EDI) and armor (ECX), then load models (ESI, stack=0).
@@ -179,4 +382,97 @@ unsafe extern "C" fn bind_animations(
         "pop ebp",
         "ret",
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transmogs_only_change_native_armor_overrides_and_can_restore_equipment() {
+        let mut player = [0xa5_u8; 4176];
+        let pointer = player.as_mut_ptr() as usize;
+        let transmogs = Transmogs {
+            armor: [11, 999, 22, 33, 44, 55],
+        };
+        let mut expected = player;
+        for kind in [0, 2, 3, 4, 5] {
+            let offset = 4012 + 2 * kind;
+            expected[offset..offset + 2].copy_from_slice(&transmogs.armor[kind].to_le_bytes());
+        }
+        unsafe { apply_transmogs(pointer, &transmogs) };
+        // Compare the whole hunter: equipped gear, weapon class, face, skills,
+        // action state, animation pointers and resource handles stay untouched.
+        assert_eq!(player, expected);
+
+        for kind in [0, 2, 3, 4, 5] {
+            expected[4012 + 2 * kind..4014 + 2 * kind].fill(0);
+        }
+        unsafe { apply_transmogs(pointer, &Transmogs::default()) };
+        assert_eq!(player, expected);
+    }
+
+    #[test]
+    fn transmog_validation_rejects_unequipped_helmets_and_unsupported_gender() {
+        let mut player = [0_u8; 4176];
+        let pointer = player.as_mut_ptr() as usize;
+        let mut dat = [0_usize; 25];
+        let mut specs = [[0_u8; 72]; 3];
+        specs[1][4] = 3;
+        specs[2][4] = 1;
+        dat[20] = specs.as_ptr() as usize;
+        let dat = dat.as_ptr() as usize;
+        let mut transmogs = Transmogs::default();
+        transmogs.armor[2] = 2;
+        unsafe {
+            assert!(validate_transmogs(dat, pointer, &transmogs).is_err());
+            put(pointer + 962, 1_u16);
+            assert!(validate_transmogs(dat, pointer, &transmogs).is_ok());
+            put(pointer + 17, 1_u8);
+            assert!(validate_transmogs(dat, pointer, &transmogs).is_err());
+            put(specs.as_mut_ptr() as usize + 2 * 72 + 4, 3_u8);
+            assert!(validate_transmogs(dat, pointer, &transmogs).is_ok());
+            put(specs.as_mut_ptr() as usize + 72 + 4, 1_u8);
+            assert!(validate_transmogs(dat, pointer, &transmogs).is_err());
+            assert!(validate_transmogs(dat, pointer, &Transmogs::default()).is_ok());
+        }
+    }
+
+    #[test]
+    fn appearance_catalog_resolves_face_records_and_native_hair_ranges_per_gender() {
+        let mut dat = [0_usize; 201];
+        let mut counts = [0_u16; 111];
+        let mut models = [0_u16; 14];
+        let faces = [[0_u16; 3], [1, 0, 0], [2, 0, 0], [3, 0, 0], [500, 0, 0]];
+        counts[110] = faces.len() as u16;
+        models[1] = 2;
+        models[8] = 3;
+        models[2] = 151;
+        models[9] = 30;
+        dat[4] = counts.as_ptr() as usize;
+        dat[57] = models.as_ptr() as usize;
+        dat[200] = faces.as_ptr() as usize;
+
+        let options = unsafe { appearance_options(dat.as_ptr() as usize) };
+        assert_eq!(
+            options[0].faces,
+            [Face { id: 1, model_id: 0 }, Face { id: 2, model_id: 1 }]
+        );
+        assert_eq!(
+            options[1].faces,
+            [
+                Face { id: 1, model_id: 0 },
+                Face { id: 2, model_id: 1 },
+                Face { id: 3, model_id: 2 },
+            ]
+        );
+        assert_eq!(options[0].hair.len(), 141);
+        assert_eq!(options[0].hair.first(), Some(&0));
+        assert_eq!(options[0].hair.last(), Some(&150));
+        assert_eq!(options[1].hair.len(), 20);
+        assert_eq!(options[1].hair.last(), Some(&29));
+        for options in options {
+            assert!((17..=26).all(|hair| !options.hair.contains(&hair)));
+        }
+    }
 }

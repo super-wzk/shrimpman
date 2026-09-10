@@ -14,7 +14,7 @@ Base 创建 `OverlayRegistry` 与 UI 输入状态，不提供游戏原生 IME �
 配置服务通过 `mhf.config.v1` 提供能力，自身不依赖任何游戏配置类型。
 
 Font、UI 和 Quest 都由 `mhf.base` 发布，接口名称分别为 `mhf.font.v1`、`mhf.ui.v1`、
-`mhf.quest.v1`、`mhf.quest.control.v1` 和 `mhf.quest.launch.v1`。
+`mhf.quest.v1`、`mhf.quest.control.v2` 和 `mhf.quest.launch.v1`。
 消费者声明对 `mhf.base` 的依赖。`registry()` 供同一宿主二进制内的内置调试面板使用；
 外部 Mod 使用公开 UI 能力，不传递 Rust egui 对象。
 

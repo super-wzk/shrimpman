@@ -5,6 +5,8 @@ _Static_assert(sizeof(QuestSnapshot) == 2 * sizeof(size_t), "QuestSnapshot layou
 _Static_assert(offsetof(QuestSnapshot, hunter_initialized) == 2, "QuestSnapshot hunter flag");
 _Static_assert(offsetof(QuestSnapshot, quest_size) == sizeof(size_t), "QuestSnapshot quest_size");
 _Static_assert(sizeof(QuestMonsterSpawn) == 20, "QuestMonsterSpawn layout");
+_Static_assert(offsetof(QuestMonsterSpawn, variant) == 1, "QuestMonsterSpawn variant");
+_Static_assert(offsetof(QuestMonsterSpawn, area) == 2, "QuestMonsterSpawn area");
 _Static_assert(offsetof(QuestMonsterSpawn, position) == 4, "QuestMonsterSpawn position");
 _Static_assert(offsetof(QuestMonsterSpawn, yaw) == 16, "QuestMonsterSpawn yaw");
 _Static_assert(sizeof(QuestSpawnOffset) == 4, "QuestSpawnOffset layout");

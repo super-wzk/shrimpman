@@ -5,6 +5,7 @@ use egui::{Context, InputState, Key};
 
 pub(crate) struct InputController {
     species: u8,
+    variant: u8,
     pub(super) speed: f32,
     pub(super) shortcuts: [Option<MonsterAction>; 4],
     command_error: Option<String>,
@@ -14,6 +15,7 @@ impl Default for InputController {
     fn default() -> Self {
         Self {
             species: 94,
+            variant: 0,
             speed: 300.0,
             shortcuts: [None; 4],
             command_error: None,
@@ -26,9 +28,21 @@ impl InputController {
         self.species
     }
 
+    pub(super) fn variant(&self) -> u8 {
+        self.variant
+    }
+
     pub(super) fn select_species(&mut self, species: u8) {
         if self.species != species {
             self.species = species;
+            self.variant = 0;
+            self.shortcuts = [None; 4];
+        }
+    }
+
+    pub(super) fn select_variant(&mut self, variant: u8) {
+        if self.variant != variant {
+            self.variant = variant;
             self.shortcuts = [None; 4];
         }
     }
@@ -69,7 +83,7 @@ impl InputController {
             speed: self.speed * if input.modifiers.shift { 3.0 } else { 1.0 },
         };
         let mut commands = Vec::new();
-        if snapshot.monster == Some(self.species) {
+        if snapshot.monster == Some(self.species) && snapshot.monster_variant == self.variant {
             for (slot, key) in [Key::Num1, Key::Num2, Key::Num3, Key::Num4]
                 .into_iter()
                 .enumerate()
