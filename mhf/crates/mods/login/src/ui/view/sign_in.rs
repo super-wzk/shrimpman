@@ -42,8 +42,14 @@ fn form(state: &mut SignIn, password_visible: &mut bool, ui: &mut egui::Ui) -> O
             let content = ui.vertical_centered(|ui| {
                 let width = (ui.available_width() - 40.0).clamp(120.0, 360.0);
                 ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-                    ui.label(RichText::new("Sign in").size(22.0).strong());
-                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("登录").size(22.0).strong());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if let Some(action) = settings::menu(ui, !state.submitting) {
+                                message = Some(action);
+                            }
+                        });
+                    });
                     let username_id = Id::new("sign_in_username");
                     let password_id = Id::new("sign_in_password");
                     let username = ui.add_enabled(
@@ -74,7 +80,7 @@ fn form(state: &mut SignIn, password_visible: &mut bool, ui: &mut egui::Ui) -> O
                         !state.submitting,
                         Checkbox::new(&mut state.form.remember_password, "记住密码"),
                     );
-                    ui.add_space(8.0);
+                    ui.add_space(4.0);
                     let submit_from_field = ui.memory(|memory| {
                         memory.has_focus(username_id) || memory.has_focus(password_id)
                     }) && ui
@@ -82,13 +88,13 @@ fn form(state: &mut SignIn, password_visible: &mut bool, ui: &mut egui::Ui) -> O
                     let mut submit = Button::new(if state.submitting {
                         "正在登录…"
                     } else {
-                        "Sign in"
+                        "登录"
                     })
                     .id(Id::new("sign_in_submit"))
                     .kind(ButtonKind::Primary)
                     .min_size(vec2(width, 44.0));
                     if !state.submitting {
-                        submit = submit.icon(Icon::ArrowRight);
+                        submit = submit.icon(Icon::LogIn);
                     }
                     let can_submit = state.can_submit();
                     if ui.add_enabled(can_submit, submit).clicked()

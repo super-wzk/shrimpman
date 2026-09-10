@@ -1,5 +1,5 @@
 use crate::config::SignEncoding;
-use crate::{config, credentials::CredentialStore, model::SignInSuccess, sign, ui};
+use crate::{model::SignInSuccess, settings, ui};
 use mhf_config::Config;
 use mhf_mod_api::game::{GlobalData32, LaunchParams32};
 
@@ -8,17 +8,11 @@ pub(crate) fn run(
     params: &mut LaunchParams32,
     global_data: &mut GlobalData32,
 ) -> Result<bool, String> {
-    let section = configuration
-        .read("sign")
-        .map_err(|error| error.to_string())?;
-    let settings = config::load(&section)?;
-    let client = sign::Client::new(&settings.endpoint, settings.encoding)
-        .map_err(|error| error.to_string())?;
-    let credentials = CredentialStore::new(&client.credential_target());
-    let Some(request) = ui::run(client, credentials, settings.encoding)? else {
+    let Some((request, encoding)) = ui::run(configuration)? else {
         return Ok(false);
     };
-    apply_sign_in(params, &request, settings.encoding)?;
+    settings::apply_game_settings(configuration, params)?;
+    apply_sign_in(params, &request, encoding)?;
     apply_global_sign_in(global_data, &request.sign_in)?;
     Ok(true)
 }

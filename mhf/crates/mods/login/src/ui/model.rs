@@ -176,6 +176,9 @@ impl Characters {
 }
 
 pub(super) enum Message {
+    OpenSettings(crate::settings::SettingsCategory),
+    SaveSettings,
+    CancelSettings,
     SignIn,
     SignedIn {
         result: Result<SignInSuccess, sign::Error>,
@@ -211,6 +214,14 @@ pub(super) enum Effect {
 }
 
 impl Model {
+    pub(super) fn can_configure(&self) -> bool {
+        match self {
+            Self::SignIn(state) => !state.submitting,
+            Self::Characters(state) => state.is_idle(),
+            Self::Closing => false,
+        }
+    }
+
     pub(super) fn sign_in(credentials: Option<PasswordCredentials>) -> Self {
         Self::SignIn(SignIn {
             form: credentials.map_or_else(CredentialsForm::default, CredentialsForm::remembered),

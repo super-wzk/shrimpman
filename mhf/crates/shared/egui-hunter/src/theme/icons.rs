@@ -13,9 +13,11 @@ pub enum Icon {
     Check,
     Warning,
     Search,
+    Settings,
     ArrowRight,
     ArrowUpRight,
     Plus,
+    LogIn,
     LogOut,
     Trash,
     Eye,
@@ -177,6 +179,22 @@ impl Icon {
                 p.circle_stroke(point(0.42, 0.4), rect.width() * 0.26, stroke);
                 line(&[(0.62, 0.61), (0.9, 0.89)]);
             }
+            Self::Settings => {
+                let center = rect.center();
+                let teeth = (0..32)
+                    .map(|index| {
+                        let angle = index as f32 * std::f32::consts::TAU / 32.0;
+                        let radius = if matches!(index % 4, 1 | 2) {
+                            0.43
+                        } else {
+                            0.33
+                        };
+                        center + Vec2::angled(angle) * rect.width() * radius
+                    })
+                    .collect();
+                p.add(Shape::closed_line(teeth, stroke));
+                p.circle_stroke(center, rect.width() * 0.13, stroke);
+            }
             Self::ArrowRight => {
                 line(&[(0.15, 0.5), (0.85, 0.5)]);
                 line(&[(0.55, 0.2), (0.85, 0.5), (0.55, 0.8)]);
@@ -188,6 +206,11 @@ impl Icon {
             Self::Plus => {
                 line(&[(0.2, 0.5), (0.8, 0.5)]);
                 line(&[(0.5, 0.2), (0.5, 0.8)]);
+            }
+            Self::LogIn => {
+                line(&[(0.55, 0.15), (0.85, 0.15), (0.85, 0.85), (0.55, 0.85)]);
+                line(&[(0.1, 0.5), (0.65, 0.5)]);
+                line(&[(0.43, 0.28), (0.65, 0.5), (0.43, 0.72)]);
             }
             Self::LogOut => {
                 line(&[(0.45, 0.15), (0.15, 0.15), (0.15, 0.85), (0.45, 0.85)]);

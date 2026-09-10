@@ -10,7 +10,9 @@ pub const PROVIDER_ID: &str = "mhf.base";
 pub const INTERFACE_ID: &str = "mhf.font.v1";
 pub const FAMILY_NAME: &str = "JetBrains Maple Mono NF NL HT";
 
-/// An immutable family name, readable concurrently without allocating.
+/// A family name, readable concurrently without allocating. The startup UI
+/// may select a final family before attach; names borrowed during prepare
+/// remain valid snapshots through the provider's lifetime.
 /// Implementations must return valid UTF-8 borrowed from their own stable
 /// storage and must not unwind through the generated C entry point.
 #[derive_ReprC(dyn)]
@@ -27,7 +29,7 @@ pub type FontTable = VirtualPtr<dyn FontApi + Send + Sync>;
 
 pub enum FontInterface {}
 // SAFETY: The ID identifies the generated FontApi table. Providers keep the
-// immutable object and its borrowed name alive through consumer destruction.
+// object and every borrowed name alive through consumer destruction.
 unsafe impl Interface for FontInterface {
     type Table = FontTable;
     const PROVIDER: &'static str = PROVIDER_ID;

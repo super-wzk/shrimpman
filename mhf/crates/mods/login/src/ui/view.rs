@@ -1,6 +1,7 @@
 use super::model::{CharacterOperation, CharacterSelection, Characters, Message, Model, SignIn};
 use crate::config::SignEncoding;
 use crate::model::SignCharacter;
+use crate::settings::{Settings, SettingsCategory};
 use egui::{Align, Id, Layout, RichText};
 use egui_hunter::{
     Button, ButtonKind, Checkbox, Dialog, DialogState, Icon, NoticeKind, Notifications, Panel,
@@ -11,6 +12,7 @@ use shrimpman_domain::character::{Gender, WeaponType};
 use std::borrow::Cow;
 
 mod characters;
+mod settings;
 mod sign_in;
 
 use characters::{character_name, show_characters};
@@ -50,6 +52,26 @@ impl View {
             text,
             std::time::Duration::from_secs(6),
         );
+    }
+
+    pub(super) fn notify_success(&mut self, context: &egui::Context, message: &str) {
+        self.notifications.push_for(
+            context,
+            NoticeKind::Success,
+            message,
+            std::time::Duration::from_secs(4),
+        );
+    }
+
+    pub(super) fn show_settings(
+        &mut self,
+        settings: &mut Settings,
+        ui: &mut egui::Ui,
+    ) -> Option<Message> {
+        let message = settings::show(settings, ui);
+        self.notifications
+            .show_at(ui.ctx(), egui::Align2::CENTER_TOP, egui::vec2(0.0, 12.0));
+        message
     }
 
     pub(super) fn show(&mut self, model: &mut Model, ui: &mut egui::Ui) -> Option<Message> {

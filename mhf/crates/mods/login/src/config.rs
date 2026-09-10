@@ -8,6 +8,13 @@ pub(crate) fn load(section: &str) -> Result<SignSettings, String> {
         .map_err(|error| format!("failed to resolve [sign] configuration: {error}"))
 }
 
+pub(crate) fn endpoint_override() -> Option<String> {
+    std::env::vars().find_map(|(key, value)| {
+        key.eq_ignore_ascii_case("MHF_SIGN__ENDPOINT")
+            .then_some(value)
+    })
+}
+
 fn sign_environment() -> Environment {
     Environment::with_prefix("MHF")
         .prefix_separator("_")

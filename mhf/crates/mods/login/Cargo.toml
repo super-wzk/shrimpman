@@ -14,6 +14,7 @@ egui = { workspace = true }
 egui-hunter = { path = "../../shared/egui-hunter" }
 futures-util = { version = "0.3", features = ["sink"] }
 jiff = { version = "0.2", features = ["serde"] }
+mhf-base = { path = "../base" }
 mhf-config = { path = "../config" }
 mhf-font = { path = "../font", features = ["provider"] }
 mhf-mod-api = { path = "../../runtime/mod-api" }
@@ -31,3 +32,6 @@ windows = { workspace = true, features = [
     "Win32_Security_Credentials",
     "Win32_System_LibraryLoader",
 ] }
+
+[dev-dependencies]
+mhf-config = { path = "../config", features = ["provider"] }

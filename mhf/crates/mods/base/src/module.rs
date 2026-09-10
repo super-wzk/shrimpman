@@ -55,6 +55,13 @@ impl Module for BaseMod {
     }
 
     fn attach(&mut self, context: &Context) -> Result<()> {
+        let table = context.interface(mhf_config::PROVIDER_ID, mhf_config::INTERFACE_ID)?;
+        // Startup settings are saved after prepare; use the same live provider.
+        let config = unsafe { mhf_config::bind(table.cast::<mhf_config::ConfigTable>()) };
+        let font: crate::MhfFontConfig =
+            toml::from_str(&config.read("font").map_err(|error| error.to_string())?)
+                .map_err(|error| format!("invalid Base [font]: {error}"))?;
+        self.font.set_family(font.name)?;
         self.font
             .attach(context)
             .map_err(|error| format!("font: {error}"))?;

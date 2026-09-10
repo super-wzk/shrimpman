@@ -23,6 +23,28 @@ impl FontMod {
             renderer,
         })
     }
+
+    /// Finalize a changed family after the startup UI, before installing hooks.
+    pub fn set_family(&mut self, family: String) -> Result<()> {
+        if self.name.as_bytes() == family.as_bytes() {
+            return Ok(());
+        }
+        if self.hook.is_some() {
+            return Err("cannot change the font family after attaching".into());
+        }
+        let name = CString::new(family.clone()).map_err(|error| error.to_string())?;
+        let registration = if self.registration.is_none() {
+            native::register_for(&family)?
+        } else {
+            None
+        };
+        self.service.set_family(family)?;
+        self.name = name;
+        if registration.is_some() {
+            self.registration = registration;
+        }
+        Ok(())
+    }
 }
 
 impl Module for FontMod {

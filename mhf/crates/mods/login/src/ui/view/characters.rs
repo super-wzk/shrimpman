@@ -24,12 +24,15 @@ pub(super) fn show_characters(
         < action_width("删除角色")
             + action_width("启动游戏").max(120.0)
             + ui.spacing().item_spacing.x;
-    ui.horizontal_top(|ui| {
-        let title_width = if compact_actions {
-            (ui.available_width() - 36.0 - ui.spacing().item_spacing.x).max(0.0)
+    let header_actions_width = action_width("设置").max(52.0)
+        + if compact_actions {
+            36.0
         } else {
-            (ui.available_width() - 140.0).max(120.0)
-        };
+            action_width("退出登录")
+        }
+        + ui.spacing().item_spacing.x * 2.0;
+    ui.horizontal_top(|ui| {
+        let title_width = (ui.available_width() - header_actions_width).max(0.0);
         ui.allocate_ui_with_layout(
             egui::vec2(title_width, 40.0),
             Layout::top_down(Align::Min),
@@ -62,6 +65,9 @@ pub(super) fn show_characters(
             });
             if response.clicked() {
                 message = Some(Message::SignOut);
+            }
+            if let Some(action) = settings::menu(ui, state.is_idle()) {
+                message = Some(action);
             }
         });
     });
@@ -137,7 +143,7 @@ pub(super) fn show_characters(
             });
         });
 
-    if state.is_idle() && message.is_none() {
+    if state.is_idle() && message.is_none() && !egui::Popup::is_any_open(ui.ctx()) {
         let focused_control = ui.memory(|memory| memory.focused().is_some());
         let (up, down, enter, delete) = ui.input(|input| {
             (

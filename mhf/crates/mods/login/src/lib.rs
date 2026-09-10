@@ -6,6 +6,7 @@ compile_error!("mhf-login only supports i686 Windows");
 mod config;
 mod credentials;
 mod model;
+mod settings;
 mod sign;
 mod startup;
 mod ui;

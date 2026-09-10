@@ -31,6 +31,7 @@ quest = "quests/test.bin"
 Debug 的普通启动接口自动覆盖 Login 的 fallback。任务相对路径以 Debug 的资源目录
 （内置时为启动器可执行文件目录）为基准，绝对路径直接使用。
 Debug 调用 Base 的 `mhf.quest.launch.v1` 准备本地会话，随后 Base 在 attach 安装任务 Hook。
+登录和角色界面的“设置”菜单可保存字体、屏幕与登录服务器地址，保存到本次使用的配置文件。
 登录服务、编码和记住密码的行为见 [Login](../../mods/login/README.md)，
 任务与游戏内操作见 [Debug](../../mods/debug/README.md)。
 

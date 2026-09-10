@@ -1744,6 +1744,7 @@ dependencies = [
  "encoding_rs",
  "futures-util",
  "jiff",
+ "mhf-base",
  "mhf-config",
  "mhf-font",
  "mhf-mod-api",
