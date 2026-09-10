@@ -1,4 +1,5 @@
 use super::*;
+use crate::Source;
 
 const CATALOG: BuiltinCatalog = BuiltinCatalog {
     login: true,
@@ -37,7 +38,7 @@ fn add_external(candidates: &mut Vec<Candidate>, id: &str) {
 }
 
 #[test]
-fn base_is_required_and_login_is_an_application_default() {
+fn default_login_pulls_base_through_its_declared_dependencies() {
     let resolved = plan(CATALOG, "").unwrap();
     assert_eq!(
         resolved
@@ -49,8 +50,13 @@ fn base_is_required_and_login_is_an_application_default() {
     );
     assert!(plan(CATALOG, "['mhf.base']\nenabled = false").is_err());
     let resolved = plan(CATALOG, "['mhf.login']\nenabled = false").unwrap();
-    assert_eq!(resolved.mods.len(), 2);
-    assert!(selected(&resolved, "mhf.base"));
+    assert!(resolved.mods.is_empty());
+    let resolved = plan(
+        CATALOG,
+        "['mhf.login']\nenabled = false\n['mhf.base']\nenabled = false",
+    )
+    .unwrap();
+    assert!(resolved.mods.is_empty());
 }
 
 #[test]
@@ -61,10 +67,19 @@ fn explicit_debug_keeps_default_login_and_adds_its_dependencies() {
     }
     assert!(position(&resolved, "mhf.base") < position(&resolved, "mhf.debug"));
     // Choosing the startup callback is a host concern; resolution keeps both.
+    let resolved = plan(
+        CATALOG,
+        "['mhf.debug']\nenabled = true\n['mhf.login']\nenabled = false",
+    )
+    .unwrap();
+    assert!(selected(&resolved, "mhf.base"));
+    assert!(selected(&resolved, "mhf.config"));
+    assert!(selected(&resolved, "mhf.debug"));
+    assert!(!selected(&resolved, "mhf.login"));
     assert!(
         plan(
             CATALOG,
-            "['mhf.debug']\nenabled = true\n['mhf.base']\nenabled = false",
+            "['mhf.debug']\nenabled = true\n['mhf.login']\nenabled = false\n['mhf.base']\nenabled = false",
         )
         .is_err()
     );
@@ -79,7 +94,14 @@ fn the_catalog_only_exposes_compiled_packages() {
     let candidates = minimal.candidates().unwrap();
     assert_eq!(candidates.len(), 2);
     assert_eq!(candidates[0].manifest.id, "mhf.config");
-    assert_eq!(plan(minimal, "").unwrap().mods.len(), 2);
+    assert!(plan(minimal, "").unwrap().mods.is_empty());
+    assert_eq!(
+        plan(minimal, "['mhf.base']\nenabled = true")
+            .unwrap()
+            .mods
+            .len(),
+        2
+    );
     for id in ["mhf.login", "mhf.debug", "mhf.quest"] {
         assert!(plan(minimal, &format!("['{id}']\nenabled = true")).is_err());
     }
@@ -99,34 +121,16 @@ fn the_catalog_only_exposes_compiled_packages() {
 
 #[test]
 fn external_base_can_replace_builtin_support() {
-    let config = RuntimeConfig::default();
     let mut candidates = CATALOG.candidates().unwrap();
     add_external(&mut candidates, "mhf.base");
-    let resolved = CATALOG.resolve(&config, &candidates).unwrap();
-    assert!(matches!(
-        resolved.mods[position(&resolved, "mhf.base")].source,
-        Source::Directory(_)
-    ));
-    assert!(selected(&resolved, "mhf.login"));
-}
-
-#[test]
-fn builtin_debug_requires_the_builtin_egui_registry() {
-    let config: RuntimeConfig = toml::from_str("['mhf.debug']\nenabled = true").unwrap();
-    let mut candidates = CATALOG.candidates().unwrap();
-    add_external(&mut candidates, "mhf.base");
-    assert!(CATALOG.resolve(&config, &candidates).is_err());
-
-    add_external(&mut candidates, "mhf.debug");
-    let resolved = CATALOG.resolve(&config, &candidates).unwrap();
-    for id in ["mhf.base", "mhf.debug"] {
-        assert!(
-            matches!(
-                resolved.mods[position(&resolved, id)].source,
-                Source::Directory(_)
-            ),
-            "{id}"
-        );
+    for text in ["", "['mhf.debug']\nenabled = true"] {
+        let config: RuntimeConfig = toml::from_str(text).unwrap();
+        let resolved = CATALOG.resolve(&config, &candidates).unwrap();
+        assert!(matches!(
+            resolved.mods[position(&resolved, "mhf.base")].source,
+            Source::Directory(_)
+        ));
+        assert!(selected(&resolved, "mhf.login"));
     }
 }
 
@@ -149,16 +153,11 @@ fn configuration_provider_has_no_consumer_dependencies() {
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        ["mhf.config"]
+        ["mhf.base", "mhf.config"]
     );
-    for id in ["mhf.base", "mhf.login"] {
-        let consumer = candidates
-            .iter()
-            .find(|candidate| candidate.manifest.id == id)
-            .unwrap();
-        assert!(
-            consumer.manifest.dependencies.contains_key("mhf.config"),
-            "{id}"
-        );
-    }
+    let base = candidates
+        .iter()
+        .find(|candidate| candidate.manifest.id == "mhf.base")
+        .unwrap();
+    assert!(base.manifest.dependencies.contains_key("mhf.config"));
 }

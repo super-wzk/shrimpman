@@ -11,13 +11,13 @@ Quest 是 Base 的内部组件，普通 Login 不激活本地任务 Hook。准�
 没有普通提供方时使用 fallback。有效层必须恰好有一个提供方，否则在启动回调前报错。取消登录正常结束启动。
 
 独立管理器 [`mhf-mods`](../mod-manager/README.md) 默认打开图形界面，编辑同一份配置的 Mod 开关和版本要求。
-它检查明确启用项及其声明依赖；启动器应用默认项、必需项和内置兼容性规则。
+它按启动组合诊断依赖，保存和导出时解析明确启用项及其声明依赖；启动器按默认项与声明依赖解析选择。
 `--list-mods` 显示启动器的解析选择，`--export-modpack` 导出该组合，两者均不运行启动回调或游戏。
 
 ## 启动选择与配置
 
-默认构建包含 `login`、`debug`，自动选择 Login。调试使用同一个 `mhf-launcher`，
-只需在 `mhf.toml` 中调整 Mod 选择：
+默认构建包含 `login`、`debug`，自动选择 Login，Base 由 Login、Debug 等 Mod 的声明依赖按需带入。
+调试使用同一个 `mhf-launcher`，只需在 `mhf.toml` 中调整 Mod 选择：
 
 ```toml
 [mods."mhf.debug"]

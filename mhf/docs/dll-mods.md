@@ -262,9 +262,9 @@ mhf-mods disable example.counter-consumer
 
 ZIP 内使用 `mods/<id>/<version>/*`，整合包的 `pack.toml` 记录已解析的精确版本。单包使用同样目录结构，可省略 `pack.toml`。导入验证路径和清单后发布到 Mod 根目录，不覆盖已有版本，不自动修改启用设置。导出记录不是第二份运行配置。
 
-界面可设置自动／启用／关闭及版本要求，预览依赖后保存或撤销，并在后台导入、导出 ZIP。
+界面可设置自动／启用／禁用及指定版本，预览依赖后保存或撤销，并在后台导入、导出 ZIP。
 GUI 导出已保存配置中明确启用的项及其完整依赖，与不指定 ID 的 CLI 导出一致；需要的内置依赖记录精确版本。
-两者均拒绝覆盖已有 ZIP。自动默认项和启动必需项由启动器决定；导出包含这些项的实际会话选择使用：
+两者均拒绝覆盖已有 ZIP。启动器应用默认启用项，并按声明补齐依赖；导出包含默认项的实际会话选择使用：
 
 ```sh
 mhf-launcher --config mhf.toml --game-dir GAME --export-modpack selected.zip

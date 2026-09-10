@@ -25,7 +25,7 @@ pub(crate) enum Command {
         #[arg(long)]
         version: Option<VersionReq>,
     },
-    /// 关闭 Mod，保留参数和版本要求
+    /// 禁用 Mod，保留参数和版本要求
     Disable {
         id: String,
         #[arg(long)]
@@ -67,7 +67,7 @@ pub(crate) fn run(manager: Manager, command: Command) -> Result<()> {
         Command::List => {
             let snapshot = manager.load()?;
             println!("Mod 目录：{}", snapshot.mods_dir.display());
-            println!("ID\t已安装版本\t类型\t配置开关\t版本要求\t来源");
+            println!("ID\t已安装版本\t类型\t配置开关\t指定版本\t来源");
             let installed: BTreeSet<_> = snapshot
                 .candidates
                 .iter()
@@ -127,7 +127,7 @@ pub(crate) fn run(manager: Manager, command: Command) -> Result<()> {
         }
         Command::Disable { id, version } => {
             manager.set_enabled(&id, false, version.as_ref())?;
-            println!("已关闭 {id}，下次启动生效。");
+            println!("已禁用 {id}，下次启动生效。");
         }
     }
     Ok(())
@@ -160,7 +160,7 @@ fn export_selections(
 fn enabled_text(enabled: Option<bool>) -> &'static str {
     match enabled {
         Some(true) => "启用",
-        Some(false) => "关闭",
+        Some(false) => "禁用",
         None => "未设置",
     }
 }

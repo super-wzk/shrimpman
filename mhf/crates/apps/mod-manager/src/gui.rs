@@ -2,11 +2,14 @@
 mod tests;
 mod view;
 
-use crate::manager::{Manager, Snapshot};
+use crate::manager::{CATALOG, Manager, Snapshot};
 use egui_hunter::{DialogState, NoticeKind, notice};
-use mhf_mod_package::{Resolved, Selection, VersionReq};
+use mhf_mod_package::{
+    DependencyIssue, DependencyIssueKind, ModDiagnostic, Resolved, Selection, VersionReq,
+    diagnose_resolution,
+};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::mpsc::{self, Receiver, TryRecvError},
 };
@@ -66,6 +69,7 @@ struct App {
     snapshot: Option<Snapshot>,
     draft: BTreeMap<String, Draft>,
     preview: Result<Resolved, String>,
+    diagnostics: BTreeMap<String, ModDiagnostic>,
     selected: Option<String>,
     filter: String,
     pending: Option<Pending>,
@@ -86,6 +90,7 @@ impl App {
             snapshot: None,
             draft: BTreeMap::new(),
             preview: Err("正在读取配置与已安装 Mod…".into()),
+            diagnostics: BTreeMap::new(),
             selected: None,
             filter: String::new(),
             pending: None,
@@ -169,11 +174,48 @@ impl App {
     }
 
     fn update_preview(&mut self) {
-        if let Some(snapshot) = &self.snapshot {
-            self.preview = self
-                .selections()
-                .and_then(|selections| self.manager.preview(snapshot, &selections));
-        }
+        self.diagnostics.clear();
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let edits = match self.selections() {
+            Ok(edits) => edits,
+            Err(error) => {
+                self.preview = Err(error);
+                for (id, draft) in &self.draft {
+                    if let Err(message) = parse_version(&draft.version) {
+                        self.diagnostics.insert(
+                            id.clone(),
+                            ModDiagnostic {
+                                candidate: None,
+                                issues: vec![DependencyIssue {
+                                    dependency: None,
+                                    requirement: None,
+                                    kind: DependencyIssueKind::InvalidVersion,
+                                    message,
+                                }],
+                            },
+                        );
+                    }
+                }
+                return;
+            }
+        };
+        self.preview = self.manager.preview(snapshot, &edits);
+        let mut selections = snapshot.config.selections();
+        selections.extend(edits);
+        // Diagnose the launch selection. Save/export still use explicit roots.
+        self.diagnostics = diagnose_resolution(
+            &snapshot.candidates,
+            &selections,
+            &CATALOG.defaults(),
+            &BTreeSet::new(),
+        );
+        self.diagnostics.retain(|id, _| {
+            self.draft
+                .get(id)
+                .is_none_or(|draft| draft.enabled != Some(false))
+        });
     }
 
     fn start(

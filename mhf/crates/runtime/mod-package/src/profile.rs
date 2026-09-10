@@ -1,6 +1,4 @@
-use crate::{
-    Candidate, Error, Kind, Manifest, Resolved, Result, RuntimeConfig, Source, Version, VersionReq,
-};
+use crate::{Candidate, Kind, Manifest, Resolved, Result, RuntimeConfig, Version, VersionReq};
 use std::collections::BTreeSet;
 
 /// Available built-in packages for a particular application build.
@@ -17,7 +15,7 @@ impl BuiltinCatalog {
             ("mhf.base", "基础支持", vec!["mhf.config"]),
         ];
         if self.login {
-            descriptions.push(("mhf.login", "登录启动", vec!["mhf.config"]));
+            descriptions.push(("mhf.login", "登录启动", vec!["mhf.base", "mhf.config"]));
         }
         if self.debug {
             descriptions.push(("mhf.debug", "调试启动", vec!["mhf.base"]));
@@ -46,26 +44,23 @@ impl BuiltinCatalog {
             .collect()
     }
 
-    /// Application defaults only; a startup provider is selected by Mod configuration.
-    pub fn resolve(&self, config: &RuntimeConfig, candidates: &[Candidate]) -> Result<Resolved> {
+    /// Application-default roots; explicitly disabled Mods are excluded during resolution.
+    pub fn defaults(&self) -> BTreeSet<String> {
         let mut defaults = BTreeSet::new();
         if self.login {
             defaults.insert("mhf.login".into());
         }
-        let required = BTreeSet::from(["mhf.base".into()]);
-        let resolved = crate::resolve(candidates, &config.selections(), &defaults, &required)?;
-        let builtin = |id: &str| {
-            resolved
-                .mods
-                .iter()
-                .any(|candidate| candidate.manifest.id == id && candidate.source == Source::Builtin)
-        };
-        if builtin("mhf.debug") && !builtin("mhf.base") {
-            return Err(Error::new(
-                "当前内置调试界面使用 Base 的 egui 实现，需要内置 mhf.base",
-            ));
-        }
-        Ok(resolved)
+        defaults
+    }
+
+    /// Application defaults only; a startup provider is selected by Mod configuration.
+    pub fn resolve(&self, config: &RuntimeConfig, candidates: &[Candidate]) -> Result<Resolved> {
+        crate::resolve(
+            candidates,
+            &config.selections(),
+            &self.defaults(),
+            &BTreeSet::new(),
+        )
     }
 }
 

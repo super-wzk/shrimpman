@@ -9,7 +9,7 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 type Result<T> = std::result::Result<T, String>;
 
-const CATALOG: BuiltinCatalog = BuiltinCatalog {
+pub(crate) const CATALOG: BuiltinCatalog = BuiltinCatalog {
     login: cfg!(feature = "login"),
     debug: cfg!(feature = "debug"),
 };

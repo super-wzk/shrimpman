@@ -1785,6 +1785,7 @@ version = "0.1.0"
 dependencies = [
  "semver",
  "serde",
+ "thiserror 2.0.20",
  "toml",
  "zip",
 ]

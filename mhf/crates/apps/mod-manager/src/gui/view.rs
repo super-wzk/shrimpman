@@ -103,6 +103,23 @@ impl App {
                     ui.spinner();
                     ui.add(egui::Label::new(RichText::new("处理中…").small()).truncate())
                         .on_hover_text(pending.label);
+                } else if self.snapshot.is_some()
+                    && let Err(error) = &self.preview
+                {
+                    let summary = if ui.available_width() < 160.0 {
+                        "检查未通过"
+                    } else {
+                        "检查未通过，无法保存"
+                    };
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(summary)
+                                .small()
+                                .color(ui.visuals().error_fg_color),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(error);
                 } else if self.dirty() {
                     let count = self
                         .draft
@@ -137,6 +154,15 @@ impl App {
                     .kind(ButtonKind::Primary)
                     .min_size(egui::vec2(112.0, 44.0)),
             )
+            .on_disabled_hover_text(if self.pending.is_some() {
+                "请等待当前操作完成。"
+            } else if self.snapshot.is_none() {
+                "请先读取配置与已安装 Mod。"
+            } else if let Err(error) = &self.preview {
+                error
+            } else {
+                "没有未保存的修改。"
+            })
             .clicked()
         {
             self.save(ui.ctx());
@@ -266,15 +292,7 @@ impl App {
                         Some(Source::Directory(_)) => "外部",
                         None => "未安装",
                     };
-                    let row = mod_row(
-                        ui,
-                        id,
-                        name,
-                        source,
-                        draft,
-                        self.changed(id, draft),
-                        self.selected.as_ref() == Some(id),
-                    );
+                    let row = self.mod_row(ui, id, name, source, draft);
                     if row.clicked() {
                         clicked = Some(id.clone());
                     }
@@ -290,19 +308,16 @@ impl App {
     }
 
     fn details(&mut self, ui: &mut egui::Ui) {
-        if self.snapshot.is_none() {
+        let Some(snapshot) = &self.snapshot else {
             ui.label(if self.pending.is_some() {
                 "正在读取配置与已安装 Mod…"
             } else {
                 "检查配置路径与 Mod 目录，然后刷新。"
             });
             return;
-        }
+        };
         let Some(id) = self.selected.clone() else {
             ui.label("选择一个 Mod 查看设置与依赖。");
-            return;
-        };
-        let Some(snapshot) = &self.snapshot else {
             return;
         };
         let mut candidates: Vec<_> = snapshot
@@ -349,7 +364,7 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 ui.label("启用设置");
                 ui.spacing_mut().item_spacing.x = 4.0;
-                for (value, label) in [(None, "自动"), (Some(true), "启用"), (Some(false), "关闭")]
+                for (value, label) in [(None, "自动"), (Some(true), "启用"), (Some(false), "禁用")]
                 {
                     if ui
                         .add(
@@ -364,12 +379,19 @@ impl App {
                     }
                 }
             });
-            ui.add(egui::Label::new(RichText::new("自动：由启动器决定。").small().weak()).wrap());
+            ui.add(
+                egui::Label::new(
+                    RichText::new("自动：被依赖或默认启动规则需要时启用。")
+                        .small()
+                        .weak(),
+                )
+                .wrap(),
+            );
             ui.add_space(8.0);
             let error = parse_version(&draft.version).err();
             let fields = [
                 Field::new(Id::new(("version", &id)))
-                    .label("版本要求")
+                    .label("指定版本")
                     .validation(error.as_deref().map(Validation::Error).unwrap_or_default()),
                 Field::new(Id::new(("installed_versions", &id))).label("已安装版本"),
             ];
@@ -391,43 +413,52 @@ impl App {
             self.update_preview();
         }
         ui.add_space(12.0);
-        match &self.preview {
-            Ok(_) => {
-                ui.horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::hover());
-                    egui_hunter::Icon::Check.paint(ui.painter(), rect, Tokens::get(ui).success);
-                    ui.label(RichText::new("依赖检查通过").color(Tokens::get(ui).success));
-                });
-            }
-            Err(error) => {
-                notice(ui, NoticeKind::Danger, &format!("依赖检查未通过\n{error}"));
-                ui.add(
-                    egui::Label::new(
-                        RichText::new("调整启用设置或版本要求后，可重新保存或导出。")
-                            .small()
-                            .weak(),
-                    )
-                    .wrap(),
-                );
-            }
+        let diagnostic = self.diagnostics.get(&id);
+        let own_issues = diagnostic
+            .into_iter()
+            .flat_map(|diagnostic| &diagnostic.issues)
+            .filter(|issue| {
+                issue.dependency.is_none() && issue.kind != DependencyIssueKind::InvalidVersion
+            })
+            .map(|issue| issue.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !own_issues.is_empty() {
+            notice(ui, NoticeKind::Danger, &own_issues);
         }
-        let resolved = self.preview.as_ref().ok().and_then(|resolved| {
-            resolved
-                .mods
+        let candidate = diagnostic
+            .and_then(|diagnostic| diagnostic.candidate.as_ref())
+            .or_else(|| {
+                self.draft
+                    .get(&id)
+                    .and_then(|draft| parse_version(&draft.version).ok())
+                    .and_then(|requirement| {
+                        candidates.iter().find(|candidate| {
+                            requirement.as_ref().is_none_or(|requirement| {
+                                requirement.matches(&candidate.manifest.version)
+                            })
+                        })
+                    })
+            });
+        if let Some(candidate) = candidate {
+            dependency_details(ui, candidate, diagnostic);
+        } else if diagnostic.is_none_or(|diagnostic| {
+            diagnostic
+                .issues
                 .iter()
-                .find(|candidate| candidate.manifest.id == id)
-        });
-        if let Some(candidate) = resolved.or_else(|| candidates.first()) {
-            dependency_details(ui, candidate);
-        }
-        if candidates.is_empty() {
-            notice(
-                ui,
-                NoticeKind::Warning,
-                "没有发现这个 ID 的可用包。可导入缺少的包，或调整启用设置。",
+                .all(|issue| issue.dependency.is_some())
+        }) {
+            ui.label(
+                RichText::new(if candidates.is_empty() {
+                    "未安装"
+                } else {
+                    "没有满足版本要求的已安装包。"
+                })
+                .small()
+                .weak(),
             );
-        } else {
+        }
+        if !candidates.is_empty() {
             ui.add_space(8.0);
             ui.separator();
             egui::CollapsingHeader::new("包详情")
@@ -549,6 +580,13 @@ impl App {
                             self.preview.is_ok(),
                             Button::new("保存并退出").kind(ButtonKind::Primary),
                         )
+                        .on_disabled_hover_text(
+                            self.preview
+                                .as_ref()
+                                .err()
+                                .map(String::as_str)
+                                .unwrap_or_default(),
+                        )
                         .clicked()
                     {
                         save_and_close = true;
@@ -614,97 +652,140 @@ fn installed_versions(
     response
 }
 
-fn mod_row(
-    ui: &mut egui::Ui,
-    id: &str,
-    name: &str,
-    source: &str,
-    draft: &Draft,
-    changed: bool,
-    selected: bool,
-) -> egui::Response {
-    let status = match draft.enabled {
-        None => "自动",
-        Some(true) => "启用",
-        Some(false) => "关闭",
-    };
-    let state = if changed {
-        format!("{status} · 已修改")
-    } else {
-        status.to_owned()
-    };
-    let response = ui.add(
-        Button::new("")
-            .id(Id::new(("mod_row", id)))
-            .kind(ButtonKind::Quiet)
-            .selected(selected)
-            .min_size(egui::vec2(0.0, 64.0))
-            .full_width(),
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
-            ui.is_enabled(),
-            selected,
-            format!("{name}，{id}，{source}，{state}"),
-        )
-    });
-    if ui.is_rect_visible(response.rect) {
-        let rect = response.rect.shrink2(egui::vec2(10.0, 10.0));
-        let foreground = if selected {
-            ui.visuals().selection.stroke.color
-        } else {
-            ui.visuals().text_color()
+impl App {
+    fn mod_row(
+        &self,
+        ui: &mut egui::Ui,
+        id: &str,
+        name: &str,
+        source: &str,
+        draft: &Draft,
+    ) -> egui::Response {
+        let changed = self.changed(id, draft);
+        let selected = self.selected.as_deref() == Some(id);
+        let issues = self
+            .diagnostics
+            .get(id)
+            .map(|diagnostic| diagnostic.issues.as_slice())
+            .unwrap_or_default();
+        let problem = issues
+            .iter()
+            .map(|issue| issue.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let has_problem = !issues.is_empty();
+        let status = match draft.enabled {
+            None => "自动",
+            Some(true) => "启用",
+            Some(false) => "禁用",
         };
-        let secondary = ui.visuals().weak_text_color();
-        let painter = ui.painter_at(rect);
-        let state_font = egui::TextStyle::Small.resolve(ui.style());
-        let state_color = if changed {
-            Tokens::get(ui).primary
-        } else if draft.enabled == Some(true) {
-            Tokens::get(ui).success
+        let state = if changed {
+            format!("{status} · 已修改")
         } else {
-            secondary
+            status.to_owned()
         };
-        let state_galley =
-            ui.fonts_mut(|fonts| fonts.layout_no_wrap(state, state_font, state_color));
-        let marker_width = ui.spacing().icon_width + 8.0;
-        let state_right = rect.right() - marker_width;
-        let name_width = (state_right - state_galley.size().x - 8.0 - rect.left()).max(0.0);
-        let metadata = format!("{id} · {source}");
-        for (text, y, style, color, width) in [
-            (
-                name,
-                rect.top(),
-                egui::TextStyle::Body,
-                foreground,
-                name_width,
-            ),
-            (
-                metadata.as_str(),
-                rect.top() + 24.0,
-                egui::TextStyle::Small,
-                secondary,
-                (rect.width() - marker_width).max(0.0),
-            ),
-        ] {
-            let mut job = egui::text::LayoutJob::simple_singleline(
-                text.to_owned(),
-                style.resolve(ui.style()),
-                color,
-            );
-            job.wrap.max_width = width;
-            job.wrap.max_rows = 1;
-            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-            painter.galley(egui::pos2(rect.left(), y), galley, color);
-        }
-        painter.galley(
-            egui::pos2(state_right - state_galley.size().x, rect.top() + 1.0),
-            state_galley,
-            state_color,
+        let response = ui.add(
+            Button::new("")
+                .id(Id::new(("mod_row", id)))
+                .kind(ButtonKind::Quiet)
+                .selected(selected)
+                .min_size(egui::vec2(0.0, 64.0))
+                .full_width(),
         );
+        let description = if has_problem {
+            format!("{name}，{id}，{source}，{state}，{problem}")
+        } else {
+            format!("{name}，{id}，{source}，{state}")
+        };
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                selected,
+                &description,
+            )
+        });
+        if ui.is_rect_visible(response.rect) {
+            let rect = response.rect.shrink2(egui::vec2(10.0, 10.0));
+            let foreground = if has_problem {
+                ui.visuals().error_fg_color
+            } else if selected {
+                ui.visuals().selection.stroke.color
+            } else {
+                ui.visuals().text_color()
+            };
+            let secondary = ui.visuals().weak_text_color();
+            let painter = ui.painter_at(rect);
+            let state_font = egui::TextStyle::Small.resolve(ui.style());
+            let state_color = if has_problem {
+                ui.visuals().error_fg_color
+            } else if changed {
+                Tokens::get(ui).primary
+            } else if draft.enabled == Some(true) {
+                Tokens::get(ui).success
+            } else {
+                secondary
+            };
+            let state_galley =
+                ui.fonts_mut(|fonts| fonts.layout_no_wrap(state.clone(), state_font, state_color));
+            let marker_width = ui.spacing().icon_width + 8.0;
+            let state_right = rect.right() - marker_width;
+            let name_width = (state_right - state_galley.size().x - 8.0 - rect.left()).max(0.0);
+            let metadata = format!("{id} · {source}");
+            let metadata_offset = if has_problem {
+                let side = ui.spacing().icon_width_inner;
+                egui_hunter::Icon::Warning.paint(
+                    &painter,
+                    egui::Rect::from_min_size(
+                        egui::pos2(rect.left(), rect.top() + 24.0),
+                        egui::Vec2::splat(side),
+                    ),
+                    ui.visuals().error_fg_color,
+                );
+                side + ui.spacing().icon_spacing
+            } else {
+                0.0
+            };
+            for (text, x, y, style, color, width) in [
+                (
+                    name,
+                    rect.left(),
+                    rect.top(),
+                    egui::TextStyle::Body,
+                    foreground,
+                    name_width,
+                ),
+                (
+                    metadata.as_str(),
+                    rect.left() + metadata_offset,
+                    rect.top() + 24.0,
+                    egui::TextStyle::Small,
+                    secondary,
+                    (rect.width() - marker_width - metadata_offset).max(0.0),
+                ),
+            ] {
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    text.to_owned(),
+                    style.resolve(ui.style()),
+                    color,
+                );
+                job.wrap.max_width = width;
+                job.wrap.max_rows = 1;
+                let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+                painter.galley(egui::pos2(x, y), galley, color);
+            }
+            painter.galley(
+                egui::pos2(state_right - state_galley.size().x, rect.top() + 1.0),
+                state_galley,
+                state_color,
+            );
+        }
+        response.on_hover_text(if has_problem {
+            format!("{name}\n{id}\n{source} · {state}\n{problem}")
+        } else {
+            format!("{name}\n{id}\n{source} · {state}")
+        })
     }
-    response.on_hover_text(format!("{name}\n{id}\n{source} · {status}"))
 }
 
 fn candidate_details(ui: &mut egui::Ui, candidate: &Candidate) {
@@ -719,15 +800,45 @@ fn candidate_details(ui: &mut egui::Ui, candidate: &Candidate) {
     if let Some(entry) = &candidate.manifest.entry {
         ui.add(egui::Label::new(format!("入口：{}", entry.display())).wrap());
     }
-    dependency_details(ui, candidate);
+    dependency_details(ui, candidate, None);
 }
 
-fn dependency_details(ui: &mut egui::Ui, candidate: &Candidate) {
+fn dependency_details(
+    ui: &mut egui::Ui,
+    candidate: &Candidate,
+    diagnostic: Option<&ModDiagnostic>,
+) {
+    let issues = diagnostic
+        .map(|diagnostic| diagnostic.issues.as_slice())
+        .unwrap_or_default();
     if candidate.manifest.dependencies.is_empty() {
         ui.label(RichText::new("无依赖").small().weak());
     } else {
         for (id, version) in &candidate.manifest.dependencies {
-            ui.add(egui::Label::new(format!("{id}  {version}")).wrap());
+            let problem = issues
+                .iter()
+                .filter(|issue| issue.dependency.as_deref() == Some(id.as_str()))
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("；");
+            if problem.is_empty() {
+                ui.add(egui::Label::new(format!("{id}  {version}")).wrap());
+            } else {
+                ui.horizontal_top(|ui| {
+                    let color = ui.visuals().error_fg_color;
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::splat(ui.spacing().icon_width_inner),
+                        egui::Sense::hover(),
+                    );
+                    egui_hunter::Icon::Warning.paint(ui.painter(), rect, color);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("{id}  {version} · {problem}")).color(color),
+                        )
+                        .wrap(),
+                    );
+                });
+            }
         }
     }
 }

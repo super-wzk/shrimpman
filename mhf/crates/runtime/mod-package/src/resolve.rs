@@ -1,5 +1,5 @@
-use crate::{Candidate, Error, Result};
-use semver::VersionReq;
+use crate::{Candidate, Error, Result, diagnostics::DependencyIssueKind};
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,10 +18,40 @@ pub struct Resolved {
 }
 
 #[derive(Clone)]
-struct Requirement {
-    from: String,
-    version: VersionReq,
+pub(super) struct Requirement {
+    pub from: Option<(String, Version)>,
+    pub version: VersionReq,
 }
+
+impl Requirement {
+    fn source(&self) -> String {
+        self.from.as_ref().map_or_else(
+            || "当前选择".into(),
+            |(id, version)| format!("{id} {version}"),
+        )
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct ResolutionFailure {
+    pub dependency: String,
+    pub kind: DependencyIssueKind,
+    pub selected: BTreeMap<String, Candidate>,
+    pub message: String,
+}
+
+impl ResolutionFailure {
+    fn package(candidate: &Candidate, message: String) -> Self {
+        Self {
+            dependency: candidate.manifest.id.clone(),
+            kind: DependencyIssueKind::InvalidPackage,
+            selected: BTreeMap::from([(candidate.manifest.id.clone(), candidate.clone())]),
+            message,
+        }
+    }
+}
+
+pub(super) type Available<'a> = BTreeMap<&'a str, Vec<&'a Candidate>>;
 
 /// Choose the newest compatible versions, backtracking across transitive
 /// constraints. Explicit disabling also applies to required dependencies.
@@ -31,9 +61,24 @@ pub fn resolve(
     defaults: &BTreeSet<String>,
     required: &BTreeSet<String>,
 ) -> Result<Resolved> {
-    let mut available: BTreeMap<&str, Vec<&Candidate>> = BTreeMap::new();
+    let available = available(candidates).map_err(|failure| Error::new(failure.message))?;
+    solve_roots(
+        &available,
+        selections,
+        &roots(selections, defaults, required),
+    )
+    .map_err(|failure| Error::new(failure.message))
+}
+
+pub(super) fn available(
+    candidates: &[Candidate],
+) -> std::result::Result<Available<'_>, ResolutionFailure> {
+    let mut available: Available<'_> = BTreeMap::new();
     for candidate in candidates {
-        candidate.manifest.validate()?;
+        candidate
+            .manifest
+            .validate()
+            .map_err(|error| ResolutionFailure::package(candidate, error.to_string()))?;
         available
             .entry(&candidate.manifest.id)
             .or_default()
@@ -43,13 +88,24 @@ pub fn resolve(
         versions.sort_by(|a, b| b.manifest.version.cmp(&a.manifest.version));
         for pair in versions.windows(2) {
             if pair[0].manifest.version == pair[1].manifest.version {
-                return Err(Error::new(format!(
-                    "{} {}：存在多个实现来源",
-                    pair[0].manifest.id, pair[0].manifest.version
-                )));
+                return Err(ResolutionFailure::package(
+                    pair[0],
+                    format!(
+                        "{} {}：存在多个实现来源",
+                        pair[0].manifest.id, pair[0].manifest.version
+                    ),
+                ));
             }
         }
     }
+    Ok(available)
+}
+
+pub(super) fn roots(
+    selections: &BTreeMap<String, Selection>,
+    defaults: &BTreeSet<String>,
+    required: &BTreeSet<String>,
+) -> BTreeSet<String> {
     let mut roots = required.clone();
     roots.extend(
         defaults
@@ -63,55 +119,75 @@ pub fn resolve(
             .filter(|(_, selection)| selection.enabled == Some(true))
             .map(|(id, _)| id.clone()),
     );
+    roots
+}
+
+pub(super) fn solve_roots(
+    available: &Available<'_>,
+    selections: &BTreeMap<String, Selection>,
+    roots: &BTreeSet<String>,
+) -> std::result::Result<Resolved, ResolutionFailure> {
     let constraints = roots
-        .into_iter()
+        .iter()
         .map(|id| {
             let version = selections
-                .get(&id)
+                .get(id)
                 .and_then(|selection| selection.version.clone())
                 .unwrap_or(VersionReq::STAR);
             (
-                id,
+                id.clone(),
                 vec![Requirement {
-                    from: "当前选择".into(),
+                    from: None,
                     version,
                 }],
             )
         })
         .collect();
-    let selected = choose(&available, selections, BTreeMap::new(), constraints)?;
-    let mut ordered = Vec::new();
-    let mut visited = BTreeSet::new();
-    let mut stack = Vec::new();
-    for id in selected.keys() {
-        visit(id, &selected, &mut visited, &mut stack, &mut ordered)?;
-    }
+    solve(available, selections, constraints)
+}
+
+pub(super) fn solve(
+    available: &Available<'_>,
+    selections: &BTreeMap<String, Selection>,
+    constraints: BTreeMap<String, Vec<Requirement>>,
+) -> std::result::Result<Resolved, ResolutionFailure> {
+    let ordered = choose(available, selections, BTreeMap::new(), constraints)?;
     Ok(Resolved {
         mods: ordered.into_iter().cloned().collect(),
     })
 }
 
 fn choose<'a>(
-    available: &BTreeMap<&str, Vec<&'a Candidate>>,
+    available: &Available<'a>,
     selections: &BTreeMap<String, Selection>,
     selected: BTreeMap<String, &'a Candidate>,
     constraints: BTreeMap<String, Vec<Requirement>>,
-) -> Result<BTreeMap<String, &'a Candidate>> {
+) -> std::result::Result<Vec<&'a Candidate>, ResolutionFailure> {
     for (id, requirements) in &constraints {
         if selections.get(id).and_then(|s| s.enabled) == Some(false) {
-            return Err(Error::new(format!(
-                "{id}：已明确禁用，但仍被以下来源依赖：{}",
-                requirements
-                    .iter()
-                    .map(|r| r.from.as_str())
-                    .collect::<Vec<_>>()
-                    .join("、")
-            )));
+            return Err(failure(
+                id,
+                DependencyIssueKind::Disabled,
+                &selected,
+                format!(
+                    "{id}：已禁用，但仍被以下来源依赖：{}",
+                    requirements
+                        .iter()
+                        .map(Requirement::source)
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ),
+            ));
         }
         if let Some(candidate) = selected.get(id)
             && !matches(candidate, requirements, selections.get(id))
         {
-            return Err(conflict(id, requirements));
+            return Err(conflict(
+                id,
+                DependencyIssueKind::VersionConflict,
+                requirements,
+                &selected,
+            ));
         }
     }
     let Some((id, requirements)) = constraints
@@ -125,9 +201,18 @@ fn choose<'a>(
         for id in selected.keys() {
             visit(id, &selected, &mut visited, &mut Vec::new(), &mut ordered)?;
         }
-        return Ok(selected);
+        return Ok(ordered);
     };
-    let mut failure = conflict(id, requirements);
+    let mut failure = conflict(
+        id,
+        if available.contains_key(id.as_str()) {
+            DependencyIssueKind::VersionConflict
+        } else {
+            DependencyIssueKind::Missing
+        },
+        requirements,
+        &selected,
+    );
     for candidate in available.get(id.as_str()).into_iter().flatten() {
         if !matches(candidate, requirements, selections.get(id)) {
             continue;
@@ -140,7 +225,10 @@ fn choose<'a>(
                 .entry(dependency.clone())
                 .or_default()
                 .push(Requirement {
-                    from: format!("{} {}", candidate.manifest.id, candidate.manifest.version),
+                    from: Some((
+                        candidate.manifest.id.clone(),
+                        candidate.manifest.version.clone(),
+                    )),
                     version: version.clone(),
                 });
         }
@@ -165,15 +253,46 @@ fn matches(
             .is_none_or(|r| r.matches(&candidate.manifest.version))
 }
 
-fn conflict(id: &str, requirements: &[Requirement]) -> Error {
-    Error::new(format!(
-        "{id}：没有兼容版本（{}）",
-        requirements
+fn conflict(
+    id: &str,
+    kind: DependencyIssueKind,
+    requirements: &[Requirement],
+    selected: &BTreeMap<String, &Candidate>,
+) -> ResolutionFailure {
+    failure(
+        id,
+        kind,
+        selected,
+        format!(
+            "{id}：没有兼容版本（{}）",
+            requirements
+                .iter()
+                .map(|requirement| format!(
+                    "{} 要求版本 {}",
+                    requirement.source(),
+                    requirement.version
+                ))
+                .collect::<Vec<_>>()
+                .join("；")
+        ),
+    )
+}
+
+fn failure(
+    id: &str,
+    kind: DependencyIssueKind,
+    selected: &BTreeMap<String, &Candidate>,
+    message: String,
+) -> ResolutionFailure {
+    ResolutionFailure {
+        dependency: id.into(),
+        kind,
+        selected: selected
             .iter()
-            .map(|r| format!("{} 要求版本 {}", r.from, r.version))
-            .collect::<Vec<_>>()
-            .join("；")
-    ))
+            .map(|(id, candidate)| (id.clone(), (*candidate).clone()))
+            .collect(),
+        message,
+    }
 }
 
 fn visit<'a>(
@@ -182,15 +301,17 @@ fn visit<'a>(
     visited: &mut BTreeSet<String>,
     stack: &mut Vec<String>,
     ordered: &mut Vec<&'a Candidate>,
-) -> Result<()> {
+) -> std::result::Result<(), ResolutionFailure> {
     if visited.contains(id) {
         return Ok(());
     }
     if let Some(start) = stack.iter().position(|item| item == id) {
-        return Err(Error::new(format!(
-            "存在循环依赖：{} -> {id}",
-            stack[start..].join(" -> ")
-        )));
+        return Err(failure(
+            id,
+            DependencyIssueKind::Cycle,
+            selected,
+            format!("存在循环依赖：{} -> {id}", stack[start..].join(" -> ")),
+        ));
     }
     stack.push(id.to_owned());
     let candidate = selected[id];

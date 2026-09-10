@@ -1,6 +1,6 @@
 # Login
 
-`mhf-login` 提供运行 Mod `mhf.login`。它只依赖运行时的 `mhf.config`，负责 Sign 登录、角色选择与系统凭据存储，
+`mhf-login` 提供运行 Mod `mhf.login`。它依赖运行时的 `mhf.base` 和 `mhf.config`，负责 Sign 登录、角色选择与系统凭据存储，
 在 prepare 发布 `mhf.launch.fallback.v1`。没有普通启动提供方时，宿主才在游戏 DLL 加载前调用它；
 用户关闭登录窗口时返回取消，正常结束启动。
 

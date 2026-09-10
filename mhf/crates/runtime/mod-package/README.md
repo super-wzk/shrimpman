@@ -24,7 +24,7 @@ entry = "observer.dll"
 let selected = mhf_mod_package::resolve(
     &candidates,
     &selections, // BTreeMap<String, Selection>
-    &defaults,   // 未明确关闭时启用的 ID
+    &defaults,   // 未明确禁用时启用的 ID
     &required,   // 应用固定要求的 ID
 )?;
 for candidate in selected.mods {
@@ -34,16 +34,17 @@ for candidate in selected.mods {
 
 `Selection` 的 `enabled: Option<bool>` 区分未配置和明确开关；
 `version: Option<semver::VersionReq>` 限定所选版本。必要依赖自动补入，
-但不会覆盖明确关闭。解析尝试最新兼容版本，遇到传递约束或循环时回溯。
+但不会覆盖明确禁用。解析尝试最新兼容版本，遇到传递约束或循环时回溯。
 同一 ID 只选择一个版本，相同 ID/版本的重复来源需要宿主先消除歧义。
 
 启动应用与管理器通过 `BuiltinCatalog` 共用已编译内置 Mod 的元数据。
 编译能力字段只有 `login`、`debug`；运行清单为 Config、Base、Login、Debug。
-Config 不依赖配置消费者；Base、Login 依赖 Config，Debug 依赖 Base。
+Config 不依赖配置消费者；Base 依赖 Config，Login 依赖 Base 和 Config，Debug 依赖 Base。
 Quest 是 Base 的内部能力，Unicode／Translation crate 暂未接入。
 
-调用方合并内置与外部候选后，应用应用默认项、必需项及内置兼容性规则；
-管理器使用通用 `resolve` 检查明确启用项及声明依赖。
+启动器合并内置与外部候选后，以 Login 为默认项，使用空的 `required` 集合；
+Base 由 Login、Debug 等 Mod 的声明依赖按需带入。
+管理器使用 `diagnose_resolution` 按启动组合检查依赖；保存和导出使用通用 `resolve` 解析明确启用项及声明依赖。
 启动提供方由 ModHost 从公开接口选出，启用普通 Debug 自动覆盖 Login 的 fallback。
 
 `export_archive(path, &selected.mods)` 导出传入的精确版本与全部包资源，
@@ -75,7 +76,7 @@ label = "计数器"
 `directory` 默认是 `mods`，相对路径的基准由调用方决定：游戏启动器使用其可执行文件目录，
 并在切换游戏工作目录前解析；`mhf-mods` 使用命令启动时的当前工作目录。
 `enabled` 未设置时由宿主默认选择或依赖关系决定；
-明确关闭的必需依赖会使组合解析失败。状态和参数修改在下次游戏启动时生效。
+明确禁用的必需依赖会使组合解析失败。状态和参数修改在下次游戏启动时生效。
 
 可执行工具由 [`mhf-mod-manager`](../../apps/mod-manager/README.md) 提供，二进制名称为 `mhf-mods`。
 不指定子命令时打开独立管理界面；包库本身不包含应用入口。

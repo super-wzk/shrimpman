@@ -54,8 +54,8 @@ flowchart TD
 | ID | 当前职责及选择规则 |
 | --- | --- |
 | `mhf.config` | 独立配置存储与通用 INI 桥，提供 `mhf.config.v1`；不依赖配置消费者 |
-| `mhf.base` | 必需基础支持；统一 Font、UI、Geometry 和 Quest，提供 `mhf.font.v1`、`mhf.ui.v1`，向配置桥注册游戏字段与 INI 映射 |
-| `mhf.login` | 默认登录启动；只依赖 Config，提供 `mhf.launch.fallback.v1` |
+| `mhf.base` | 基础支持，按消费者声明的依赖启用；统一 Font、UI、Geometry 和 Quest，提供 `mhf.font.v1`、`mhf.ui.v1`，向配置桥注册游戏字段与 INI 映射 |
+| `mhf.login` | 默认登录启动；依赖 Base 和 Config，提供 `mhf.launch.fallback.v1` |
 | `mhf.debug` | 调试启动、临时猎人和游戏工具；只依赖 Base，提供 `mhf.launch.v1` 与 `mhf.debug-tools.v1` |
 
 Font、UI、Quest、Geometry 和 DebugTools 按职责分 crate，但不独立参与运行选择。Unicode 和 Translation 的代码保留，当前不接入应用。
@@ -98,13 +98,14 @@ label = "计数器"
 
 游戏宿主和管理器的 `directory` 都默认是调用目录中的 `mods`；配置中的相对目录也以调用目录为基准，在切换到游戏工作目录前解析。`settings` 序列化为该 Mod 的配置 TOML，经 Host 表读取。原有游戏设置仍留在原配置节，不为此复制一份运行设置。
 
-`enabled` 区分未设置、明确启用和明确关闭。必需依赖自动加入，但不会覆盖明确关闭。`version` 和包的 `dependencies` 都使用 `semver::VersionReq`；解析器选取满足全部约束的版本，在传递冲突和循环时回溯。同一 ID 最终只选一个候选，相同 ID／版本的重复来源报错。
+`enabled` 区分未设置、明确启用和明确禁用。必需依赖自动加入，但不会覆盖明确禁用。`version` 和包的 `dependencies` 都使用 `semver::VersionReq`；解析器选取满足全部约束的版本，在传递冲突和循环时回溯。同一 ID 最终只选一个候选，相同 ID／版本的重复来源报错。
 
 `mhf-mods`（来自 `apps/mod-manager` 的 `mhf-mod-manager` package）默认打开独立管理界面。
 界面刷新并查看内置和外部包及其声明依赖，
-设置自动／启用／关闭、semver 范围或已安装精确版本，并预览依赖结果后保存或撤销。
-管理器和启动应用共用 `BuiltinCatalog` 的内置元数据与通用 semver 解析器；管理器检查明确启用项及其声明依赖，
-启动器应用自动默认项、必需项和内置兼容性约束，宿主通过公开接口选择启动提供方。
+设置自动／启用／禁用、semver 范围或已安装精确版本，并预览依赖结果后保存或撤销。
+管理器和启动应用共用 `BuiltinCatalog` 的内置元数据、默认启动项与通用 semver 解析器；依赖诊断按实际启动组合检查，未被需要的自动项不报依赖错误。保存和导出按明确启用项及其声明依赖解析。
+启动器默认启用 Login，Base 由 Login、Debug 等 Mod 的声明依赖按需带入，
+宿主通过公开接口选择启动提供方。
 管理器的编译能力决定可用的启动候选，Nix 开发命令共用项目的调试设置。
 
 ZIP 导入和导出在后台执行，不加载 Mod DLL 或游戏。导入不自动启用，不覆盖已有包版本；
