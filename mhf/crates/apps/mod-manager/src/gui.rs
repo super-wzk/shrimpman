@@ -19,6 +19,10 @@ pub(crate) fn run(manager: Manager) -> Result<(), String> {
         "Mod 管理",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
+                .with_icon(
+                    eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+                        .expect("valid embedded Mod manager icon"),
+                )
                 .with_inner_size([960.0, 640.0])
                 .with_min_inner_size([420.0, 440.0]),
             centered: true,

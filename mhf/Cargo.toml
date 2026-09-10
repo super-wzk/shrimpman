@@ -19,4 +19,4 @@ windows = "=0.62.2"
 #lto = "fat"        # 启用最激进的链接时优化
 #codegen-units = 1  # 减少代码生成单元数量，提高优化效果
 #panic = "abort"    # 使用"abort"而非"unwind"处理恐慌
-#strip = "symbols"  # 删除符号信息但保留必要的调试信息
+#strip = "debuginfo"  # 删除调试信息

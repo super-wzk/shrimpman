@@ -24,6 +24,7 @@ mhf-login = { path = "../../mods/login", optional = true }
 mhf-debug = { path = "../../mods/debug", optional = true }
 
 [build-dependencies]
+embed-resource = "3.0"
 mhf-mod-api = { path = "../../runtime/mod-api", features = ["headers"] }
 mhf-mod-host = { path = "../../runtime/mod-host", features = ["headers"] }
 mhf-font = { path = "../../mods/font", features = ["headers"] }

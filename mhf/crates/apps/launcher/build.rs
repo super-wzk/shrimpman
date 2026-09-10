@@ -1,8 +1,18 @@
-//! Aggregate the public domain contracts without compiling their providers.
+//! Embed the application icon and aggregate the public domain contracts.
 
 fn main() -> std::io::Result<()> {
     use mhf_mod_api::headers as h;
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=assets/icon.rc");
+    println!("cargo::rerun-if-changed=assets/icon.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_resource::compile(
+            "assets/icon.rc",
+            embed_resource::ParamsIncludeDirs(["assets"]),
+        )
+        .manifest_required()
+        .expect("failed to embed the launcher icon");
+    }
     let include =
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR"))
             .join("include");

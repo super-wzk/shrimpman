@@ -23,6 +23,12 @@ pub(crate) fn run(
     let output = &mut launch_request;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!(
+                    "../../../../apps/launcher/assets/icon.png"
+                ))
+                .expect("valid embedded launcher icon"),
+            )
             .with_inner_size([620.0, 440.0])
             .with_min_inner_size([440.0, 360.0]),
         centered: true,
