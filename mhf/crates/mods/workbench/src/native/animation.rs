@@ -852,9 +852,9 @@ mod tests {
                     }
                 };
                 unsafe {
-                    // 100022A0 copies unknown_44 into the compact node's
+                    // 100022A0 copies motion_tag into the compact node's
                     // WORD +2; 10009DD0 places it at runtime node +198.
-                    put(node + NODE_TAG, bone.unknown_44 as u16);
+                    put(node + NODE_TAG, bone.motion_tag as u16);
                     put(node + NODE_COUNT, if index < 45 { 45_u16 } else { 3_u16 });
                     put(node + NODE_CHILD, address(bone.first_child_index));
                     put(node + NODE_SIBLING, address(bone.next_sibling_index));

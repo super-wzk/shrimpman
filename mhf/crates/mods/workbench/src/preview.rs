@@ -630,6 +630,7 @@ pub(crate) enum Command {
         yaw: f32,
     },
     FocusBone(Option<usize>),
+    ToggleFullscreen,
     Exit,
 }
 
@@ -638,6 +639,7 @@ struct Shared {
     snapshot: Snapshot,
     commands: Vec<Command>,
     viewport: Viewport,
+    closing: bool,
 }
 
 #[derive(Default)]
@@ -668,8 +670,28 @@ impl Control {
             .clone()
     }
 
+    pub fn closing(&self) -> bool {
+        self.shared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closing
+    }
+
     pub fn send(&self, command: Command) -> Result<(), String> {
         let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(command, Command::Exit) {
+            // Closing the window must work even while resource requests fill
+            // the queue. Pending loads need not run before native cleanup.
+            if !shared.closing {
+                shared.commands.clear();
+                shared.commands.push(command);
+                shared.closing = true;
+            }
+            return Ok(());
+        }
+        if shared.closing {
+            return Err("工作台正在结束".into());
+        }
         // Coalesce consecutive slider updates without moving a seek across an
         // resource switch, whose ordering changes its meaning.
         if let Some(last) = shared.commands.last_mut()
@@ -1068,6 +1090,24 @@ mod tests {
                 Command::Seek(7.0)
             ]
         ));
+    }
+
+    #[test]
+    fn closing_preempts_a_full_resource_queue_and_rejects_later_loads() {
+        let control = Control::default();
+        for id in 0..32 {
+            control.send(Command::SelectModel(id)).unwrap();
+        }
+        assert!(control.send(Command::UnloadMotion).is_err());
+        control.send(Command::Exit).unwrap();
+        assert!(control.send(Command::LoadAssets(Vec::new())).is_err());
+        control.send(Command::Exit).unwrap();
+        assert!(control.closing());
+        assert!(matches!(control.commands().as_slice(), [Command::Exit]));
+        assert!(control.closing());
+        assert!(control.send(Command::LoadAssets(Vec::new())).is_err());
+        control.send(Command::Exit).unwrap();
+        assert!(control.commands().is_empty());
     }
 
     #[test]

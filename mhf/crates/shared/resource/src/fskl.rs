@@ -33,10 +33,14 @@ pub struct Bone<'a> {
     pub first_child_index: i32,
     pub next_sibling_index: i32,
     pub transform: Transform,
-    /// Native 100022A0 copies the low WORD; the full file word is retained.
+    /// Native 100022A0 copies the low WORD to compact node +10; 10009DD0
+    /// sign-extends it as i16 into runtime node +368. Its subsequent use is
+    /// unconfirmed. The complete file DWORD, including its high bits, is retained.
     pub unknown_40: u32,
-    /// Public tools label this chainID, but its IK semantics are unverified.
-    pub unknown_44: u32,
+    /// Node group for native motion binding, sampling, and pose blending.
+    /// 100022A0/10009DD0 copy the low WORD to runtime node +198; the complete
+    /// file DWORD is retained. This tag is not a MOT directory index or bone ID.
+    pub motion_tag: u32,
     pub unknown_48: &'a [u8],
     pub trailing: &'a [u8],
 }
@@ -57,7 +61,7 @@ impl<'a> Bone<'a> {
                 translation: float_array(&data[48..64]),
             },
             unknown_40: word(&data[64..68]),
-            unknown_44: word(&data[68..72]),
+            motion_tag: word(&data[68..72]),
             unknown_48: &data[72..BONE_RECORD_SIZE],
             trailing: &data[BONE_RECORD_SIZE..],
         })

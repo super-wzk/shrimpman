@@ -204,6 +204,21 @@ impl Workbench {
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
             self.open = !self.open;
         }
+        if context.input_mut(|input| {
+            let pressed = input.events.iter().any(|event| {
+                matches!(event, egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if *modifiers == egui::Modifiers::ALT)
+            });
+            input.consume_key(egui::Modifiers::ALT, egui::Key::Enter);
+            pressed
+        }) {
+            self.send(Command::ToggleFullscreen);
+        }
         if !self.open {
             self.control.set_viewport(Viewport::default());
             return;
@@ -259,6 +274,10 @@ impl Workbench {
                         ui.checkbox(&mut self.show_inspector, "检查器");
                         ui.checkbox(&mut self.show_log, "输出日志");
                         ui.checkbox(&mut self.preview_only, "专注预览 · F11");
+                        if ui.button("切换全屏 · Alt+Enter").clicked() {
+                            self.send(Command::ToggleFullscreen);
+                            ui.close();
+                        }
                     });
                     if ui
                         .button(if self.preview_only {
@@ -2587,6 +2606,54 @@ mod tests {
             (viewport.x, viewport.y, viewport.width, viewport.height),
             (0.0, 0.0, 1.0, 1.0)
         );
+    }
+
+    #[test]
+    fn fullscreen_shortcut_works_in_search_and_when_hidden_without_repeating() {
+        let mut workbench = preview_fixture();
+        let context = egui::Context::default();
+        egui_hunter::Theme::default().apply(&context);
+        mhf_font::install(&context);
+        let input = |pressed, repeat| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1440.0, 900.0),
+            )),
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed,
+                repeat,
+                modifiers: egui::Modifiers::ALT,
+            }],
+            ..Default::default()
+        };
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("workbench-filter")));
+        context
+            .run_ui(input(true, false), |ui| workbench.show(ui))
+            .drop_without_applying_deltas();
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::ToggleFullscreen]
+        ));
+        assert!(!workbench.preview_only);
+        assert!(workbench.filter.is_empty());
+        context
+            .run_ui(input(true, true), |ui| workbench.show(ui))
+            .drop_without_applying_deltas();
+        assert!(workbench.control.commands().is_empty());
+        workbench.open = false;
+        context
+            .run_ui(input(false, false), |ui| workbench.show(ui))
+            .drop_without_applying_deltas();
+        context
+            .run_ui(input(true, false), |ui| workbench.show(ui))
+            .drop_without_applying_deltas();
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::ToggleFullscreen]
+        ));
+        assert!(!workbench.open);
     }
 
     #[test]

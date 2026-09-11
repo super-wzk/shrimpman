@@ -1632,14 +1632,14 @@ impl Builder {
                 self.field(
                     child,
                     "unknown_40",
-                    format!("{:#X}", bone.unknown_40),
+                    format!("{}（{:#010X}）", bone.unknown_40 as i16, bone.unknown_40),
                     at + 64,
                     4,
                 );
                 self.field(
                     child,
-                    "unknown_44",
-                    format!("{:#X}", bone.unknown_44),
+                    "motion_tag（动画分组）",
+                    format!("{}（{:#010X}）", bone.motion_tag as u16, bone.motion_tag),
                     at + 68,
                     4,
                 );

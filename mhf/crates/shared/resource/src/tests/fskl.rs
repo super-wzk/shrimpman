@@ -64,7 +64,7 @@ fn hierarchy_keeps_order_ids_unknown_bytes_and_fourth_components() {
     assert_eq!(first.transform.rotation, [0.0, 0.0, 0.0, 2.0]);
     assert_eq!(first.transform.translation, [10.0, 20.0, 30.0, 7.0]);
     assert_eq!(first.unknown_40, 0x4321_ffff);
-    assert_eq!(first.unknown_44, 0x7654_1234);
+    assert_eq!(first.motion_tag, 0x7654_1234);
     assert_eq!(first.unknown_48, [0x6d; 184]);
     assert_eq!(parsed.as_bytes(), source);
     parsed.validate_hierarchy().unwrap();

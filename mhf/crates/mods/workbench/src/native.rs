@@ -5,6 +5,7 @@ mod asset;
 mod skeleton;
 mod textures;
 mod viewport;
+mod window;
 
 use crate::preview::{AssetBundle, Bone, Camera, Command, Control, LoadedModel, Snapshot};
 use mhf_hooks::{HookGuard, HookSlot, ModuleReference};
@@ -45,6 +46,7 @@ pub(crate) struct State {
     control: Arc<Control>,
     bootstrap: usize,
     dispatch: usize,
+    window: window::Hooks,
     runtime: Mutex<Runtime>,
 }
 
@@ -103,7 +105,10 @@ impl Model {
 
 impl State {
     pub unsafe fn prepare_release(&mut self) -> Result<(), String> {
-        unsafe { self.module.release() }
+        unsafe {
+            self.window.restore(self.client)?;
+            self.module.release()
+        }
     }
 }
 
@@ -165,16 +170,20 @@ pub(crate) unsafe fn install(
             dispatch as *mut c_void,
         )
     }?;
-    unsafe {
+    let window = unsafe { window::prepare(client, &mut hooks) }?;
+    let guard = unsafe {
         hooks.install(State {
             module: retained,
             client,
             control,
             bootstrap: bootstrap as usize,
             dispatch: dispatch as usize,
+            window,
             runtime: Mutex::new(Runtime::default()),
         })
-    }
+    }?;
+    unsafe { window::activate(client) };
+    Ok(guard)
 }
 
 unsafe fn ready(state: &State, runtime: &Runtime) -> bool {
@@ -391,6 +400,12 @@ unsafe fn command(
         }
         return Ok("正在结束资源工作台".into());
     }
+    if matches!(command, Command::ToggleFullscreen) {
+        // 114D6580 consumes this request on the native device thread and runs
+        // the existing 114D5420 window/fullscreen transition and reset path.
+        unsafe { put(client.address(0x1e866cc4), 1_i32) };
+        return Ok("正在切换全屏 / 窗口模式".into());
+    }
     if !unsafe { ready(state, runtime) } {
         return Err("原生资源池尚未初始化".into());
     }
@@ -586,7 +601,7 @@ unsafe fn command(
                 runtime.focus_bone = index;
                 Ok("已更新镜头焦点".into())
             }
-            Command::Exit => unreachable!(),
+            Command::Exit | Command::ToggleFullscreen => unreachable!(),
         }
     }
 }
