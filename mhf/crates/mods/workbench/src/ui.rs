@@ -452,7 +452,7 @@ impl Workbench {
                         snapshot
                             .motion
                             .as_deref()
-                            .unwrap_or("选择动画节点后点击加载此动画"),
+                            .unwrap_or("点击动画节点右侧的播放按钮"),
                     )
                     .truncate(),
                 )
@@ -599,7 +599,7 @@ impl Workbench {
                     &self.directory,
                     &self.catalog,
                     self.path.as_ref(),
-                    self.document.as_deref(),
+                    self.document.as_ref(),
                     &self.asset_nodes,
                     action_width,
                     self.show_encoding_layers,
@@ -622,7 +622,7 @@ impl Workbench {
             self.expand_node(index);
         }
         if let Some(index) = preview_node {
-            self.preview_scope(index);
+            self.preview_node(index);
         }
         if let Some(path) = load {
             self.request = self.request.wrapping_add(1);
@@ -690,7 +690,7 @@ impl Workbench {
                         .on_hover_text("预览此节点下的全部模型组")
                         .clicked()
                     {
-                        self.preview_scope(self.node);
+                        self.preview_node(self.node);
                     }
                 });
             }
@@ -740,7 +740,18 @@ impl Workbench {
             .collect()
     }
 
-    fn preview_scope(&mut self, node: usize) {
+    fn preview_node(&mut self, node: usize) {
+        if let Some(document) = &self.document {
+            let source = ResourceRef {
+                document: document.clone(),
+                node,
+            };
+            if source.kind() == Kind::Motion {
+                self.node = node;
+                self.send(Command::LoadMotion(source));
+                return;
+            }
+        }
         let assets = self.scoped_assets(node);
         if !assets.is_empty() {
             self.node = node;
@@ -1300,7 +1311,7 @@ fn directory(
     folder: &Directory,
     catalog: &Catalog,
     path: Option<&PathBuf>,
-    document: Option<&Document>,
+    document: Option<&Arc<Document>>,
     asset_nodes: &[Vec<usize>],
     action_width: f32,
     show_encoding_layers: bool,
@@ -1359,7 +1370,7 @@ fn directory(
             let response = ui
                 .horizontal(|ui| {
                     ui.add_space(ui.spacing().indent);
-                    tree_row(ui, name.as_ref(), selected, 0, action_width).0
+                    tree_row(ui, name.as_ref(), selected, 0, false, action_width).0
                 })
                 .inner;
             if response.clicked() && !selected {
@@ -1373,7 +1384,7 @@ fn directory(
 #[allow(clippy::too_many_arguments)]
 fn tree(
     ui: &mut egui::Ui,
-    document: &Document,
+    document: &Arc<Document>,
     index: usize,
     asset_nodes: &[Vec<usize>],
     action_width: f32,
@@ -1397,10 +1408,23 @@ fn tree(
     };
     let label = format!("{name} · {}", node.kind);
     let group_count = asset_nodes.get(index).map_or(0, Vec::len);
+    let motion = ResourceRef {
+        document: document.clone(),
+        node: index,
+    }
+    .kind()
+        == Kind::Motion;
     let response = if node.children.is_empty() && !node.deferred {
         ui.horizontal(|ui| {
             ui.add_space(ui.spacing().indent);
-            tree_row(ui, &label, *selected == index, group_count, action_width)
+            tree_row(
+                ui,
+                &label,
+                *selected == index,
+                group_count,
+                motion,
+                action_width,
+            )
         })
         .inner
     } else {
@@ -1411,7 +1435,14 @@ fn tree(
             root,
         )
         .show_header(ui, |ui| {
-            let response = tree_row(ui, &label, *selected == index, group_count, action_width);
+            let response = tree_row(
+                ui,
+                &label,
+                *selected == index,
+                group_count,
+                motion,
+                action_width,
+            );
             clicked = response.0.clicked();
             response
         });
@@ -1513,6 +1544,7 @@ fn tree_row(
     label: &str,
     selected: bool,
     group_count: usize,
+    motion: bool,
     action_width: f32,
 ) -> (egui::Response, Option<egui::Response>) {
     // Reserve this trailing area even when no group is present. Its contents
@@ -1531,23 +1563,28 @@ fn tree_row(
         )
         .on_hover_text(label);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(action_width, height), egui::Sense::hover());
-    let button = (group_count != 0).then(|| {
+    let button = (group_count != 0 || motion).then(|| {
         let mut actions = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect)
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
-        let response = actions
-            .small_button("预览")
-            .on_hover_text(format!("预览此节点下的全部 {group_count} 个模型组"));
-        actions.add(
-            egui::Label::new(
-                RichText::new(format!("模型组 {group_count}"))
-                    .strong()
-                    .color(ui.visuals().selection.stroke.color),
-            )
-            .extend(),
-        );
+        let (caption, help) = if motion {
+            ("播放", "将此动画加载到当前模型并从头播放".to_owned())
+        } else {
+            ("预览", format!("预览此节点下的全部 {group_count} 个模型组"))
+        };
+        let response = actions.small_button(caption).on_hover_text(help);
+        if group_count != 0 {
+            actions.add(
+                egui::Label::new(
+                    RichText::new(format!("模型组 {group_count}"))
+                        .strong()
+                        .color(ui.visuals().selection.stroke.color),
+                )
+                .extend(),
+            );
+        }
         response
     });
     (label, button)
@@ -1632,7 +1669,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 5]
         );
-        workbench.preview_scope(0);
+        workbench.preview_node(0);
         assert!(
             matches!(workbench.control.commands().as_slice(), [Command::LoadAssets(bundles)] if bundles.len() == 2)
         );
@@ -1649,7 +1686,7 @@ mod tests {
         for index in [1, 5] {
             let (_, button, _, _) = draw_tree(&mut workbench, &context, index, 0.0, vec![]);
             assert!(button.is_none());
-            workbench.preview_scope(index);
+            workbench.preview_node(index);
             workbench.select_resource(ResourceRef {
                 document: document.clone(),
                 node: index,
@@ -1805,7 +1842,7 @@ mod tests {
             )
             .drop_without_applying_deltas();
         if let Some(index) = preview {
-            workbench.preview_scope(index);
+            workbench.preview_node(index);
         }
         let (label, button) = responses.unwrap();
         (label, button, id, details)
@@ -1849,6 +1886,7 @@ mod tests {
                                 &"long-resource-name".repeat(8),
                                 false,
                                 count,
+                                false,
                                 action_width,
                             )
                         })
@@ -2261,14 +2299,15 @@ mod tests {
     }
 
     #[test]
-    fn deferred_motion_details_expand_without_loading_the_animation() {
+    fn motion_rows_play_explicitly_while_tracks_and_channels_remain_inspection_only() {
         let mut workbench = preview_fixture();
+        workbench.tab = InspectorTab::Bones;
         let mut document = (*multiple_models()).clone();
         document.nodes[9].deferred = true;
         workbench.loaded_document(Arc::new(document));
         let context = egui::Context::default();
         let (label, button, _, details) = draw_tree(&mut workbench, &context, 9, 0.0, vec![]);
-        assert!(button.is_none() && details.is_none());
+        assert!(button.is_some() && details.is_none());
         draw_tree(
             &mut workbench,
             &context,
@@ -2283,11 +2322,37 @@ mod tests {
             0.2,
             pointer(label.rect.center(), false),
         );
-        let (_, button, _, details) = draw_tree(&mut workbench, &context, 9, 1.0, vec![]);
-        assert!(button.is_none());
+        let (_, button, id, details) = draw_tree(&mut workbench, &context, 9, 1.0, vec![]);
         assert_eq!(details, Some(9));
         assert_eq!(workbench.node, 9);
         assert!(workbench.control.commands().is_empty());
+        let position = button.unwrap().rect.center();
+        for (time, pressed) in [(1.1, true), (1.2, false)] {
+            draw_tree(
+                &mut workbench,
+                &context,
+                9,
+                time,
+                pointer(position, pressed),
+            );
+        }
+        assert!(
+            matches!(workbench.control.commands().as_slice(), [Command::LoadMotion(source)] if source.node == 9)
+        );
+        assert!(workbench.tab == InspectorTab::Bones);
+        assert!(
+            egui::collapsing_header::CollapsingState::load(&context, id)
+                .unwrap()
+                .is_open()
+        );
+        for kind in [Kind::Track, Kind::Channel] {
+            let mut document = (**workbench.document.as_ref().unwrap()).clone();
+            document.nodes[9].kind = kind;
+            document.nodes[9].deferred = false;
+            workbench.refresh_document(Arc::new(document));
+            let (_, button, _, _) = draw_tree(&mut workbench, &context, 9, 2.0, vec![]);
+            assert!(button.is_none());
+        }
     }
 
     #[test]
