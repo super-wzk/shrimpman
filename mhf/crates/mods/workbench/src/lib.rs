@@ -1,6 +1,12 @@
 //! Resource inspection and native previews, independently selectable from Debug.
 
 pub mod catalog;
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+#[cfg_attr(
+    not(all(feature = "provider", windows, target_arch = "x86")),
+    allow(dead_code)
+)]
+mod guides;
 pub mod inspect;
 #[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
 #[cfg_attr(
@@ -8,6 +14,12 @@ pub mod inspect;
     allow(dead_code)
 )]
 mod preview;
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+#[cfg_attr(
+    not(all(feature = "provider", windows, target_arch = "x86")),
+    allow(dead_code)
+)]
+mod settings;
 #[cfg(all(feature = "provider", windows, target_arch = "x86"))]
 mod ui;
 #[cfg(all(feature = "provider", windows, target_arch = "x86"))]

@@ -6,6 +6,25 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+pub(crate) const DEFAULT_BACKGROUND_COLOR: [u8; 3] = [16, 19, 22];
+
+#[derive(Clone, Copy)]
+pub(crate) struct PreviewOptions {
+    pub background_color: [u8; 3],
+    pub show_grid: bool,
+    pub show_axes: bool,
+}
+
+impl Default for PreviewOptions {
+    fn default() -> Self {
+        Self {
+            background_color: DEFAULT_BACKGROUND_COLOR,
+            show_grid: true,
+            show_axes: true,
+        }
+    }
+}
+
 /// An identified resource keeps its decoded source bytes alive independently
 /// of the file currently selected in the browser.
 #[derive(Clone)]
@@ -424,6 +443,32 @@ impl ViewportPixels {
 }
 
 impl Camera {
+    pub fn distance(self) -> f32 {
+        self.eye
+            .into_iter()
+            .zip(self.target)
+            .map(|(eye, target)| (eye - target).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    }
+
+    /// Translate the camera and orbit center so points on the focus plane follow
+    /// the drag. Delta is a fraction of viewport width/height, independent of DPI.
+    pub fn pan_offset(self, delta: [f32; 2]) -> Option<[f32; 3]> {
+        let scale = 2.0 * self.distance() * (self.fov_y * 0.5).tan();
+        if !scale.is_finite() || scale <= 0.0 || self.aspect <= 0.0 {
+            return None;
+        }
+        let (view, _) = self.matrices(1.0, 200_000.0);
+        let offset = std::array::from_fn(|axis| {
+            scale * (-view[axis * 4] * delta[0] * self.aspect + view[axis * 4 + 1] * delta[1])
+        });
+        offset
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(offset)
+    }
+
     /// Row-major D3DX look-at and perspective matrices used by the native shader slots.
     pub fn matrices(self, near: f32, far: f32) -> ([f32; 16], [f32; 16]) {
         fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -629,6 +674,7 @@ pub(crate) enum Command {
         pitch: f32,
         yaw: f32,
     },
+    Pan([f32; 3]),
     FocusBone(Option<usize>),
     ToggleFullscreen,
     Exit,
@@ -639,6 +685,7 @@ struct Shared {
     snapshot: Snapshot,
     commands: Vec<Command>,
     viewport: Viewport,
+    preview_options: PreviewOptions,
     closing: bool,
 }
 
@@ -648,6 +695,20 @@ pub(crate) struct Control {
 }
 
 impl Control {
+    pub fn set_preview_options(&self, options: PreviewOptions) {
+        self.shared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .preview_options = options;
+    }
+
+    pub fn preview_options(&self) -> PreviewOptions {
+        self.shared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .preview_options
+    }
+
     pub fn set_viewport(&self, viewport: Viewport) {
         self.shared
             .lock()
@@ -691,6 +752,16 @@ impl Control {
         }
         if shared.closing {
             return Err("工作台正在结束".into());
+        }
+        // Pan is a relative motion: add consecutive deltas instead of dropping
+        // earlier input while the native thread is still drawing/loading.
+        if let Some(Command::Pan(pending)) = shared.commands.last_mut()
+            && let Command::Pan(delta) = &command
+        {
+            for axis in 0..3 {
+                pending[axis] += delta[axis];
+            }
+            return Ok(());
         }
         // Coalesce consecutive slider updates without moving a seek across an
         // resource switch, whose ordering changes its meaning.
@@ -924,6 +995,53 @@ mod tests {
             let depth = (z * projection[10] + projection[14]) / (z * projection[11]);
             assert!((depth - expected).abs() < 0.00001);
         }
+    }
+
+    #[test]
+    fn panning_keeps_focus_plane_motion_under_the_pointer_at_any_zoom_or_angle() {
+        for distance in [1.0, 350.0, 100_000.0] {
+            for aspect in [0.75, 2.0] {
+                for direction in [[0.0, 0.0, 1.0], [0.6, 0.4, -0.7]] {
+                    let camera = Camera {
+                        eye: direction.map(|value| value * distance),
+                        target: [0.0; 3],
+                        up: [0.0, 1.0, 0.0],
+                        fov_y: std::f32::consts::FRAC_PI_3,
+                        aspect,
+                    };
+                    let delta = [0.08, -0.05];
+                    let offset = camera.pan_offset(delta).unwrap();
+                    let moved = Camera {
+                        eye: std::array::from_fn(|axis| camera.eye[axis] + offset[axis]),
+                        target: offset,
+                        ..camera
+                    };
+                    let point = moved.project(camera.target).unwrap();
+                    for axis in 0..2 {
+                        assert!((point[axis] - (0.5 + delta[axis])).abs() < 0.00001);
+                    }
+                    assert!(camera.pan_offset([f32::NAN, 0.0]).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn queued_pan_deltas_accumulate_without_crossing_focus_changes() {
+        let control = Control::default();
+        for _ in 0..100 {
+            control.send(Command::Pan([1.0, -2.0, 3.0])).unwrap();
+        }
+        control.send(Command::FocusAll).unwrap();
+        control.send(Command::Pan([4.0, 5.0, 6.0])).unwrap();
+        assert!(matches!(
+            control.commands().as_slice(),
+            [
+                Command::Pan([100.0, -200.0, 300.0]),
+                Command::FocusAll,
+                Command::Pan([4.0, 5.0, 6.0])
+            ]
+        ));
     }
 
     #[test]

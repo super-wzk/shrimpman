@@ -2,6 +2,7 @@
 
 mod animation;
 mod asset;
+mod guides;
 mod skeleton;
 mod textures;
 mod viewport;
@@ -601,6 +602,18 @@ unsafe fn command(
                 runtime.focus_bone = index;
                 Ok("已更新镜头焦点".into())
             }
+            Command::Pan(offset) => {
+                let target = camera_target(runtime);
+                let center = std::array::from_fn(|axis| target[axis] + offset[axis]);
+                if offset.iter().chain(&center).any(|value| !value.is_finite()) {
+                    return Err("镜头平移参数无效".into());
+                }
+                runtime.center = center;
+                // Continue from the followed bone's current position, then let
+                // the new orbit center remain independent of its animation.
+                runtime.focus_bone = None;
+                Ok("已平移预览镜头".into())
+            }
             Command::Exit | Command::ToggleFullscreen => unreachable!(),
         }
     }
@@ -727,13 +740,29 @@ unsafe extern "C" fn render_preview() -> i32 {
     i32::from(result.is_ok())
 }
 
+fn camera_target(runtime: &Runtime) -> [f32; 3] {
+    runtime
+        .focus_bone
+        .and_then(|index| {
+            runtime
+                .snapshot
+                .bones
+                .iter()
+                .find(|bone| bone.index == index)
+        })
+        .map_or(runtime.center, |bone| bone.position)
+}
+
 unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), String> {
     let requested = state.control.viewport();
+    let options = state.control.preview_options();
     runtime.snapshot.viewport = requested;
     let pointer = unsafe { state.client.read::<*mut c_void>(0x1e811a3c) };
     let device =
         unsafe { IDirect3DDevice9::from_raw_borrowed(&pointer) }.ok_or("原生绘制设备尚未初始化")?;
-    let mut viewport = unsafe { viewport::NativeViewport::begin(device, state.client, requested) }?;
+    let mut viewport = unsafe {
+        viewport::NativeViewport::begin(device, state.client, requested, options.background_color)
+    }?;
     runtime.snapshot.viewport = viewport.normalized;
     let Some(pixels) = viewport.pixels else {
         runtime.last_frame = None;
@@ -757,10 +786,7 @@ unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), Strin
         }
     }
     let snapshot = &runtime.snapshot;
-    let target = runtime
-        .focus_bone
-        .and_then(|index| snapshot.bones.iter().find(|bone| bone.index == index))
-        .map_or(runtime.center, |bone| bone.position);
+    let target = camera_target(runtime);
     let pitch = snapshot.pitch.to_radians();
     let yaw = snapshot.yaw.to_radians();
     let radius = snapshot.distance;
@@ -826,6 +852,8 @@ unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), Strin
             }
         }
     }
+    unsafe { guides::draw(device, camera, options) }
+        .map_err(|error| format!("无法绘制预览网格与坐标轴：{error}"))?;
     viewport.restore()?;
     runtime.snapshot.camera = Some(camera);
     if !runtime.viewport_reported && viewport.normalized != crate::preview::Viewport::default() {

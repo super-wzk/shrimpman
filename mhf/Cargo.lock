@@ -1899,6 +1899,7 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "egui-hunter",
+ "mhf-config",
  "mhf-font",
  "mhf-hooks",
  "mhf-mod-host",

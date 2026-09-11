@@ -22,7 +22,11 @@ impl BuiltinCatalog {
             descriptions.push(("mhf.debug", "调试启动", vec!["mhf.base"]));
         }
         if self.workbench {
-            descriptions.push(("mhf.workbench", "资源工作台", vec!["mhf.base"]));
+            descriptions.push((
+                "mhf.workbench",
+                "资源工作台",
+                vec!["mhf.base", "mhf.config"],
+            ));
         }
         descriptions
             .into_iter()

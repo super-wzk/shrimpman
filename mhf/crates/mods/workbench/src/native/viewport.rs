@@ -28,6 +28,7 @@ impl<'a> NativeViewport<'a> {
         device: &'a IDirect3DDevice9,
         client: Client,
         requested: Viewport,
+        background_color: [u8; 3],
     ) -> Result<Self, String> {
         let mut previous = D3DVIEWPORT9::default();
         unsafe { device.GetViewport(&mut previous) }
@@ -73,7 +74,12 @@ impl<'a> NativeViewport<'a> {
                 0,
                 ptr::null(),
                 (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER) as u32,
-                0xff101316,
+                u32::from_be_bytes([
+                    255,
+                    background_color[0],
+                    background_color[1],
+                    background_color[2],
+                ]),
                 1.0,
                 0,
             )

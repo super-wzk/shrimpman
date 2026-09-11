@@ -1,8 +1,13 @@
-use crate::{native, preview::Control, ui::Workbench, worker::Worker};
+use crate::{
+    native,
+    preview::Control,
+    settings::{Settings, ViewSettings},
+    ui::Workbench,
+    worker::Worker,
+};
 use mhf_hooks::HookGuard;
 use mhf_mod_host::{Context, LaunchProvider, Module, Result};
 use mhf_ui::{Overlay, OverlayRegistration, OverlayRegistry};
-use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc};
 use windows::Win32::Foundation::HMODULE;
 
@@ -14,6 +19,7 @@ pub struct WorkbenchModule {
     data_root: PathBuf,
     export_root: PathBuf,
     control: Arc<Control>,
+    view: ViewSettings,
     worker: Option<Arc<Worker>>,
     hook: Option<HookGuard<native::State>>,
 }
@@ -28,23 +34,20 @@ impl WorkbenchModule {
             export_root: game_dir.join("workbench-exports"),
             game_dir,
             control: Arc::new(Control::default()),
+            view: ViewSettings::default(),
             worker: None,
             hook: None,
         }
     }
 }
 
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Settings {
-    data_root: Option<PathBuf>,
-    export_root: Option<PathBuf>,
-}
-
 impl Module for WorkbenchModule {
     fn prepare(&mut self, context: &Context) -> Result<()> {
         let settings: Settings = toml::from_str(context.config())
             .map_err(|error| format!("invalid workbench settings: {error}"))?;
+        self.view = settings.view;
+        self.control
+            .set_preview_options(self.view.preview_options());
         self.data_root = self
             .game_dir
             .join(settings.data_root.unwrap_or_else(|| "dat".into()));
@@ -62,6 +65,10 @@ impl Module for WorkbenchModule {
     }
 
     fn attach(&mut self, context: &Context) -> Result<()> {
+        let table = context.interface("mhf.config", "mhf.config.v1")?;
+        // The dependency outlives this module; unregister drains and drops the
+        // overlay before the provider can be released.
+        let configuration = unsafe { mhf_config::bind(table.cast()) };
         self.hook = Some(unsafe {
             native::install(HMODULE(context.game().module_base), self.control.clone())
         }?);
@@ -70,11 +77,14 @@ impl Module for WorkbenchModule {
                 .map_err(|error| format!("资源工作线程启动失败：{error}"))?,
         );
         self.worker = Some(worker.clone());
-        self.registration = Some(self.registry.register(Box::new(Workbench::new(
+        let workbench = Workbench::new(
             self.control.clone(),
             worker,
             self.data_root.clone(),
-        ))));
+            self.view,
+            Some(configuration),
+        );
+        self.registration = Some(self.registry.register(Box::new(workbench)));
         Ok(())
     }
 

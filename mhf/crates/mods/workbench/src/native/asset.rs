@@ -463,6 +463,12 @@ const SIGNATURES: &[(usize, &[u8])] = &[
         0x108f8440,
         &[0x55, 0x8b, 0xec, 0x51, 0x53, 0xf6, 0xc1, 0x01, 0x0f, 0x84],
     ),
+    // 108F8520 resets material blend/filter overrides; skip its relocated
+    // initial MOV operand and verify the following native guard sequence.
+    (
+        0x108f8526,
+        &[0xf7, 0xd8, 0x1b, 0xc0, 0xf7, 0xd0, 0x85, 0x05],
+    ),
 ];
 
 pub(crate) fn preflight(bundle: &AssetBundle) -> Result<(), String> {
@@ -857,6 +863,14 @@ impl NativeAsset {
             unsafe { transmute(client.address(0x1000c7d0)) };
         let render_options: unsafe extern "fastcall" fn(u32) =
             unsafe { transmute(client.address(0x108f8440)) };
+        let reset_render_options: unsafe extern "C" fn() =
+            unsafe { transmute(client.address(0x108f8520)) };
+        // Match the native draw helpers (e.g. 11203230): options with bit 0
+        // unset inherit the caller's standard alpha blending. Establish that
+        // baseline before the first mesh, then restore it after every draw.
+        // Otherwise an additive mesh in em001's second model tints the first
+        // model with the framebuffer/background on the following frame.
+        unsafe { reset_render_options() };
         for index in 0..self.requirements.mesh_vertices.len() {
             if !self.meshes[index].visible {
                 continue;
@@ -879,7 +893,11 @@ impl NativeAsset {
                     );
                 }
                 render_options(mesh.render_options);
-                if draw_model(client.address(0x10007f50), mesh.handle as u32) == 0 {
+                let drawn = draw_model(client.address(0x10007f50), mesh.handle as u32);
+                // Also restore when the native handle failed to draw. This
+                // updates both the device and the engine's cached state.
+                reset_render_options();
+                if drawn == 0 {
                     return Err(format!("网格 {index} 已失去原生绘制句柄"));
                 }
             }

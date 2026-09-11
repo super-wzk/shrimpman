@@ -1,12 +1,17 @@
 use crate::{
     catalog::Catalog,
     inspect::{Document, Kind, Node},
-    preview::{AssetBundle, Command, Control, LoadedModel, ResourceRef, Snapshot, Viewport},
+    preview::{
+        AssetBundle, Command, Control, DEFAULT_BACKGROUND_COLOR, LoadedModel, ResourceRef,
+        Snapshot, Viewport,
+    },
+    settings::ViewSettings,
     worker::Worker,
 };
 use egui::{Color32, RichText};
 use std::{
     collections::{BTreeMap, VecDeque},
+    fmt::Write as _,
     path::PathBuf,
     sync::Arc,
 };
@@ -23,12 +28,10 @@ pub(crate) struct Workbench {
     worker: Arc<Worker>,
     root: PathBuf,
     open: bool,
-    compact: bool,
-    show_resources: bool,
-    show_encoding_layers: bool,
-    show_inspector: bool,
-    show_log: bool,
-    preview_only: bool,
+    view: ViewSettings,
+    configuration: Option<mhf_config::Config<'static>>,
+    view_dirty: bool,
+    view_save_error: String,
     tab: InspectorTab,
     viewport_rect: egui::Rect,
     log: VecDeque<(bool, String)>,
@@ -54,24 +57,27 @@ pub(crate) struct Workbench {
     hex_selection: Option<std::ops::Range<usize>>,
     active_model: Option<u64>,
     bone: Option<usize>,
-    show_bones: bool,
     error: String,
     status: String,
 }
 
 impl Workbench {
-    pub fn new(control: Arc<Control>, worker: Arc<Worker>, root: PathBuf) -> Self {
+    pub fn new(
+        control: Arc<Control>,
+        worker: Arc<Worker>,
+        root: PathBuf,
+        view: ViewSettings,
+        configuration: Option<mhf_config::Config<'static>>,
+    ) -> Self {
         Self {
             control,
             worker,
             root,
             open: true,
-            compact: true,
-            show_resources: true,
-            show_encoding_layers: false,
-            show_inspector: true,
-            show_log: true,
-            preview_only: false,
+            view,
+            configuration,
+            view_dirty: false,
+            view_save_error: String::new(),
             tab: InspectorTab::Models,
             viewport_rect: egui::Rect::NOTHING,
             log: VecDeque::new(),
@@ -97,9 +103,24 @@ impl Workbench {
             hex_selection: None,
             active_model: None,
             bone: None,
-            show_bones: false,
             error: String::new(),
             status: String::new(),
+        }
+    }
+
+    fn save_view(&mut self) {
+        if !self.view_dirty {
+            return;
+        }
+        self.view_dirty = false;
+        if let Some(configuration) = self.configuration {
+            if self.error == self.view_save_error {
+                self.error.clear();
+            }
+            self.view_save_error = self.view.save(configuration).err().unwrap_or_default();
+            if !self.view_save_error.is_empty() {
+                self.error.clone_from(&self.view_save_error);
+            }
         }
     }
 
@@ -166,7 +187,7 @@ impl Workbench {
     }
 
     fn loaded_document(&mut self, document: Arc<Document>) {
-        self.node = visible_node(&document, document.root, self.show_encoding_layers);
+        self.node = visible_node(&document, document.root, self.view.show_encoding_layers);
         self.refresh_document(document);
     }
 
@@ -201,6 +222,7 @@ impl Workbench {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.poll();
         let context = ui.ctx().clone();
+        let previous_view = self.view;
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
             self.open = !self.open;
         }
@@ -220,11 +242,12 @@ impl Workbench {
             self.send(Command::ToggleFullscreen);
         }
         if !self.open {
+            self.save_view();
             self.control.set_viewport(Viewport::default());
             return;
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F11)) {
-            self.preview_only = !self.preview_only;
+            self.view.preview_only = !self.view.preview_only;
         }
         let snapshot = self.control.snapshot();
         if self.active_model != snapshot.active_model {
@@ -233,12 +256,21 @@ impl Workbench {
         }
         self.record_messages(&snapshot);
         ui.scope(|ui| {
-            if self.compact {
+            if self.view.compact {
                 egui_hunter::Density::Compact.scope(ui, |ui| self.layout(ui, &snapshot));
             } else {
                 self.layout(ui, &snapshot);
             }
         });
+        if self.view != previous_view {
+            self.view_dirty = true;
+            self.control
+                .set_preview_options(self.view.preview_options());
+        }
+        // Apply color while dragging, and persist once the pointer is released.
+        if !context.input(|input| input.pointer.any_down()) {
+            self.save_view();
+        }
     }
 
     fn layout(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
@@ -257,13 +289,33 @@ impl Workbench {
                     ui.menu_button("视图", |ui| {
                         ui.set_style(menu_style.clone());
                         egui::containers::menu::menu_style(ui.style_mut());
-                        ui.checkbox(&mut self.compact, "紧凑模式");
+                        ui.checkbox(&mut self.view.compact, "紧凑模式");
+                        egui::containers::menu::SubMenuButton::new("模型预览背景")
+                            .config(
+                                egui::containers::menu::MenuConfig::new()
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                            )
+                            .ui(ui, |ui| {
+                                ui.spacing_mut().slider_width = 240.0;
+                                let [r, g, b] = self.view.background_color;
+                                let mut color = Color32::from_rgb(r, g, b);
+                                if egui::color_picker::color_picker_color32(
+                                    ui,
+                                    &mut color,
+                                    egui::color_picker::Alpha::Opaque,
+                                ) {
+                                    self.view.background_color = [color.r(), color.g(), color.b()];
+                                }
+                                if ui.button("恢复默认").clicked() {
+                                    self.view.background_color = DEFAULT_BACKGROUND_COLOR;
+                                }
+                            });
                         ui.separator();
-                        ui.checkbox(&mut self.show_resources, "资源目录");
+                        ui.checkbox(&mut self.view.show_resources, "资源目录");
                         if ui
-                            .checkbox(&mut self.show_encoding_layers, "显示编码层")
+                            .checkbox(&mut self.view.show_encoding_layers, "显示编码层")
                             .changed()
-                            && !self.show_encoding_layers
+                            && !self.view.show_encoding_layers
                             && let Some(document) = &self.document
                         {
                             self.node = visible_node(document, self.node, false);
@@ -271,23 +323,32 @@ impl Workbench {
                             self.hex_buffer = false;
                             self.hex_selection = None;
                         }
-                        ui.checkbox(&mut self.show_inspector, "检查器");
-                        ui.checkbox(&mut self.show_log, "输出日志");
-                        ui.checkbox(&mut self.preview_only, "专注预览 · F11");
+                        ui.checkbox(&mut self.view.show_inspector, "检查器");
+                        ui.checkbox(&mut self.view.show_log, "输出日志");
+                        ui.checkbox(&mut self.view.preview_only, "专注预览 · F11");
+                        ui.checkbox(&mut self.view.show_grid, "地面网格");
+                        ui.checkbox(&mut self.view.show_axes, "坐标显示");
                         if ui.button("切换全屏 · Alt+Enter").clicked() {
                             self.send(Command::ToggleFullscreen);
                             ui.close();
                         }
+                        if !self.view_save_error.is_empty() {
+                            ui.separator();
+                            ui.colored_label(ui.visuals().error_fg_color, &self.view_save_error);
+                            if ui.button("重试保存视图设置").clicked() {
+                                self.view_dirty = true;
+                            }
+                        }
                     });
                     if ui
-                        .button(if self.preview_only {
+                        .button(if self.view.preview_only {
                             "恢复布局 · F11"
                         } else {
                             "专注预览 · F11"
                         })
                         .clicked()
                     {
-                        self.preview_only = !self.preview_only;
+                        self.view.preview_only = !self.view.preview_only;
                     }
                     ui.menu_button("工作台", |ui| {
                         ui.set_style(menu_style);
@@ -312,7 +373,7 @@ impl Workbench {
             });
         // Both side panels leave room for a usable center even in a smaller window.
         let side_limit = ((screen.width() - 300.0) / 2.0).clamp(160.0, 520.0);
-        if self.show_resources && !self.preview_only {
+        if self.view.show_resources && !self.view.preview_only {
             egui::Panel::left("workbench-resources")
                 .default_size(300.0)
                 .size_range(200.0_f32.min(side_limit)..=side_limit)
@@ -321,14 +382,14 @@ impl Workbench {
                     self.resources(ui);
                 });
         }
-        if self.show_inspector && !self.preview_only {
+        if self.view.show_inspector && !self.view.preview_only {
             egui::Panel::right("workbench-inspector")
                 .default_size(320.0)
                 .size_range(220.0_f32.min(side_limit)..=side_limit)
                 .frame(frame)
                 .show(ui, |ui| self.inspector_panel(ui, snapshot));
         }
-        if self.show_log && !self.preview_only {
+        if self.view.show_log && !self.view.preview_only {
             egui::Panel::bottom("workbench-log")
                 .resizable(true)
                 .default_size(120.0)
@@ -353,8 +414,10 @@ impl Workbench {
                     {
                         self.send(Command::FocusAll);
                     }
-                    ui.checkbox(&mut self.show_bones, "骨架");
-                    ui.weak("拖动环绕 · 滚轮缩放");
+                    ui.checkbox(&mut self.view.show_bones, "骨架");
+                    ui.checkbox(&mut self.view.show_grid, "网格");
+                    ui.checkbox(&mut self.view.show_axes, "坐标");
+                    ui.weak("左键环绕 · 中键 / Shift+左键平移 · 滚轮缩放");
                 });
             });
         egui::CentralPanel::default()
@@ -422,13 +485,28 @@ impl Workbench {
             );
         }
         self.draw_bones(ui, snapshot);
+        self.draw_coordinates(ui, snapshot);
         let mut distance = snapshot.distance;
         let mut pitch = snapshot.pitch;
         let mut yaw = snapshot.yaw;
-        if response.dragged_by(egui::PointerButton::Primary) {
+        let primary_drag = response.dragged_by(egui::PointerButton::Primary);
+        let pan = response.dragged_by(egui::PointerButton::Middle)
+            || (primary_drag && ui.input(|input| input.modifiers.shift));
+        if primary_drag && !pan {
             let delta = response.drag_delta();
             yaw = (yaw - delta.x * 0.4 + 180.0).rem_euclid(360.0) - 180.0;
             pitch = (pitch + delta.y * 0.4).clamp(-80.0, 80.0);
+        }
+        if pan && let Some(camera) = snapshot.camera {
+            response.request_focus();
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            let delta = response.drag_delta();
+            if delta != egui::Vec2::ZERO
+                && let Some(offset) =
+                    camera.pan_offset([delta.x / rect.width(), delta.y / rect.height()])
+            {
+                self.send(Command::Pan(offset));
+            }
         }
         if response.hovered() {
             let scroll = ui.input_mut(|input| std::mem::take(&mut input.smooth_scroll_delta.y));
@@ -621,7 +699,7 @@ impl Workbench {
                     self.document.as_ref(),
                     &self.asset_nodes,
                     action_width,
-                    self.show_encoding_layers,
+                    self.view.show_encoding_layers,
                     &mut self.node,
                     &mut load,
                     &mut preview_node,
@@ -1161,7 +1239,7 @@ impl Workbench {
     }
 
     fn bones(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        ui.checkbox(&mut self.show_bones, "显示骨架");
+        ui.checkbox(&mut self.view.show_bones, "显示骨架");
         ui.small(format!("{} 个原生骨骼 · 双击聚焦", snapshot.bones.len()));
         egui::ScrollArea::vertical()
             .id_salt("workbench-bones")
@@ -1229,6 +1307,79 @@ impl Workbench {
         }
     }
 
+    fn draw_coordinates(&self, ui: &egui::Ui, snapshot: &Snapshot) {
+        let Some(camera) = snapshot.camera.filter(|_| snapshot.ready) else {
+            return;
+        };
+        if !self.view.show_grid && !self.view.show_axes {
+            return;
+        }
+        let rect = self.viewport_rect.intersect(ui.clip_rect());
+        let painter = ui.painter().with_clip_rect(rect);
+        let mut text = String::new();
+        if self.view.show_axes {
+            let bone = self
+                .bone
+                .and_then(|index| snapshot.bones.iter().find(|bone| bone.index == index));
+            let position = bone.map_or(camera.target, |bone| bone.position);
+            if let Some(bone) = bone {
+                let _ = write!(text, "骨骼 {}", bone.index);
+            } else {
+                text.push_str("焦点");
+            }
+            let _ = write!(
+                text,
+                " · 世界坐标\nX {:+.2}  Y {:+.2}  Z {:+.2}",
+                position[0], position[1], position[2]
+            );
+            if rect.width() >= 120.0 && rect.height() >= 180.0 {
+                let center = egui::pos2(rect.right() - 58.0, rect.top() + 58.0);
+                painter.circle_filled(center, 48.0, Color32::from_black_alpha(150));
+                let (view, _) = camera.matrices(1.0, 200_000.0);
+                let mut axes = [0, 1, 2];
+                axes.sort_by(|&a, &b| view[a * 4 + 2].total_cmp(&view[b * 4 + 2]));
+                for axis in axes {
+                    let [r, g, b] = crate::guides::AXIS_COLORS[axis];
+                    let color = Color32::from_rgb(r, g, b);
+                    let direction = egui::vec2(view[axis * 4], -view[axis * 4 + 1]);
+                    let end = center + direction * 32.0;
+                    painter.line_segment([center, end], egui::Stroke::new(2.0, color));
+                    painter.circle_filled(end, 3.0, color);
+                    painter.text(
+                        center + direction * 42.0,
+                        egui::Align2::CENTER_CENTER,
+                        ["X", "Y", "Z"][axis],
+                        egui::FontId::monospace(13.0),
+                        color,
+                    );
+                }
+            }
+        }
+        if self.view.show_grid {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            let _ = write!(
+                text,
+                "网格间距 {} · 地面 Y=0",
+                crate::guides::grid_spacing(camera)
+            );
+        }
+        let galley = painter.layout(
+            text,
+            egui::FontId::monospace(12.0),
+            Color32::WHITE,
+            (rect.width() - 32.0).max(1.0),
+        );
+        let position = egui::pos2(rect.left() + 12.0, rect.bottom() - 12.0 - galley.size().y);
+        painter.rect_filled(
+            egui::Rect::from_min_size(position, galley.size()).expand(5.0),
+            4.0,
+            Color32::from_black_alpha(175),
+        );
+        painter.galley(position, galley, Color32::WHITE);
+    }
+
     fn draw_bones(&self, ui: &egui::Ui, snapshot: &Snapshot) {
         let Some(camera) = snapshot.camera.filter(|_| snapshot.ready) else {
             return;
@@ -1238,7 +1389,7 @@ impl Workbench {
         }) {
             return;
         }
-        if !self.show_bones && self.bone.is_none() {
+        if !self.view.show_bones && self.bone.is_none() {
             return;
         }
         let screen = ui.ctx().content_rect();
@@ -1263,7 +1414,7 @@ impl Workbench {
         };
         for bone in snapshot.bones.iter() {
             let selected = self.bone == Some(bone.index);
-            if !self.show_bones && !selected {
+            if !self.view.show_bones && !selected {
                 continue;
             }
             let Some(position) = point(bone.position) else {
@@ -1295,6 +1446,12 @@ impl Workbench {
                 );
             }
         }
+    }
+}
+
+impl Drop for Workbench {
+    fn drop(&mut self) {
+        self.save_view();
     }
 }
 
@@ -1620,7 +1777,13 @@ mod tests {
         worker.stop();
         let worker = Arc::new(worker);
         let _ = worker.updates();
-        let mut workbench = Workbench::new(Arc::new(Control::default()), worker, root);
+        let mut workbench = Workbench::new(
+            Arc::new(Control::default()),
+            worker,
+            root,
+            ViewSettings::default(),
+            None,
+        );
         workbench.scanning = false;
         workbench
     }
@@ -1842,7 +2005,7 @@ mod tests {
                         visible_node(
                             workbench.document.as_ref().unwrap(),
                             index,
-                            workbench.show_encoding_layers,
+                            workbench.view.show_encoding_layers,
                         ),
                     ));
                     let action_width = group_action_width(ui, workbench.assets.len());
@@ -1852,7 +2015,7 @@ mod tests {
                         index,
                         &workbench.asset_nodes,
                         action_width,
-                        workbench.show_encoding_layers,
+                        workbench.view.show_encoding_layers,
                         &mut workbench.node,
                         &mut preview,
                         &mut details,
@@ -2031,7 +2194,7 @@ mod tests {
         let document = encoded_models();
         let buffers = document.buffers.clone();
         workbench.loaded_document(document.clone());
-        assert!(!workbench.show_encoding_layers);
+        assert!(!workbench.view.show_encoding_layers);
         assert_eq!(workbench.node, 0);
         let context = egui::Context::default();
         let (_, button, decoded_id, _) = draw_tree(&mut workbench, &context, 12, 0.0, vec![]);
@@ -2059,7 +2222,7 @@ mod tests {
             matches!(workbench.control.commands().as_slice(), [Command::LoadAssets(bundles)] if bundles.len() == 2)
         );
 
-        workbench.show_encoding_layers = true;
+        workbench.view.show_encoding_layers = true;
         for layer in [12, 13, 14, 0] {
             assert_eq!(visible_node(&document, layer, true), layer);
             let context = egui::Context::default();
@@ -2591,7 +2754,7 @@ mod tests {
             .run_ui(input(), |ui| workbench.show(ui))
             .drop_without_applying_deltas();
         let docked = workbench.viewport_rect;
-        workbench.preview_only = true;
+        workbench.view.preview_only = true;
         context
             .run_ui(input(), |ui| workbench.show(ui))
             .drop_without_applying_deltas();
@@ -2606,6 +2769,73 @@ mod tests {
             (viewport.x, viewport.y, viewport.width, viewport.height),
             (0.0, 0.0, 1.0, 1.0)
         );
+    }
+
+    #[test]
+    fn viewport_drag_gestures_choose_pan_or_orbit_without_repeating_stationary_motion() {
+        for (button, modifiers, pan) in [
+            (egui::PointerButton::Middle, egui::Modifiers::NONE, true),
+            (egui::PointerButton::Primary, egui::Modifiers::SHIFT, true),
+            (egui::PointerButton::Primary, egui::Modifiers::NONE, false),
+        ] {
+            let mut workbench = preview_fixture();
+            let context = egui::Context::default();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+            let snapshot = Snapshot {
+                camera: Some(crate::preview::Camera {
+                    eye: [0.0, 0.0, 350.0],
+                    target: [0.0; 3],
+                    up: [0.0, 1.0, 0.0],
+                    fov_y: std::f32::consts::FRAC_PI_3,
+                    aspect: 800.0 / 600.0,
+                }),
+                ..Snapshot::default()
+            };
+            let control = workbench.control.clone();
+            let mut draw = |events| {
+                context
+                    .run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| workbench.viewport(ui, &snapshot, screen),
+                    )
+                    .drop_without_applying_deltas();
+            };
+            let start = screen.center();
+            let end = start + egui::vec2(40.0, 20.0);
+            draw(vec![egui::Event::ModifiersChanged(modifiers)]);
+            draw(vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button,
+                    pressed: true,
+                    modifiers,
+                },
+            ]);
+            draw(vec![egui::Event::PointerMoved(end)]);
+            let commands = control.commands();
+            if pan {
+                assert!(
+                    matches!(commands.as_slice(), [Command::Pan([x, y, z])] if *x < 0.0 && *y > 0.0 && *z == 0.0)
+                );
+            } else {
+                assert!(
+                    matches!(commands.as_slice(), [Command::Camera { yaw, pitch, .. }] if *yaw < 0.0 && *pitch > snapshot.pitch)
+                );
+            }
+            draw(vec![]);
+            draw(vec![egui::Event::PointerButton {
+                pos: end,
+                button,
+                pressed: false,
+                modifiers,
+            }]);
+            assert!(control.commands().is_empty());
+        }
     }
 
     #[test]
@@ -2636,7 +2866,7 @@ mod tests {
             workbench.control.commands().as_slice(),
             [Command::ToggleFullscreen]
         ));
-        assert!(!workbench.preview_only);
+        assert!(!workbench.view.preview_only);
         assert!(workbench.filter.is_empty());
         context
             .run_ui(input(true, true), |ui| workbench.show(ui))
@@ -2726,7 +2956,13 @@ mod tests {
         worker.stop();
         let worker = Arc::new(worker);
         let _ = worker.updates();
-        let mut workbench = Workbench::new(Arc::new(Control::default()), worker, root);
+        let mut workbench = Workbench::new(
+            Arc::new(Control::default()),
+            worker,
+            root,
+            ViewSettings::default(),
+            None,
+        );
         workbench.scanning = false;
         workbench.document = Some(Arc::new(Document {
             root: 0, buffers: vec![Arc::from([0_u8; 16])],

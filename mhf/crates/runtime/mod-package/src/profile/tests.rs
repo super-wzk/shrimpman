@@ -134,6 +134,10 @@ fn workbench_is_explicit_and_shares_base_without_pulling_debug() {
         assert!(selected(&workbench, id));
     }
     assert!(!selected(&workbench, "mhf.debug"));
+    let dependencies = &workbench.mods[position(&workbench, "mhf.workbench")]
+        .manifest
+        .dependencies;
+    assert!(dependencies.contains_key("mhf.config"));
     assert!(position(&workbench, "mhf.base") < position(&workbench, "mhf.workbench"));
     assert!(plan(CATALOG, "['mhf.workbench']\nenabled = true").is_err());
 }
