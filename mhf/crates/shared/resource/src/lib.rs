@@ -7,6 +7,7 @@ use std::fmt;
 
 pub mod container;
 pub mod crypto;
+pub mod dat;
 pub mod dds;
 mod decoded;
 pub mod effect;

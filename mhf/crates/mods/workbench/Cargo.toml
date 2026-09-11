@@ -10,6 +10,11 @@ provider = ["dep:egui", "dep:egui-hunter", "dep:serde", "dep:toml", "dep:mhf-con
 
 [dependencies]
 mhf-resource = { path = "../../shared/resource" }
+encoding_rs = "0.8"
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 egui = { workspace = true, optional = true }

@@ -5,6 +5,18 @@
 
 use crate::{Error, Result};
 
+mod attachment;
+pub use attachment::{
+    AttachmentDefinition, AttachmentRotation, AttachmentScale, AttachmentSequence,
+    AttachmentUvAnimation,
+};
+
+mod model;
+pub use model::{
+    ColorAnimation, ModelEffectDefinition, OpacityAnimation, RotationAnimation, ScaleAnimation,
+    UvAnimation,
+};
+
 fn record<const N: usize>(bytes: &[u8]) -> Result<&[u8; N]> {
     if bytes.len() != N {
         return Err(Error::new(
@@ -86,60 +98,6 @@ impl AttachmentGroup {
     }
 }
 
-/// DAT entry 161. `10BB2AB0` applies this local position to the selected node.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AttachmentDefinition {
-    /// IEEE-754 storage, including NaNs and signed zero, in native XYZ order.
-    pub local_position_bits: [u32; 3],
-    pub unknown_0c: u8,
-    pub node_index: u8,
-    /// The original mode byte; no guessed mode enumeration is imposed.
-    pub attachment_mode: u8,
-    pub unknown_0f: [u8; 113],
-}
-
-impl AttachmentDefinition {
-    pub const DAT_INDEX: usize = 161;
-    pub const SIZE: usize = 128;
-
-    pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let bytes = record::<128>(bytes)?;
-        Ok(Self {
-            local_position_bits: std::array::from_fn(|axis| {
-                u32::from_le_bytes(bytes[axis * 4..axis * 4 + 4].try_into().unwrap())
-            }),
-            unknown_0c: bytes[12],
-            node_index: bytes[13],
-            attachment_mode: bytes[14],
-            unknown_0f: bytes[15..].try_into().unwrap(),
-        })
-    }
-
-    pub fn parse_table(bytes: &[u8]) -> Result<Vec<Self>> {
-        table::<128, _>(bytes, Self::parse)
-    }
-
-    pub fn local_position(&self) -> [f32; 3] {
-        self.local_position_bits.map(f32::from_bits)
-    }
-
-    pub fn set_local_position(&mut self, position: [f32; 3]) {
-        self.local_position_bits = position.map(f32::to_bits);
-    }
-
-    pub fn to_bytes(&self) -> [u8; 128] {
-        let mut bytes = [0; 128];
-        for (axis, bits) in self.local_position_bits.iter().enumerate() {
-            bytes[axis * 4..axis * 4 + 4].copy_from_slice(&bits.to_le_bytes());
-        }
-        bytes[12] = self.unknown_0c;
-        bytes[13] = self.node_index;
-        bytes[14] = self.attachment_mode;
-        bytes[15..].copy_from_slice(&self.unknown_0f);
-        bytes
-    }
-}
-
 /// DAT entry 165, matched by `10BBA300` before loading entry-166 definitions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelEffectBinding {
@@ -191,68 +149,6 @@ impl ModelEffectBinding {
             bytes[index * 2..index * 2 + 2].copy_from_slice(&value.to_le_bytes());
         }
         write_ids(&mut bytes, 8, &self.definition_ids);
-        bytes
-    }
-}
-
-/// DAT entry 166. This modifies an existing model's selected draw entry/node;
-/// it is not the same record or binding scheme as entry 161.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelEffectDefinition {
-    /// Added to / removed from the selected node's translation by `10BBE150`.
-    pub translation_delta_bits: [u32; 3],
-    pub unknown_0c: u8,
-    pub draw_group: u8,
-    pub group_entry: u8,
-    pub node_index: u8,
-    pub start_delay: u16,
-    /// Includes interpolation parameters and flags whose full semantics have
-    /// not been established. Preserve them instead of assigning guessed names.
-    pub unknown_12: [u8; 162],
-}
-
-impl ModelEffectDefinition {
-    pub const DAT_INDEX: usize = 166;
-    pub const SIZE: usize = 180;
-
-    pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let bytes = record::<180>(bytes)?;
-        Ok(Self {
-            translation_delta_bits: std::array::from_fn(|axis| {
-                u32::from_le_bytes(bytes[axis * 4..axis * 4 + 4].try_into().unwrap())
-            }),
-            unknown_0c: bytes[12],
-            draw_group: bytes[13],
-            group_entry: bytes[14],
-            node_index: bytes[15],
-            start_delay: u16::from_le_bytes(bytes[16..18].try_into().unwrap()),
-            unknown_12: bytes[18..].try_into().unwrap(),
-        })
-    }
-
-    pub fn parse_table(bytes: &[u8]) -> Result<Vec<Self>> {
-        table::<180, _>(bytes, Self::parse)
-    }
-
-    pub fn translation_delta(&self) -> [f32; 3] {
-        self.translation_delta_bits.map(f32::from_bits)
-    }
-
-    pub fn set_translation_delta(&mut self, translation: [f32; 3]) {
-        self.translation_delta_bits = translation.map(f32::to_bits);
-    }
-
-    pub fn to_bytes(&self) -> [u8; 180] {
-        let mut bytes = [0; 180];
-        for (axis, bits) in self.translation_delta_bits.iter().enumerate() {
-            bytes[axis * 4..axis * 4 + 4].copy_from_slice(&bits.to_le_bytes());
-        }
-        bytes[12] = self.unknown_0c;
-        bytes[13] = self.draw_group;
-        bytes[14] = self.group_entry;
-        bytes[15] = self.node_index;
-        bytes[16..18].copy_from_slice(&self.start_delay.to_le_bytes());
-        bytes[18..].copy_from_slice(&self.unknown_12);
         bytes
     }
 }

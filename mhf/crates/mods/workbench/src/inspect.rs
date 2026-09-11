@@ -5,6 +5,7 @@ use std::{fmt, ops::Range, path::Path, sync::Arc};
 
 #[cfg(test)]
 mod archive_tests;
+mod dat;
 mod legacy_stage;
 #[cfg(test)]
 mod motion_tests;
@@ -37,6 +38,9 @@ pub enum Kind {
     Archive,
     Momo,
     Mha,
+    Dat,
+    DatTable(usize),
+    DatRecord(usize),
     Stage,
     StageLighting,
     LegacyStageLighting,
@@ -84,6 +88,9 @@ impl Kind {
             Self::Archive => "偏移目录",
             Self::Momo => "MOMO 容器",
             Self::Mha => "MHA 命名容器",
+            Self::Dat => "DAT 游戏数据",
+            Self::DatTable(_) => "DAT 数据表",
+            Self::DatRecord(_) => "DAT 记录",
             Self::Stage => "场景专用目录",
             Self::StageLighting => "场景光照与后处理",
             Self::LegacyStageLighting => "旧版场景环境参数",
@@ -239,6 +246,8 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
     };
     builder.document.nodes[node].deferred = false;
     match kind {
+        Kind::DatTable(index) => builder.dat_table_records(node, index)?,
+        Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
         Kind::Motion => {
             let motion = Motion::parse(bytes).map_err(|error| error.to_string())?;
             builder.motion_tracks(node, &motion, range.start);
@@ -692,6 +701,11 @@ impl Builder {
                 file.decode(size)
             });
             self.decoded(node, result, hint);
+            return;
+        }
+        if bytes.starts_with(mhf_resource::dat::MAGIC) {
+            self.document.nodes[node].kind = Kind::Dat;
+            self.inspect_dat(node, bytes, base);
             return;
         }
         if bytes.starts_with(b"mha\x01") {

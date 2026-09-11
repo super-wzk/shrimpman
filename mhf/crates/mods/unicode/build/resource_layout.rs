@@ -297,6 +297,45 @@ pub(super) fn generate(manifest_directory: &Path, output_directory: &Path) -> Re
     Ok(())
 }
 
+/// Offline DAT inspection shares the validated text catalog, without runtime
+/// hooks or a dependency on the Unicode/Translation providers.
+pub(super) fn generate_dat_inspection(
+    manifest_directory: &Path,
+    output_directory: &Path,
+) -> Result<(), String> {
+    let catalog = read_catalog(manifest_directory)?;
+    let resource = catalog
+        .layouts
+        .iter()
+        .find(|layout| layout.id == "mhfdat")
+        .ok_or("missing mhfdat resource layout")?;
+    let ResourceBody::Records(tables) = &resource.body else {
+        return Err("mhfdat must contain record tables".into());
+    };
+    let mut output = String::from("// Generated from Unicode resources/layout.json.\n");
+    output.push_str("static TEXT_TABLES: &[TableLayout] = &[\n");
+    for table in tables {
+        writeln!(
+            output,
+            "TableLayout {{ id: {id:?}, label: {id:?}, root: &{root:?}, first_record: {first}, records: {count}, stride: {stride}, format: RecordFormat::Text {{ offset: {offset}, parts: {parts} }}, directory: {directory}, names: None }},",
+            id = table.id,
+            root = table.root.offsets(),
+            first = table.first_record,
+            count = render_record_count(&table.records),
+            stride = table.stride,
+            offset = table.text_offset,
+            parts = table.parts,
+            directory = table.directory.as_ref().map_or_else(
+                || "None".to_owned(),
+                |entry| format!("Some(({}, {}))", entry.index, render_record_count(&entry.count)),
+            ),
+        ).expect("writing to String cannot fail");
+    }
+    output.push_str("];\n");
+    fs::write(output_directory.join("dat_text.rs"), output)
+        .map_err(|error| format!("failed to write DAT inspection layout: {error}"))
+}
+
 fn read_resource_layouts(path: &Path) -> Result<Vec<ResourceLayout>, String> {
     let contents = read_utf8(path)?;
     let definitions: ResourceLayoutFile = serde_json::from_str(&contents)

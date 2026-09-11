@@ -39,6 +39,7 @@ fn tree(document: &Document, index: usize, depth: usize, shown: &mut HashSet<usi
                 | Kind::Archive
                 | Kind::Momo
                 | Kind::Mha
+                | Kind::Dat
                 | Kind::Stage
                 | Kind::StageObjectPackage
                 | Kind::StageResourceReference
@@ -46,7 +47,12 @@ fn tree(document: &Document, index: usize, depth: usize, shown: &mut HashSet<usi
                 | Kind::GroupedMaterials
                 | Kind::MotionArchive
                 | Kind::Unknown
-        ) {
+        ) || node.kind == Kind::Block
+            && node
+                .children
+                .iter()
+                .any(|&child| matches!(document.nodes[child].kind, Kind::DatTable(_)))
+        {
             pending.extend(node.children.iter().rev().map(|&child| (child, depth + 1)));
         }
     }

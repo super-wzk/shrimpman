@@ -157,3 +157,7 @@ tables therefore does not imply that arbitrary effects can simply be combined.
 Public record fields deliberately expose unknown bytes and raw float bits. Parsing
 and `to_bytes` cover every byte. Only explicitly changed fields alter the serialized
 record; no reserved fields are zero-filled and no bit patterns are normalized.
+
+DAT 161/166 的动画尾部已拆分为独立字段，包括资源序列、旋转、缩放、颜色、
+透明度、UV 和状态控制；附着特效另含视线偏移和拖尾参数。详细偏移、原生消费证据
+和仍未确认的范围见 [equipment-effect-animation.md](equipment-effect-animation.md)。
