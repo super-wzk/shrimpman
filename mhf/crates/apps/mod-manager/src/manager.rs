@@ -12,6 +12,7 @@ type Result<T> = std::result::Result<T, String>;
 pub(crate) const CATALOG: BuiltinCatalog = BuiltinCatalog {
     login: cfg!(feature = "login"),
     debug: cfg!(feature = "debug"),
+    workbench: cfg!(feature = "workbench"),
 };
 
 #[derive(Deserialize)]

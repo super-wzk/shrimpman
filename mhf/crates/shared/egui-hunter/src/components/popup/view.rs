@@ -36,7 +36,9 @@ impl<'a> Popup<'a> {
     /// An anchor Response has no parent Ui style. Pass a local style explicitly
     /// when this popup should use it instead of the native Area's global style.
     pub fn style(mut self, style: impl Into<Arc<Style>>) -> Self {
-        self.style = Some(style.into());
+        let style = style.into();
+        self.native = self.native.gap(style.spacing.item_spacing.y);
+        self.style = Some(style);
         self
     }
     /// Pass the anchor Ui's custom tokens across the detached Area boundary.

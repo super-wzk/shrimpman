@@ -1,4 +1,4 @@
-use super::{BASE, Runtime, SLOT, State, get, put, restart};
+use super::{BASE, Runtime, SLOT, State, equipment, get, put, restart};
 use crate::provider::{DebugSnapshot, MonsterAction, MonsterInput};
 use std::{
     mem::transmute,
@@ -29,17 +29,6 @@ pub(super) struct Control {
     visible: u8,
     wait_frames: u16,
     tick: Instant,
-}
-
-pub(super) unsafe fn hunter(state: &State) -> Option<usize> {
-    unsafe {
-        let scene = state.read::<usize>(0x1e7fff3c);
-        if scene == 0 {
-            return None;
-        }
-        let index = usize::from(get::<u8>(scene + 9208));
-        (index < 4).then(|| state.address(0x1dc6b750) + index * 4176)
-    }
 }
 
 pub(super) unsafe fn actor(state: &State, runtime: &Runtime) -> Option<usize> {
@@ -103,7 +92,7 @@ pub(super) unsafe fn transform(
     let actions = selected.actions.clone();
     unsafe {
         let source = actor(state, runtime)
-            .or_else(|| hunter(state))
+            .or_else(|| equipment::hunter(state.model()))
             .ok_or("猎人尚未初始化")?;
         let yaw = get::<u16>(source + 164);
         let spawn_offset = state
@@ -158,7 +147,7 @@ unsafe fn area_transition(state: &State, runtime: &mut Runtime) -> bool {
         let Some(control) = runtime.monster.as_ref() else {
             return false;
         };
-        let Some(player) = hunter(state) else {
+        let Some(player) = equipment::hunter(state.model()) else {
             return false;
         };
         let scene = state.read::<usize>(0x1e7fff3c);
@@ -325,7 +314,7 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
             .is_some_and(|control| control.waiting)
         {
             let pool = state.read::<usize>(POOL);
-            let player = hunter(state).filter(|player| {
+            let player = equipment::hunter(state.model()).filter(|player| {
                 get::<u8>(*player) != 0
                     && get::<u8>(*player + 2042) == 0
                     && get::<usize>(*player + 1656) != 0

@@ -1,19 +1,231 @@
-//! Refresh the local hunter through the native equipment loaders on the task thread.
+//! Native model operations for the supported ZZ HD client.
+//!
+//! Every memory operation must run while the verified game DLL and its resources
+//! remain loaded. Model mutations must run on the game's task thread, after its
+//! local hunter is initialized and before native update/render resumes.
 
-use super::{State, get, monster, put};
-use crate::provider::{Appearance, AppearanceChange, AppearanceOptions, Face, Transmogs};
-use std::mem::transmute;
+use super::{
+    Appearance, AppearanceChange, AppearanceOptions, Equipment, EquipmentCatalog, Face, Transmogs,
+};
+use std::{mem::transmute, ptr};
+use windows::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 
-unsafe fn local_hunter(state: &State) -> Result<(usize, usize), String> {
+#[derive(Clone, Copy, Debug)]
+pub struct Client {
+    base: usize,
+}
+
+impl Client {
+    /// # Safety
+    /// `base` must be a live supported `mhfo-hd.dll` image. The caller must keep
+    /// that module loaded throughout all uses and verify its native interfaces.
+    pub const unsafe fn new(base: usize) -> Self {
+        Self { base }
+    }
+
+    pub fn address(self, preferred_va: usize) -> usize {
+        self.base + preferred_va - 0x1000_0000
+    }
+
+    /// # Safety
+    /// The relocated address must contain an initialized readable `T`; no game
+    /// thread may mutate it concurrently with this read.
+    pub unsafe fn read<T: Copy>(self, preferred_va: usize) -> T {
+        unsafe { get(self.address(preferred_va)) }
+    }
+
+    /// # Safety
+    /// The module's mapped image must include every checked function range.
+    pub unsafe fn validate(self) -> Result<(), String> {
+        for &(rva, expected) in SIGNATURES {
+            if unsafe { std::slice::from_raw_parts((self.base + rva) as *const u8, expected.len()) }
+                != expected
+            {
+                return Err(format!("不支持此游戏 DLL 的模型接口：RVA {rva:#x}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+unsafe fn get<T: Copy>(address: usize) -> T {
+    unsafe { ptr::read_unaligned(address as *const T) }
+}
+
+unsafe fn put<T>(address: usize, value: T) {
+    unsafe { ptr::write_unaligned(address as *mut T, value) }
+}
+
+/// # Safety
+/// The client must be live and its scene pointer readable on the game thread.
+pub unsafe fn hunter(client: Client) -> Option<usize> {
     unsafe {
-        let scene = state.read::<usize>(0x1e7fff3c);
-        let player = monster::hunter(state).ok_or("猎人尚未初始化")?;
+        let scene = client.read::<usize>(0x1e7fff3c);
+        if scene == 0 {
+            return None;
+        }
+        let index = usize::from(get::<u8>(scene + 9208));
+        (index < 4).then(|| client.address(0x1dc6b750) + index * 4176)
+    }
+}
+
+/// RVA byte prefixes shared by consumers before installing hooks.
+pub const SIGNATURES: &[(usize, &[u8])] = &[
+    (
+        0x00ba7160,
+        &[0x0f, 0xb7, 0xd0, 0x03, 0xd2, 0xf6, 0x84, 0xd1],
+    ),
+    (
+        0x00b9f080,
+        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x0c, 0x56],
+    ),
+    (
+        0x00a89cd0,
+        &[0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x81, 0xec],
+    ),
+    (
+        0x001c0780,
+        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08, 0x56],
+    ),
+    (
+        0x00b37680,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x20, 0x53, 0x56],
+    ),
+    (
+        0x00b9f820,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x8b],
+    ),
+    (
+        0x008f9960,
+        &[0x56, 0x8d, 0xb7, 0x00, 0x04, 0x00, 0x00, 0x6a],
+    ),
+    (
+        0x008fb7c0,
+        &[0x55, 0x8b, 0xec, 0x81, 0xec, 0x88, 0x00, 0x00],
+    ),
+    (
+        0x008fb1f0,
+        &[0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x83, 0xec, 0x1c, 0x53],
+    ),
+    (
+        0x008fca00,
+        &[0x55, 0x8b, 0xec, 0x83, 0x7d, 0x08, 0x00, 0x57],
+    ),
+    (
+        0x0089f8c0,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x56],
+    ),
+    (
+        0x00a92d70,
+        &[0x55, 0x8b, 0xec, 0x51, 0x85, 0xf6, 0x74, 0x3b],
+    ),
+    // Skip the relocated absolute address in the first MOVSS instruction.
+    (
+        0x008ec098,
+        &[0x0f, 0x57, 0xc0, 0x53, 0x56, 0x57, 0x8b, 0xf8],
+    ),
+    (
+        0x00bba300,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x56, 0x57],
+    ),
+];
+
+unsafe fn text(pointer: usize) -> Option<String> {
+    if pointer == 0 {
+        return None;
+    }
+    // All catalog pointers come from the supported, relocated DAT resource.
+    let mut length = 0;
+    while length < 1024 && unsafe { get::<u8>(pointer + length) } != 0 {
+        length += 1;
+    }
+    if length == 0 || length == 1024 {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer as *const u8, length) };
+    decode_catalog_text(bytes)
+}
+
+fn decode_catalog_text(bytes: &[u8]) -> Option<String> {
+    // Catalog strings in the supported Japanese DAT use CP932.
+    let length = unsafe { MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes, None) };
+    if length <= 0 {
+        return None;
+    }
+    let mut utf16 = vec![0; length as usize];
+    let written =
+        unsafe { MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes, Some(&mut utf16)) };
+    if written != length {
+        return None;
+    }
+    String::from_utf16(&utf16).ok()
+}
+
+/// Read only the equipment and appearance directories from the relocated DAT.
+///
+/// # Safety
+/// The client and supported DAT tables must be live and stable on the game thread.
+pub unsafe fn catalog(client: Client) -> EquipmentCatalog {
+    let mut catalog = EquipmentCatalog::default();
+    unsafe {
+        let dat = client.read::<usize>(0x1e77dcc4);
+        if dat == 0 {
+            return catalog;
+        }
+        catalog.appearances = appearance_options(dat);
+        // Name-table extents match mhf-unicode/resources/layout.json for this ZZ DAT.
+        // Native 10A9BDF0 resolves these spec tables and record strides.
+        // 10BAD8B0 reads weapon model +0; 108F9D00 reads armor male/female +0/+2.
+        for (kind, root, count, specs, stride, class_offset) in [
+            (6, 136, 17568, 124, 52, Some(3)),
+            (7, 132, 4223, 128, 60, Some(4)),
+            (2, 100, 14594, 80, 72, None),
+            (3, 104, 13462, 84, 72, None),
+            (4, 108, 13452, 88, 72, None),
+            (5, 112, 13708, 92, 72, None),
+            (0, 116, 13514, 96, 72, None),
+        ] {
+            let names = get::<usize>(dat + root);
+            let specs = get::<usize>(dat + specs);
+            if names == 0 || specs == 0 {
+                continue;
+            }
+            for id in 0..count {
+                let spec = specs + id * stride;
+                let weapon = class_offset.map(|offset| get::<u8>(spec + offset));
+                if weapon.is_some_and(|weapon| weapon >= 14) {
+                    continue;
+                }
+                let Some(name) = text(get::<usize>(names + id * 4)) else {
+                    continue;
+                };
+                catalog.equipment.push(Equipment {
+                    kind,
+                    id: id as u16,
+                    model_ids: if weapon.is_some() {
+                        [get::<u16>(spec); 2]
+                    } else {
+                        get::<[u16; 2]>(spec)
+                    },
+                    weapon,
+                    name,
+                });
+            }
+        }
+    }
+    catalog
+}
+
+unsafe fn local_hunter(client: Client) -> Result<(usize, usize), String> {
+    unsafe {
+        let scene = client.read::<usize>(0x1e7fff3c);
+        let player = hunter(client).ok_or("猎人尚未初始化")?;
         // Other hunters can share motion allocations; only reload the offline
-        // provider's single hunter in slot 0.
+        // session's single hunter in slot 0.
         if scene == 0 || get::<u8>(scene + 9208) != 0 || get::<u8>(scene + 9210) != 1 {
             return Err("热替换仅支持本地单猎人调试任务".into());
         }
-        let save = state.read::<usize>(0x11a3ee2c);
+        let save = client.read::<usize>(0x11a3ee2c);
         if save == 0 || get::<usize>(player + 3368) == 0 {
             return Err("猎人装备尚未初始化".into());
         }
@@ -21,7 +233,9 @@ unsafe fn local_hunter(state: &State) -> Result<(usize, usize), String> {
     }
 }
 
-pub(super) unsafe fn appearance(save: usize) -> Appearance {
+/// # Safety
+/// `save` must point to the live supported save data with no concurrent writes.
+pub unsafe fn appearance(save: usize) -> Appearance {
     unsafe {
         Appearance {
             female: get::<u8>(save + 1) != 0,
@@ -31,7 +245,10 @@ pub(super) unsafe fn appearance(save: usize) -> Appearance {
     }
 }
 
-pub(super) unsafe fn appearance_options(dat: usize) -> [AppearanceOptions; 2] {
+/// # Safety
+/// A nonzero `dat` must be the supported relocated DAT, including all referenced
+/// name/model tables, and remain readable for this call.
+pub unsafe fn appearance_options(dat: usize) -> [AppearanceOptions; 2] {
     unsafe {
         if dat == 0 {
             return Default::default();
@@ -69,44 +286,52 @@ pub(super) unsafe fn appearance_options(dat: usize) -> [AppearanceOptions; 2] {
     }
 }
 
-pub(super) unsafe fn change_appearance(
-    state: &State,
+/// # Safety
+/// Run on the initialized local hunter's task thread with the live, verified
+/// client. Options and transmogs must belong to its current DAT; an optional
+/// moveset must be a native weapon class in `0..14`.
+pub unsafe fn change_appearance(
+    client: Client,
     moveset: Option<u8>,
     transmogs: &Transmogs,
     options: &[AppearanceOptions; 2],
     change: AppearanceChange,
 ) -> Result<(), String> {
     unsafe {
-        let (player, save) = local_hunter(state)?;
+        let (player, save) = local_hunter(client)?;
         let current = appearance(save);
         let next = current.changed(change, options)?;
         if next == current {
             return Ok(());
         }
-        reset_action(state, player);
+        reset_action(client, player);
         // 10B9F080 copies these fields, resolving the face directory index into
         // player+946 and the hairstyle into player+910. Keep the save in sync
         // so later equipment changes and area loads retain the new appearance.
         put(save + 1, u8::from(next.female));
         put(save + 2, next.face);
         put(save + 3, next.hair);
-        refresh(state, moveset, transmogs, player, save, true);
+        refresh(client, moveset, transmogs, player, save, true);
     }
     Ok(())
 }
 
-pub(super) unsafe fn equip(
-    state: &State,
+/// # Safety
+/// Run on the initialized local hunter's task thread with the live, verified
+/// client. `kind`/`id` must come from its equipment catalogue, transmogs must have
+/// been validated against that catalogue, and a moveset must be in `0..14`.
+pub unsafe fn equip(
+    client: Client,
     moveset: Option<u8>,
     transmogs: &Transmogs,
     kind: u8,
     id: u16,
 ) -> Result<(), String> {
     unsafe {
-        let (player, save) = local_hunter(state)?;
+        let (player, save) = local_hunter(client)?;
         let add: unsafe extern "C" fn(usize, u8, u16, u16) -> i16 =
-            transmute(state.address(0x10ba6b10));
-        let capacity: unsafe extern "C" fn(usize) -> i16 = transmute(state.address(0x10ba9ad0));
+            transmute(client.address(0x10ba6b10));
+        let capacity: unsafe extern "C" fn(usize) -> i16 = transmute(client.address(0x10ba9ad0));
         let count = i32::from(capacity(save)) * 100;
         if !(1..=8000).contains(&count) {
             return Err("装备箱状态无效".into());
@@ -120,12 +345,12 @@ pub(super) unsafe fn equip(
             return Err("临时装备箱已满".into());
         }
 
-        reset_action(state, player);
+        reset_action(client, player);
 
         let equipped: u32;
         std::arch::asm!(
             "call edx",
-            in("edx") state.address(0x10ba7160),
+            in("edx") client.address(0x10ba7160),
             inlateout("eax") index as u32 => equipped,
             in("ecx") save,
             clobber_abi("C"),
@@ -134,12 +359,15 @@ pub(super) unsafe fn equip(
             return Err("无法装备所选装备".into());
         }
 
-        refresh(state, moveset, transmogs, player, save, false);
+        refresh(client, moveset, transmogs, player, save, false);
     }
     Ok(())
 }
 
-pub(super) unsafe fn apply_transmogs(player: usize, transmogs: &Transmogs) {
+/// # Safety
+/// `player` must be a writable native hunter on the task thread. Every nonzero
+/// override ID must already have been validated against the supported DAT.
+pub unsafe fn apply_transmogs(player: usize, transmogs: &Transmogs) {
     unsafe {
         // 108F9D00 resolves these equipment IDs through each armor DAT table.
         // They are separate from the equipped records at player+928 and from
@@ -188,17 +416,21 @@ unsafe fn validate_transmogs(
     Ok(())
 }
 
-pub(super) unsafe fn change_transmog(state: &State, transmogs: &Transmogs) -> Result<(), String> {
+/// # Safety
+/// Run on the initialized local hunter's task thread with the live, verified
+/// client. Nonzero IDs must first pass `Transmogs::changed` for its catalogue;
+/// this function additionally checks native gender/model compatibility.
+pub unsafe fn change_transmog(client: Client, transmogs: &Transmogs) -> Result<(), String> {
     unsafe {
-        let (player, _) = local_hunter(state)?;
-        validate_transmogs(state.read(0x1e77dcc4), player, transmogs)?;
+        let (player, _) = local_hunter(client)?;
+        validate_transmogs(client.read(0x1e77dcc4), player, transmogs)?;
         if [0, 2, 3, 4, 5]
             .into_iter()
             .all(|kind| get::<u16>(player + 4012 + 2 * kind) == transmogs.armor[kind])
         {
             return Ok(());
         }
-        reset_action(state, player);
+        reset_action(client, player);
         for kind in [0, 2, 3, 4, 5] {
             if get::<u16>(player + 4012 + 2 * kind) != transmogs.armor[kind] {
                 // Different armor IDs can share a model but use different
@@ -210,35 +442,35 @@ pub(super) unsafe fn change_transmog(state: &State, transmogs: &Transmogs) -> Re
         // Keep weapon and motion allocations intact. Armor loading also rebuilds
         // the selected parts' cosmetic effects through 10BAFF00/10BB0200.
         let release: unsafe extern "thiscall" fn(usize) -> i32 =
-            transmute(state.address(0x108fb7c0));
-        let load: unsafe extern "C" fn(usize) = transmute(state.address(0x108fb1f0));
+            transmute(client.address(0x108fb7c0));
+        let load: unsafe extern "C" fn(usize) = transmute(client.address(0x108fb1f0));
         release(player);
         load(player);
         // The chest owns animation buffers. Bind them before the next native
         // update, retaining the current weapon class and its loaded moveset.
         bind_animations(
-            state.address(0x10a92d70),
-            state.address(0x108ec090),
-            state.address(0x10bba300),
+            client.address(0x10a92d70),
+            client.address(0x108ec090),
+            client.address(0x10bba300),
             player,
         );
-        reset_action(state, player);
+        reset_action(client, player);
     }
     Ok(())
 }
 
-unsafe fn reset_action(state: &State, player: usize) {
+unsafe fn reset_action(client: Client, player: usize) {
     unsafe {
         // End the old action while its weapon class and resources still agree.
         let change: unsafe extern "C" fn(usize, i16, i16, i16, u8) -> i16 =
-            transmute(state.address(0x10a80a00));
+            transmute(client.address(0x10a80a00));
         change(player, 0, 0, 2, 1);
         put(player + 18, 0_u8);
     }
 }
 
 unsafe fn refresh(
-    state: &State,
+    client: Client,
     moveset: Option<u8>,
     transmogs: &Transmogs,
     player: usize,
@@ -249,19 +481,19 @@ unsafe fn refresh(
         // 10B9F080 also rebuilds the save's equipped records. 10B9FE90 would
         // overwrite the live item pouch, so refresh its equipment fields only.
         let copy_equipment: unsafe extern "C" fn(usize, usize) =
-            transmute(state.address(0x10b9f080));
+            transmute(client.address(0x10b9f080));
         let copy_armor_properties: unsafe extern "C" fn(usize) =
-            transmute(state.address(0x10b9f820));
-        let update_skills: unsafe extern "C" fn(usize) = transmute(state.address(0x10a89cd0));
-        let cache_skills: unsafe extern "C" fn(usize) = transmute(state.address(0x101c0780));
+            transmute(client.address(0x10b9f820));
+        let update_skills: unsafe extern "C" fn(usize) = transmute(client.address(0x10a89cd0));
+        let cache_skills: unsafe extern "C" fn(usize) = transmute(client.address(0x101c0780));
         copy_equipment(player, save);
         // Copying equipment restores the save's native cosmetic fields, so
-        // reapply this debug session's selections before any model resolution.
+        // reapply this session's selections before any model resolution.
         apply_transmogs(player, transmogs);
         // EAX=player: refresh the equipped weapon's secret-book style.
         std::arch::asm!(
             "call edx",
-            in("edx") state.address(0x10b37680),
+            in("edx") client.address(0x10b37680),
             inlateout("eax") player => _,
             clobber_abi("C"),
         );
@@ -288,22 +520,22 @@ unsafe fn refresh(
         // release/load just those models. Do not call 106A7FB0: it also frees
         // player+1720, which 10A5E9F8 dereferences on the very next hunter update.
         reload_models(
-            state.address(0x108f9960),
-            state.address(0x108fb7c0),
-            state.address(0x108fca00),
+            client.address(0x108f9960),
+            client.address(0x108fb7c0),
+            client.address(0x108fca00),
             player,
         );
 
         // 108FD1D0 replaces motion allocations. Finish rebinding in this dispatch
         // before native update/render can observe an old animation or blend.
-        reload_moveset(state.address(0x1089f8c0), u32::from(weapon));
+        reload_moveset(client.address(0x1089f8c0), u32::from(weapon));
         bind_animations(
-            state.address(0x10a92d70),
-            state.address(0x108ec090),
-            state.address(0x10bba300),
+            client.address(0x10a92d70),
+            client.address(0x108ec090),
+            client.address(0x10bba300),
             player,
         );
-        reset_action(state, player);
+        reset_action(client, player);
     }
 }
 
@@ -474,5 +706,24 @@ mod tests {
         for options in options {
             assert!((17..=26).all(|hair| !options.hair.contains(&hair)));
         }
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::decode_catalog_text;
+
+    #[test]
+    fn catalog_preserves_ascii_names() {
+        assert_eq!(decode_catalog_text(b"Iron Sword").unwrap(), "Iron Sword");
+    }
+
+    #[test]
+    fn catalog_decodes_original_cp932() {
+        assert_eq!(
+            decode_catalog_text(b"\x83\x65\x83\x58\x83\x67").unwrap(),
+            "テスト"
+        );
+        assert!(decode_catalog_text(b"\x83").is_none());
     }
 }

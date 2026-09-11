@@ -36,7 +36,7 @@ pub fn scroll_keyboard(ui: &mut Ui, focus: Id) {
         if held {
             480.0 * dt
         } else if pressed {
-            36.0
+            ui.spacing().interact_size.y
         } else {
             0.0
         }

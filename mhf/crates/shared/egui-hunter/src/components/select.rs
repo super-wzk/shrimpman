@@ -74,22 +74,28 @@ impl<'a> SelectField<'a> {
         ui.scope_builder(UiBuilder::new().id(self.id.with("select")), |ui| {
             crate::input::discard_escape_repeats(ui.ctx());
             let enabled = ui.is_enabled();
-            let original_widgets = ui.visuals().widgets.clone();
-            let original_padding = ui.spacing().button_padding;
-            let original_height = ui.spacing().interact_size.y;
-            let original_width = ui.spacing().combo_width;
+            let tokens = Tokens::get(ui);
+            let original_style = ui.style().clone();
             let width = ui.available_width();
-            let height = original_height.max(40.0);
+            let height = ui
+                .spacing()
+                .interact_size
+                .y
+                .max(crate::Density::get(ui).field_height());
             let content_height = ui
                 .text_style_height(&egui::TextStyle::Button)
                 .max(ui.spacing().icon_width);
-            let padding = original_padding.y.max((height - content_height) / 2.0);
+            let padding = ui
+                .spacing()
+                .button_padding
+                .y
+                .max((height - content_height) / 2.0);
             ui.spacing_mut().interact_size.y = height;
             ui.spacing_mut().button_padding.y = padding;
             ui.spacing_mut().combo_width = width;
 
             let status = validation_color(ui);
-            let focus_color = status.unwrap_or_else(|| Tokens::get(ui).focus);
+            let focus_color = status.unwrap_or(tokens.focus);
             let widgets = &mut ui.visuals_mut().widgets;
             if let Some(color) = status {
                 for visual in [
@@ -103,8 +109,6 @@ impl<'a> SelectField<'a> {
             }
             widgets.active.bg_stroke = Stroke::new(2.0, focus_color);
             widgets.open.bg_stroke = Stroke::new(2.0, focus_color);
-            let field_widgets = widgets.clone();
-
             let output = self.native.show_ui(ui, |ui| {
                 // Native popups live outside the disabled parent Ui. Close an
                 // existing menu before its options can handle any queued input.
@@ -112,41 +116,19 @@ impl<'a> SelectField<'a> {
                     ui.close();
                     return None;
                 }
-                // The field's border and height belong to the closed control.
-                // Restore inherited values in the menu, retaining native popup-style overrides.
-                let widgets = &mut ui.visuals_mut().widgets;
-                for (visual, field, original) in [
-                    (
-                        &mut widgets.inactive,
-                        field_widgets.inactive,
-                        original_widgets.inactive,
-                    ),
-                    (
-                        &mut widgets.hovered,
-                        field_widgets.hovered,
-                        original_widgets.hovered,
-                    ),
-                    (
-                        &mut widgets.active,
-                        field_widgets.active,
-                        original_widgets.active,
-                    ),
-                    (&mut widgets.open, field_widgets.open, original_widgets.open),
-                ] {
-                    if visual.bg_stroke == field.bg_stroke {
-                        visual.bg_stroke = original.bg_stroke;
-                    }
-                }
-                if ui.spacing().button_padding.y == padding {
-                    ui.spacing_mut().button_padding.y = original_padding.y;
-                }
-                if ui.spacing().interact_size.y == height {
-                    ui.spacing_mut().interact_size.y = original_height;
-                }
-                if ui.spacing().combo_width == width {
-                    ui.spacing_mut().combo_width = original_width;
-                }
-                Some(menu_contents(ui))
+                Some(
+                    tokens
+                        .scope(ui, |ui| {
+                            // Restore the local style before the field's height and
+                            // validation overrides, then apply native popup overrides.
+                            // The popup Area otherwise starts from the global style.
+                            let popup_style = egui::containers::menu::MenuConfig::find(ui).style;
+                            ui.set_style(original_style);
+                            popup_style.apply(ui.style_mut());
+                            menu_contents(ui)
+                        })
+                        .inner,
+                )
             });
             if !output.response.enabled() {
                 output.response.surrender_focus();

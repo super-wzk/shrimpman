@@ -1,8 +1,10 @@
-use egui::{Color32, Context, CornerRadius, FontId, Margin, Stroke, TextStyle, vec2};
+use egui::{Color32, Context, CornerRadius, FontId, Stroke, TextStyle};
 
+mod density;
 mod icons;
 pub(crate) mod paint;
 mod tokens;
+pub use density::Density;
 pub use icons::Icon;
 pub use tokens::Tokens;
 
@@ -15,6 +17,13 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Choose the host's initial density. Use `Density::scope` for one local UI.
+    pub fn density(mut self, density: Density) -> Self {
+        density.apply_spacing(&mut self.style);
+        self.tokens.density = density;
+        self
+    }
+
     /// Install during host initialization or when changing themes.
     /// Font data and the host's input configuration remain owned by the host.
     pub fn apply(&self, context: &Context) {
@@ -88,15 +97,7 @@ impl Default for Theme {
         visuals.widgets.open.weak_bg_fill = raised;
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, border);
         visuals.text_cursor.stroke.color = gold;
-        style.spacing.item_spacing = vec2(8.0, 6.0);
-        style.spacing.window_margin = Margin::same(12);
-        style.spacing.button_padding = vec2(12.0, 7.0);
-        style.spacing.icon_width = 20.0;
-        style.spacing.icon_width_inner = 16.0;
-        style.spacing.icon_spacing = 8.0;
-        style.spacing.interact_size = vec2(36.0, 36.0);
-        style.spacing.slider_width = 180.0;
-        style.spacing.slider_rail_height = 10.0;
+        Density::Standard.apply_spacing(&mut style);
         style.spacing.tooltip_width = 320.0;
         style.spacing.scroll.bar_width = 6.0;
         style.animation_time = 0.14;

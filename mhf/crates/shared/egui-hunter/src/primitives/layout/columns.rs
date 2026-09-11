@@ -7,7 +7,7 @@ pub struct ResponsiveColumns {
     id: Id,
     min_width: f32,
     max_columns: usize,
-    gap: f32,
+    gap: Option<f32>,
 }
 
 impl ResponsiveColumns {
@@ -16,7 +16,7 @@ impl ResponsiveColumns {
             id,
             min_width: 400.0,
             max_columns: 2,
-            gap: 16.0,
+            gap: None,
         }
     }
 
@@ -29,7 +29,7 @@ impl ResponsiveColumns {
         self
     }
     pub fn gap(mut self, gap: f32) -> Self {
-        self.gap = gap.max(0.0);
+        self.gap = Some(gap.max(0.0));
         self
     }
 
@@ -43,11 +43,11 @@ impl ResponsiveColumns {
     ) -> InnerResponse<Vec<R>> {
         ui.scope(|ui| {
             let item_spacing = ui.spacing().item_spacing;
-            let columns = (((ui.available_width() + self.gap) / (self.min_width + self.gap))
-                as usize)
+            let gap = self.gap.unwrap_or(item_spacing.x * 2.0);
+            let columns = (((ui.available_width() + gap) / (self.min_width + gap)) as usize)
                 .clamp(1, self.max_columns)
                 .min(count.max(1));
-            ui.spacing_mut().item_spacing = egui::vec2(self.gap, self.gap);
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             let mut result = Vec::with_capacity(count);
             for start in (0..count).step_by(columns) {
                 ui.columns(columns, |cols| {

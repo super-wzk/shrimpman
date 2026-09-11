@@ -1,0 +1,25 @@
+[package]
+name = "mhf-workbench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+provider = ["dep:egui", "dep:egui-hunter", "dep:serde", "dep:toml", "dep:mhf-font", "dep:mhf-hooks", "dep:mhf-mod-host", "dep:mhf-mod-sdk", "dep:mhf-quest", "dep:mhf-ui", "dep:windows"]
+
+[dependencies]
+mhf-resource = { path = "../../shared/resource" }
+
+[target.'cfg(windows)'.dependencies]
+egui = { workspace = true, optional = true }
+egui-hunter = { path = "../../shared/egui-hunter", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+toml = { version = "1", optional = true }
+mhf-font = { path = "../font", features = ["provider"], optional = true }
+mhf-hooks = { path = "../../runtime/hooks", optional = true }
+mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
+mhf-mod-sdk = { path = "../../runtime/mod-sdk", optional = true }
+mhf-quest = { path = "../quest", optional = true }
+mhf-ui = { path = "../ui", features = ["provider"], optional = true }
+windows = { workspace = true, optional = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D9", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_Kernel"] }

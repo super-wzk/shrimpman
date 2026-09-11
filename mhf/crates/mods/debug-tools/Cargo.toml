@@ -8,7 +8,7 @@ publish = false
 default = []
 headers = ["mhf-mod-sdk/headers"]
 provider = [
-    "dep:egui", "dep:egui-hunter", "dep:mhf-font", "dep:mhf-hooks",
+    "dep:mhf-base", "dep:egui", "dep:egui-hunter", "dep:mhf-font", "dep:mhf-hooks",
     "dep:mhf-mod-host", "dep:mhf-quest", "dep:mhf-ui", "dep:windows",
 ]
 
@@ -17,6 +17,7 @@ mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
 safer-ffi = { workspace = true, features = ["dyn-traits"] }
 
 [target.'cfg(windows)'.dependencies]
+mhf-base = { path = "../base", optional = true }
 egui = { workspace = true, optional = true }
 egui-hunter = { path = "../../shared/egui-hunter", optional = true }
 mhf-font = { path = "../font", features = ["provider"], optional = true }
@@ -26,7 +27,6 @@ mhf-hooks = { path = "../../runtime/hooks", optional = true }
 mhf-mod-host = { path = "../../runtime/mod-host", optional = true }
 windows = { workspace = true, optional = true, features = [
     "Win32_Foundation",
-    "Win32_Globalization",
     "Win32_System_LibraryLoader",
 ] }
 

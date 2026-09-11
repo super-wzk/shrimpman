@@ -30,6 +30,7 @@ let
     "/imsvc${windowsSdk}/sdk/include/um"
   ];
   debugFeature = lib.optionalString config.development.mhf.debug.enable ",debug";
+  workbenchFeature = lib.optionalString config.development.mhf.workbench.enable ",workbench";
   command =
     name: text:
     mkCommand {
@@ -138,6 +139,9 @@ in
     debug.enable = lib.mkEnableOption "MHF offline debugging tools and control window" // {
       default = true;
     };
+    workbench.enable = lib.mkEnableOption "MHF resource workbench" // {
+      default = true;
+    };
     gameDirectory = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -176,7 +180,7 @@ in
       mhf-mods-build = mkDefault (
         command "mhf-mods-build" ''
           exec cargo build -p mhf-mod-manager --bin mhf-mods --release \
-            --no-default-features --features gui,login${debugFeature} \
+            --no-default-features --features gui,login${debugFeature}${workbenchFeature} \
             --target i686-pc-windows-msvc --locked "$@"
         ''
       );
@@ -189,7 +193,7 @@ in
       mhf-build = mkDefault (
         command "mhf-build" ''
           exec cargo build -p mhf-launcher --bin mhf-launcher --release \
-            --no-default-features --features login${debugFeature} \
+            --no-default-features --features login${debugFeature}${workbenchFeature} \
             --target i686-pc-windows-msvc --locked "$@"
         ''
       );

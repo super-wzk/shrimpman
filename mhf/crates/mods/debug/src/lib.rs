@@ -58,14 +58,7 @@ impl Module for DebugModule {
                 launch
                     .prepare_local(&bytes)
                     .map_err(|error| error.to_string())?;
-                params.selected_character_id_1 = 1;
-                params.selected_character_id_2 = 1;
-                params.character_ids.fill(0);
-                params.character_ids[0] = 1;
-                params.fixed_1d58_one = 1;
-                params.fixed_200c_one = 1;
-                params.selected_character_name.fill(0);
-                params.selected_character_name[..5].copy_from_slice(b"Debug");
+                mhf_quest::configure_local_hunter(params, b"Debug")?;
                 Ok(true)
             }));
         startup.register(context)

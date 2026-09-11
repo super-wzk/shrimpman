@@ -110,7 +110,7 @@ impl Widget for Button<'_> {
             .max(self.min_size)
             .max(ui.spacing().interact_size);
         if self.kind == ButtonKind::Primary {
-            size.y = size.y.max(44.0);
+            size.y = size.y.max(crate::Density::get(ui).primary_button_height());
         }
         if self.full_width {
             size.x = ui.available_width();

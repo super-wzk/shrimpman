@@ -29,4 +29,4 @@ pub use input::{Direction, GamepadState, InputDevice, NavigationInput, consume_e
 pub use primitives::focus::{EngagementPlugin, FocusEngagement, FocusGroup, scroll_on_focus};
 pub use primitives::layout::{ListOutput, ResponsiveColumns, VirtualList, scroll_keyboard};
 pub use primitives::navigation::{NavigationStack, NavigationState};
-pub use theme::{Icon, Theme, Tokens};
+pub use theme::{Density, Icon, Theme, Tokens};

@@ -1,9 +1,9 @@
 mod area;
 mod combat;
-mod equipment;
 mod monster;
 
-use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Equipment, Transmogs};
+use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Transmogs};
+use mhf_base::model::native::{self as equipment, Client};
 use mhf_hooks::{HookGuard, HookSlot, ModuleReference};
 use mhf_quest::QuestControl;
 use std::{
@@ -16,7 +16,6 @@ use std::{
     },
 };
 use windows::Win32::Foundation::HMODULE;
-use windows::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 
 static SLOT: HookSlot<State> = HookSlot::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -63,6 +62,11 @@ impl State {
     /// Call after all hooks detach, retaining this state through final DLL unload.
     pub(crate) unsafe fn prepare_release(&mut self) -> Result<(), String> {
         unsafe { self.module.release() }
+    }
+
+    fn model(&self) -> Client {
+        // State is held by the installed hook guard, which retains and validates the DLL.
+        unsafe { Client::new(self.base) }
     }
 
     fn address(&self, va: usize) -> usize {
@@ -112,67 +116,10 @@ const SIGNATURES: &[(usize, &[u8])] = &[
     (0x008b7b60, &[0x55, 0x8b, 0xec, 0x80, 0x3e, 0x00]),
     (0x00846ca0, &[0x55, 0x8b, 0xec, 0x56, 0x8b, 0xf0]),
     (0x00aa0d70, &[0x0f, 0xb7, 0x8a, 0x24, 0x06, 0x00, 0x00]),
-    (
-        0x00ba7160,
-        &[0x0f, 0xb7, 0xd0, 0x03, 0xd2, 0xf6, 0x84, 0xd1],
-    ),
-    (
-        0x00b9f080,
-        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x0c, 0x56],
-    ),
-    (
-        0x00a89cd0,
-        &[0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x81, 0xec],
-    ),
-    (
-        0x001c0780,
-        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08, 0x56],
-    ),
-    (
-        0x00b37680,
-        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x20, 0x53, 0x56],
-    ),
-    (
-        0x00b9f820,
-        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x8b],
-    ),
-    (
-        0x008f9960,
-        &[0x56, 0x8d, 0xb7, 0x00, 0x04, 0x00, 0x00, 0x6a],
-    ),
-    (
-        0x008fb7c0,
-        &[0x55, 0x8b, 0xec, 0x81, 0xec, 0x88, 0x00, 0x00],
-    ),
-    (
-        0x008fb1f0,
-        &[0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x83, 0xec, 0x1c, 0x53],
-    ),
-    (
-        0x008fca00,
-        &[0x55, 0x8b, 0xec, 0x83, 0x7d, 0x08, 0x00, 0x57],
-    ),
-    (
-        0x0089f8c0,
-        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x56],
-    ),
-    (
-        0x00a92d70,
-        &[0x55, 0x8b, 0xec, 0x51, 0x85, 0xf6, 0x74, 0x3b],
-    ),
-    // Skip the relocated absolute address in the first MOVSS instruction.
-    (
-        0x008ec098,
-        &[0x0f, 0x57, 0xc0, 0x53, 0x56, 0x57, 0x8b, 0xf8],
-    ),
-    (
-        0x00bba300,
-        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x56, 0x57],
-    ),
 ];
 
 unsafe fn validate(base: usize) -> Result<(), String> {
-    for &(rva, expected) in SIGNATURES {
+    for &(rva, expected) in SIGNATURES.iter().chain(equipment::SIGNATURES) {
         if unsafe { std::slice::from_raw_parts((base + rva) as *const u8, expected.len()) }
             != expected
         {
@@ -302,7 +249,7 @@ unsafe extern "C" fn initialize_players() -> i32 {
         let original: unsafe extern "C" fn() -> i32 = transmute(state.initialize_players);
         let result = original();
         let runtime = state.runtime.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(player) = monster::hunter(state)
+        if let Some(player) = equipment::hunter(state.model())
             && get::<u8>(player) != 0
         {
             // 1089DF70 loads motions and models after this constructor returns.
@@ -329,37 +276,6 @@ unsafe fn restart(state: &State, runtime: &mut Runtime) -> Result<(), String> {
     }
 }
 
-unsafe fn text(pointer: usize) -> Option<String> {
-    if pointer == 0 {
-        return None;
-    }
-    // All catalog pointers come from the supported, relocated DAT resource.
-    let mut length = 0;
-    while length < 1024 && unsafe { get::<u8>(pointer + length) } != 0 {
-        length += 1;
-    }
-    if length == 0 || length == 1024 {
-        return None;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(pointer as *const u8, length) };
-    decode_catalog_text(bytes)
-}
-
-fn decode_catalog_text(bytes: &[u8]) -> Option<String> {
-    // Catalog strings in the supported Japanese DAT use CP932.
-    let length = unsafe { MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes, None) };
-    if length <= 0 {
-        return None;
-    }
-    let mut utf16 = vec![0; length as usize];
-    let written =
-        unsafe { MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes, Some(&mut utf16)) };
-    if written != length {
-        return None;
-    }
-    String::from_utf16(&utf16).ok()
-}
-
 unsafe fn catalog(state: &State) -> Catalog {
     let mut catalog = Catalog::default();
     unsafe {
@@ -375,47 +291,10 @@ unsafe fn catalog(state: &State) -> Catalog {
                 actions: Arc::new(super::monsters::actions(id as u8)),
             })
             .collect();
+        let models = equipment::catalog(state.model());
+        catalog.equipment = models.equipment;
+        catalog.appearances = models.appearances;
         let dat = state.read::<usize>(0x1e77dcc4);
-        catalog.appearances = equipment::appearance_options(dat);
-        // Name-table extents match mhf-unicode/resources/layout.json for this ZZ DAT.
-        // Native 10A9BDF0 resolves these spec tables and record strides.
-        // 10BAD8B0 reads weapon model +0; 108F9D00 reads armor male/female +0/+2.
-        for (kind, root, count, specs, stride, class_offset) in [
-            (6, 136, 17568, 124, 52, Some(3)),
-            (7, 132, 4223, 128, 60, Some(4)),
-            (2, 100, 14594, 80, 72, None),
-            (3, 104, 13462, 84, 72, None),
-            (4, 108, 13452, 88, 72, None),
-            (5, 112, 13708, 92, 72, None),
-            (0, 116, 13514, 96, 72, None),
-        ] {
-            let names = get::<usize>(dat + root);
-            let specs = get::<usize>(dat + specs);
-            if names == 0 || specs == 0 {
-                continue;
-            }
-            for id in 0..count {
-                let spec = specs + id * stride;
-                let weapon = class_offset.map(|offset| get::<u8>(spec + offset));
-                if weapon.is_some_and(|weapon| weapon >= 14) {
-                    continue;
-                }
-                let Some(name) = text(get::<usize>(names + id * 4)) else {
-                    continue;
-                };
-                catalog.equipment.push(Equipment {
-                    kind,
-                    id: id as u16,
-                    model_ids: if weapon.is_some() {
-                        [get::<u16>(spec); 2]
-                    } else {
-                        get::<[u16; 2]>(spec)
-                    },
-                    weapon,
-                    name,
-                });
-            }
-        }
         let directory = get::<usize>(dat + 389 * 4);
         for weapon in 0..14 {
             for id in [0, 6, 9] {
@@ -603,21 +482,27 @@ unsafe extern "C" fn dispatch() -> i32 {
                             .find(|item| (item.kind, item.id) == (kind, id))
                         {
                             let name = item.name.clone();
-                            equipment::equip(state, runtime.moveset, &runtime.transmogs, kind, id)
-                                .map(|()| {
-                                    runtime.pending_action = None;
-                                    format!("已热替换为 {name}")
-                                })
+                            equipment::equip(
+                                state.model(),
+                                runtime.moveset,
+                                &runtime.transmogs,
+                                kind,
+                                id,
+                            )
+                            .map(|()| {
+                                runtime.pending_action = None;
+                                format!("已热替换为 {name}")
+                            })
                         } else {
                             Err("装备编号无效".into())
                         }
                     }
                     DebugCommand::Transmog { kind, id } if current.ready => runtime
                         .transmogs
-                        .changed(kind, id, &runtime.catalog)
+                        .changed(kind, id, &runtime.catalog.equipment)
                         .map_err(String::from)
                         .and_then(|next| {
-                            equipment::change_transmog(state, &next)?;
+                            equipment::change_transmog(state.model(), &next)?;
                             runtime.transmogs = next;
                             runtime.pending_action = None;
                             Ok(if id.is_some() {
@@ -628,7 +513,7 @@ unsafe extern "C" fn dispatch() -> i32 {
                         }),
                     DebugCommand::Appearance(change) if current.ready => {
                         equipment::change_appearance(
-                            state,
+                            state.model(),
                             runtime.moveset,
                             &runtime.transmogs,
                             &runtime.catalog.appearances,
@@ -755,37 +640,19 @@ fn session_started(state: &State) -> bool {
 }
 
 #[cfg(test)]
-mod text_tests {
-    use super::decode_catalog_text;
-
-    #[test]
-    fn catalog_preserves_ascii_names() {
-        assert_eq!(decode_catalog_text(b"Iron Sword").unwrap(), "Iron Sword");
-    }
-
-    #[test]
-    fn catalog_decodes_original_cp932() {
-        assert_eq!(
-            decode_catalog_text(b"\x83\x65\x83\x58\x83\x67").unwrap(),
-            "テスト"
-        );
-        assert!(decode_catalog_text(b"\x83").is_none());
-    }
-}
-
-#[cfg(test)]
 mod hook_tests {
-    use super::{SIGNATURES, validate};
+    use super::{SIGNATURES, equipment, validate};
 
     #[test]
     fn debug_validation_does_not_revalidate_the_already_hooked_offline_bootstrap() {
         let size = SIGNATURES
             .iter()
+            .chain(equipment::SIGNATURES)
             .map(|(rva, bytes)| rva + bytes.len())
             .max()
             .unwrap();
         let mut image = vec![0; size];
-        for &(rva, bytes) in SIGNATURES {
+        for &(rva, bytes) in SIGNATURES.iter().chain(equipment::SIGNATURES) {
             image[rva..rva + bytes.len()].copy_from_slice(bytes);
         }
         image[0x008d25a0..0x008d25a8].fill(0xe9);

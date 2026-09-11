@@ -5,10 +5,11 @@ edition.workspace = true
 publish = false
 
 [features]
-default = ["gui", "login", "debug"]
+default = ["gui", "login", "debug", "workbench"]
 gui = ["dep:eframe", "dep:egui", "dep:egui-hunter", "dep:mhf-font"]
 login = []
 debug = []
+workbench = []
 
 [[bin]]
 name = "mhf-mods"

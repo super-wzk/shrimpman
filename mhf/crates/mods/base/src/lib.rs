@@ -1,6 +1,7 @@
 //! The built-in `mhf.base` runtime, assembled from the native support components.
 
 pub mod config;
+pub mod model;
 pub use config::*;
 
 #[cfg(all(windows, not(target_arch = "x86")))]

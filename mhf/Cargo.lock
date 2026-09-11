@@ -1629,6 +1629,7 @@ dependencies = [
  "mhf-ui",
  "serde",
  "toml",
+ "windows",
 ]
 
 [[package]]
@@ -1662,6 +1663,7 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "egui-hunter",
+ "mhf-base",
  "mhf-font",
  "mhf-hooks",
  "mhf-mod-host",
@@ -1730,6 +1732,7 @@ dependencies = [
  "mhf-mod-package",
  "mhf-quest",
  "mhf-ui",
+ "mhf-workbench",
 ]
 
 [[package]]
@@ -1838,6 +1841,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mhf-resource"
+version = "0.1.0"
+
+[[package]]
 name = "mhf-translation"
 version = "0.1.0"
 dependencies = [
@@ -1884,6 +1891,24 @@ dependencies = [
  "unicode-width",
  "windows",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mhf-workbench"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-hunter",
+ "mhf-font",
+ "mhf-hooks",
+ "mhf-mod-host",
+ "mhf-mod-sdk",
+ "mhf-quest",
+ "mhf-resource",
+ "mhf-ui",
+ "serde",
+ "toml",
+ "windows",
 ]
 
 [[package]]

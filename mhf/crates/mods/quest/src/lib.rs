@@ -3,6 +3,9 @@
 pub mod api;
 pub use api::*;
 
+mod local_hunter;
+pub use local_hunter::configure_local_hunter;
+
 #[cfg(all(feature = "provider", windows, not(target_arch = "x86")))]
 compile_error!("the MHF quest provider requires i686 Windows");
 

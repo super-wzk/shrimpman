@@ -80,7 +80,7 @@ pub(super) unsafe extern "C" fn render_world() -> i32 {
     };
     unsafe {
         let visibility = controlled(state)
-            .and_then(|_| monster::hunter(state))
+            .and_then(|_| super::equipment::hunter(state.model()))
             .map(|player| {
                 let visible = get::<u8>(player + 1);
                 put(player + 1, 0_u8);
@@ -168,7 +168,7 @@ unsafe extern "C" fn hit_target_impl(effect: usize, mut target: usize, source: u
     let original = if let Some(state) = invocation.state() {
         unsafe {
             if let Some(actor) = controlled(state) {
-                let player = monster::hunter(state);
+                let player = super::equipment::hunter(state.model());
                 if source == actor {
                     if target == actor || player == Some(target) {
                         return;

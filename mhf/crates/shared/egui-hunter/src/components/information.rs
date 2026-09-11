@@ -101,7 +101,7 @@ pub fn notice(ui: &mut Ui, kind: NoticeKind, text: &str) -> Response {
     egui::Frame::new()
         .fill(fill)
         .corner_radius(ui.visuals().widgets.inactive.corner_radius)
-        .inner_margin(12)
+        .inner_margin(ui.spacing().window_margin)
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 let (rect, _) =
@@ -186,21 +186,28 @@ impl Widget for Meter<'_> {
                     label,
                     ui.visuals().text_color(),
                 );
+            let rail_height = ui.spacing().slider_rail_height.clamp(0.0, rect.height());
             let bar = Rect::from_min_max(
-                pos2(rect.left() + label_width, rect.center().y - 5.0),
-                pos2(rect.right(), rect.center().y + 5.0),
+                pos2(
+                    rect.left() + label_width,
+                    rect.center().y - rail_height * 0.5,
+                ),
+                pos2(rect.right(), rect.center().y + rail_height * 0.5),
             );
             painter.add(paint::rounded(
                 bar,
-                CornerRadius::same(5),
+                CornerRadius::same((rail_height * 0.5).round() as u8),
                 ui.visuals().extreme_bg_color,
                 ui.visuals().widgets.noninteractive.bg_stroke,
             ));
             let fill = Rect::from_min_size(
                 bar.min + vec2(2.0, 2.0),
-                vec2((bar.width() - 4.0) * fraction, bar.height() - 4.0),
+                vec2(
+                    (bar.width() - 4.0).max(0.0) * fraction,
+                    (bar.height() - 4.0).max(0.0),
+                ),
             );
-            if fill.width() > 0.0 {
+            if fill.width() > 0.0 && fill.height() > 0.0 {
                 painter.add(paint::rounded(
                     fill,
                     CornerRadius::same(3),

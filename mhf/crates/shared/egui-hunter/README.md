@@ -93,6 +93,37 @@ Panel::new("任务列表").show(ui, |ui| {
 
 `Theme` 只负责安装预设，包含原生 `egui::Style` 和少量专用 `Tokens`。可在安装前修改 `theme.style`；安装后，原生控件和自绘控件都读取当前 `Ui`，不再持有主题引用。
 
+### 界面密度
+
+默认 `Density::Standard` 保持现有登录和游戏 UI 的尺寸。资源工具等需要更多可见内容的页面，可以只为自己的 UI 子树启用 `Density::Compact`：
+
+```rust
+use egui_hunter::{Button, Density, TextField};
+
+Density::Compact.scope(ui, |ui| {
+    ui.button("原生按钮");
+    ui.add(Button::new("组件按钮"));
+    ui.add(TextField::new(egui::Id::new("filter"), &mut filter));
+});
+// 后续兄弟控件仍使用父 Ui 的密度与样式。
+```
+
+| 默认尺寸（逻辑点） | 标准 | 紧凑 |
+| --- | ---: | ---: |
+| 普通控件最小高度 | 36 | 24 |
+| 文本框 / 选择框最小高度 | 40 | 28 |
+| 主要按钮最小高度 | 44 | 28 |
+| 控件间距 X / Y | 8 / 6 | 6 / 4 |
+| 按钮内边距 X / Y | 12 / 7 | 8 / 3 |
+| 面板内边距 | 12 | 8 |
+| 图标 / 图标内框 | 20 / 16 | 16 / 12 |
+
+密度只调整布局尺寸；字体、字号、颜色、DPI 缩放与输入逻辑不变。文字或图标较大时控件仍会增高，显式 `.min_size(...)`、物品槽 `.size(...)` 和布局断点仍由调用方决定。`FormLayout` 的标签与控件共用字段高度；页签也考虑实际文字高度。`ResponsiveColumns` 默认间隙为当前横向 `item_spacing` 的两倍，显式 `.gap(...)` 优先。
+
+独立宿主可以用 `Theme::default().density(Density::Compact).apply(&context)` 选择初始密度；同一 Context 中只有局部页面需要紧凑时，应使用 `Density::scope`，不要重复安装全局 Theme。`Density::get(ui)` 读取当前值。原生 spacing 和 hunter 特有的最小尺寸通过现有 Style / Tokens 继承：不要只修改 `Tokens::density` 而遗漏原生 spacing。
+
+Window、Dialog、Popup 和 RichTooltip 创建独立 Area，跨边界仍需传递 `.style(ui.style().clone()).tokens(Tokens::get(ui))`，或在新 Area 的内容闭包内调用 `Density::scope`。`SelectField` 自己的菜单已传递局部密度。浮动通知可用 `notifications.show_in(ui)` / `show_at_in(ui, anchor, offset)` 继承调用处；原有 `show(ctx)` / `show_at(ctx, ...)` 继续使用宿主默认值。
+
 ```rust
 ui.scope(|ui| {
     ui.visuals_mut().override_text_color = Some(egui::Color32::LIGHT_BLUE);
@@ -102,7 +133,7 @@ ui.scope(|ui| {
 });
 ```
 
-主要动作的前景/背景、成功的前景/背景、危险背景与焦点颜色没有完整的原生语义字段，保存在 `Tokens`。`Tokens::get(ui)` 读取最近的 Ui 标签，回退到 Context 中安装的默认值；`tokens.scope(ui, content)` 提供仅对后代生效的局部覆盖。通用颜色、字体、圆角和尺寸使用 `Style` / `Visuals`。
+主要动作的前景/背景、成功的前景/背景、危险背景与焦点颜色没有完整的原生语义字段，保存在 `Tokens`。`Tokens::get(ui)` 读取最近的 Ui 标签，回退到 Context 中安装的默认值；`tokens.scope(ui, content)` 提供仅对后代生效的局部覆盖。通用颜色、字体、圆角和间距使用 `Style` / `Visuals`；仅没有原生 Style 字段的 hunter 控件最小高度由密度值补充。
 
 控件保留默认、悬浮、按下和禁用状态。主要按钮保持金色底与深色文字，选择行保持选中底与金色勾选，聚焦不替换这些状态。按钮、物品槽和选择控件仅将原有内部边框加粗到 2px，不扩展矩形或叠加另一圈；复选框强调方框，开关强调轨道。金色主按钮和已勾选控件使用深色焦点边框，保留原有填充与文字。文本框沿用原生选择、游标和编辑行为，聚焦时仅加粗原有内部边框至 2px，并保留校验色；不追加外环。密码字段可用 `.password_visible(&mut visible)` 在框内显示可聚焦的可见性按钮，编辑文字由原生 suffix 布局避让。焦点强调不改变内容尺寸和位置。Tabs 和 ScrollPanel 保留组件自身的内部焦点框，分别标记页签与键盘滚动区域。
 
@@ -464,7 +495,7 @@ cargo run -p egui-hunter --example gallery --target aarch64-apple-darwin -- \
   --screenshot /tmp/hunter-ui.png
 ```
 
-示例优先使用 `--font`，否则尝试常见的系统中文字体；字体不会打包进库。`--compact` 切换窄窗口，`--dialog` 打开任务确认弹窗。`--containers` 直接进入容器与导航页，`--popup` / `--window` 同时打开该页的弹出菜单 / 浮动窗口，`--notices` 播放消息队列。`--details` 进入信息与交互页，`--form-labels-left` 同时将登记表切换为左侧标签，`--tooltip` 同时聚焦装备图标以展示富提示框，便于截图检查。
+示例优先使用 `--font`，否则尝试常见的系统中文字体；字体不会打包进库。`--compact` 只切换窄窗口，`--density compact` 切换紧凑控件（默认 `--density standard`）；两项可以组合使用。`--dialog` 打开任务确认弹窗。`--containers` 直接进入容器与导航页，`--popup` / `--window` 同时打开该页的弹出菜单 / 浮动窗口，`--notices` 播放消息队列。`--details` 进入信息与交互页，`--form-labels-left` 同时将登记表切换为左侧标签，`--tooltip` 同时聚焦装备图标以展示富提示框，便于截图检查。
 
 组件页包含任务确认、背包分类/搜索/整理、道具消耗与体力更新、禁用状态、键鼠/手柄提示和 HUD。容器页包含三级营地菜单、一万条委托档案、浮动手记、行动菜单、确认对话框和消息队列；键盘 Tab 原生遍历控件，Enter 直接操作，Esc 关闭弹层或返回菜单。页面保留可选的手柄区域声明，需由采集手柄输入的宿主接入。信息页的登记表组合文本、密码和下拉字段，可切换标签在上或在左以检查响应式对齐；其余区域包含装备属性与富提示框、装备选择和只读/禁用/校验状态。装备选择下方的向上/向下按钮直接移动焦点并支持按住连发，确认后切换装备。示例未采集真实手柄。窄窗口自动堆叠面板并允许纵向滚动。
 

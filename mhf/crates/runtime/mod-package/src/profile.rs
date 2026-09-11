@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 pub struct BuiltinCatalog {
     pub login: bool,
     pub debug: bool,
+    pub workbench: bool,
 }
 
 impl BuiltinCatalog {
@@ -19,6 +20,9 @@ impl BuiltinCatalog {
         }
         if self.debug {
             descriptions.push(("mhf.debug", "调试启动", vec!["mhf.base"]));
+        }
+        if self.workbench {
+            descriptions.push(("mhf.workbench", "资源工作台", vec!["mhf.base"]));
         }
         descriptions
             .into_iter()

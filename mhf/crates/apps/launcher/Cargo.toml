@@ -5,9 +5,10 @@ edition.workspace = true
 publish = false
 
 [features]
-default = ["login", "debug"]
+default = ["login", "debug", "workbench"]
 login = ["dep:mhf-login"]
 debug = ["dep:mhf-debug"]
+workbench = ["dep:mhf-workbench"]
 
 [[bin]]
 name = "mhf-launcher"
@@ -22,6 +23,7 @@ mhf-base = { path = "../../mods/base" }
 mhf-config = { path = "../../mods/config", features = ["provider"] }
 mhf-login = { path = "../../mods/login", optional = true }
 mhf-debug = { path = "../../mods/debug", optional = true }
+mhf-workbench = { path = "../../mods/workbench", features = ["provider"], optional = true }
 
 [build-dependencies]
 embed-resource = "3.0"

@@ -3,7 +3,8 @@
 `mhf-launcher` 是唯一可执行启动入口。应用发现 Mod、解析选择并组装内置提供方，
 [`mhf-game`](../../runtime/game/README.md) 负责通用游戏 ABI、生命周期和退出。
 登录由 [`mhf.login`](../../mods/login/README.md) 提供，临时猎人及调试工具由
-[`mhf.debug`](../../mods/debug/README.md) 提供；启动器没有另一套运行模式设置。
+[`mhf.debug`](../../mods/debug/README.md) 提供，资源浏览与原生模型预览由
+[`mhf.workbench`](../../mods/workbench/README.md) 提供。
 
 [`mhf.base`](../../mods/base/README.md) 统一管理原生支持组件，
 独立 [`mhf.config`](../../mods/config/README.md) 提供配置与通用 INI 桥。
@@ -16,7 +17,7 @@ Quest 是 Base 的内部组件，普通 Login 不激活本地任务 Hook。准�
 
 ## 启动选择与配置
 
-默认构建包含 `login`、`debug`，自动选择 Login，Base 由 Login、Debug 等 Mod 的声明依赖按需带入。
+默认构建包含 `login`、`debug`、`workbench`，自动选择 Login，Base 由各 Mod 的声明依赖按需带入。
 调试使用同一个 `mhf-launcher`，只需在 `mhf.toml` 中调整 Mod 选择：
 
 ```toml
@@ -33,7 +34,8 @@ Debug 的普通启动接口自动覆盖 Login 的 fallback。任务相对路径�
 Debug 调用 Base 的 `mhf.quest.launch.v1` 准备本地会话，随后 Base 在 attach 安装任务 Hook。
 登录和角色界面的“设置”菜单可保存字体、屏幕与登录服务器地址，保存到本次使用的配置文件。
 登录服务、编码和记住密码的行为见 [Login](../../mods/login/README.md)，
-任务与游戏内操作见 [Debug](../../mods/debug/README.md)。
+任务与游戏内操作见 [Debug](../../mods/debug/README.md)。资源工作台使用
+`[mods."mhf.workbench"] enabled = true`，并关闭 Debug；两者都提供普通启动接口，不能同时启用。
 
 Cargo features 决定可用的启动提供方，`[mods]` 决定实际选择。
 当前保留原生文本与 CP932 任务，Unicode／Translation crate 暂未接入应用。
@@ -42,8 +44,8 @@ Cargo features 决定可用的启动提供方，`[mods]` 决定实际选择。
 ## 代码结构
 
 - [`src/main.rs`](src/main.rs)：参数、发现、列表／导出和游戏库调用。
-- [`src/builtins.rs`](src/builtins.rs)：编译能力、Factory 及内置 Base／Debug 注册表接线。
-- [`mods/login`](../../mods/login/README.md)、[`mods/debug`](../../mods/debug/README.md)：启动提供方。
+- [`src/builtins.rs`](src/builtins.rs)：编译能力、Factory 及内置 Base、Debug、Workbench 注册表接线。
+- [`mods/login`](../../mods/login/README.md)、[`mods/debug`](../../mods/debug/README.md)、[`mods/workbench`](../../mods/workbench/README.md)：启动提供方。
 
 内置清单由 `mhf_mod_package::BuiltinCatalog` 提供；配置和路径准备位于应用的
 [`src/runtime.rs`](src/runtime.rs)，固定客户端描述是 `mhf_game::runtime::PROFILE`。
@@ -108,8 +110,9 @@ nix run .#mhf-build
 nix run --impure .#mhf-mods
 ```
 
-`mhf-build` 构建同一个 `mhf-launcher`，默认包含 Login 与 Debug。
-`development.mhf.debug.enable = false;` 可移除 Debug 实现，管理器共用该编译能力设置。
+`mhf-build` 构建同一个 `mhf-launcher`，默认包含 Login、Debug 与 Workbench。
+`development.mhf.debug.enable = false;` 或 `development.mhf.workbench.enable = false;`
+可移除对应实现，管理器共用这些编译能力设置。
 
 Flake 提供 LLVM 和 x86 Windows SDK/CRT，设置 i686 专用编译、归档和链接环境，命令使用普通 `cargo build`。
 SDK 由 Nixpkgs 的 xwin 构建步骤准备，项目接受其 Microsoft 软件许可。RustRover 继承开发环境后重新加载 Cargo 即可。

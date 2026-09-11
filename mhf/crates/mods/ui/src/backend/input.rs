@@ -153,7 +153,9 @@ impl InputState {
         self.update_modifiers();
         let notches = f32::from(high_word_signed(wparam.0)) / WHEEL_DELTA as f32;
         let delta = if horizontal {
-            Vec2::new(notches * SCROLL_POINTS_PER_NOTCH, 0.0)
+            // WM_MOUSEHWHEEL is positive towards the right; egui's delta
+            // describes content motion, which goes left to reveal that side.
+            Vec2::new(-notches * SCROLL_POINTS_PER_NOTCH, 0.0)
         } else {
             Vec2::new(0.0, notches * SCROLL_POINTS_PER_NOTCH)
         };
@@ -410,6 +412,28 @@ mod tests {
         let packed = usize::from(20_u16) << 16 | usize::from((-10_i16).cast_unsigned());
         assert_eq!(low_word_signed(packed), -10);
         assert_eq!(high_word_signed(packed), 20);
+    }
+
+    #[test]
+    fn wheel_messages_translate_scroll_direction_to_content_motion() {
+        let mut input = InputState::new();
+        for (message, notches, expected) in [
+            (WM_MOUSEHWHEEL, 120_i16, Vec2::new(-24.0, 0.0)),
+            (WM_MOUSEHWHEEL, -120, Vec2::new(24.0, 0.0)),
+            (WM_MOUSEHWHEEL, 60, Vec2::new(-12.0, 0.0)),
+            (WM_MOUSEWHEEL, 120, Vec2::new(0.0, 24.0)),
+            (WM_MOUSEWHEEL, -120, Vec2::new(0.0, -24.0)),
+        ] {
+            input.events.clear();
+            input.handle_message(
+                message,
+                WPARAM(usize::from(notches.cast_unsigned()) << 16),
+                LPARAM(0),
+            );
+            assert!(matches!(input.events.last(), Some(Event::MouseWheel {
+                delta, unit: MouseWheelUnit::Point, ..
+            }) if *delta == expected));
+        }
     }
 
     #[test]

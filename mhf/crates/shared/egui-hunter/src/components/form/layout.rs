@@ -124,7 +124,10 @@ impl FormLayout {
                         .map(|(field, label)| {
                             field.control_offset(
                                 label.as_ref().map_or(0.0, |label| label.size().y),
-                                ui.spacing().interact_size.y.max(40.0),
+                                ui.spacing()
+                                    .interact_size
+                                    .y
+                                    .max(crate::Density::get(ui).field_height()),
                             )
                         })
                         .fold(0.0, f32::max);

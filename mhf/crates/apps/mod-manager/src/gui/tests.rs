@@ -14,6 +14,7 @@ fn app(context: &egui::Context) -> App {
             candidates: BuiltinCatalog {
                 login: true,
                 debug: true,
+                workbench: false,
             }
             .candidates()
             .unwrap(),

@@ -35,10 +35,14 @@ impl Tabs {
                     f32::INFINITY,
                     TextStyle::Button,
                 );
-                let size = vec2(
-                    galley.size().x + 24.0,
-                    ui.spacing().interact_size.y.max(36.0),
-                );
+                let padding = ui.spacing().button_padding;
+                let size = (galley.size() + padding * 2.0).max(vec2(
+                    0.0,
+                    ui.spacing()
+                        .interact_size
+                        .y
+                        .max(crate::Density::get(ui).tab_height()),
+                ));
                 let (_, rect) = ui.allocate_space(size);
                 let response = ui.interact(rect, id, Sense::click());
                 crate::primitives::focus::focus_on_click(&response);
@@ -72,8 +76,8 @@ impl Tabs {
                     if selected {
                         ui.painter_at(rect).line_segment(
                             [
-                                pos2(rect.left() + 12.0, rect.bottom() - 1.0),
-                                pos2(rect.right() - 12.0, rect.bottom() - 1.0),
+                                pos2(rect.left() + padding.x, rect.bottom() - 1.0),
+                                pos2(rect.right() - padding.x, rect.bottom() - 1.0),
                             ],
                             egui::Stroke::new(2.0, color),
                         );

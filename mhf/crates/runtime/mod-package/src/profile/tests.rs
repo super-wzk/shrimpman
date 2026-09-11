@@ -4,6 +4,7 @@ use crate::Source;
 const CATALOG: BuiltinCatalog = BuiltinCatalog {
     login: true,
     debug: true,
+    workbench: false,
 };
 
 fn plan(catalog: BuiltinCatalog, text: &str) -> Result<Resolved> {
@@ -90,6 +91,7 @@ fn the_catalog_only_exposes_compiled_packages() {
     let minimal = BuiltinCatalog {
         login: false,
         debug: false,
+        workbench: false,
     };
     let candidates = minimal.candidates().unwrap();
     assert_eq!(candidates.len(), 2);
@@ -117,6 +119,23 @@ fn the_catalog_only_exposes_compiled_packages() {
             "{former_component} must remain inside Base"
         );
     }
+}
+
+#[test]
+fn workbench_is_explicit_and_shares_base_without_pulling_debug() {
+    let catalog = BuiltinCatalog {
+        workbench: true,
+        ..CATALOG
+    };
+    let ordinary = plan(catalog, "").unwrap();
+    assert!(!selected(&ordinary, "mhf.workbench"));
+    let workbench = plan(catalog, "['mhf.workbench']\nenabled = true").unwrap();
+    for id in ["mhf.config", "mhf.base", "mhf.workbench"] {
+        assert!(selected(&workbench, id));
+    }
+    assert!(!selected(&workbench, "mhf.debug"));
+    assert!(position(&workbench, "mhf.base") < position(&workbench, "mhf.workbench"));
+    assert!(plan(CATALOG, "['mhf.workbench']\nenabled = true").is_err());
 }
 
 #[test]

@@ -5,7 +5,7 @@ use egui::{
     Color32, FontSelection, Id, Rect, RichText, Sense, Stroke, TextStyle, Vec2, pos2, vec2,
 };
 use egui_hunter::{
-    Button, ButtonKind, Checkbox, Dialog, DialogState, Direction, Field, FocusEngagement,
+    Button, ButtonKind, Checkbox, Density, Dialog, DialogState, Direction, Field, FocusEngagement,
     FocusGroup, FormLayout, Icon, ItemSlot, LabelPlacement, Meter, NavigationStack,
     NavigationState, NoticeKind, Notifications, Panel, Popup, Property, ResponsiveColumns,
     RichTooltip, ScrollPanel, SelectField, Surface, Tab, Tabs, TextField, Theme, Toggle, Tokens,
@@ -25,6 +25,7 @@ struct Options {
     font: Option<PathBuf>,
     screenshot: Option<PathBuf>,
     compact: bool,
+    density: Density,
     dialog: bool,
     containers: bool,
     popup: bool,
@@ -46,6 +47,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(args.next().ok_or("--screenshot needs a PNG path")?.into())
             }
             "--compact" => options.compact = true,
+            "--density" => {
+                options.density = match args.next().as_deref() {
+                    Some("standard") => Density::Standard,
+                    Some("compact") => Density::Compact,
+                    _ => return Err("--density requires standard or compact".into()),
+                };
+            }
             "--dialog" => options.dialog = true,
             "--containers" => options.containers = true,
             "--notices" => options.notices = true,
@@ -86,7 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(move |cc| {
             install_fonts(&cc.egui_ctx, options.font.as_deref())?;
             let mut gallery = Gallery::default();
-            Theme::default().apply(&cc.egui_ctx);
+            Theme::default()
+                .density(options.density)
+                .apply(&cc.egui_ctx);
             gallery.screenshot = options.screenshot;
             if options.dialog {
                 gallery.dialog.open(&cc.egui_ctx);

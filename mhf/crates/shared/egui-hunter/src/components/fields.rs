@@ -89,6 +89,7 @@ impl Widget for TextField<'_> {
 impl TextField<'_> {
     fn show_editor(self, ui: &mut Ui) -> Response {
         let tokens = Tokens::get(ui);
+        let density = crate::Density::get(ui);
         let enabled = ui.is_enabled();
         let visibility_id = self.id.with("visibility");
         let password_visible = self.password_visible;
@@ -107,16 +108,23 @@ impl TextField<'_> {
             self.value
         };
         let icon_id = self.id.with("icon");
-        let content_height =
-            ui.text_style_height(&egui::TextStyle::Body)
-                .max(if self.icon.is_some() {
-                    ui.spacing().icon_width_inner
-                } else {
-                    0.0
-                });
-        let vertical_padding = (40.0_f32.max(ui.spacing().interact_size.y) - content_height)
-            .max(0.0)
-            .ceil();
+        let visibility_inset = ui.spacing().icon_spacing * 0.5;
+        let content_height = ui.text_style_height(&egui::TextStyle::Body).max(
+            if self.icon.is_some() || password_visible.is_some() {
+                ui.spacing().icon_width_inner
+            } else {
+                0.0
+            },
+        );
+        let min_height = density
+            .field_height()
+            .max(ui.spacing().interact_size.y)
+            .max(if password_visible.is_some() {
+                ui.spacing().icon_width_inner + visibility_inset * 2.0
+            } else {
+                0.0
+            });
+        let vertical_padding = (min_height - content_height).max(0.0).ceil();
         let margin = egui::Margin {
             left: ui.spacing().button_padding.x.round() as i8,
             right: ui.spacing().button_padding.x.round() as i8,
@@ -142,9 +150,12 @@ impl TextField<'_> {
             ));
         }
         if password_visible.is_some() {
+            let width = density
+                .password_button_width()
+                .max(ui.spacing().icon_width_inner + ui.spacing().icon_spacing);
             editor = editor.suffix(Atom::custom(
                 visibility_id,
-                egui::vec2(28.0, ui.spacing().icon_width_inner),
+                egui::vec2(width, ui.spacing().icon_width_inner),
             ));
         }
         let output = editor.show(ui);
@@ -156,9 +167,12 @@ impl TextField<'_> {
             .map(|(visible, slot)| {
                 let rect = egui::Rect::from_center_size(
                     slot.center(),
-                    egui::vec2(slot.width(), (response.rect.height() - 8.0).max(0.0)),
+                    egui::vec2(
+                        slot.width(),
+                        (response.rect.height() - visibility_inset * 2.0).max(0.0),
+                    ),
                 )
-                .intersect(response.rect.shrink(4.0));
+                .intersect(response.rect.shrink(visibility_inset));
                 // Consume both pointer senses so the underlying editor cannot
                 // start a cursor drag when the embedded button is pressed.
                 let button = ui

@@ -1,11 +1,16 @@
 use egui::{Color32, Context, Id, InnerResponse, Ui, UiBuilder, UiStackInfo};
 
+use super::Density;
+
 const TOKENS: &str = "egui-hunter-tokens";
 
-/// Hunter-specific values with no equivalent in [`egui::Style`].
+/// Hunter-specific colors and control minimum sizes without native Style fields.
 /// General colors, fonts, spacing and interaction states belong to the native style.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
+    /// Hunter-only minimum sizes accompanying the native spacing preset.
+    /// Prefer `Density::scope` so native spacing and these sizes change together.
+    pub density: Density,
     /// Persistent fill for the main action in a group.
     pub primary: Color32,
     pub on_primary: Color32,
@@ -19,6 +24,7 @@ pub struct Tokens {
 impl Default for Tokens {
     fn default() -> Self {
         Self {
+            density: Density::Standard,
             primary: Color32::from_rgb(0xD8, 0xB8, 0x78),
             on_primary: Color32::from_rgb(0x1C, 0x1A, 0x15),
             success: Color32::from_rgb(0x93, 0xCB, 0xA8),
