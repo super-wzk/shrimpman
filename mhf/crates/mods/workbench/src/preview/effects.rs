@@ -15,7 +15,6 @@ use std::sync::{
 };
 
 static NEXT_BINDING_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_TRIGGER_ORDER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn is_binding(kind: Kind) -> bool {
     matches!(kind, Kind::DatRecord(index) if index == dat::DATA_TABLES.len() || index == dat::DATA_TABLES.len() + 2)
@@ -32,6 +31,15 @@ pub(crate) enum Definition {
 }
 
 impl Definition {
+    fn conflicts_with(&self, other: &Self) -> bool {
+        let (Some((mesh, local)), Some((other_mesh, other_local))) = (self.draw(), other.draw())
+        else {
+            return false;
+        };
+        mesh == other_mesh
+            && (local == other_local || self.transforms_node() && other.transforms_node())
+    }
+
     fn timeline(&self) -> (f32, bool) {
         let mut duration = 1;
         let mut looping = false;
@@ -120,7 +128,6 @@ pub(crate) struct Entry {
     pub slot: usize,
     pub id: u16,
     pub started_at: Option<f32>,
-    pub trigger_order: u64,
     pub definition: Definition,
 }
 
@@ -231,7 +238,6 @@ impl Binding {
                     slot,
                     id,
                     started_at: None,
-                    trigger_order: 0,
                     definition,
                 })
             })
@@ -263,7 +269,7 @@ impl Target {
                 .get(mesh)
                 .is_none_or(|&count| entry >= count)
         {
-            return Some(format!("绘制组 {mesh} / 条目 {entry} 不存在于当前模型"));
+            return Some(format!("绘制组 {mesh} / 条目 {entry} 不存在于绑定模型"));
         }
         if definition.position().iter().any(|value| !value.is_finite()) {
             return Some("位移包含非有限值，保留原值但不应用".into());
@@ -453,7 +459,18 @@ impl Effects {
         }
         let entry = self.entry_mut(binding, slot)?;
         entry.started_at = Some(frame);
-        entry.trigger_order = NEXT_TRIGGER_ORDER.fetch_add(1, Ordering::Relaxed);
+        let definition = entry.definition.clone();
+        if self.target.error(&definition).is_none() {
+            for source in &mut self.bindings {
+                for other in &mut source.entries {
+                    if (source.id != binding || other.slot != slot)
+                        && definition.conflicts_with(&other.definition)
+                    {
+                        other.started_at = None;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -537,27 +554,6 @@ impl Effects {
                     position: None,
                     color: [255, 190, 55],
                 };
-                let overridden = self
-                    .bindings
-                    .iter()
-                    .flat_map(|binding| &binding.entries)
-                    .any(|other| {
-                        let (Some((mesh, local)), Some((other_mesh, other_local))) =
-                            (draw, other.definition.draw())
-                        else {
-                            return false;
-                        };
-                        let same_target = mesh == other_mesh
-                            && (local == other_local
-                                || definition.transforms_node()
-                                    && other.definition.transforms_node());
-                        other.trigger_order > entry.trigger_order
-                            && other.started_at.is_some_and(|start| {
-                                frame >= start + f32::from(other.definition.delay())
-                            })
-                            && self.target.error(&other.definition).is_none()
-                            && same_target
-                    });
                 let start = entry.started_at.unwrap_or(0.0);
                 let due = start + f32::from(definition.delay());
                 snapshot.message = if entry.started_at.is_none() {
@@ -570,8 +566,6 @@ impl Effects {
                     format!("尚未到触发位置 · 第 {start:.0} 步")
                 } else if frame < due {
                     format!("等待启动 · 剩余 {:.0} 步", due - frame)
-                } else if overridden {
-                    "同一目标由最近触发的定义预览；可点击重播".into()
                 } else {
                     match definition {
                         Definition::Attachment(value) if value.attachment_mode != 0 => {
@@ -903,14 +897,11 @@ pub(crate) mod tests {
         effects.trigger(effects.bindings[2].id, 0, 0.0).unwrap();
         let conflict = effects.sample(20.0);
         assert_eq!(conflict.transforms.len(), 1);
-        assert!(
-            conflict.bindings[1].definitions[0]
-                .message
-                .contains("最近触发")
-        );
+        assert!(conflict.bindings[1].definitions[0].frame.is_none());
         assert!(conflict.bindings[2].definitions[0].active);
         effects.stop(effects.bindings[2].id, 0).unwrap();
-        assert_eq!(effects.sample(20.0).transforms.len(), 1);
+        assert!(effects.sample(20.0).transforms.is_empty());
+        effects.trigger(effects.bindings[1].id, 0, 0.0).unwrap();
         let Definition::Model(value) = &mut effects.bindings[1].entries[0].definition else {
             panic!()
         };
@@ -1057,7 +1048,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn arbitrary_conditions_require_manual_triggers_and_latest_trigger_owns_the_target() {
+    fn arbitrary_conditions_require_manual_triggers_and_trigger_stops_conflicting_definitions() {
         let (_, source) = fixture();
         let mut document = (*source.document).clone();
         let mut bytes = document.buffers[0].to_vec();
@@ -1103,9 +1094,39 @@ pub(crate) mod tests {
             assert_eq!(sample.materials[0].rgb, [1.0; 3]);
         }
         effects.stop(id, 1).unwrap();
-        assert!(effects.sample(122.0).bindings[0].definitions[0].active);
+        assert!(!effects.sample(122.0).bindings[0].definitions[0].active);
         effects.stop(id, 0).unwrap();
         assert!(effects.sample(122.0).materials.is_empty());
+    }
+
+    #[test]
+    fn triggering_stops_conflicts_immediately_even_during_delay_but_not_other_targets() {
+        let mut effects = effects();
+        let original = effects.bindings[1].id;
+        let mut next = effects.bindings[1].clone();
+        next.id += 10000;
+        let incoming = next.id;
+        let Definition::Model(value) = &mut next.entries[0].definition else {
+            unreachable!()
+        };
+        value.start_delay = 50;
+        value.node_index = 99;
+        effects.bindings.push(next);
+        effects.trigger(incoming, 0, 20.0).unwrap();
+        assert!(effects.sample(20.0).bindings[1].definitions[0].active);
+        let Definition::Model(value) = &mut effects.bindings[2].entries[0].definition else {
+            unreachable!()
+        };
+        value.node_index = 2;
+        effects.trigger(incoming, 0, 20.0).unwrap();
+        let waiting = effects.sample(20.0);
+        assert!(waiting.bindings[1].definitions[0].frame.is_none());
+        assert!(!waiting.bindings[2].definitions[0].active);
+        assert!(waiting.bindings[0].definitions[0].active);
+        effects.stop(incoming, 0).unwrap();
+        assert!(effects.sample(100.0).materials.is_empty());
+        effects.trigger(original, 0, 100.0).unwrap();
+        assert!(effects.sample(110.0).bindings[1].definitions[0].active);
     }
 
     #[test]
@@ -1167,7 +1188,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn looping_track_omits_repeat_delay_and_seeking_preserves_trigger_precedence() {
+    fn looping_track_omits_repeat_delay_and_seeking_does_not_restart_stopped_conflicts() {
         let mut effects = effects();
         let binding = &mut effects.bindings[1];
         let Definition::Model(value) = &mut binding.entries[0].definition else {

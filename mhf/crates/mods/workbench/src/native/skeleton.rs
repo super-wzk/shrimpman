@@ -1,11 +1,12 @@
-//! Asset-owned traversal and matrices for the client's 448-byte runtime nodes.
+//! Owned traversal and matrices for the client's 448-byte runtime nodes.
 //!
 //! 100092A0 keeps 64 pending child lists on its stack; 10008AB0 writes a global
 //! matrix array indexed by a signed node ID. Neither limit belongs to FSKL.
 //! Keep their transform arithmetic, but size traversal/storage to this resource.
 
 use super::{Client, animation, get, put};
-use crate::preview::effects::NodeTransform;
+use crate::preview::{Bone, ResourceRef, effects::NodeTransform};
+use mhf_resource::fskl::{Fskl, NodeEntry};
 use std::{cmp::Reverse, collections::BinaryHeap, mem::transmute, sync::Arc};
 
 const NODE_SIZE: usize = 448;
@@ -19,6 +20,271 @@ const NODE_SCALE: usize = 260;
 const MATRIX_MULTIPLY_IMPORT: usize = 0x115d_2408;
 
 type Matrix = [f32; 16];
+
+const IDENTITY: Matrix = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
+
+/// A standalone FSKL uses the same compact-node compiler and constructor as
+/// 108F8660, with its own memory instead of the model resource pool.
+pub(super) struct Standalone {
+    _source: ResourceRef,
+    nodes: Box<[RuntimeNode]>,
+    roots: Vec<usize>,
+    skeleton: Skeleton,
+}
+
+#[repr(C, align(16))]
+#[derive(Clone)]
+struct RuntimeNode([u8; NODE_SIZE]);
+
+#[derive(Debug, PartialEq, Eq)]
+struct Group {
+    first: usize,
+    count: usize,
+}
+
+struct StandalonePlan {
+    groups: Vec<Group>,
+    count: usize,
+}
+
+impl StandalonePlan {
+    fn read(bytes: &[u8]) -> Result<Self, String> {
+        let source = Fskl::parse(bytes).map_err(|error| error.to_string())?;
+        source
+            .validate_hierarchy()
+            .map_err(|error| error.to_string())?;
+        let count = source.nodes.len();
+        if count == 0 || count > i16::MAX as usize {
+            return Err("骨架节点数量超出原生有符号 WORD 范围".into());
+        }
+        if source.root_tables.len() != 1 || source.blocks.len() != count + 1 {
+            return Err("当前预览尚未支持含额外元数据的骨架编译布局".into());
+        }
+        if source.root_indices().is_empty() {
+            return Err("骨架没有根节点".into());
+        }
+        let mut ids = Vec::with_capacity(count);
+        for node in source.bones() {
+            let id = u16::try_from(node.node_id).map_err(|_| "骨架节点 ID 超出原生 WORD 范围")?;
+            if node.transform.scale[..3]
+                .iter()
+                .any(|value| !value.is_finite() || *value == 0.0)
+                || node.transform.rotation[..3]
+                    .iter()
+                    .chain(&node.transform.translation[..3])
+                    .any(|value| !value.is_finite())
+            {
+                return Err("骨骼变换包含无法用于原生矩阵运算的值".into());
+            }
+            ids.push(id);
+        }
+        ids.sort_unstable();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("骨架节点 ID 重复，无法唯一映射节点".into());
+        }
+        let mut groups = Vec::with_capacity(source.root_indices().len());
+        let mut visited = vec![false; count];
+        for &root in source.root_indices() {
+            let first = root as usize;
+            let mut pending = vec![first];
+            let mut indices = Vec::new();
+            while let Some(index) = pending.pop() {
+                if visited[index] {
+                    return Err("骨架包含重复根或共享节点".into());
+                }
+                visited[index] = true;
+                indices.push(index);
+                let NodeEntry::Bone(node) = &source.nodes[index] else {
+                    return Err("未知原生骨骼布局".into());
+                };
+                if node.next_sibling_index >= 0 {
+                    pending.push(node.next_sibling_index as usize);
+                }
+                if node.first_child_index >= 0 {
+                    pending.push(node.first_child_index as usize);
+                }
+            }
+            // 100022A0 counts the traversal, then copies this contiguous source
+            // range. It rebases only child/sibling ordinals, not node IDs.
+            let end = first + indices.len();
+            if indices.iter().any(|&index| index < first || index >= end) {
+                return Err("骨架根所引用的节点不构成原生要求的连续索引范围".into());
+            }
+            groups.push(Group {
+                first,
+                count: indices.len(),
+            });
+        }
+        if visited.iter().any(|visited| !visited) {
+            return Err("存在不属于任何根骨架的节点".into());
+        }
+        Ok(Self { groups, count })
+    }
+}
+
+impl Standalone {
+    /// # Safety
+    /// Native render thread only, while the supported client DLL is live.
+    /// Release every motion bound to these nodes before dropping this owner.
+    pub(super) unsafe fn load(client: Client, source: ResourceRef) -> Result<Self, String> {
+        let bytes = source.bytes()?;
+        let plan = StandalonePlan::read(bytes)?;
+        unsafe { validate(client) }?;
+        let compile: unsafe extern "C" fn(*mut u32, *mut u32, *const u8, u32) -> i32 =
+            unsafe { transmute(client.address(0x1000_22a0)) };
+        // The constructor leaves root parent and unused bind-value words alone.
+        // Zeroed memory is essential when its storage is not a fresh game pool.
+        let mut nodes = vec![RuntimeNode([0; NODE_SIZE]); plan.count].into_boxed_slice();
+        let base = nodes.as_mut_ptr() as usize;
+        let mut roots = Vec::with_capacity(plan.groups.len());
+        let mut offset = 0;
+        for (ordinal, group) in plan.groups.iter().enumerate() {
+            let mut compact = vec![0u32; 4 + 16 * group.count];
+            let mut descriptor = [0u32; 4];
+            if unsafe {
+                compile(
+                    descriptor.as_mut_ptr(),
+                    compact.as_mut_ptr(),
+                    bytes.as_ptr(),
+                    ordinal as u32,
+                )
+            } == 0
+                || (compact[0] >> 16) as usize != group.count
+            {
+                return Err(format!(
+                    "原生骨架编译结果与节点 {} 的分组不一致",
+                    group.first
+                ));
+            }
+            let root = base + offset * NODE_SIZE;
+            // The constructor ends in the security-cookie check; EAX is not a
+            // success flag. Validate the resulting node graph below instead.
+            unsafe {
+                construct_native(client.address(0x1000_9640), root, compact.as_ptr() as usize)
+            };
+            roots.push(root);
+            offset += group.count;
+        }
+        let skeleton = unsafe { Skeleton::prepare(&roots, (base, plan.count)) }?;
+        let mut result = Self {
+            _source: source,
+            nodes,
+            roots,
+            skeleton,
+        };
+        // 10009640 prepares local/inverse-bind matrices. World matrices at +0
+        // are published by the same update used for model-owned skeletons.
+        unsafe { result.update(client, &[], &IDENTITY) }?;
+        Ok(result)
+    }
+
+    pub(super) fn animation_nodes(&self) -> (&[usize], (usize, usize)) {
+        (
+            &self.roots,
+            (self.nodes.as_ptr() as usize, self.nodes.len()),
+        )
+    }
+
+    pub(super) unsafe fn update(
+        &mut self,
+        client: Client,
+        motion_frames: &[(usize, f32)],
+        world: &Matrix,
+    ) -> Result<(), String> {
+        unsafe { self.skeleton.update(client, motion_frames, world, &[]) }?;
+        Ok(())
+    }
+
+    pub(super) fn bones(&self) -> Vec<Bone> {
+        let mut bones: Vec<_> = self
+            .skeleton
+            .original_order
+            .iter()
+            .map(|step| {
+                let world = &self.skeleton.worlds[step.index];
+                Bone {
+                    index: step.index,
+                    parent: step.parent,
+                    position: [world[12], world[13], world[14]],
+                }
+            })
+            .collect();
+        bones.sort_unstable_by_key(|bone| bone.index);
+        bones
+    }
+
+    pub(super) fn bindings(&self) -> Arc<Vec<Option<usize>>> {
+        self.skeleton.bindings()
+    }
+
+    pub(super) fn set_binding(
+        &mut self,
+        target: usize,
+        source: Option<usize>,
+    ) -> Result<(), String> {
+        self.skeleton.set_binding(target, source)
+    }
+
+    pub(super) fn set_bindings(&mut self, bindings: Arc<Vec<Option<usize>>>) -> Result<(), String> {
+        self.skeleton.set_bindings(bindings)
+    }
+
+    pub(super) fn clear_bindings(&mut self) {
+        self.skeleton.clear_bindings();
+    }
+}
+
+/// 10009640: ECX = runtime nodes, caller-clean stack = compact buffer.
+/// IDA's additional EBP argument is the function's stack-alignment prologue.
+#[unsafe(naked)]
+unsafe extern "C" fn construct_native(_function: usize, _nodes: usize, _compact: usize) -> i32 {
+    core::arch::naked_asm!(
+        "push ebp",
+        "mov ebp, esp",
+        "mov ecx, [ebp + 12]",
+        "push dword ptr [ebp + 16]",
+        "call dword ptr [ebp + 8]",
+        "add esp, 4",
+        "pop ebp",
+        "ret",
+    );
+}
+
+pub(super) unsafe fn validate(client: Client) -> Result<(), String> {
+    // Prefixes contain no relocated absolute operands.
+    for (address, prefix) in [
+        (
+            0x1000_22a0,
+            &[
+                0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x56, 0x8b, 0x75, 0x10, 0x8b, 0x4e, 0x04,
+                0x33, 0xd2, 0x8d, 0x46, 0x0c,
+            ][..],
+        ),
+        (
+            0x1000_9640,
+            &[
+                0x53, 0x8b, 0xdc, 0x83, 0xec, 0x08, 0x83, 0xe4, 0xf0, 0x83, 0xc4, 0x04, 0x55, 0x8b,
+                0x6b, 0x04, 0x89, 0x6c, 0x24, 0x04, 0x8b, 0xec, 0x83, 0xec, 0x68,
+            ][..],
+        ),
+        (
+            0x1000_9dd0,
+            &[
+                0x55, 0x8b, 0xec, 0x8b, 0x55, 0x08, 0xc1, 0xe1, 0x06, 0x8d, 0x4c, 0x11, 0x10, 0x0f,
+                0xbf, 0x51, 0x0a, 0x89, 0x90, 0x70, 0x01, 0x00, 0x00,
+            ][..],
+        ),
+    ] {
+        if unsafe { std::slice::from_raw_parts(client.address(address) as *const u8, prefix.len()) }
+            != prefix
+        {
+            return Err(format!("不支持此客户端的独立骨架接口：{address:#x}"));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Links {
@@ -141,8 +407,21 @@ impl Skeleton {
         }
         let mut bindings = self.bindings.as_ref().clone();
         bindings[target] = source;
+        self.set_bindings(Arc::new(bindings))
+    }
+
+    /// Install a complete validated graph atomically; replaying one edge at a
+    /// time can introduce a transient cycle when restoring a valid saved graph.
+    pub(super) fn set_bindings(&mut self, bindings: Arc<Vec<Option<usize>>>) -> Result<(), String> {
+        if bindings.len() != self.bindings.len()
+            || bindings.iter().enumerate().any(|(target, source)| {
+                source.is_some_and(|source| source >= bindings.len() || source == target)
+            })
+        {
+            return Err("姿态跟随图包含无效节点".into());
+        }
         let order = binding_order(&self.original_order, &bindings)?;
-        self.bindings = Arc::new(bindings);
+        self.bindings = bindings;
         self.order = order;
         Ok(())
     }
@@ -180,11 +459,11 @@ impl Skeleton {
     pub(super) unsafe fn update(
         &mut self,
         client: Client,
-        frame: f32,
+        motion_frames: &[(usize, f32)],
         world: &Matrix,
         transforms: &[NodeTransform],
     ) -> Result<&[Matrix], String> {
-        if !frame.is_finite() {
+        if motion_frames.iter().any(|(_, frame)| !frame.is_finite()) {
             return Err("预览动画帧坐标无效".into());
         }
         let address = unsafe { client.read::<usize>(MATRIX_MULTIPLY_IMPORT) };
@@ -198,6 +477,10 @@ impl Skeleton {
             world,
             |index| {
                 let node = base + index * NODE_SIZE;
+                let frame = motion_frames
+                    .iter()
+                    .find_map(|&(target, frame)| (target == node).then_some(frame))
+                    .unwrap_or(0.0);
                 unsafe {
                     animation::sample(client, node, frame);
                     // Modify the sampled copy, never the original local matrix.
@@ -383,6 +666,132 @@ mod tests {
     const IDENTITY: Matrix = [
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ];
+
+    fn fskl_fixture(roots: &[u32], links: &[(i32, i32, i32)]) -> Vec<u8> {
+        let root_size = 12 + roots.len() * 4;
+        let size = 12 + root_size + links.len() * 268;
+        let mut bytes = vec![0u8; size];
+        let mut word = |offset: usize, value: u32| {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        word(0, mhf_resource::fskl::SKELETON);
+        word(4, links.len() as u32 + 1);
+        word(8, size as u32);
+        word(16, roots.len() as u32);
+        word(20, root_size as u32);
+        for (index, &root) in roots.iter().enumerate() {
+            word(24 + index * 4, root);
+        }
+        for (index, &(parent, child, sibling)) in links.iter().enumerate() {
+            let at = 12 + root_size + index * 268;
+            word(at, mhf_resource::fskl::BONE_HD);
+            word(at + 4, 1);
+            word(at + 8, 268);
+            word(at + 12, index as u32 + 1000);
+            word(at + 16, parent as u32);
+            word(at + 20, child as u32);
+            word(at + 24, sibling as u32);
+            for axis in 0..3 {
+                word(at + 28 + axis * 4, 1.0f32.to_bits());
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn standalone_plan_keeps_root_groups_separate_without_a_model_root_limit() {
+        let bytes = fskl_fixture(
+            &[2, 0],
+            &[(-1, 1, -1), (0, -1, -1), (-1, 3, -1), (2, -1, -1)],
+        );
+        let plan = StandalonePlan::read(&bytes).unwrap();
+        assert_eq!(plan.count, 4);
+        assert_eq!(
+            plan.groups,
+            [Group { first: 2, count: 2 }, Group { first: 0, count: 2 }]
+        );
+        let roots: Vec<_> = (0..8).collect();
+        let bytes = fskl_fixture(&roots, &[(-1, -1, -1); 8]);
+        let plan = StandalonePlan::read(&bytes).unwrap();
+        assert_eq!(plan.groups.len(), 8);
+        assert!(plan.groups.iter().all(|group| group.count == 1));
+    }
+
+    #[test]
+    fn standalone_plan_rejects_native_unsafe_hierarchy_and_transform_layouts() {
+        for bytes in [
+            // Two root traversals share one node.
+            fskl_fixture(&[0, 1], &[(-1, 1, -1), (0, -1, -1)]),
+            // Valid links, but root 0's copied source range would omit node 2.
+            fskl_fixture(&[0, 1], &[(-1, 2, -1), (-1, -1, -1), (0, -1, -1)]),
+            fskl_fixture(&[0], &[(-1, 0, -1)]),
+            fskl_fixture(&[0], &[(-1, 2, -1)]),
+            fskl_fixture(&[], &[(-1, -1, -1)]),
+            fskl_fixture(&[0], &[(-1, -1, -1), (-1, -1, -1)]),
+        ] {
+            assert!(StandalonePlan::read(&bytes).is_err());
+        }
+        for value in [0.0f32, f32::NAN, f32::INFINITY] {
+            let mut bytes = fskl_fixture(&[0], &[(-1, -1, -1)]);
+            // Root header 12 + root table 16 + node header 12 + scale offset 16.
+            bytes[56..60].copy_from_slice(&value.to_le_bytes());
+            assert!(StandalonePlan::read(&bytes).is_err());
+        }
+        let mut duplicate_ids = fskl_fixture(&[0, 1], &[(-1, -1, -1); 2]);
+        duplicate_ids[312..316].copy_from_slice(&1000u32.to_le_bytes());
+        assert!(StandalonePlan::read(&duplicate_ids).is_err());
+    }
+
+    #[unsafe(naked)]
+    unsafe extern "C" fn constructor_probe() -> i32 {
+        core::arch::naked_asm!("mov eax, ecx", "xor eax, [esp + 4]", "ret");
+    }
+
+    #[test]
+    fn standalone_constructor_bridge_uses_ecx_and_a_caller_clean_stack_argument() {
+        let nodes = vec![RuntimeNode([0; NODE_SIZE]); 3].into_boxed_slice();
+        let base = nodes.as_ptr() as usize;
+        assert_eq!(base % 16, 0);
+        assert_eq!(&nodes[1] as *const _ as usize - base, NODE_SIZE);
+        let compact = [0u32; 4 + 16 * 3];
+        let address = compact.as_ptr() as usize;
+        for _ in 0..16 {
+            assert_eq!(
+                unsafe { construct_native(constructor_probe as *const () as usize, base, address) },
+                (base ^ address) as i32,
+            );
+        }
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.0.iter().all(|&byte| byte == 0))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires MHF_RESOURCE_GAME_ROOT; validates original FSKL bytes without executing the DLL"]
+    fn original_em001_standalone_groups_cover_every_node_once() {
+        let root = std::path::PathBuf::from(std::env::var_os("MHF_RESOURCE_GAME_ROOT").unwrap());
+        let bytes = std::fs::read(root.join("dat/emmodel/em001.pac")).unwrap();
+        let document = Arc::new(crate::inspect::inspect("em001.pac", bytes.into()));
+        let mut checked = 0;
+        for (node, entry) in document.nodes.iter().enumerate() {
+            if entry.kind != crate::inspect::Kind::Fskl {
+                continue;
+            }
+            let source = ResourceRef {
+                document: document.clone(),
+                node,
+            };
+            let plan = StandalonePlan::read(source.bytes().unwrap()).unwrap();
+            assert_eq!(
+                plan.groups.iter().map(|group| group.count).sum::<usize>(),
+                plan.count
+            );
+            checked += 1;
+        }
+        assert!(checked > 0);
+    }
 
     fn multiply(left: &Matrix, right: &Matrix) -> Matrix {
         std::array::from_fn(|index| {
@@ -786,6 +1195,43 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1.0, 4.0, 7.0]
         );
+    }
+
+    #[test]
+    fn complete_binding_graph_restores_atomically_without_transient_cycles() {
+        let links = [
+            Links {
+                child: Some(1),
+                ..Links::default()
+            },
+            Links {
+                parent: Some(0),
+                ..Links::default()
+            },
+            Links::default(),
+        ];
+        let mut skeleton = fixture(&[0, 2], &links);
+        assert!(skeleton.set_binding(0, Some(1)).is_err());
+        let bindings = Arc::new(vec![Some(1), Some(2), None]);
+        skeleton.set_bindings(bindings.clone()).unwrap();
+        assert!(Arc::ptr_eq(&skeleton.bindings(), &bindings));
+        assert_eq!(
+            skeleton
+                .order
+                .iter()
+                .map(|step| step.index)
+                .collect::<Vec<_>>(),
+            [2, 1, 0]
+        );
+        for invalid in [
+            vec![None],
+            vec![Some(3), None, None],
+            vec![Some(0), None, None],
+            vec![Some(1), Some(0), None],
+        ] {
+            assert!(skeleton.set_bindings(Arc::new(invalid)).is_err());
+            assert!(Arc::ptr_eq(&skeleton.bindings(), &bindings));
+        }
     }
 
     #[test]

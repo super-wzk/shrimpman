@@ -2,11 +2,13 @@
 
 use crate::inspect::{Document, Kind};
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, PoisonError},
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
 };
 
 pub(crate) mod effects;
+mod equipment;
+pub(crate) use equipment::EquipmentModel;
 
 pub(crate) const DEFAULT_BACKGROUND_COLOR: [u8; 3] = [16, 19, 22];
 
@@ -50,6 +52,88 @@ pub(crate) struct ResourceRef {
 }
 
 impl ResourceRef {
+    /// Enumerate the selected subtree, stopping at complete resource boundaries.
+    /// Model dependency associations never expand the selection's scope.
+    pub fn loadable_resources(&self) -> Vec<Self> {
+        let mut resources = Vec::new();
+        let mut seen = vec![false; self.document.nodes.len()];
+        let mut pending = vec![self.node];
+        while let Some(selected) = pending.pop() {
+            let Ok(node) = resource_node(&self.document, selected) else {
+                continue;
+            };
+            if std::mem::replace(&mut seen[node], true) {
+                continue;
+            }
+            let value = &self.document.nodes[node];
+            if is_loadable_resource(value.kind) {
+                resources.push(Self {
+                    document: self.document.clone(),
+                    node: selected,
+                });
+            } else {
+                pending.extend(value.children.iter().rev().copied());
+            }
+        }
+        resources
+    }
+
+    pub fn texture_images(&self) -> Vec<Self> {
+        if !matches!(self.kind(), Kind::Txb | Kind::Archive) {
+            return vec![self.clone()];
+        }
+        let Some(node) = self.document.payload(self.node) else {
+            return vec![self.clone()];
+        };
+        self.document.nodes[node]
+            .children
+            .iter()
+            .map(|&node| {
+                if self.document.nodes[node].range.is_empty() {
+                    Self::white_texture()
+                } else {
+                    Self {
+                        document: self.document.clone(),
+                        node,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    pub fn white_texture() -> Self {
+        static WHITE: OnceLock<Arc<Document>> = OnceLock::new();
+        let document = WHITE
+            .get_or_init(|| {
+                let mut bytes = vec![0u8; 132];
+                bytes[..4].copy_from_slice(b"DDS ");
+                for (at, value) in [
+                    (4, 124u32),
+                    (8, 0x100f),
+                    (12, 1),
+                    (16, 1),
+                    (20, 4),
+                    (76, 32),
+                    (80, 0x41),
+                    (88, 32),
+                    (92, 0xff),
+                    (96, 0xff00),
+                    (100, 0xff0000),
+                    (104, 0xff000000),
+                    (108, 0x1000),
+                    (128, u32::MAX),
+                ] {
+                    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                Arc::new(crate::inspect::inspect("默认白色贴图", bytes.into()))
+            })
+            .clone();
+        Self {
+            node: document.root,
+            document,
+        }
+    }
+
     pub fn bytes(&self) -> Result<&[u8], String> {
         self.document
             .bytes(resource_node(&self.document, self.node)?)
@@ -70,6 +154,18 @@ impl ResourceRef {
             root.rsplit(['/', '\\']).next().unwrap_or(root),
             self.document.nodes[self.node].name
         )
+    }
+
+    /// Expanding a document clones its nodes but retains the original root bytes.
+    pub fn same_document(&self, other: &Self) -> bool {
+        let a = &self.document.nodes[self.document.root];
+        let b = &other.document.nodes[other.document.root];
+        a.kind == b.kind
+            && a.range == b.range
+            && Arc::ptr_eq(
+                &self.document.buffers[a.buffer],
+                &other.document.buffers[b.buffer],
+            )
     }
 
     pub fn same_source(&self, other: &Self) -> bool {
@@ -94,6 +190,80 @@ impl ResourceRef {
         resource_node(&self.document, self.node)
             .map_or(Kind::Unknown, |node| self.document.nodes[node].kind)
     }
+}
+
+fn is_loadable_resource(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Fmod | Kind::Fskl | Kind::Png | Kind::Dds | Kind::Motion
+    ) || effects::is_binding(kind)
+        || effects::is_definition(kind)
+}
+
+/// Cache once when an inspection document changes. Shared reference targets
+/// count once per subtree, and complete resources hide their inspector fields.
+pub(crate) fn loadable_resource_counts(document: &Document) -> Vec<usize> {
+    let empty = Arc::new(HashSet::<usize>::new());
+    let mut descendants: Vec<Option<Arc<HashSet<usize>>>> = vec![None; document.nodes.len()];
+    let mut visiting = vec![false; document.nodes.len()];
+    let mut pending = Vec::new();
+    for start in 0..document.nodes.len() {
+        pending.push((start, false));
+        while let Some((index, expanded)) = pending.pop() {
+            if descendants[index].is_some() {
+                continue;
+            }
+            let Ok(payload) = resource_node(document, index) else {
+                descendants[index] = Some(empty.clone());
+                continue;
+            };
+            let value = &document.nodes[payload];
+            if is_loadable_resource(value.kind) {
+                descendants[index] = Some(Arc::new(HashSet::from([payload])));
+                continue;
+            }
+            if !expanded {
+                if std::mem::replace(&mut visiting[index], true) {
+                    continue;
+                }
+                pending.push((index, true));
+                if payload != index {
+                    pending.push((payload, false));
+                } else {
+                    pending.extend(value.children.iter().rev().map(|&child| (child, false)));
+                }
+                continue;
+            }
+            let resources = if payload != index {
+                descendants[payload]
+                    .clone()
+                    .unwrap_or_else(|| empty.clone())
+            } else {
+                let mut children = value
+                    .children
+                    .iter()
+                    .filter_map(|&child| descendants[child].as_ref())
+                    .filter(|resources| !resources.is_empty());
+                match (children.next(), children.next()) {
+                    (None, _) => empty.clone(),
+                    (Some(only), None) => only.clone(),
+                    (Some(first), Some(second)) => {
+                        let mut combined = (**first).clone();
+                        combined.extend(second.iter().copied());
+                        for resources in children {
+                            combined.extend(resources.iter().copied());
+                        }
+                        Arc::new(combined)
+                    }
+                }
+            };
+            descendants[index] = Some(resources);
+        }
+    }
+    descendants
+        .into_iter()
+        .map(|resources| resources.map_or(0, |resources| resources.len()))
+        .collect()
 }
 
 /// The inspection document retains every encoded layer. Runtime resource
@@ -126,6 +296,42 @@ pub(crate) struct AssetBundle {
 }
 
 impl AssetBundle {
+    pub fn contains(&self, source: &ResourceRef) -> bool {
+        self.model.same_source(source)
+            || self
+                .skeleton
+                .as_ref()
+                .is_some_and(|skeleton| skeleton.same_source(source))
+            || self
+                .textures
+                .iter()
+                .any(|texture| texture.same_source(source))
+    }
+
+    pub fn loaded_from(&self, resources: &[LoadedResource]) -> Self {
+        let loaded = |source: &ResourceRef| {
+            resources
+                .iter()
+                .any(|entry| entry.enabled && entry.source.same_source(source))
+        };
+        Self {
+            model: self.model.clone(),
+            name: self.name.clone(),
+            skeleton: self.skeleton.clone().filter(&loaded),
+            textures: self
+                .textures
+                .iter()
+                .flat_map(ResourceRef::texture_images)
+                .map(|source| {
+                    if loaded(&source) {
+                        source
+                    } else {
+                        ResourceRef::white_texture()
+                    }
+                })
+                .collect(),
+        }
+    }
     pub fn same_source(&self, other: &Self) -> bool {
         self.model.same_source(&other.model)
             && self.textures.len() == other.textures.len()
@@ -605,8 +811,26 @@ pub(crate) struct LoadedMesh {
 }
 
 #[derive(Clone)]
+pub(crate) struct LoadedResource {
+    pub id: u64,
+    pub source: ResourceRef,
+    pub enabled: bool,
+}
+
+impl LoadedResource {
+    pub fn in_category(&self, kind: Kind) -> bool {
+        if kind == Kind::Txb {
+            matches!(self.source.kind(), Kind::Png | Kind::Dds)
+        } else {
+            self.source.kind() == kind
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct LoadedModel {
     pub id: u64,
+    pub resources: AssetBundle,
     pub name: Arc<str>,
     pub visible: bool,
     pub error: Option<Arc<str>>,
@@ -614,13 +838,41 @@ pub(crate) struct LoadedModel {
 }
 
 #[derive(Clone)]
+pub(crate) struct LoadedSkeleton {
+    pub id: u64,
+    pub bones: Arc<Vec<Bone>>,
+    pub bone_bindings: Arc<Vec<Option<usize>>>,
+    pub error: Option<Arc<str>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LoadedMotion {
+    pub id: u64,
+    pub source: ResourceRef,
+    pub enabled: bool,
+    pub frames: f32,
+    pub frame: Option<f32>,
+    pub skeleton: Option<u64>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LoadedEffect {
+    pub id: u64,
+    pub source: ResourceRef,
+    pub enabled: bool,
+    pub model: Option<u64>,
+    pub automatic: bool,
+    pub manual_target: Option<u64>,
+    pub model_id: Option<u16>,
+    pub message: Arc<str>,
+    pub binding: effects::BindingSnapshot,
+}
+
+#[derive(Clone)]
 pub(crate) struct Snapshot {
     pub ready: bool,
     pub playing: bool,
     pub playback_speed: f32,
-    pub bones: Arc<Vec<Bone>>,
-    /// Optional source node per target node, scoped to the active model.
-    pub bone_bindings: Arc<Vec<Option<usize>>>,
     pub camera: Option<Camera>,
     /// Actual pixel-rounded rectangle from the same rendered frame as camera.
     pub viewport: Viewport,
@@ -629,13 +881,10 @@ pub(crate) struct Snapshot {
     pub yaw: f32,
     pub message: Arc<str>,
     pub models: Arc<Vec<LoadedModel>>,
-    pub active_model: Option<u64>,
-    pub scene: Option<Arc<str>>,
-    pub scene_visible: bool,
-    pub motion: Option<Arc<str>>,
-    pub motion_frames: f32,
-    pub motion_frame: f32,
-    pub effects: Arc<Vec<effects::BindingSnapshot>>,
+    pub resources: Arc<Vec<LoadedResource>>,
+    pub motions: Arc<Vec<LoadedMotion>>,
+    pub skeletons: Arc<Vec<LoadedSkeleton>>,
+    pub loaded_effects: Arc<Vec<LoadedEffect>>,
 }
 
 impl Default for Snapshot {
@@ -644,8 +893,6 @@ impl Default for Snapshot {
             ready: false,
             playing: true,
             playback_speed: 1.0,
-            bones: Arc::new(Vec::new()),
-            bone_bindings: Arc::default(),
             camera: None,
             viewport: Viewport::default(),
             distance: 350.0,
@@ -653,45 +900,53 @@ impl Default for Snapshot {
             yaw: 0.0,
             message: "正在初始化资源工作台".into(),
             models: Arc::new(Vec::new()),
-            active_model: None,
-            scene: None,
-            scene_visible: false,
-            motion: None,
-            motion_frames: 0.0,
-            motion_frame: 0.0,
-            effects: Arc::default(),
+            resources: Arc::default(),
+            motions: Arc::default(),
+            skeletons: Arc::default(),
+            loaded_effects: Arc::default(),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlaybackTrack {
-    Motion,
+    Motion(u64),
     Effect { binding: u64, slot: usize },
 }
 
 pub(crate) enum Command {
-    LoadAssets(Vec<AssetBundle>),
-    AddAsset(AssetBundle),
-    TriggerEffect(ResourceRef),
+    LoadResource(ResourceRef),
+    RemoveResource(u64),
+    ResourceEnabled {
+        id: u64,
+        enabled: bool,
+    },
+    ClearResources(Kind),
+    BindEffect {
+        binding: u64,
+        model: Option<u64>,
+    },
+    AutoBindEffect(u64),
+    EffectEnabled {
+        binding: u64,
+        enabled: bool,
+    },
+    RemoveEffect(u64),
+    ClearLoadedEffects,
     TriggerEffectDefinition {
-        model: u64,
         binding: u64,
         slot: usize,
     },
     StopEffectDefinition {
-        model: u64,
         binding: u64,
         slot: usize,
     },
     RemoveEffectDefinition {
-        model: u64,
         binding: u64,
         slot: usize,
     },
     RemoveAsset(u64),
     ClearAssets,
-    SelectModel(u64),
     ModelVisible {
         id: u64,
         visible: bool,
@@ -707,17 +962,18 @@ pub(crate) enum Command {
     },
     ShowAllMeshes(u64),
     BoneBinding {
-        model: u64,
+        skeleton: u64,
         node: usize,
         source: Option<usize>,
     },
     ClearBoneBindings(u64),
     FocusAll,
-    LoadScene(AssetBundle),
-    UnloadScene,
-    SceneVisible(bool),
-    LoadMotion(ResourceRef),
-    UnloadMotion,
+    RemoveMotion(u64),
+    ClearMotions,
+    MotionEnabled {
+        id: u64,
+        enabled: bool,
+    },
     Playing(bool),
     PlaybackSpeed(f32),
     Seek {
@@ -734,7 +990,10 @@ pub(crate) enum Command {
         yaw: f32,
     },
     Pan([f32; 3]),
-    FocusBone(Option<usize>),
+    FocusBone {
+        skeleton: u64,
+        node: Option<usize>,
+    },
     ToggleFullscreen,
     Exit,
 }
@@ -830,8 +1089,7 @@ impl Control {
                     first == second
                 }
                 (Command::PlaybackSpeed(_), Command::PlaybackSpeed(_))
-                | (Command::Camera { .. }, Command::Camera { .. })
-                | (Command::LoadAssets(_), Command::LoadAssets(_)) => true,
+                | (Command::Camera { .. }, Command::Camera { .. }) => true,
                 _ => false,
             }
         {
@@ -1144,6 +1402,19 @@ mod tests {
             document: document.clone(),
             node,
         };
+        assert_eq!(
+            source(0)
+                .loadable_resources()
+                .iter()
+                .map(|source| source.node)
+                .collect::<Vec<_>>(),
+            [1, 6]
+        );
+        let counts = loadable_resource_counts(&document);
+        assert_eq!(counts, [2, 1, 1, 1, 1, 1, 1, 0, 0, 0]);
+        for (index, count) in counts.into_iter().enumerate() {
+            assert_eq!(count, source(index).loadable_resources().len());
+        }
         for index in [1, 2, 3, 4, 5] {
             assert_eq!(source(index).kind(), Kind::Fmod);
             assert_eq!(source(index).bytes().unwrap(), b"mesh");
@@ -1166,6 +1437,66 @@ mod tests {
             assert_eq!(invalid.bytes().unwrap_err(), "original layer error");
             assert_eq!(invalid.kind(), Kind::Unknown);
             assert!(!invalid.same_source(&source(4)));
+            assert!(invalid.loadable_resources().is_empty());
+            assert_eq!(loadable_resource_counts(&invalid.document)[5], 0);
+        }
+    }
+
+    #[test]
+    fn directory_counts_keep_reference_owners_and_stop_at_resource_boundaries() {
+        let node = |kind, children| crate::inspect::Node {
+            name: String::new(),
+            kind,
+            buffer: 0,
+            range: 0..4,
+            children,
+            deferred: false,
+            fields: Vec::new(),
+            error: None,
+        };
+        let document = Arc::new(Document {
+            root: 0,
+            buffers: vec![Arc::from(*b"data")],
+            nodes: vec![
+                node(Kind::Archive, vec![1, 6, 11]),
+                node(Kind::StageObjectPackage, vec![2, 3, 4]),
+                node(Kind::Fmod, vec![12]),
+                node(Kind::Fskl, vec![]),
+                node(Kind::Txb, vec![5]),
+                node(Kind::Dds, vec![]),
+                node(Kind::StageObjectPackage, vec![7, 8, 9]),
+                node(Kind::StageResourceReference, vec![2]),
+                node(Kind::Fskl, vec![]),
+                node(Kind::Txb, vec![10]),
+                node(Kind::Png, vec![]),
+                node(Kind::Motion, vec![13]),
+                node(Kind::Png, vec![]),
+                node(Kind::Motion, vec![]),
+            ],
+        });
+        let sources = |node| {
+            ResourceRef {
+                document: document.clone(),
+                node,
+            }
+            .loadable_resources()
+        };
+        assert_eq!(
+            sources(6)
+                .iter()
+                .map(|source| source.node)
+                .collect::<Vec<_>>(),
+            [7, 8, 10]
+        );
+        assert_eq!(
+            sources(0)
+                .iter()
+                .map(|source| source.node)
+                .collect::<Vec<_>>(),
+            [2, 3, 5, 8, 10, 11]
+        );
+        for (index, count) in loadable_resource_counts(&document).into_iter().enumerate() {
+            assert_eq!(count, sources(index).len(), "node {index}");
         }
     }
 
@@ -1216,6 +1547,101 @@ mod tests {
         }
         assert!(bundles[0].name.ends_with("first.bin · 模型 1"));
         assert!(bundles[1].name.ends_with("second.bin · 模型 1"));
+        let other_skeleton = bundles[1].skeleton.clone().unwrap();
+        let image = bundles[0].textures[0].texture_images().remove(0);
+        let loaded = vec![
+            LoadedResource {
+                id: 1,
+                source: other_skeleton,
+                enabled: true,
+            },
+            LoadedResource {
+                id: 2,
+                source: image.clone(),
+                enabled: true,
+            },
+        ];
+        let first = bundles[0].loaded_from(&loaded);
+        assert!(
+            first.skeleton.is_none(),
+            "unrelated skeletons must not bind by node numbers"
+        );
+        assert!(first.textures[0].same_source(&image));
+        assert!(bundles[1].loaded_from(&loaded).skeleton.is_some());
+    }
+
+    #[test]
+    fn txb_images_load_individually_and_missing_images_keep_their_original_slots() {
+        let node = |kind, children| crate::inspect::Node {
+            name: "resource".into(),
+            kind,
+            buffer: 0,
+            range: 0..16,
+            children,
+            deferred: false,
+            fields: Vec::new(),
+            error: None,
+        };
+        let document = Arc::new(Document {
+            root: 0,
+            buffers: vec![Arc::from([0u8; 16])],
+            nodes: vec![
+                node(Kind::Archive, vec![1, 2]),
+                node(Kind::Fmod, vec![]),
+                node(Kind::Txb, vec![3, 4, 5]),
+                node(Kind::Png, vec![]),
+                node(Kind::Png, vec![]),
+                node(Kind::Dds, vec![]),
+            ],
+        });
+        let source = |node| ResourceRef {
+            document: document.clone(),
+            node,
+        };
+        let images = source(2).texture_images();
+        assert_eq!(
+            images.iter().map(|image| image.node).collect::<Vec<_>>(),
+            [3, 4, 5]
+        );
+        let group = AssetBundle {
+            name: "group".into(),
+            model: source(1),
+            skeleton: None,
+            textures: vec![source(2)],
+        };
+        let mut loaded: Vec<_> = images
+            .iter()
+            .enumerate()
+            .map(|(index, source)| LoadedResource {
+                id: index as u64,
+                source: source.clone(),
+                enabled: true,
+            })
+            .collect();
+        assert!(
+            group
+                .loaded_from(&loaded)
+                .textures
+                .iter()
+                .zip(&images)
+                .all(|(a, b)| a.same_source(b))
+        );
+        loaded.remove(1);
+        let partial = group.loaded_from(&loaded);
+        assert_eq!(partial.textures.len(), 3);
+        assert!(partial.textures[0].same_source(&images[0]));
+        assert!(partial.textures[1].same_source(&ResourceRef::white_texture()));
+        assert!(partial.textures[2].same_source(&images[2]));
+        loaded[1].enabled = false;
+        let disabled = group.loaded_from(&loaded);
+        assert!(disabled.textures[0].same_source(&images[0]));
+        assert!(disabled.textures[2].same_source(&ResourceRef::white_texture()));
+        loaded[1].enabled = true;
+        assert!(
+            partial.same_source(&group.loaded_from(&loaded)),
+            "defaults remain stable across reconciliation"
+        );
+        assert_eq!(source(2).texture_images().len(), 3);
     }
 
     #[test]
@@ -1260,7 +1686,7 @@ mod tests {
         for frame in 0..100 {
             control
                 .send(Command::Seek {
-                    track: PlaybackTrack::Motion,
+                    track: PlaybackTrack::Motion(5),
                     frame: frame as f32,
                 })
                 .unwrap();
@@ -1281,10 +1707,10 @@ mod tests {
                 frame: 5.0,
             })
             .unwrap();
-        control.send(Command::UnloadMotion).unwrap();
+        control.send(Command::RemoveMotion(5)).unwrap();
         control
             .send(Command::Seek {
-                track: PlaybackTrack::Motion,
+                track: PlaybackTrack::Motion(5),
                 frame: 7.0,
             })
             .unwrap();
@@ -1292,7 +1718,7 @@ mod tests {
             control.commands().as_slice(),
             [
                 Command::Seek {
-                    track: PlaybackTrack::Motion,
+                    track: PlaybackTrack::Motion(5),
                     frame: 99.0
                 },
                 Command::Seek {
@@ -1302,9 +1728,9 @@ mod tests {
                     },
                     frame: 5.0
                 },
-                Command::UnloadMotion,
+                Command::RemoveMotion(5),
                 Command::Seek {
-                    track: PlaybackTrack::Motion,
+                    track: PlaybackTrack::Motion(5),
                     frame: 7.0
                 }
             ]
@@ -1315,16 +1741,24 @@ mod tests {
     fn closing_preempts_a_full_resource_queue_and_rejects_later_loads() {
         let control = Control::default();
         for id in 0..32 {
-            control.send(Command::SelectModel(id)).unwrap();
+            control.send(Command::RemoveAsset(id)).unwrap();
         }
-        assert!(control.send(Command::UnloadMotion).is_err());
+        assert!(control.send(Command::RemoveMotion(5)).is_err());
         control.send(Command::Exit).unwrap();
-        assert!(control.send(Command::LoadAssets(Vec::new())).is_err());
+        assert!(
+            control
+                .send(Command::LoadResource(ResourceRef::white_texture()))
+                .is_err()
+        );
         control.send(Command::Exit).unwrap();
         assert!(control.closing());
         assert!(matches!(control.commands().as_slice(), [Command::Exit]));
         assert!(control.closing());
-        assert!(control.send(Command::LoadAssets(Vec::new())).is_err());
+        assert!(
+            control
+                .send(Command::LoadResource(ResourceRef::white_texture()))
+                .is_err()
+        );
         control.send(Command::Exit).unwrap();
         assert!(control.commands().is_empty());
     }
@@ -1335,7 +1769,7 @@ mod tests {
         control
             .send(Command::IsolateMesh { model: 2, mesh: 3 })
             .unwrap();
-        control.send(Command::SelectModel(1)).unwrap();
+        control.send(Command::RemoveAsset(1)).unwrap();
         control
             .send(Command::MeshVisible {
                 model: 2,
@@ -1348,7 +1782,7 @@ mod tests {
             control.commands().as_slice(),
             [
                 Command::IsolateMesh { model: 2, mesh: 3 },
-                Command::SelectModel(1),
+                Command::RemoveAsset(1),
                 Command::MeshVisible {
                     model: 2,
                     mesh: 1,

@@ -503,15 +503,58 @@ unsafe fn free_compiled(client: Client, compiled: usize) -> Result<(), String> {
 
 #[must_use = "release on the task thread before releasing the owning skeleton"]
 pub(super) struct NativeMotion {
-    source: ResourceRef,
+    pub(super) source: ResourceRef,
     compiled: Option<usize>,
-    targets: Vec<BindingTarget>,
-    frames: f32,
+    targets: Vec<usize>,
+    offsets: Vec<u32>,
 }
 
 impl NativeMotion {
+    pub(super) fn duration(source: &ResourceRef) -> Result<f32, String> {
+        let motion = Motion::parse(source.bytes()?).map_err(|error| error.to_string())?;
+        Ok(MotionPlan::read(&motion)?.frames)
+    }
+
+    /// Inspect a prospective binding without compiling or changing node pointers.
+    ///
     /// # Safety
-    /// Roots/range must describe the live owning NativeAsset on the task thread
+    /// The roots and range must belong to a live, idle owned skeleton.
+    pub(super) unsafe fn binding_nodes(
+        source: &ResourceRef,
+        roots: &[usize],
+        node_range: (usize, usize),
+    ) -> Result<Vec<usize>, String> {
+        let motion = Motion::parse(source.bytes()?).map_err(|error| error.to_string())?;
+        let binding = unsafe { BindingPlan::read(roots, node_range, motion.tracks.len()) }?;
+        Ok(binding
+            .targets
+            .into_iter()
+            .map(|target| target.address)
+            .collect())
+    }
+
+    pub(super) fn target_nodes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.targets.iter().copied()
+    }
+
+    /// # Safety
+    /// The retained compilation and every target skeleton node must still be live.
+    pub(super) unsafe fn activate(&self) -> Result<(), String> {
+        let compiled = self.compiled.ok_or("动画编译资源已释放")?;
+        if self.offsets.len() != self.targets.len() {
+            return Err("动画轨道和绑定节点数量不一致".into());
+        }
+        for (&node, &offset) in self.targets.iter().zip(&self.offsets) {
+            unsafe {
+                put(node + NODE_MOTION, compiled);
+                put(node + NODE_TRACK_OFFSET, offset);
+            }
+        }
+        Ok(())
+    }
+
+    /// # Safety
+    /// Roots/range must describe the live owning skeleton on the task thread
     /// with sampling and rendering stopped. Release this motion before freeing
     /// that skeleton or unloading the game DLL.
     pub(super) unsafe fn load(
@@ -555,33 +598,32 @@ impl NativeMotion {
                     return Err("MOT 未按已验证的节点顺序完成绑定".into());
                 }
             }
-            Ok(())
+            Ok(offsets)
         })();
-        if let Err(error) = result {
-            if bound {
-                unsafe {
-                    binding.restore();
+        let offsets = match result {
+            Ok(offsets) => offsets,
+            Err(error) => {
+                if bound {
+                    unsafe {
+                        binding.restore();
+                    }
                 }
+                if let Err(cleanup) = unsafe { free_compiled(client, compiled) } {
+                    return Err(format!("{error}；{cleanup}"));
+                }
+                return Err(error);
             }
-            if let Err(cleanup) = unsafe { free_compiled(client, compiled) } {
-                return Err(format!("{error}；{cleanup}"));
-            }
-            return Err(error);
-        }
+        };
         Ok(Self {
             source,
             compiled: Some(compiled),
-            targets: binding.targets,
-            frames: plan.frames,
+            targets: binding
+                .targets
+                .into_iter()
+                .map(|target| target.address)
+                .collect(),
+            offsets,
         })
-    }
-
-    pub(super) fn frames(&self) -> f32 {
-        self.frames
-    }
-
-    pub(super) fn name(&self) -> String {
-        self.source.name()
     }
 
     /// # Safety
@@ -594,12 +636,12 @@ impl NativeMotion {
         };
         let locked = unsafe { AllocationListLock::acquire(client) };
         if unsafe { locked.contains(client, compiled) }? {
-            for target in &self.targets {
+            for &node in &self.targets {
                 // Releasing an older clip must not erase a replacement binding.
-                if unsafe { get::<usize>(target.address + NODE_MOTION) } == compiled {
+                if unsafe { get::<usize>(node + NODE_MOTION) } == compiled {
                     unsafe {
-                        put(target.address + NODE_MOTION, 0usize);
-                        put(target.address + NODE_TRACK_OFFSET, 0u32);
+                        put(node + NODE_MOTION, 0usize);
+                        put(node + NODE_TRACK_OFFSET, 0u32);
                     }
                 }
             }

@@ -19,6 +19,7 @@ use mhf_resource::{
     txb::Image,
 };
 use std::{
+    collections::BTreeSet,
     mem::{size_of, transmute},
     ptr,
     sync::Arc,
@@ -549,7 +550,9 @@ const SIGNATURES: &[(usize, &[u8])] = &[
     ),
 ];
 
+#[cfg(test)]
 pub(crate) fn preflight(bundle: &AssetBundle) -> Result<(), String> {
+    let bundle = preview_resources(bundle.clone())?;
     let textures = bundle
         .textures
         .iter()
@@ -567,6 +570,108 @@ pub(crate) fn preflight(bundle: &AssetBundle) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// Keep incomplete user resources renderable without editing their source bytes.
+/// Defaults belong only to the native instance; the UI retains the explicit inputs.
+fn preview_resources(mut bundle: AssetBundle) -> Result<AssetBundle, String> {
+    let model = Fmod::parse(bundle.model.bytes()?).map_err(|error| error.to_string())?;
+    let mut required_images = 1;
+    for section in &model.sections {
+        if let Section::Textures(table) = section {
+            for entry in &table.records {
+                let TextureEntry::Texture(texture) = entry else {
+                    return Err("未知原生贴图引用记录".into());
+                };
+                required_images = required_images.max(texture.image_id as usize + 1);
+            }
+        }
+    }
+    if required_images > textures::TEXTURE_CAPACITY {
+        return Err("模型贴图索引超出原生贴图容量".into());
+    }
+    if bundle.skeleton.is_none() {
+        let mut ids = BTreeSet::from([0u32]);
+        for object in model.objects() {
+            if let Some(Component::BoneMap(map)) = object
+                .components
+                .iter()
+                .find(|component| matches!(component, Component::BoneMap(_)))
+            {
+                ids.extend(map.values.iter().copied());
+            } else if let Some(weights) = object.weights() {
+                ids.extend(
+                    weights
+                        .vertices
+                        .iter()
+                        .flat_map(|vertex| &vertex.influences)
+                        .map(|influence| influence.bone_index),
+                );
+            }
+        }
+        if ids.len() > i16::MAX as usize || ids.iter().any(|&id| id > u16::MAX as u32) {
+            return Err("模型骨骼引用超出原生骨架范围".into());
+        }
+        let size = 28 + ids.len() * 268;
+        let mut bytes = vec![0; size];
+        let mut word = |offset: usize, value: u32| {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes())
+        };
+        word(0, mhf_resource::fskl::SKELETON);
+        word(4, ids.len() as u32 + 1);
+        word(8, size as u32);
+        word(16, 1);
+        word(20, 16);
+        for (index, id) in ids.iter().enumerate() {
+            let at = 28 + index * 268;
+            word(at, mhf_resource::fskl::BONE_HD);
+            word(at + 4, 1);
+            word(at + 8, 268);
+            word(at + 12, *id);
+            word(at + 16, if index == 0 { u32::MAX } else { 0 });
+            word(
+                at + 20,
+                if index == 0 && ids.len() > 1 {
+                    1
+                } else {
+                    u32::MAX
+                },
+            );
+            word(
+                at + 24,
+                if index > 0 && index + 1 < ids.len() {
+                    index as u32 + 1
+                } else {
+                    u32::MAX
+                },
+            );
+            for axis in 0..4 {
+                word(at + 28 + axis * 4, 1.0f32.to_bits());
+            }
+        }
+        bundle.skeleton = Some(generated_resource("默认静态骨架", bytes));
+    }
+    let sources = bundle
+        .textures
+        .iter()
+        .map(|source| source.bytes())
+        .collect::<Result<Vec<_>, _>>()?;
+    let provided = textures::images(&sources)?.len();
+    if provided < required_images {
+        let white = crate::preview::ResourceRef::white_texture();
+        bundle
+            .textures
+            .extend(std::iter::repeat_n(white, required_images - provided));
+    }
+    Ok(bundle)
+}
+
+fn generated_resource(name: &str, bytes: Vec<u8>) -> crate::preview::ResourceRef {
+    let document = Arc::new(crate::inspect::inspect(name, bytes.into()));
+    crate::preview::ResourceRef {
+        node: document.root,
+        document,
+    }
+}
+
 pub(crate) unsafe fn validate(client: Client) -> Result<(), String> {
     for &(address, prefix) in SIGNATURES {
         if unsafe { std::slice::from_raw_parts(client.address(address) as *const u8, prefix.len()) }
@@ -580,7 +685,8 @@ pub(crate) unsafe fn validate(client: Client) -> Result<(), String> {
 
 #[must_use = "release on the native task thread before dropping the source document"]
 pub(crate) struct NativeAsset {
-    bundle: AssetBundle,
+    // Native nodes retain pointers into these source bytes until release.
+    _bundle: AssetBundle,
     requirements: Requirements,
     pool: usize,
     slot: Option<i32>,
@@ -594,6 +700,7 @@ impl NativeAsset {
     /// Native task thread only, after scene pools initialize, while all drawing
     /// is quiescent. The supported geometry Mod must already own model hooks.
     pub(crate) unsafe fn load(client: Client, bundle: AssetBundle) -> Result<Self, String> {
+        let bundle = preview_resources(bundle)?;
         let model = bundle.model.bytes()?;
         let skeleton = bundle
             .skeleton
@@ -687,7 +794,7 @@ impl NativeAsset {
                     })
                     .collect(),
             ),
-            bundle,
+            _bundle: bundle,
             requirements,
             pool,
             slot: Some(slot),
@@ -795,10 +902,6 @@ impl NativeAsset {
         )
     }
 
-    pub(crate) fn name(&self) -> &str {
-        &self.bundle.name
-    }
-
     pub(crate) fn meshes(&self) -> Arc<Vec<LoadedMesh>> {
         self.meshes.clone()
     }
@@ -822,6 +925,16 @@ impl NativeAsset {
             .map_or_else(Arc::default, Skeleton::bindings)
     }
 
+    pub(crate) fn set_bone_bindings(
+        &mut self,
+        bindings: Arc<Vec<Option<usize>>>,
+    ) -> Result<(), String> {
+        self.skeleton
+            .as_mut()
+            .ok_or("预览骨架尚未初始化")?
+            .set_bindings(bindings)
+    }
+
     pub(crate) fn set_bone_binding(
         &mut self,
         node: usize,
@@ -842,7 +955,7 @@ impl NativeAsset {
     }
 
     pub(crate) fn set_mesh_visible(&mut self, index: usize, visible: bool) -> Result<(), String> {
-        let mesh = self.meshes.get(index).ok_or("子网格编号超出当前模型范围")?;
+        let mesh = self.meshes.get(index).ok_or("子网格编号超出该模型范围")?;
         if mesh.visible != visible {
             Arc::make_mut(&mut self.meshes)[index].visible = visible;
         }
@@ -851,7 +964,7 @@ impl NativeAsset {
 
     pub(crate) fn isolate_mesh(&mut self, index: usize) -> Result<(), String> {
         if index >= self.meshes.len() {
-            return Err("子网格编号超出当前模型范围".into());
+            return Err("子网格编号超出该模型范围".into());
         }
         for mesh in Arc::make_mut(&mut self.meshes) {
             mesh.visible = mesh.index == index;
@@ -934,13 +1047,27 @@ impl NativeAsset {
     }
 
     /// # Safety
+    /// Native render phase only, with the node allocation still owned and live.
+    pub(crate) unsafe fn update_skeleton(
+        &mut self,
+        client: Client,
+        motion_frames: &[(usize, f32)],
+        world: &[f32; 16],
+    ) -> Result<(), String> {
+        unsafe { self.owned_resource(client) }.ok_or("预览资源已释放，请重新载入")?;
+        let skeleton = self.skeleton.as_mut().ok_or("预览骨架尚未初始化")?;
+        unsafe { skeleton.update(client, motion_frames, world, &[]) }?;
+        Ok(())
+    }
+
+    /// # Safety
     /// Native world-render thread/phase only, with no concurrent load/release.
     /// `world` must be finite and stay valid until this call completes.
     pub(crate) unsafe fn draw(
         &mut self,
         client: Client,
         world: &[f32; 16],
-        frame: f32,
+        motion_frames: &[(usize, f32)],
         mut effects: Option<&mut Sample>,
     ) -> Result<(), String> {
         if world.iter().any(|v| !v.is_finite()) {
@@ -950,7 +1077,7 @@ impl NativeAsset {
             .copied()
             .ok_or("预览资源已随场景释放，请重新载入")?;
         let skeleton = self.skeleton.as_mut().ok_or("预览骨架尚未初始化")?;
-        unsafe { skeleton.update(client, frame, world, &[]) }?;
+        unsafe { skeleton.update(client, motion_frames, world, &[]) }?;
         if let Some(effects) = effects.as_mut() {
             effects.place(skeleton.worlds());
         }
@@ -983,7 +1110,7 @@ impl NativeAsset {
                 .copied()
                 .collect();
             if transformed || !transforms.is_empty() {
-                unsafe { skeleton.update(client, frame, world, &transforms) }?;
+                unsafe { skeleton.update(client, motion_frames, world, &transforms) }?;
             }
             transformed = !transforms.is_empty();
             if let Some(effects) = effects.as_mut() {
@@ -1101,14 +1228,14 @@ impl NativeAsset {
                 reset_render_options();
                 if drawn == 0 {
                     if transformed {
-                        skeleton.update(client, frame, world, &[])?;
+                        skeleton.update(client, motion_frames, world, &[])?;
                     }
                     return Err(format!("网格 {index} 已失去原生绘制句柄"));
                 }
             }
         }
         if transformed {
-            unsafe { skeleton.update(client, frame, world, &[]) }?;
+            unsafe { skeleton.update(client, motion_frames, world, &[]) }?;
         }
         Ok(())
     }
@@ -1297,7 +1424,7 @@ mod tests {
         let document = Arc::new(crate::inspect::inspect("mesh fixture", Arc::from([])));
         let source = crate::preview::ResourceRef { document, node: 0 };
         NativeAsset {
-            bundle: AssetBundle {
+            _bundle: AssetBundle {
                 model: source.clone(),
                 skeleton: None,
                 textures: vec![source],
@@ -1383,8 +1510,111 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires MHF_RESOURCE_GAME_ROOT; validates independent resource loading"]
+    fn original_model_loads_without_dependencies_and_partial_textures_keep_slots() {
+        let root = std::path::PathBuf::from(std::env::var_os("MHF_RESOURCE_GAME_ROOT").unwrap());
+        let document = Arc::new(crate::inspect::inspect(
+            "em001.pac",
+            std::fs::read(root.join("dat/emmodel/em001.pac"))
+                .unwrap()
+                .into(),
+        ));
+        let group = AssetBundle::find_with_nodes(document.clone()).0.remove(0);
+        let parent = document
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(index, node)| {
+                if node.kind != crate::inspect::Kind::Archive {
+                    return None;
+                }
+                let resources = crate::preview::ResourceRef {
+                    document: document.clone(),
+                    node: index,
+                }
+                .loadable_resources();
+                (resources.len() == 2
+                    && resources
+                        .iter()
+                        .any(|source| source.same_source(&group.model))
+                    && resources
+                        .iter()
+                        .any(|source| source.same_source(group.skeleton.as_ref().unwrap())))
+                .then_some(index)
+            })
+            .unwrap();
+        let selected = crate::preview::ResourceRef {
+            document: document.clone(),
+            node: parent,
+        }
+        .loadable_resources();
+        assert_eq!(selected.len(), 2);
+        assert!(
+            selected
+                .iter()
+                .any(|source| source.same_source(&group.model))
+        );
+        assert!(
+            selected
+                .iter()
+                .any(|source| source.same_source(group.skeleton.as_ref().unwrap()))
+        );
+        assert!(!selected.iter().any(|source| matches!(
+            source.kind(),
+            crate::inspect::Kind::Png | crate::inspect::Kind::Dds | crate::inspect::Kind::Txb
+        )));
+        assert!(
+            crate::preview::ResourceRef {
+                node: document.root,
+                document
+            }
+            .loadable_resources()
+            .iter()
+            .any(|source| matches!(
+                source.kind(),
+                crate::inspect::Kind::Png | crate::inspect::Kind::Dds
+            ))
+        );
+        let original = group.model.bytes().unwrap().to_vec();
+        let bare = AssetBundle {
+            name: group.name.clone(),
+            model: group.model.clone(),
+            skeleton: None,
+            textures: Vec::new(),
+        };
+        preflight(&bare).unwrap();
+        let completed = preview_resources(bare.clone()).unwrap();
+        let skeleton = Fskl::parse(completed.skeleton.as_ref().unwrap().bytes().unwrap()).unwrap();
+        skeleton.validate_hierarchy().unwrap();
+        assert!(
+            skeleton
+                .bones()
+                .all(|node| node.transform.scale[..3] == [1.0; 3])
+        );
+        let sources = completed
+            .textures
+            .iter()
+            .map(|source| source.bytes().unwrap())
+            .collect::<Vec<_>>();
+        assert!(!textures::images(&sources).unwrap().is_empty());
+        let images = group.textures[0].texture_images();
+        assert!(images.len() > 1);
+        let resources = vec![crate::preview::LoadedResource {
+            id: 1,
+            source: images[1].clone(),
+            enabled: true,
+        }];
+        let partial = group.loaded_from(&resources);
+        assert!(partial.textures[0].same_source(&crate::preview::ResourceRef::white_texture()));
+        assert!(partial.textures[1].same_source(&images[1]));
+        preflight(&partial).unwrap();
+        assert!(bare.skeleton.is_none() && bare.textures.is_empty());
+        assert_eq!(group.model.bytes().unwrap(), original);
+    }
+
+    #[test]
     #[ignore = "requires MHF_RESOURCE_GAME_ROOT; reads original game files only"]
-    fn actual_resource_bundles_reach_native_preflight() {
+    fn actual_resource_bundles_reach_native_validation() {
         let root = std::path::PathBuf::from(std::env::var_os("MHF_RESOURCE_GAME_ROOT").unwrap());
         let mut supported = 0;
         for name in [
@@ -1453,7 +1683,20 @@ mod tests {
             });
             let mut supplied = 0;
             for bundle in bundles {
-                let result = preflight(&bundle);
+                let explicit_textures = bundle
+                    .textures
+                    .iter()
+                    .map(|source| source.bytes().unwrap())
+                    .collect::<Vec<_>>();
+                let result = validate_files(
+                    bundle.model.bytes().unwrap(),
+                    bundle
+                        .skeleton
+                        .as_ref()
+                        .map(|source| source.bytes().unwrap()),
+                    &explicit_textures,
+                )
+                .map(|_| ());
                 if !single_image {
                     eprintln!("{}: {result:?}", bundle.name);
                 }

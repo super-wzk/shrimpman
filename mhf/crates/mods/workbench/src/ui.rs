@@ -3,8 +3,8 @@ use crate::{
     catalog::Catalog,
     inspect::{Document, Kind, Node},
     preview::{
-        AssetBundle, Command, Control, DEFAULT_BACKGROUND_COLOR, LoadedModel, PlaybackTrack,
-        ResourceRef, Snapshot, Viewport,
+        Command, Control, DEFAULT_BACKGROUND_COLOR, LoadedModel, PlaybackTrack, ResourceRef,
+        Snapshot, Viewport,
     },
     settings::ViewSettings,
     worker::Worker,
@@ -19,9 +19,8 @@ use std::{
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InspectorTab {
-    Models,
+    Loaded,
     Resource,
-    Bones,
 }
 
 struct TimelineTrack {
@@ -53,17 +52,12 @@ pub(crate) struct Workbench {
     expanding: Option<usize>,
     path: Option<PathBuf>,
     document: Option<Arc<Document>>,
-    assets: Vec<AssetBundle>,
-    asset_nodes: Vec<Vec<usize>>,
-    model: Option<ResourceRef>,
-    skeleton: Option<ResourceRef>,
-    textures: Vec<ResourceRef>,
+    resource_counts: Vec<usize>,
     node: usize,
     hex_start: usize,
     hex_buffer: bool,
     hex_selection: Option<std::ops::Range<usize>>,
-    active_model: Option<u64>,
-    bone: Option<usize>,
+    bone: Option<(u64, usize)>,
     error: String,
     status: String,
 }
@@ -85,7 +79,7 @@ impl Workbench {
             configuration,
             view_dirty: false,
             view_save_error: String::new(),
-            tab: InspectorTab::Models,
+            tab: InspectorTab::Loaded,
             viewport_rect: egui::Rect::NOTHING,
             log: VecDeque::new(),
             last_messages: Default::default(),
@@ -101,14 +95,9 @@ impl Workbench {
             document: None,
             node: 0,
             hex_start: 0,
-            assets: Vec::new(),
-            asset_nodes: Vec::new(),
-            model: None,
-            skeleton: None,
-            textures: Vec::new(),
+            resource_counts: Vec::new(),
             hex_buffer: false,
             hex_selection: None,
-            active_model: None,
             bone: None,
             error: String::new(),
             status: String::new(),
@@ -132,16 +121,6 @@ impl Workbench {
     }
 
     fn send(&mut self, command: Command) {
-        let bundle = match &command {
-            Command::LoadAssets(bundles) => bundles.first(),
-            Command::AddAsset(bundle) => Some(bundle),
-            _ => None,
-        };
-        if let Some(bundle) = bundle {
-            self.model = Some(bundle.model.clone());
-            self.skeleton = bundle.skeleton.clone();
-            self.textures.clone_from(&bundle.textures);
-        }
         self.error = self.control.send(command).err().unwrap_or_default();
     }
 
@@ -170,8 +149,7 @@ impl Workbench {
                 Ok(document) => self.loaded_document(document),
                 Err(error) => {
                     self.document = None;
-                    self.assets.clear();
-                    self.asset_nodes.clear();
+                    self.resource_counts.clear();
                     self.error = error;
                 }
             }
@@ -199,9 +177,9 @@ impl Workbench {
     }
 
     fn refresh_document(&mut self, document: Arc<Document>) {
-        (self.assets, self.asset_nodes) = AssetBundle::find_with_nodes(document.clone());
+        self.resource_counts = crate::preview::loadable_resource_counts(&document);
         self.status.clear();
-        if self.assets.is_empty()
+        if !document.nodes.iter().any(|node| node.kind == Kind::Fmod)
             && document
                 .nodes
                 .iter()
@@ -257,8 +235,10 @@ impl Workbench {
             self.view.preview_only = !self.view.preview_only;
         }
         let snapshot = self.control.snapshot();
-        if self.active_model != snapshot.active_model {
-            self.active_model = snapshot.active_model;
+        if self
+            .bone
+            .is_some_and(|(id, _)| !snapshot.resources.iter().any(|resource| resource.id == id))
+        {
             self.bone = None;
         }
         self.record_messages(&snapshot);
@@ -411,10 +391,10 @@ impl Workbench {
             .frame(frame)
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.strong("模型预览");
+                    ui.strong("资源预览");
                     if ui
                         .add_enabled(
-                            !snapshot.models.is_empty(),
+                            has_visible_resources(snapshot),
                             egui_hunter::Button::new("聚焦全部 · F"),
                         )
                         .clicked()
@@ -435,9 +415,8 @@ impl Workbench {
     fn inspector_panel(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
         ui.horizontal(|ui| {
             for (tab, label) in [
-                (InspectorTab::Models, "模型"),
-                (InspectorTab::Resource, "资源"),
-                (InspectorTab::Bones, "骨骼"),
+                (InspectorTab::Loaded, "已加载"),
+                (InspectorTab::Resource, "详情"),
             ] {
                 ui.selectable_value(&mut self.tab, tab, label);
             }
@@ -447,23 +426,15 @@ impl Workbench {
             .id_salt("workbench-inspector-content")
             .auto_shrink([false, false])
             .show(ui, |ui| match self.tab {
-                InspectorTab::Models => self.composition(ui, snapshot),
+                InspectorTab::Loaded => self.loaded_resources(ui, snapshot),
                 InspectorTab::Resource => {
                     if let Some(document) = self.document.clone() {
-                        egui::CollapsingHeader::new("预览与资源选择")
-                            .show(ui, |ui| self.resource_actions(ui, &document));
+                        self.resource_actions(ui, &document);
                         if let Some(node) = document.nodes.get(self.node) {
                             self.inspector(ui, &document, node);
                         }
                     } else {
-                        ui.weak("单击资源查看字段与原始字节，点击模型组旁的预览按钮加载。");
-                    }
-                }
-                InspectorTab::Bones => {
-                    if snapshot.bones.is_empty() {
-                        ui.weak("当前模型没有可显示的骨骼。");
-                    } else {
-                        self.bones(ui, snapshot);
+                        ui.weak("单击资源查看字段与原始字节，点击右侧按钮加载。");
                     }
                 }
             });
@@ -482,11 +453,11 @@ impl Workbench {
         if response.clicked() {
             response.request_focus();
         }
-        if snapshot.models.is_empty() && snapshot.scene.is_none() {
+        if !has_visible_resources(snapshot) {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "选择左侧资源，点击模型组旁的预览按钮",
+                "选择左侧资源，点击右侧的加载按钮",
                 egui::TextStyle::Body.resolve(ui.style()),
                 ui.visuals().weak_text_color(),
             );
@@ -529,12 +500,12 @@ impl Workbench {
         }
         if (response.hovered() || response.has_focus()) && !ui.ctx().text_edit_focused() {
             if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F))
-                && !snapshot.models.is_empty()
+                && has_visible_resources(snapshot)
             {
                 self.send(Command::FocusAll);
             }
             if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space))
-                && (snapshot.motion.is_some() || !snapshot.effects.is_empty())
+                && (!snapshot.motions.is_empty() || !snapshot.loaded_effects.is_empty())
             {
                 self.send(Command::Playing(!snapshot.playing));
             }
@@ -542,49 +513,8 @@ impl Workbench {
     }
 
     fn timeline(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        ui.horizontal(|ui| {
-            ui.strong("模型动画");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(snapshot.motion.is_some(), egui::Button::new("卸载"))
-                    .clicked()
-                {
-                    self.send(Command::UnloadMotion);
-                }
-                ui.add_sized(
-                    [ui.available_width(), ui.spacing().interact_size.y],
-                    egui::Label::new(
-                        snapshot
-                            .motion
-                            .as_deref()
-                            .unwrap_or("点击动画节点右侧的播放按钮"),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(snapshot.motion.as_deref().unwrap_or(""));
-            });
-        });
-        if !snapshot.effects.is_empty() {
-            ui.horizontal(|ui| {
-                ui.strong("特效");
-                ui.weak(format!(
-                    "{} 个定义 · 30 预览步/秒",
-                    snapshot
-                        .effects
-                        .iter()
-                        .map(|binding| binding.definitions.len())
-                        .sum::<usize>()
-                ));
-                ui.weak("独立轨道").on_hover_text(
-                    "每条轨道从第 0 步到自身总步数占满宽度，播放进度互不影响。拖动或单步只调整本轨道；播放、暂停和速度统一控制。",
-                );
-            });
-        }
-        if snapshot.motion.is_some() || !snapshot.effects.is_empty() {
-            self.effect_track(ui, snapshot);
-        }
         ui.add_enabled_ui(
-            snapshot.motion.is_some() || !snapshot.effects.is_empty(),
+            !snapshot.motions.is_empty() || !snapshot.loaded_effects.is_empty(),
             |ui| {
                 ui.horizontal(|ui| {
                     if ui
@@ -704,9 +634,8 @@ impl Workbench {
         });
         let before = self.node;
         let mut load = None;
-        let mut preview_node = None;
+        let mut load_node = None;
         let mut details = None;
-        let action_width = group_action_width(ui, self.assets.len());
         let browser = egui::ScrollArea::both()
             .id_salt("workbench-files")
             .auto_shrink([false, false])
@@ -717,12 +646,11 @@ impl Workbench {
                     &self.catalog,
                     self.path.as_ref(),
                     self.document.as_ref(),
-                    &self.asset_nodes,
-                    action_width,
+                    &self.resource_counts,
                     self.view.show_encoding_layers,
                     &mut self.node,
                     &mut load,
-                    &mut preview_node,
+                    &mut load_node,
                     &mut details,
                     !self.filter.is_empty(),
                 );
@@ -738,8 +666,8 @@ impl Workbench {
         if let Some(index) = details {
             self.expand_node(index);
         }
-        if let Some(index) = preview_node {
-            self.preview_node(index);
+        if let Some(index) = load_node {
+            self.load_node(index);
         }
         if let Some(path) = load {
             self.request = self.request.wrapping_add(1);
@@ -748,8 +676,7 @@ impl Workbench {
             self.loading = true;
             self.expanding = None;
             self.error.clear();
-            self.assets.clear();
-            self.asset_nodes.clear();
+            self.resource_counts.clear();
             self.worker.load(self.request, path);
         }
         browser.inner_rect
@@ -766,283 +693,274 @@ impl Workbench {
     }
 
     fn resource_actions(&mut self, ui: &mut egui::Ui, document: &Arc<Document>) {
-        let source = ResourceRef {
-            document: document.clone(),
-            node: self.node,
-        };
-        let kind = source.kind();
-        let valid = document.nodes[self.node].error.is_none();
         if document.nodes[self.node].deferred && ui.button("展开明细").clicked() {
             self.expand_node(self.node);
         }
-        ui.add_enabled_ui(valid, |ui| {
-            let action = match kind {
-                Kind::Fmod => Some("选择此模型"),
-                Kind::Fskl => Some("选择此骨架"),
-                Kind::Txb => Some("选择此贴图组"),
-                Kind::Png | Kind::Dds => Some("选择此贴图"),
-                Kind::Motion => Some("加载此动画"),
-                _ => None,
-            };
-            if let Some(action) = action
-                && ui.button(action).clicked()
-            {
-                self.select_resource(source.clone());
-            }
-            if (effects::is_binding(kind) || effects::is_definition(kind))
-                && ui.button("追加并触发特效").clicked()
-            {
-                self.send(Command::TriggerEffect(source.clone()));
-            }
-            if matches!(kind, Kind::Txb | Kind::Png | Kind::Dds)
-                && ui
-                    .button("追加贴图")
-                    .on_hover_text("按顺序追加到已选贴图来源之后")
+        let resource_count = self.resource_counts.get(self.node).copied().unwrap_or(0);
+        if resource_count != 0 {
+            ui.horizontal(|ui| {
+                ui.strong(format!("资源 {resource_count}"));
+                if ui
+                    .small_button("加载")
+                    .on_hover_text("加载所选范围内的资源")
                     .clicked()
-            {
-                self.textures.push(source);
-            }
-            let mut asset_indices = self.asset_nodes.get(self.node).cloned().unwrap_or_default();
-            asset_indices.retain(|&index| self.assets.get(index).is_some());
-            if !asset_indices.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.strong(format!("模型组 {}", asset_indices.len()));
-                    if ui
-                        .small_button("预览")
-                        .on_hover_text("预览此节点下的全部模型组")
-                        .clicked()
-                    {
-                        self.preview_node(self.node);
-                    }
-                });
-            }
-            for (index, asset_index) in asset_indices.into_iter().enumerate() {
-                let asset = &self.assets[asset_index];
-                let commands = ui
-                    .push_id(("resource-asset", index), |ui| {
-                        let name = asset.name.rsplit(['/', '\\']).next().unwrap_or(&asset.name);
-                        ui.add(egui::Label::new(name).truncate())
-                            .on_hover_text(&asset.name);
-                        ui.horizontal_wrapped(|ui| {
-                            [
-                                ui.button("加入预览")
-                                    .clicked()
-                                    .then(|| Command::AddAsset(asset.clone())),
-                                ui.button("作为场景载入")
-                                    .clicked()
-                                    .then(|| Command::LoadScene(asset.clone())),
-                            ]
-                        })
-                        .inner
-                    })
-                    .inner;
-                for command in commands.into_iter().flatten() {
-                    self.send(command);
+                {
+                    self.load_node(self.node);
                 }
-            }
-        });
-    }
-
-    fn select_resource(&mut self, source: ResourceRef) {
-        match source.kind() {
-            Kind::Fmod => self.model = Some(source),
-            Kind::Fskl => self.skeleton = Some(source),
-            Kind::Txb | Kind::Png | Kind::Dds => self.textures = vec![source],
-            Kind::Motion => self.send(Command::LoadMotion(source)),
-            _ => {}
+            });
         }
     }
 
-    fn scoped_assets(&self, node: usize) -> Vec<AssetBundle> {
-        self.asset_nodes
-            .get(node)
-            .into_iter()
-            .flatten()
-            .filter_map(|&index| self.assets.get(index).cloned())
-            .collect()
-    }
-
-    fn preview_node(&mut self, node: usize) {
+    fn load_node(&mut self, node: usize) {
         if let Some(document) = &self.document {
             let source = ResourceRef {
                 document: document.clone(),
                 node,
             };
-            if effects::is_binding(source.kind()) || effects::is_definition(source.kind()) {
-                self.node = node;
-                self.send(Command::TriggerEffect(source));
-                return;
-            }
-            if source.kind() == Kind::Motion {
-                self.node = node;
-                self.send(Command::LoadMotion(source));
-                return;
-            }
-        }
-        let assets = self.scoped_assets(node);
-        if !assets.is_empty() {
             self.node = node;
-            self.tab = InspectorTab::Models;
-            self.send(Command::LoadAssets(assets));
+            self.tab = InspectorTab::Loaded;
+            self.send(Command::LoadResource(source));
         }
     }
 
-    fn selected_bundle(&self) -> Option<AssetBundle> {
-        if self.textures.is_empty() {
-            return None;
-        }
-        let model = self.model.clone()?;
-        Some(AssetBundle {
-            name: model.name(),
-            model,
-            skeleton: self.skeleton.clone(),
-            textures: self.textures.clone(),
-        })
-    }
-
-    fn effect_controls(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot, model: u64) {
-        let count: usize = snapshot
-            .effects
-            .iter()
-            .map(|binding| binding.definitions.len())
-            .sum();
-        ui.horizontal(|ui| {
-            ui.strong(format!("特效 · {count}"));
-            ui.weak("说明").on_hover_text("追加特效直接加入并触发当前模型。相同目标以最近触发的定义为准。原生条件仅展示；旋转、缩放按标准周期预览；DAT166 模式 0 的 UV 滚动已支持；附着粒子、拖尾及依赖装备状态的 UV 模式与速度尚未预览。");
-        });
-        if count == 0 {
-            ui.weak("从资源列表追加特效，即时预览。");
-        }
-        for binding in snapshot.effects.iter() {
-            for entry in &binding.definitions {
-                ui.push_id(("model-effect", model, binding.id, entry.slot), |ui| {
-                    let header = egui::collapsing_header::CollapsingState::load_with_default_open(
-                        ui.ctx(),
-                        ui.id().with("details"),
-                        false,
-                    )
-                    .show_header(ui, |ui| {
-                        ui.strong(format!("定义 {}", entry.id));
-                        let status = if entry.frame.is_none() {
-                            "已停止"
-                        } else if entry.active {
-                            "播放中"
-                        } else if entry.message.contains("最近触发") {
-                            "已被接管"
-                        } else if entry.message.starts_with("等待启动") {
-                            "延迟中"
-                        } else if entry.message.starts_with("尚未到") {
-                            "待触发"
-                        } else {
-                            "不可预览"
-                        };
-                        ui.weak(status).on_hover_text(&entry.message);
-                        if ui
-                            .small_button(if entry.frame.is_some() {
-                                "重播"
-                            } else {
-                                "触发"
-                            })
-                            .clicked()
-                        {
-                            self.send(Command::TriggerEffectDefinition {
-                                model,
-                                binding: binding.id,
-                                slot: entry.slot,
-                            });
+    fn effect_controls(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
+        for effect in snapshot.loaded_effects.iter() {
+            ui.push_id(("loaded-effect", effect.id), |ui| {
+                ui.horizontal(|ui| {
+                    let mut enabled = effect.enabled;
+                    if ui.checkbox(&mut enabled, "").changed() {
+                        self.send(Command::EffectEnabled {
+                            binding: effect.id,
+                            enabled,
+                        });
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("卸载").clicked() {
+                            self.send(Command::RemoveEffect(effect.id));
                         }
-                        if ui
-                            .add_enabled(entry.frame.is_some(), egui::Button::new("停止").small())
-                            .clicked()
-                        {
-                            self.send(Command::StopEffectDefinition {
-                                model,
-                                binding: binding.id,
-                                slot: entry.slot,
-                            });
-                        }
-                        if ui.small_button("移除").clicked() {
-                            self.send(Command::RemoveEffectDefinition {
-                                model,
-                                binding: binding.id,
-                                slot: entry.slot,
-                            });
-                        }
-                    });
-                    header.body(|ui| {
-                        ui.add(egui::Label::new(&binding.name).wrap());
-                        let target = entry.draw.map_or_else(
-                            || "附着点".into(),
-                            |(group, item)| format!("绘制组 {group} / 材质槽 {item}"),
-                        );
-                        ui.label(format!(
-                            "节点 {} · {target} · 延迟 {} 步 · 原条件 {}",
-                            entry.node, entry.delay, entry.condition
-                        ));
-                        ui.label(&entry.message);
+                        ui.add_sized(
+                            [ui.available_width(), ui.spacing().interact_size.y],
+                            egui::Label::new(effect.source.short_name()).truncate(),
+                        )
+                        .on_hover_text(effect.source.name());
                     });
                 });
-            }
+                let previous = if effect.automatic {
+                    None
+                } else {
+                    Some(effect.manual_target)
+                };
+                let mut target = previous;
+                let name = (if effect.automatic {
+                    effect.model
+                } else {
+                    effect.manual_target
+                })
+                .and_then(|id| snapshot.models.iter().find(|model| model.id == id))
+                .map_or("未绑定", |model| model.name.as_ref());
+                let short_name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                let target_width = ui.available_width();
+                egui::ComboBox::from_id_salt(("effect-target", effect.id))
+                    .width(target_width)
+                    .truncate()
+                    .selected_text(if effect.automatic {
+                        format!("自动 · {short_name}")
+                    } else {
+                        short_name.to_owned()
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.set_max_width(target_width);
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        ui.selectable_value(
+                            &mut target,
+                            None,
+                            effect.model_id.map_or_else(
+                                || "自动匹配".into(),
+                                |id| format!("自动匹配 · 模型 ID {id}"),
+                            ),
+                        );
+                        ui.selectable_value(&mut target, Some(None), "未绑定");
+                        for model in snapshot.models.iter().filter(|model| model.error.is_none()) {
+                            ui.selectable_value(
+                                &mut target,
+                                Some(Some(model.id)),
+                                model
+                                    .name
+                                    .rsplit(['/', '\\'])
+                                    .next()
+                                    .unwrap_or(model.name.as_ref()),
+                            )
+                            .on_hover_text(model.name.as_ref());
+                        }
+                    })
+                    .response
+                    .on_hover_text(format!("{name}\n{}", effect.message));
+                if target != previous {
+                    self.send(match target {
+                        None => Command::AutoBindEffect(effect.id),
+                        Some(model) => Command::BindEffect {
+                            binding: effect.id,
+                            model,
+                        },
+                    });
+                }
+                for entry in &effect.binding.definitions {
+                    self.effect_definition_controls(
+                        ui,
+                        &effect.binding,
+                        entry,
+                        effect.enabled && effect.model.is_some(),
+                    );
+                }
+                ui.add_space(4.0);
+            });
         }
     }
 
-    fn effect_track(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        egui::ScrollArea::vertical()
-            .id_salt("effect-timeline")
-            .max_height(90.0)
-            .show(ui, |ui| {
-                if snapshot.motion.is_some() {
-                    self.track_row(
-                        ui,
-                        "模型动画",
-                        TimelineTrack {
-                            target: PlaybackTrack::Motion,
-                            range: [0.0, snapshot.motion_frames],
-                            frame: Some(snapshot.motion_frame),
-                        },
-                        Color32::from_rgb(75, 115, 205),
-                    )
-                    .on_hover_text(format!(
-                        "{} · {:.0} 帧",
-                        snapshot.motion.as_deref().unwrap_or(""),
-                        snapshot.motion_frames
-                    ));
-                }
-                for (binding_index, binding) in snapshot.effects.iter().enumerate() {
-                    for entry in &binding.definitions {
-                        let color = if entry.active {
-                            Color32::from_rgb(40, 150, 165)
+    fn effect_definition_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        binding: &effects::BindingSnapshot,
+        entry: &effects::DefinitionSnapshot,
+        bound: bool,
+    ) {
+        ui.push_id(("effect-definition", binding.id, entry.slot), |ui| {
+            egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.id().with("details"),
+                false,
+            )
+            .show_header(ui, |ui| {
+                ui.strong(format!("定义 {}", entry.id));
+                if ui
+                    .add_enabled(
+                        bound,
+                        egui::Button::new(if entry.frame.is_some() {
+                            "重播"
                         } else {
-                            Color32::from_gray(70)
-                        };
-                        self.track_row(
-                            ui,
-                            &format!("特效 {}:{} · {}", binding_index + 1, entry.slot, entry.id),
-                            TimelineTrack {
-                                target: PlaybackTrack::Effect {
-                                    binding: binding.id,
-                                    slot: entry.slot,
-                                },
-                                range: [f32::from(entry.delay), entry.frames],
-                                frame: entry.frame,
-                            },
-                            color,
+                            "触发"
+                        })
+                        .small(),
+                    )
+                    .clicked()
+                {
+                    self.send(Command::TriggerEffectDefinition {
+                        binding: binding.id,
+                        slot: entry.slot,
+                    });
+                }
+                if ui
+                    .add_enabled(
+                        bound && entry.frame.is_some(),
+                        egui::Button::new("停止").small(),
+                    )
+                    .clicked()
+                {
+                    self.send(Command::StopEffectDefinition {
+                        binding: binding.id,
+                        slot: entry.slot,
+                    });
+                }
+                if ui.small_button("移除").clicked() {
+                    self.send(Command::RemoveEffectDefinition {
+                        binding: binding.id,
+                        slot: entry.slot,
+                    });
+                }
+            })
+            .body(|ui| {
+                let target = entry.draw.map_or_else(
+                    || "附着点".into(),
+                    |(group, item)| format!("绘制组 {group} / 材质槽 {item}"),
+                );
+                ui.label(format!(
+                    "节点 {} · {target} · 延迟 {} 步 · 原条件 {}",
+                    entry.node, entry.delay, entry.condition
+                ));
+                ui.label(&entry.message);
+            });
+            self.effect_entry_track(ui, binding, entry);
+        });
+    }
+
+    fn motion_list(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
+        for motion in snapshot.motions.iter() {
+            ui.push_id(("loaded-motion", motion.id), |ui| {
+                ui.horizontal(|ui| {
+                    let mut enabled = motion.enabled;
+                    if ui.checkbox(&mut enabled, "").changed() {
+                        self.send(Command::MotionEnabled {
+                            id: motion.id,
+                            enabled,
+                        });
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("卸载").clicked() {
+                            self.send(Command::RemoveMotion(motion.id));
+                        }
+                        let target = motion
+                            .skeleton
+                            .and_then(|id| snapshot.resources.iter().find(|entry| entry.id == id))
+                            .map(|entry| entry.source.short_name())
+                            .unwrap_or_else(|| "未绑定".into());
+                        ui.add_sized(
+                            [ui.available_width(), ui.spacing().interact_size.y],
+                            egui::Label::new(motion.source.short_name()).truncate(),
                         )
                         .on_hover_text(format!(
-                            "{}\n轨道 {:.0} 步{} · 延迟 {} 步；{}",
-                            binding.name,
-                            entry.frames,
-                            if entry.looping {
-                                "（最长通道一轮）"
-                            } else {
-                                ""
-                            },
-                            entry.delay,
-                            entry.message
+                            "{}\n{}",
+                            motion.source.name(),
+                            target
                         ));
-                    }
-                }
+                    });
+                });
+                self.track_row(
+                    ui,
+                    &motion.source.name(),
+                    TimelineTrack {
+                        target: PlaybackTrack::Motion(motion.id),
+                        range: [0.0, motion.frames],
+                        frame: motion.frame,
+                    },
+                    Color32::from_rgb(75, 115, 205),
+                );
             });
+        }
+    }
+
+    fn effect_entry_track(
+        &mut self,
+        ui: &mut egui::Ui,
+        binding: &effects::BindingSnapshot,
+        entry: &effects::DefinitionSnapshot,
+    ) {
+        self.track_row(
+            ui,
+            &binding.name,
+            TimelineTrack {
+                target: PlaybackTrack::Effect {
+                    binding: binding.id,
+                    slot: entry.slot,
+                },
+                range: [f32::from(entry.delay), entry.frames],
+                frame: entry.frame,
+            },
+            if entry.active {
+                Color32::from_rgb(40, 150, 165)
+            } else {
+                Color32::from_gray(70)
+            },
+        )
+        .on_hover_text(format!(
+            "延迟 {} 步{} · {}",
+            entry.delay,
+            if entry.looping {
+                " · 最长通道一轮"
+            } else {
+                ""
+            },
+            entry.message
+        ));
     }
 
     fn track_row(
@@ -1053,8 +971,6 @@ impl Workbench {
         color: Color32,
     ) -> egui::Response {
         ui.horizontal(|ui| {
-            ui.add_sized([120.0, 18.0], egui::Label::new(label).truncate())
-                .on_hover_text(label);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 for (caption, delta, help) in
                     [("+1", 1, "本轨道下一步"), ("-1", -1, "本轨道上一步")]
@@ -1121,17 +1037,13 @@ impl Workbench {
             .inner
         })
         .inner
+        .on_hover_text(label)
     }
 
     fn draw_effects(&self, ui: &egui::Ui, snapshot: &Snapshot) {
         let Some(camera) = snapshot.camera.filter(|_| snapshot.ready) else {
             return;
         };
-        if !snapshot.models.iter().any(|model| {
-            Some(model.id) == snapshot.active_model && model.visible && model.error.is_none()
-        }) {
-            return;
-        }
         let screen = ui.ctx().content_rect();
         let region = snapshot.viewport;
         let viewport = egui::Rect::from_min_size(
@@ -1144,8 +1056,15 @@ impl Workbench {
         let painter = ui
             .painter()
             .with_clip_rect(viewport.intersect(ui.clip_rect()));
-        for (binding_index, binding) in snapshot.effects.iter().enumerate() {
-            for entry in &binding.definitions {
+        for (binding_index, effect) in snapshot.loaded_effects.iter().enumerate() {
+            if !effect.enabled
+                || !snapshot.models.iter().any(|model| {
+                    Some(model.id) == effect.model && model.visible && model.error.is_none()
+                })
+            {
+                continue;
+            }
+            for entry in &effect.binding.definitions {
                 let Some(position) = entry.position.filter(|_| entry.active) else {
                     continue;
                 };
@@ -1285,168 +1204,211 @@ impl Workbench {
         });
     }
 
-    fn composition(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        egui::CollapsingHeader::new("资源组合")
-            .default_open(false)
-            .show(ui, |ui| {
-                for (label, source) in [("模型", &self.model), ("骨架", &self.skeleton)] {
-                    ui.add(
-                        egui::Label::new(format!(
-                            "{label}：{}",
-                            source
-                                .as_ref()
-                                .map_or_else(|| "未选择".into(), ResourceRef::short_name)
-                        ))
-                        .truncate(),
-                    )
-                    .on_hover_text(source.as_ref().map_or_else(String::new, ResourceRef::name));
-                }
-                self.texture_sources(ui);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("清除骨架").clicked() {
-                        self.skeleton = None;
-                    }
-                    if ui.button("清空组合").clicked() {
-                        self.model = None;
-                        self.skeleton = None;
-                        self.textures.clear();
-                    }
-                });
-                if let Some(bundle) = self.selected_bundle() {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("加入预览").clicked() {
-                            self.send(Command::AddAsset(bundle.clone()));
-                        }
-                        if ui.button("作为场景载入").clicked() {
-                            self.send(Command::LoadScene(bundle));
-                        }
-                    });
-                }
-            });
-        ui.separator();
-        ui.strong("预览模型");
-        if snapshot.models.is_empty() {
-            ui.weak("从资源浏览选择模型组，或在资源组合中加入预览。");
-        } else {
-            ui.horizontal_wrapped(|ui| {
-                let visible = snapshot
-                    .models
-                    .iter()
-                    .any(|model| model.visible && model.error.is_none());
-                if ui
-                    .add_enabled(visible, egui::Button::new("聚焦全部"))
-                    .clicked()
-                {
-                    self.send(Command::FocusAll);
-                }
-                if ui.button("清空全部").clicked() {
-                    self.send(Command::ClearAssets);
-                }
-            });
-            for model in snapshot.models.iter() {
-                ui.push_id(("preview-model", model.id), |ui| {
-                    ui.horizontal(|ui| {
-                        let mut visible = model.visible;
-                        if ui
-                            .add_enabled(
-                                model.error.is_none(),
-                                egui::Checkbox::without_text(&mut visible),
-                            )
-                            .on_hover_text("显示模型")
-                            .changed()
-                        {
-                            self.send(Command::ModelVisible {
-                                id: model.id,
-                                visible,
-                            });
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("移除").clicked() {
-                                self.send(Command::RemoveAsset(model.id));
-                            }
-                            let name = model
-                                .name
-                                .rsplit(['/', '\\'])
-                                .next()
-                                .unwrap_or(model.name.as_ref());
+    fn loaded_resources(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
+        egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.id().with("模型"),
+            false,
+        )
+        .show_header(ui, |ui| {
+            ui.strong("模型");
+            let visible = snapshot
+                .models
+                .iter()
+                .any(|model| model.visible && model.error.is_none());
+            if ui
+                .add_enabled(visible, egui::Button::new("聚焦全部").small())
+                .clicked()
+            {
+                self.send(Command::FocusAll);
+            }
+            if ui
+                .add_enabled(
+                    !snapshot.models.is_empty(),
+                    egui::Button::new("清空").small(),
+                )
+                .clicked()
+            {
+                self.send(Command::ClearAssets);
+            }
+        })
+        .body(|ui| {
+            if snapshot.models.is_empty() {
+                ui.weak("未加载模型");
+            } else {
+                for model in snapshot.models.iter() {
+                    ui.push_id(("preview-model", model.id), |ui| {
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.id().with("meshes"),
+                            false,
+                        )
+                        .show_header(ui, |ui| {
+                            let mut visible = model.visible;
                             if ui
-                                .add_sized(
-                                    [ui.available_width(), ui.spacing().interact_size.y],
-                                    egui::Button::selectable(
-                                        snapshot.active_model == Some(model.id),
-                                        name,
-                                    )
-                                    .truncate(),
+                                .add_enabled(
+                                    model.error.is_none(),
+                                    egui::Checkbox::without_text(&mut visible),
                                 )
-                                .on_hover_text(model.name.as_ref())
-                                .clicked()
+                                .on_hover_text("显示模型")
+                                .changed()
                             {
-                                self.send(Command::SelectModel(model.id));
+                                self.send(Command::ModelVisible {
+                                    id: model.id,
+                                    visible,
+                                });
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("卸载").clicked() {
+                                        self.send(Command::RemoveAsset(model.id));
+                                    }
+                                    let name = model
+                                        .name
+                                        .rsplit(['/', '\\'])
+                                        .next()
+                                        .unwrap_or(model.name.as_ref());
+                                    ui.add_sized(
+                                        [ui.available_width(), ui.spacing().interact_size.y],
+                                        egui::Label::new(name).truncate(),
+                                    )
+                                    .on_hover_text(model.name.as_ref());
+                                },
+                            );
+                        })
+                        .body(|ui| {
+                            if model.error.is_none() {
+                                self.mesh_controls(ui, model);
                             }
                         });
+                        if let Some(error) = &model.error {
+                            ui.colored_label(Color32::LIGHT_RED, format!("无法预览：{error}"));
+                        }
                     });
-                    if let Some(error) = &model.error {
-                        ui.colored_label(Color32::LIGHT_RED, format!("无法预览：{error}"));
-                    }
-                });
-            }
-        }
-        let active = snapshot
-            .active_model
-            .and_then(|id| snapshot.models.iter().find(|model| model.id == id));
-        if let Some(model) = active.filter(|model| model.error.is_none()) {
-            ui.separator();
-            ui.strong("当前模型");
-            self.effect_controls(ui, snapshot, model.id);
-            ui.collapsing("子网格", |ui| self.mesh_controls(ui, model));
-            ui.collapsing("相机参数", |ui| self.camera_controls(ui, snapshot));
-        }
-        ui.separator();
-        ui.collapsing("场景", |ui| {
-            if let Some(scene) = &snapshot.scene {
-                ui.add(egui::Label::new(scene.as_ref()).wrap());
-                let mut enabled = snapshot.scene_visible;
-                if ui.checkbox(&mut enabled, "启用场景").changed() {
-                    self.send(Command::SceneVisible(enabled));
                 }
-                if ui.button("卸载场景").clicked() {
-                    self.send(Command::UnloadScene);
-                }
-            } else {
-                ui.weak("未加载场景；可从资源组合按需载入。");
             }
         });
+        for (title, kind) in [("骨架", Kind::Fskl), ("贴图", Kind::Txb)] {
+            egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.id().with(title),
+                false,
+            )
+            .show_header(ui, |ui| {
+                ui.strong(title);
+                if ui
+                    .add_enabled(
+                        snapshot
+                            .resources
+                            .iter()
+                            .any(|entry| entry.in_category(kind)),
+                        egui::Button::new("清空").small(),
+                    )
+                    .clicked()
+                {
+                    self.send(Command::ClearResources(kind));
+                }
+            })
+            .body(|ui| self.resource_list(ui, snapshot, kind));
+        }
+        egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.id().with("动画"),
+            false,
+        )
+        .show_header(ui, |ui| {
+            ui.strong("动画");
+            if ui
+                .add_enabled(
+                    !snapshot.motions.is_empty(),
+                    egui::Button::new("清空").small(),
+                )
+                .clicked()
+            {
+                self.send(Command::ClearMotions);
+            }
+        })
+        .body(|ui| self.motion_list(ui, snapshot));
+        egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.id().with("特效"),
+            false,
+        )
+        .show_header(ui, |ui| {
+            ui.strong("特效");
+            if ui
+                .add_enabled(
+                    !snapshot.loaded_effects.is_empty(),
+                    egui::Button::new("清空").small(),
+                )
+                .clicked()
+            {
+                self.send(Command::ClearLoadedEffects);
+            }
+        })
+        .body(|ui| self.effect_controls(ui, snapshot));
+        ui.collapsing("相机参数", |ui| self.camera_controls(ui, snapshot));
     }
 
-    fn texture_sources(&mut self, ui: &mut egui::Ui) {
-        ui.strong("贴图来源（按图槽顺序）");
-        if self.textures.is_empty() {
-            ui.weak("未选择贴图；可选择贴图组或单张 PNG / DDS，再追加其他贴图。");
-        }
-        let mut slot = 0;
-        let mut remove = None;
-        for (index, source) in self.textures.iter().enumerate() {
-            let count = texture_count(source);
-            ui.push_id(("texture-source", index), |ui| {
-                ui.horizontal(|ui| {
-                    ui.small(match count {
-                        0 => format!("来源 {} · 空贴图组", index + 1),
-                        1 => format!("来源 {} · 图槽 {slot}", index + 1),
-                        _ => format!("来源 {} · 图槽 {slot}–{}", index + 1, slot + count - 1),
+    fn resource_list(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot, kind: Kind) {
+        for entry in snapshot
+            .resources
+            .iter()
+            .filter(|entry| entry.in_category(kind))
+        {
+            ui.push_id(("loaded-resource", entry.id), |ui| {
+                if kind == Kind::Fskl {
+                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                        ui.ctx(),
+                        ui.id().with("nodes"),
+                        false,
+                    )
+                    .show_header(ui, |ui| self.resource_row(ui, snapshot, entry))
+                    .body(|ui| {
+                        if let Some(skeleton) = snapshot
+                            .skeletons
+                            .iter()
+                            .find(|skeleton| skeleton.id == entry.id)
+                        {
+                            self.bones(ui, skeleton, entry.enabled);
+                        }
                     });
-                    if ui.small_button("移除").clicked() {
-                        remove = Some(index);
-                    }
-                });
-                let name = source.name();
-                ui.add(egui::Label::new(source.short_name()).truncate())
-                    .on_hover_text(name);
+                } else {
+                    ui.horizontal(|ui| self.resource_row(ui, snapshot, entry));
+                }
             });
-            slot += count;
         }
-        if let Some(index) = remove {
-            self.textures.remove(index);
+    }
+
+    fn resource_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &Snapshot,
+        entry: &crate::preview::LoadedResource,
+    ) {
+        let mut enabled = entry.enabled;
+        if ui.checkbox(&mut enabled, "").changed() {
+            self.send(Command::ResourceEnabled {
+                id: entry.id,
+                enabled,
+            });
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("卸载").clicked() {
+                self.send(Command::RemoveResource(entry.id));
+            }
+            let bound = snapshot
+                .models
+                .iter()
+                .filter(|model| model.resources.contains(&entry.source))
+                .count();
+            ui.add_sized(
+                [ui.available_width(), ui.spacing().interact_size.y],
+                egui::Label::new(entry.source.short_name()).truncate(),
+            )
+            .on_hover_text(format!("{}\n绑定 {bound} 个模型", entry.source.name()));
+        });
     }
 
     fn mesh_controls(&mut self, ui: &mut egui::Ui, model: &LoadedModel) {
@@ -1537,16 +1499,46 @@ impl Workbench {
         }
     }
 
-    fn bones(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        ui.checkbox(&mut self.view.show_bones, "显示骨架");
-        ui.small(format!("{} 个原生骨骼 · 双击聚焦", snapshot.bones.len()));
+    fn bones(
+        &mut self,
+        ui: &mut egui::Ui,
+        skeleton: &crate::preview::LoadedSkeleton,
+        enabled: bool,
+    ) {
+        if let Some(error) = &skeleton.error {
+            ui.colored_label(Color32::LIGHT_RED, error.as_ref());
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.small(format!("{} 个节点", skeleton.bones.len()));
+            if ui
+                .add_enabled(
+                    enabled && !skeleton.bones.is_empty(),
+                    egui::Button::new("聚焦全部").small(),
+                )
+                .clicked()
+            {
+                self.send(Command::FocusBone {
+                    skeleton: skeleton.id,
+                    node: None,
+                });
+            }
+            if skeleton.bone_bindings.iter().any(Option::is_some)
+                && ui
+                    .add_enabled(enabled, egui::Button::new("清除姿态跟随").small())
+                    .clicked()
+            {
+                self.send(Command::ClearBoneBindings(skeleton.id));
+            }
+        });
         egui::ScrollArea::vertical()
-            .id_salt("workbench-bones")
-            .max_height(ui.available_height().max(120.0))
+            .id_salt(("workbench-bones", skeleton.id))
+            .max_height(280.0)
             .show(ui, |ui| {
-                for bone in snapshot.bones.iter() {
+                for bone in skeleton.bones.iter() {
+                    let key = (skeleton.id, bone.index);
                     let response = ui.selectable_label(
-                        self.bone == Some(bone.index),
+                        self.bone == Some(key),
                         format!(
                             "节点 {} · 父节点 {}",
                             bone.index,
@@ -1555,51 +1547,78 @@ impl Workbench {
                         ),
                     );
                     if response.clicked() {
-                        self.bone = Some(bone.index);
+                        self.bone = (self.bone != Some(key)).then_some(key);
                     }
-                    if response.double_clicked() {
-                        self.send(Command::FocusBone(Some(bone.index)));
+                    if enabled && response.double_clicked() {
+                        self.bone = Some(key);
+                        self.send(Command::FocusBone {
+                            skeleton: skeleton.id,
+                            node: Some(bone.index),
+                        });
                     }
-                    if self.bone == Some(bone.index) {
-                        ui.monospace(format!(
-                            "X {:.2}  Y {:.2}  Z {:.2}",
-                            bone.position[0], bone.position[1], bone.position[2]
-                        ));
-                        self.bone_binding_controls(ui, snapshot, bone.index);
+                    if self.bone == Some(key) {
+                        ui.indent(("bone-properties", skeleton.id, bone.index), |ui| {
+                            egui::Frame::new()
+                                .fill(ui.visuals().faint_bg_color)
+                                .inner_margin(egui::Margin::symmetric(8, 6))
+                                .show(ui, |ui| {
+                                    ui.columns(3, |columns| {
+                                        for (axis, column) in columns.iter_mut().enumerate() {
+                                            column.weak(["X", "Y", "Z"][axis]);
+                                            let value = format!("{:.2}", bone.position[axis]);
+                                            column
+                                                .add(
+                                                    egui::Label::new(
+                                                        RichText::new(&value).monospace(),
+                                                    )
+                                                    .truncate(),
+                                                )
+                                                .on_hover_text(value);
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.add_enabled_ui(enabled, |ui| {
+                                        self.bone_binding_controls(ui, skeleton, bone.index)
+                                    });
+                                });
+                        });
                     }
                 }
             });
-        if ui.button("聚焦整个模型").clicked() {
-            self.send(Command::FocusBone(None));
-        }
-        if let Some(model) = snapshot.active_model
-            && snapshot.bone_bindings.iter().any(Option::is_some)
-            && ui.button("清除全部姿态跟随").clicked()
-        {
-            self.send(Command::ClearBoneBindings(model));
-        }
     }
 
-    fn bone_binding_controls(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot, node: usize) {
-        let Some(model) = snapshot.active_model else {
-            return;
-        };
-        let previous = snapshot.bone_bindings.get(node).copied().flatten();
+    fn bone_binding_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        skeleton: &crate::preview::LoadedSkeleton,
+        node: usize,
+    ) {
+        let previous = skeleton.bone_bindings.get(node).copied().flatten();
         let mut source = previous;
-        ui.horizontal(|ui| {
-            ui.label("姿态跟随");
-            egui::ComboBox::from_id_salt(("workbench-bone-binding", model, node))
-                .selected_text(source.map_or_else(|| "原始骨架姿态".into(), |index| format!("节点 {index}")))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut source, None, "原始骨架姿态");
-                    for bone in snapshot.bones.iter().filter(|bone| bone.index != node) {
-                        ui.selectable_value(&mut source, Some(bone.index), format!("节点 {}", bone.index));
-                    }
-                }).response.on_hover_text("使用来源节点的世界姿态，并保留当前节点自身的逆绑定矩阵。仅作用于当前预览模型。");
-        });
+        ui.label("姿态跟随");
+        egui::ComboBox::from_id_salt(("workbench-bone-binding", skeleton.id, node))
+            .width(ui.available_width())
+            .selected_text(
+                source.map_or_else(|| "原始骨架姿态".into(), |index| format!("节点 {index}")),
+            )
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut source, None, "原始骨架姿态");
+                for bone in skeleton.bones.iter().filter(|bone| bone.index != node) {
+                    ui.selectable_value(
+                        &mut source,
+                        Some(bone.index),
+                        format!("节点 {}", bone.index),
+                    );
+                }
+            })
+            .response
+            .on_hover_text(
+                "使用来源节点的世界姿态，保留当前节点自身的逆绑定矩阵；作用于此骨架及其关联模型。",
+            );
+
         if source != previous {
             self.send(Command::BoneBinding {
-                model,
+                skeleton: skeleton.id,
                 node,
                 source,
             });
@@ -1617,9 +1636,13 @@ impl Workbench {
         let painter = ui.painter().with_clip_rect(rect);
         let mut text = String::new();
         if self.view.show_axes {
-            let bone = self
-                .bone
-                .and_then(|index| snapshot.bones.iter().find(|bone| bone.index == index));
+            let bone = self.bone.and_then(|(id, index)| {
+                snapshot
+                    .skeletons
+                    .iter()
+                    .find(|skeleton| skeleton.id == id && visible_skeleton(snapshot, skeleton))
+                    .and_then(|skeleton| skeleton.bones.iter().find(|bone| bone.index == index))
+            });
             let position = bone.map_or(camera.target, |bone| bone.position);
             if let Some(bone) = bone {
                 let _ = write!(text, "骨骼 {}", bone.index);
@@ -1683,11 +1706,6 @@ impl Workbench {
         let Some(camera) = snapshot.camera.filter(|_| snapshot.ready) else {
             return;
         };
-        if !snapshot.models.iter().any(|model| {
-            Some(model.id) == snapshot.active_model && model.visible && model.error.is_none()
-        }) {
-            return;
-        }
         if !self.view.show_bones && self.bone.is_none() {
             return;
         }
@@ -1711,38 +1729,44 @@ impl Workbench {
                 )
             })
         };
-        for bone in snapshot.bones.iter() {
-            let selected = self.bone == Some(bone.index);
-            if !self.view.show_bones && !selected {
-                continue;
-            }
-            let Some(position) = point(bone.position) else {
-                continue;
-            };
-            let color = if selected {
-                Color32::GOLD
-            } else {
-                Color32::from_rgba_unmultiplied(125, 210, 255, 180)
-            };
-            if let Some(parent) = bone
-                .parent
-                .and_then(|index| snapshot.bones.iter().find(|bone| bone.index == index))
-                && let Some(parent) = point(parent.position)
-            {
-                painter.line_segment(
-                    [parent, position],
-                    egui::Stroke::new(if selected { 2.5 } else { 1.0 }, color),
-                );
-            }
-            painter.circle_filled(position, if selected { 5.0 } else { 2.0 }, color);
-            if selected {
-                painter.text(
-                    position + egui::vec2(8.0, -8.0),
-                    egui::Align2::LEFT_BOTTOM,
-                    format!("节点 {}", bone.index),
-                    egui::FontId::proportional(14.0),
-                    color,
-                );
+        for skeleton in snapshot
+            .skeletons
+            .iter()
+            .filter(|skeleton| visible_skeleton(snapshot, skeleton))
+        {
+            for bone in skeleton.bones.iter() {
+                let selected = self.bone == Some((skeleton.id, bone.index));
+                if !self.view.show_bones && !selected {
+                    continue;
+                }
+                let Some(position) = point(bone.position) else {
+                    continue;
+                };
+                let color = if selected {
+                    Color32::GOLD
+                } else {
+                    Color32::from_rgba_unmultiplied(125, 210, 255, 180)
+                };
+                if let Some(parent) = bone
+                    .parent
+                    .and_then(|index| skeleton.bones.iter().find(|bone| bone.index == index))
+                    && let Some(parent) = point(parent.position)
+                {
+                    painter.line_segment(
+                        [parent, position],
+                        egui::Stroke::new(if selected { 2.5 } else { 1.0 }, color),
+                    );
+                }
+                painter.circle_filled(position, if selected { 5.0 } else { 2.0 }, color);
+                if selected {
+                    painter.text(
+                        position + egui::vec2(8.0, -8.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!("节点 {}", bone.index),
+                        egui::FontId::proportional(14.0),
+                        color,
+                    );
+                }
             }
         }
     }
@@ -1752,6 +1776,26 @@ impl Drop for Workbench {
     fn drop(&mut self) {
         self.save_view();
     }
+}
+
+fn visible_skeleton(snapshot: &Snapshot, skeleton: &crate::preview::LoadedSkeleton) -> bool {
+    skeleton.error.is_none()
+        && !skeleton.bones.is_empty()
+        && snapshot
+            .resources
+            .iter()
+            .any(|entry| entry.id == skeleton.id && entry.enabled)
+}
+
+fn has_visible_resources(snapshot: &Snapshot) -> bool {
+    snapshot
+        .models
+        .iter()
+        .any(|model| model.visible && model.error.is_none())
+        || snapshot
+            .skeletons
+            .iter()
+            .any(|skeleton| visible_skeleton(snapshot, skeleton))
 }
 
 #[derive(Default)]
@@ -1787,12 +1831,11 @@ fn directory(
     catalog: &Catalog,
     path: Option<&PathBuf>,
     document: Option<&Arc<Document>>,
-    asset_nodes: &[Vec<usize>],
-    action_width: f32,
+    resource_counts: &[usize],
     show_encoding_layers: bool,
     node: &mut usize,
     load: &mut Option<PathBuf>,
-    preview: &mut Option<usize>,
+    load_resource: &mut Option<usize>,
     details: &mut Option<usize>,
     expand: bool,
 ) {
@@ -1807,12 +1850,11 @@ fn directory(
                         catalog,
                         path,
                         document,
-                        asset_nodes,
-                        action_width,
+                        resource_counts,
                         show_encoding_layers,
                         node,
                         load,
-                        preview,
+                        load_resource,
                         details,
                         expand,
                     );
@@ -1833,11 +1875,10 @@ fn directory(
                     ui,
                     document,
                     document.root,
-                    asset_nodes,
-                    action_width,
+                    resource_counts,
                     show_encoding_layers,
                     node,
-                    preview,
+                    load_resource,
                     details,
                 );
             });
@@ -1845,7 +1886,7 @@ fn directory(
             let response = ui
                 .horizontal(|ui| {
                     ui.add_space(ui.spacing().indent);
-                    tree_row(ui, name.as_ref(), selected, 0, false, false, action_width).0
+                    tree_row(ui, name.as_ref(), selected, 0, None).0
                 })
                 .inner;
             if response.clicked() && !selected {
@@ -1861,11 +1902,10 @@ fn tree(
     ui: &mut egui::Ui,
     document: &Arc<Document>,
     index: usize,
-    asset_nodes: &[Vec<usize>],
-    action_width: f32,
+    resource_counts: &[usize],
     show_encoding_layers: bool,
     selected: &mut usize,
-    preview: &mut Option<usize>,
+    load_resource: &mut Option<usize>,
     details: &mut Option<usize>,
 ) -> Option<(egui::Response, Option<egui::Response>)> {
     let original = document.nodes.get(index)?;
@@ -1882,26 +1922,16 @@ fn tree(
         &original.name
     };
     let label = format!("{name} · {}", node.kind);
-    let group_count = asset_nodes.get(index).map_or(0, Vec::len);
-    let motion = ResourceRef {
+    let resource_count = resource_counts.get(index).copied().unwrap_or(0);
+    let kind = ResourceRef {
         document: document.clone(),
         node: index,
     }
-    .kind()
-        == Kind::Motion;
-    let binding = effects::is_binding(node.kind) || effects::is_definition(node.kind);
+    .kind();
     let response = if node.children.is_empty() && !node.deferred {
         ui.horizontal(|ui| {
             ui.add_space(ui.spacing().indent);
-            tree_row(
-                ui,
-                &label,
-                *selected == index,
-                group_count,
-                motion,
-                binding,
-                action_width,
-            )
+            tree_row(ui, &label, *selected == index, resource_count, Some(kind))
         })
         .inner
     } else {
@@ -1912,15 +1942,7 @@ fn tree(
             root,
         )
         .show_header(ui, |ui| {
-            let response = tree_row(
-                ui,
-                &label,
-                *selected == index,
-                group_count,
-                motion,
-                binding,
-                action_width,
-            );
+            let response = tree_row(ui, &label, *selected == index, resource_count, Some(kind));
             clicked = response.0.clicked();
             response
         });
@@ -1937,11 +1959,10 @@ fn tree(
                     ui,
                     document,
                     child,
-                    asset_nodes,
-                    action_width,
+                    resource_counts,
                     show_encoding_layers,
                     selected,
-                    preview,
+                    load_resource,
                     details,
                 );
             }
@@ -1953,7 +1974,7 @@ fn tree(
     }
     if response.1.as_ref().is_some_and(egui::Response::clicked) {
         *selected = index;
-        *preview = Some(index);
+        *load_resource = Some(index);
     }
     Some(response)
 }
@@ -1981,22 +2002,7 @@ fn visible_node(document: &Document, original: usize, show_encoding_layers: bool
     original
 }
 
-fn texture_count(source: &ResourceRef) -> usize {
-    let Some(node) = source
-        .document
-        .payload(source.node)
-        .and_then(|index| source.document.nodes.get(index))
-    else {
-        return 0;
-    };
-    match node.kind {
-        Kind::Png | Kind::Dds => 1,
-        Kind::Txb | Kind::Archive => node.children.len(),
-        _ => 0,
-    }
-}
-
-fn group_action_width(ui: &egui::Ui, count: usize) -> f32 {
+fn resource_action_width(ui: &egui::Ui, count: usize) -> f32 {
     let text_width = |text: egui::WidgetText| {
         text.into_galley(
             ui,
@@ -2008,31 +2014,47 @@ fn group_action_width(ui: &egui::Ui, count: usize) -> f32 {
         .x
         .ceil()
     };
-    text_width(
-        RichText::new(format!("模型组 {}", count.max(1)))
-            .strong()
-            .into(),
-    ) + text_width("预览".into())
-        + ui.spacing().button_padding.x * 2.0
-        + ui.spacing().item_spacing.x * 2.0
+    let button_width =
+        text_width(RichText::new("加载").small().into()) + ui.spacing().button_padding.x * 2.0;
+    if count == 0 {
+        button_width
+    } else {
+        button_width
+            + ui.spacing().item_spacing.x
+            + text_width(RichText::new(format!("资源 {count}")).strong().into())
+    }
 }
 
 fn tree_row(
     ui: &mut egui::Ui,
     label: &str,
     selected: bool,
-    group_count: usize,
-    motion: bool,
-    binding: bool,
-    action_width: f32,
+    resource_count: usize,
+    kind: Option<Kind>,
 ) -> (egui::Response, Option<egui::Response>) {
-    // Reserve this trailing area even when no group is present. Its contents
-    // never move the name's click target or the branch's expansion arrow.
+    let help = match kind {
+        Some(kind) if effects::is_binding(kind) || effects::is_definition(kind) => {
+            Some("加载特效并解析自身的模型绑定".to_owned())
+        }
+        Some(Kind::Motion) => Some("加载动画并匹配关联骨架".to_owned()),
+        Some(Kind::Fmod | Kind::Fskl | Kind::Txb | Kind::Png | Kind::Dds) => {
+            Some("立即加载此资源到当前工作台".to_owned())
+        }
+        _ if resource_count != 0 => Some(format!("加载所选目录内的 {resource_count} 个资源")),
+        _ => None,
+    };
     let height = ui.spacing().interact_size.y;
     let width =
         (ui.clip_rect().right().min(ui.max_rect().right()) - ui.next_widget_position().x).max(0.0);
-    let action_width = action_width.min(width);
-    let name_width = (width - action_width - ui.spacing().item_spacing.x).max(0.0);
+    let action_width = help
+        .as_ref()
+        .map_or(0.0, |_| resource_action_width(ui, resource_count))
+        .min(width);
+    let name_width = if help.is_some() {
+        (width - action_width - ui.spacing().item_spacing.x).max(0.0)
+    } else {
+        width
+    };
     let label = ui
         .add_sized(
             [name_width, height],
@@ -2041,25 +2063,19 @@ fn tree_row(
                 .truncate(),
         )
         .on_hover_text(label);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(action_width, height), egui::Sense::hover());
-    let button = (group_count != 0 || motion || binding).then(|| {
+    let button = help.map(|help| {
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(action_width, height), egui::Sense::hover());
         let mut actions = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect)
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
-        let (caption, help) = if binding {
-            ("追加特效", "直接加入并触发当前模型上的特效".to_owned())
-        } else if motion {
-            ("播放", "将此动画加载到当前模型并从头播放".to_owned())
-        } else {
-            ("预览", format!("预览此节点下的全部 {group_count} 个模型组"))
-        };
-        let response = actions.small_button(caption).on_hover_text(help);
-        if group_count != 0 {
+        let response = actions.small_button("加载").on_hover_text(help);
+        if resource_count != 0 {
             actions.add(
                 egui::Label::new(
-                    RichText::new(format!("模型组 {group_count}"))
+                    RichText::new(format!("资源 {resource_count}"))
                         .strong()
                         .color(ui.visuals().selection.stroke.color),
                 )
@@ -2075,20 +2091,237 @@ fn tree_row(
 mod tests {
     use super::*;
     use crate::inspect::Field;
+    use crate::preview::AssetBundle;
+
+    fn loaded_effect_fixture(
+        source: &ResourceRef,
+        bindings: Vec<effects::BindingSnapshot>,
+    ) -> Arc<Vec<crate::preview::LoadedEffect>> {
+        Arc::new(
+            bindings
+                .into_iter()
+                .map(|binding| crate::preview::LoadedEffect {
+                    id: binding.id,
+                    source: source.clone(),
+                    enabled: true,
+                    model: Some(41),
+                    automatic: false,
+                    manual_target: Some(41),
+                    model_id: None,
+                    message: "已手动绑定".into(),
+                    binding,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn long_effect_target_names_do_not_expand_the_container_or_popup() {
+        let (_, source) = effects::tests::fixture();
+        let effects = effects::Effects {
+            bindings: vec![effects::Binding::read(source.clone()).unwrap()],
+            ..Default::default()
+        };
+        let snapshot = Snapshot {
+            loaded_effects: loaded_effect_fixture(&source, effects.sample(0.0).bindings),
+            models: Arc::new(vec![LoadedModel {
+                id: 41,
+                resources: AssetBundle::find_with_nodes(multiple_models()).0.remove(0),
+                name: format!(
+                    "Z:/game/dat/extend/archive/{} · 模型 1",
+                    "long-model-name-".repeat(30)
+                )
+                .into(),
+                visible: true,
+                error: None,
+                meshes: Arc::default(),
+            }]),
+            ..Default::default()
+        };
+        for width in [260.0, 380.0] {
+            let mut workbench = preview_fixture();
+            let context = egui::Context::default();
+            let time = std::cell::Cell::new(0.0);
+            let draw = |workbench: &mut Workbench, events| {
+                time.set(time.get() + 0.016);
+                context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(900.0, 600.0),
+                        )),
+                        time: Some(time.get()),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        ui.set_width(width);
+                        let right = ui.max_rect().right();
+                        workbench.effect_controls(ui, &snapshot);
+                        assert!(
+                            ui.min_rect().right() <= right + 1.0,
+                            "binding content expanded the panel"
+                        );
+                    },
+                )
+            };
+            let mut target = None;
+            for _ in 0..4 {
+                let output = draw(&mut workbench, vec![]);
+                for shape in &output.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text().contains("long-model-name")
+                    {
+                        assert!(text.galley.elided);
+                        assert!(text.galley.size().x <= width);
+                        target = Some(text.pos + text.galley.rect.center().to_vec2());
+                    }
+                }
+                output.drop_without_applying_deltas();
+            }
+            let target = target.unwrap();
+            for pressed in [true, false] {
+                draw(&mut workbench, pointer(target, pressed)).drop_without_applying_deltas();
+            }
+            let output = draw(&mut workbench, vec![]);
+            let names = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text().contains("long-model-name") => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(names.len(), 2, "the popup must be open");
+            assert!(names.iter().all(|text| text.galley.size().x <= width));
+            output.drop_without_applying_deltas();
+            assert!(workbench.control.commands().is_empty());
+        }
+    }
+
+    #[test]
+    fn effect_target_choice_overrides_auto_and_keeps_disabled_manual_targets_until_unbound() {
+        let (_, source) = effects::tests::fixture();
+        let effects = effects::Effects {
+            bindings: vec![effects::Binding::read(source.clone()).unwrap()],
+            ..Default::default()
+        };
+        let binding = effects.bindings[0].id;
+        let mut snapshot = Snapshot {
+            loaded_effects: loaded_effect_fixture(&source, effects.sample(0.0).bindings),
+            models: Arc::new(
+                AssetBundle::find_with_nodes(multiple_models())
+                    .0
+                    .into_iter()
+                    .zip([41, 42])
+                    .map(|(resources, id)| LoadedModel {
+                        id,
+                        resources,
+                        name: format!("fixture model {id}").into(),
+                        visible: true,
+                        error: None,
+                        meshes: Arc::default(),
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let effect = &mut Arc::make_mut(&mut snapshot.loaded_effects)[0];
+        effect.automatic = true;
+        effect.manual_target = None;
+        effect.model_id = Some(44);
+        let first_name = snapshot.models[0].name.to_string();
+        let second_name = snapshot.models[1].name.to_string();
+        let mut workbench = preview_fixture();
+        workbench.loaded_document(multiple_models());
+        let context = egui::Context::default();
+        context.all_styles_mut(|style| style.animation_time = 0.0);
+        let draw = |workbench: &mut Workbench, snapshot: &Snapshot, events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(700.0, 450.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| workbench.effect_controls(ui, snapshot),
+            )
+        };
+        let caption = |output: &egui::FullOutput, caption: &str| {
+            output
+                .shapes
+                .iter()
+                .rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == caption => {
+                        Some(text.pos + text.galley.rect.center().to_vec2())
+                    }
+                    _ => None,
+                })
+        };
+        let choose = |workbench: &mut Workbench,
+                      snapshot: &Snapshot,
+                      selected: &str,
+                      option: &str| {
+            let output = draw(workbench, snapshot, vec![]);
+            let button = caption(&output, selected).expect("selected target must remain visible");
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                draw(workbench, snapshot, pointer(button, pressed)).drop_without_applying_deltas();
+            }
+            let output = draw(workbench, snapshot, vec![]);
+            let option = caption(&output, option).expect("target option must be selectable");
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                draw(workbench, snapshot, pointer(option, pressed)).drop_without_applying_deltas();
+            }
+        };
+        choose(
+            &mut workbench,
+            &snapshot,
+            &format!("自动 · {first_name}"),
+            &second_name,
+        );
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::BindEffect { binding: id, model: Some(42) }] if *id == binding
+        ));
+        let effect = &mut Arc::make_mut(&mut snapshot.loaded_effects)[0];
+        effect.automatic = false;
+        effect.manual_target = Some(42);
+        effect.enabled = false;
+        effect.model = None;
+        // Disabled effects have no resolved model, but must retain the manual
+        // choice so explicitly selecting "unbound" can clear that request.
+        choose(&mut workbench, &snapshot, &second_name, "未绑定");
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::BindEffect { binding: id, model: None }] if *id == binding
+        ));
+        Arc::make_mut(&mut snapshot.loaded_effects)[0].manual_target = None;
+        choose(&mut workbench, &snapshot, "未绑定", "自动匹配 · 模型 ID 44");
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::AutoBindEffect(id)] if *id == binding
+        ));
+    }
 
     #[test]
     fn manual_effect_buttons_target_the_definition_without_loading_a_motion() {
         let (_, source) = effects::tests::fixture();
         let mut effects = effects::Effects {
-            bindings: vec![effects::Binding::read(source).unwrap()],
+            bindings: vec![effects::Binding::read(source.clone()).unwrap()],
             ..Default::default()
         };
         let binding = effects.bindings[0].id;
         let mut workbench = preview_fixture();
         let context = egui::Context::default();
         let mut snapshot = Snapshot {
-            active_model: Some(41),
-            effects: Arc::new(effects.sample(0.0).bindings),
+            loaded_effects: loaded_effect_fixture(&source, effects.sample(0.0).bindings),
             ..Default::default()
         };
         let draw = |workbench: &mut Workbench, snapshot: &Snapshot, events| {
@@ -2101,7 +2334,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| workbench.effect_controls(ui, snapshot, 41),
+                |ui| workbench.effect_controls(ui, snapshot),
             )
         };
         for (caption, stop) in [("触发", false), ("停止", true)] {
@@ -2122,14 +2355,15 @@ mod tests {
             let commands = workbench.control.commands();
             if stop {
                 assert!(
-                    matches!(commands.as_slice(), [Command::StopEffectDefinition { model: 41, binding: id, slot: 0 }] if *id == binding)
+                    matches!(commands.as_slice(), [Command::StopEffectDefinition { binding: id, slot: 0 }] if *id == binding)
                 );
             } else {
                 assert!(
-                    matches!(commands.as_slice(), [Command::TriggerEffectDefinition { model: 41, binding: id, slot: 0 }] if *id == binding)
+                    matches!(commands.as_slice(), [Command::TriggerEffectDefinition { binding: id, slot: 0 }] if *id == binding)
                 );
                 effects.trigger(binding, 0, 20.0).unwrap();
-                snapshot.effects = Arc::new(effects.sample(20.0).bindings);
+                snapshot.loaded_effects =
+                    loaded_effect_fixture(&source, effects.sample(20.0).bindings);
             }
         }
     }
@@ -2161,13 +2395,13 @@ mod tests {
             0.2,
             pointer(center, false),
         );
-        workbench.preview_node(other);
+        workbench.load_node(other);
         let commands = workbench.control.commands();
         assert!(
-            matches!(commands.as_slice(), [Command::TriggerEffect(first), Command::TriggerEffect(second)] if first.node == definition && second.node == other)
+            matches!(commands.as_slice(), [Command::LoadResource(first), Command::LoadResource(second)] if first.node == definition && second.node == other)
         );
         workbench.loaded_document(multiple_models());
-        let Command::TriggerEffect(first) = &commands[0] else {
+        let Command::LoadResource(first) = &commands[0] else {
             panic!()
         };
         assert!(Arc::ptr_eq(&first.document, &document));
@@ -2178,7 +2412,7 @@ mod tests {
     fn independent_tracks_fill_their_own_width_and_target_only_the_selected_track() {
         let (_, source) = effects::tests::fixture();
         let effects = effects::Effects {
-            bindings: vec![effects::Binding::read(source).unwrap()],
+            bindings: vec![effects::Binding::read(source.clone()).unwrap()],
             ..Default::default()
         };
         let mut bindings = effects.sample(0.0).bindings;
@@ -2189,10 +2423,18 @@ mod tests {
         definition.frame = Some(5.0);
         definition.active = true;
         let mut snapshot = Snapshot {
-            motion: Some("motion".into()),
-            motion_frames: 60.0,
-            motion_frame: 15.0,
-            effects: Arc::new(bindings),
+            motions: Arc::new(vec![crate::preview::LoadedMotion {
+                id: 7,
+                source: ResourceRef {
+                    document: multiple_models(),
+                    node: 9,
+                },
+                enabled: true,
+                frames: 60.0,
+                frame: Some(15.0),
+                skeleton: None,
+            }]),
+            loaded_effects: loaded_effect_fixture(&source, bindings),
             ..Default::default()
         };
         let mut workbench = preview_fixture();
@@ -2207,7 +2449,14 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| workbench.effect_track(ui, snapshot),
+                |ui| {
+                    workbench.motion_list(ui, snapshot);
+                    for effect in snapshot.loaded_effects.iter() {
+                        for entry in &effect.binding.definitions {
+                            workbench.effect_entry_track(ui, &effect.binding, entry);
+                        }
+                    }
+                },
             )
         };
         let track_rects = |output: &egui::FullOutput| {
@@ -2258,21 +2507,354 @@ mod tests {
         draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
         draw(&mut workbench, &snapshot, pointer(point, false)).drop_without_applying_deltas();
         assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::Seek { track: PlaybackTrack::Motion, frame }] if (*frame - 45.0).abs() < 0.1)
+            matches!(workbench.control.commands().as_slice(), [Command::Seek { track: PlaybackTrack::Motion(7), frame }] if (*frame - 45.0).abs() < 0.1)
         );
-        Arc::make_mut(&mut snapshot.effects)[0].definitions[0].delay = 6;
+        Arc::make_mut(&mut snapshot.loaded_effects)[0]
+            .binding
+            .definitions[0]
+            .delay = 6;
         let output = draw(&mut workbench, &snapshot, vec![]);
         let [motion, effect] = track_rects(&output);
         output.drop_without_applying_deltas();
         assert!((effect.left() - motion.left() - motion.width() * 0.2).abs() < 0.1);
         assert!((effect.right() - motion.right()).abs() < 0.1);
-        Arc::make_mut(&mut snapshot.effects)[0].definitions[0].frame = None;
+        Arc::make_mut(&mut snapshot.loaded_effects)[0]
+            .binding
+            .definitions[0]
+            .frame = None;
         let point = effect.center();
         draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
         draw(&mut workbench, &snapshot, pointer(point, false)).drop_without_applying_deltas();
         draw(&mut workbench, &snapshot, pointer(step, true)).drop_without_applying_deltas();
         draw(&mut workbench, &snapshot, pointer(step, false)).drop_without_applying_deltas();
         assert!(workbench.control.commands().is_empty());
+    }
+
+    #[test]
+    fn multiple_motion_rows_keep_controls_scoped_after_browsing_another_file() {
+        let mut document = (*multiple_models()).clone();
+        let mut second_motion = document.nodes[9].clone();
+        second_motion.name = "second-motion".into();
+        document.nodes.push(second_motion);
+        document.nodes[0].children.push(12);
+        let document = Arc::new(document);
+        let snapshot = Snapshot {
+            models: Arc::new(vec![LoadedModel {
+                id: 41,
+                resources: AssetBundle::find_with_nodes(document.clone()).0.remove(0),
+                name: "shared model".into(),
+                visible: true,
+                error: None,
+                meshes: Arc::default(),
+            }]),
+            motions: Arc::new(
+                [(7, 9, 60.0), (19, 12, 120.0)]
+                    .into_iter()
+                    .map(|(id, node, frames)| crate::preview::LoadedMotion {
+                        id,
+                        source: ResourceRef {
+                            document: document.clone(),
+                            node,
+                        },
+                        enabled: true,
+                        frames,
+                        frame: Some(15.0),
+                        skeleton: None,
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let mut workbench = preview_fixture();
+        workbench.loaded_document(document.clone());
+        let context = egui::Context::default();
+        let draw = |workbench: &mut Workbench, events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(700.0, 300.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    workbench.motion_list(ui, &snapshot);
+                    workbench.timeline(ui, &snapshot);
+                },
+            )
+        };
+        draw(&mut workbench, vec![]).drop_without_applying_deltas();
+        workbench.loaded_document(multiple_models());
+        let output = draw(&mut workbench, vec![]);
+        let tracks = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(75, 115, 205) => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tracks.len(),
+            2,
+            "global controls must not duplicate motion tracks"
+        );
+        assert!(tracks[0].width() > 0.0);
+        assert!((tracks[0].width() - tracks[1].width()).abs() < 0.1);
+        let second_caption = |caption| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == caption => {
+                        Some(text.pos + text.galley.rect.center().to_vec2())
+                    }
+                    _ => None,
+                })
+                .nth(1)
+                .unwrap()
+        };
+        let step = second_caption("+1");
+        let unload = second_caption("卸载");
+        let checkbox = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if (rect.rect.width() - rect.rect.height()).abs() < 0.1
+                        && rect.rect.width() > 2.0
+                        && (rect.rect.center().y - unload.y).abs() < 2.0 =>
+                {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let seek = egui::pos2(
+            tracks[1].left() + tracks[1].width() * 0.75,
+            tracks[1].center().y,
+        );
+        output.drop_without_applying_deltas();
+        assert!(workbench.control.commands().is_empty());
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(seek, pressed)).drop_without_applying_deltas();
+        }
+        assert!(
+            matches!(workbench.control.commands().as_slice(), [Command::Seek { track: PlaybackTrack::Motion(19), frame }] if (*frame - 90.0).abs() < 0.1)
+        );
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(step, pressed)).drop_without_applying_deltas();
+        }
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::Step {
+                track: PlaybackTrack::Motion(19),
+                delta: 1
+            }]
+        ));
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(checkbox, pressed)).drop_without_applying_deltas();
+        }
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::MotionEnabled {
+                id: 19,
+                enabled: false
+            }]
+        ));
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(unload, pressed)).drop_without_applying_deltas();
+        }
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::RemoveMotion(19)]
+        ));
+        assert!(Arc::ptr_eq(&snapshot.motions[1].source.document, &document));
+    }
+
+    #[test]
+    fn expanded_skeleton_controls_keep_bone_selection_and_commands_scoped_to_their_resource() {
+        let document = multiple_models();
+        let snapshot = Snapshot {
+            resources: Arc::new(
+                [(91, 2), (92, 6)]
+                    .into_iter()
+                    .map(|(id, node)| crate::preview::LoadedResource {
+                        id,
+                        source: ResourceRef {
+                            document: document.clone(),
+                            node,
+                        },
+                        enabled: true,
+                    })
+                    .collect(),
+            ),
+            skeletons: Arc::new(
+                [91, 92]
+                    .into_iter()
+                    .map(|id| crate::preview::LoadedSkeleton {
+                        id,
+                        bones: Arc::new(vec![
+                            crate::preview::Bone {
+                                index: 0,
+                                parent: None,
+                                position: [0.0; 3],
+                            },
+                            crate::preview::Bone {
+                                index: 1,
+                                parent: Some(0),
+                                position: [1.0, 2.0, 3.0],
+                            },
+                        ]),
+                        bone_bindings: Arc::new(vec![None, Some(0)]),
+                        error: None,
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let mut workbench = preview_fixture();
+        workbench.loaded_document(document.clone());
+        let context = egui::Context::default();
+        context.all_styles_mut(|style| style.animation_time = 0.0);
+        let time = std::cell::Cell::new(0.0);
+        let draw = |workbench: &mut Workbench, events| {
+            time.set(time.get() + 0.05);
+            context.run_ui(
+                egui::RawInput {
+                    time: Some(time.get()),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| workbench.resource_list(ui, &snapshot, Kind::Fskl),
+            )
+        };
+        let caption = |output: &egui::FullOutput, caption: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == caption => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+        };
+        let output = draw(&mut workbench, vec![]);
+        assert!(caption(&output, "节点 1 · 父节点 0").is_none());
+        let expand = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Path(path)
+                    if path.closed
+                        && path.points.len() == 3
+                        && path.fill != Color32::TRANSPARENT =>
+                {
+                    Some(egui::Rect::from_points(&path.points).center())
+                }
+                _ => None,
+            })
+            .nth(1)
+            .unwrap();
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(expand, pressed)).drop_without_applying_deltas();
+        }
+        workbench.loaded_document(multiple_models());
+        let output = draw(&mut workbench, vec![]);
+        let focus = caption(&output, "聚焦全部").unwrap();
+        let clear = caption(&output, "清除姿态跟随").unwrap();
+        let bone = caption(&output, "节点 1 · 父节点 0").unwrap();
+        assert_eq!(
+            output
+                .shapes
+                .iter()
+                .filter(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == "节点 1 · 父节点 0"
+                ))
+                .count(),
+            1,
+            "opening the second skeleton must leave the first skeleton collapsed"
+        );
+        output.drop_without_applying_deltas();
+        assert!(workbench.control.commands().is_empty());
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(focus, pressed)).drop_without_applying_deltas();
+        }
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::FocusBone {
+                skeleton: 92,
+                node: None
+            }]
+        ));
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(clear, pressed)).drop_without_applying_deltas();
+        }
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::ClearBoneBindings(92)]
+        ));
+        // Isolate this double click from the preceding toolbar clicks; egui's
+        // triple-click window otherwise includes the fast clear-button click.
+        time.set(time.get() + 1.0);
+        for pressed in [true, false, true, false] {
+            draw(&mut workbench, pointer(bone, pressed)).drop_without_applying_deltas();
+        }
+        assert_eq!(workbench.bone, Some((92, 1)));
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::FocusBone {
+                skeleton: 92,
+                node: Some(1)
+            }]
+        ));
+        let output = draw(&mut workbench, vec![]);
+        let binding = caption(&output, "节点 0").unwrap();
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(binding, pressed)).drop_without_applying_deltas();
+        }
+        let output = draw(&mut workbench, vec![]);
+        let original_pose = caption(&output, "原始骨架姿态").unwrap();
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(original_pose, pressed)).drop_without_applying_deltas();
+        }
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::BoneBinding {
+                skeleton: 92,
+                node: 1,
+                source: None
+            }]
+        ));
+        time.set(time.get() + 1.0);
+        let output = draw(&mut workbench, vec![]);
+        assert!(caption(&output, "姿态跟随").is_some());
+        assert!(caption(&output, "X").is_some());
+        let bone = caption(&output, "节点 1 · 父节点 0").unwrap();
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            draw(&mut workbench, pointer(bone, pressed)).drop_without_applying_deltas();
+        }
+        assert_eq!(workbench.bone, None);
+        let output = draw(&mut workbench, vec![]);
+        assert!(caption(&output, "节点 1 · 父节点 0").is_some());
+        assert!(caption(&output, "姿态跟随").is_none());
+        assert!(caption(&output, "X").is_none());
+        output.drop_without_applying_deltas();
+        assert!(workbench.control.commands().is_empty());
+        assert!(Arc::ptr_eq(
+            &snapshot.resources[1].source.document,
+            &document
+        ));
     }
 
     fn preview_fixture() -> Workbench {
@@ -2343,52 +2925,92 @@ mod tests {
     }
 
     #[test]
+    fn directory_loading_stays_inside_the_selected_subtree() {
+        let mut document = (*multiple_models()).clone();
+        let mut directory = document.nodes[0].clone();
+        directory.name = "model-offset-directory".into();
+        directory.children = vec![1, 2];
+        document.nodes.push(directory);
+        document.nodes[0].children = vec![12, 3, 5, 6, 7, 9, 10, 11];
+        let document = Arc::new(document);
+        let resources = |node| {
+            ResourceRef {
+                document: document.clone(),
+                node,
+            }
+            .loadable_resources()
+            .iter()
+            .map(|source| source.node)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(resources(12), [1, 2]);
+        assert_eq!(resources(1), [1]);
+        assert_eq!(resources(3), [4]);
+        assert_eq!(resources(0), [1, 2, 4, 5, 6, 8, 9]);
+        // FMOD inspector children are fields, not independently loaded resources.
+        let mut nested = (*document).clone();
+        nested.nodes[1].children = vec![4];
+        assert_eq!(
+            ResourceRef {
+                document: Arc::new(nested),
+                node: 12
+            }
+            .loadable_resources()
+            .iter()
+            .map(|source| source.node)
+            .collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
+
+    #[test]
     fn opening_or_refreshing_a_file_only_identifies_its_model_groups() {
         let mut workbench = preview_fixture();
         workbench.loaded_document(multiple_models());
         assert!(workbench.control.commands().is_empty());
-        assert_eq!(
-            workbench
-                .scoped_assets(0)
-                .iter()
-                .map(|bundle| bundle.model.node)
-                .collect::<Vec<_>>(),
-            [1, 5]
-        );
-        workbench.preview_node(0);
+        assert_eq!(workbench.resource_counts[0], 7);
+        workbench.load_node(0);
         assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::LoadAssets(bundles)] if bundles.len() == 2)
+            matches!(workbench.control.commands().as_slice(), [Command::LoadResource(source)] if source.node == 0)
         );
         workbench.loaded_document(multiple_models());
         assert!(workbench.control.commands().is_empty());
     }
 
     #[test]
-    fn model_nodes_keep_manual_selection_without_group_preview_actions() {
+    fn leaf_load_buttons_dispatch_only_the_selected_resource() {
         let mut workbench = preview_fixture();
         let document = multiple_models();
         workbench.loaded_document(document.clone());
         let context = egui::Context::default();
         for index in [1, 5] {
-            let (_, button, _, _) = draw_tree(&mut workbench, &context, index, 0.0, vec![]);
-            assert!(button.is_none());
-            workbench.preview_node(index);
-            workbench.select_resource(ResourceRef {
-                document: document.clone(),
-                node: index,
-            });
-            assert_eq!(workbench.model.as_ref().unwrap().node, index);
+            let (_, button, _, _) =
+                draw_tree(&mut workbench, &context, index, index as f64, vec![]);
+            let point = button.unwrap().rect.center();
+            draw_tree(
+                &mut workbench,
+                &context,
+                index,
+                index as f64 + 0.1,
+                pointer(point, true),
+            );
+            draw_tree(
+                &mut workbench,
+                &context,
+                index,
+                index as f64 + 0.2,
+                pointer(point, false),
+            );
+            assert!(
+                matches!(workbench.control.commands().as_slice(), [Command::LoadResource(source)] if source.node == index)
+            );
         }
         assert!(workbench.control.commands().is_empty());
     }
 
     #[test]
     fn browsing_and_document_updates_preserve_the_selected_inspector_tab() {
-        for tab in [
-            InspectorTab::Models,
-            InspectorTab::Bones,
-            InspectorTab::Resource,
-        ] {
+        for tab in [InspectorTab::Loaded, InspectorTab::Resource] {
             let mut workbench = preview_fixture();
             let document = multiple_models();
             let first = workbench.root.join("models.pac");
@@ -2471,7 +3093,7 @@ mod tests {
         document.nodes[1].kind = Kind::Unknown;
         document.nodes[5].kind = Kind::Unknown;
         workbench.loaded_document(Arc::new(document));
-        assert!(workbench.assets.is_empty());
+        assert_eq!(workbench.resource_counts[0], 5);
         assert!(workbench.control.commands().is_empty());
         assert!(workbench.error.is_empty());
     }
@@ -2512,13 +3134,11 @@ mod tests {
                             workbench.view.show_encoding_layers,
                         ),
                     ));
-                    let action_width = group_action_width(ui, workbench.assets.len());
                     responses = tree(
                         ui,
                         workbench.document.as_ref().unwrap(),
                         index,
-                        &workbench.asset_nodes,
-                        action_width,
+                        &workbench.resource_counts,
                         workbench.view.show_encoding_layers,
                         &mut workbench.node,
                         &mut preview,
@@ -2528,7 +3148,7 @@ mod tests {
             )
             .drop_without_applying_deltas();
         if let Some(index) = preview {
-            workbench.preview_node(index);
+            workbench.load_node(index);
         }
         let (label, button) = responses.unwrap();
         (label, button, id, details)
@@ -2547,7 +3167,7 @@ mod tests {
     }
 
     #[test]
-    fn group_labels_fit_the_current_font_and_count_without_elision_or_overlap() {
+    fn resource_labels_fit_the_current_font_and_count_without_elision_or_overlap() {
         let context = egui::Context::default();
         egui_hunter::Theme::default().apply(&context);
         mhf_font::install(&context);
@@ -2564,25 +3184,16 @@ mod tests {
                 |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::proportional(size));
                     ui.spacing_mut().interact_size.y = size + 6.0;
-                    let action_width = group_action_width(ui, count);
                     let (name, button) = ui
                         .horizontal(|ui| {
-                            tree_row(
-                                ui,
-                                &"long-resource-name".repeat(8),
-                                false,
-                                count,
-                                false,
-                                false,
-                                action_width,
-                            )
+                            tree_row(ui, &"long-resource-name".repeat(8), false, count, None)
                         })
                         .inner;
                     rectangles = Some((name.rect, button.unwrap().rect));
                 },
             );
             let (name, button) = rectangles.unwrap();
-            let label = format!("模型组 {count}");
+            let label = format!("资源 {count}");
             let (clip, text) = output
                 .shapes
                 .iter()
@@ -2602,7 +3213,7 @@ mod tests {
     }
 
     #[test]
-    fn right_aligned_group_actions_preserve_the_name_and_arrow_positions() {
+    fn right_aligned_resource_actions_preserve_the_name_and_arrow_positions() {
         let mut workbench = preview_fixture();
         let mut document = (*multiple_models()).clone();
         let mut branch = document.nodes[0].clone();
@@ -2615,10 +3226,14 @@ mod tests {
         document.nodes[0].children.push(12);
         let document = Arc::new(document);
         workbench.loaded_document(document.clone());
-        workbench.asset_nodes.clear();
         let context = egui::Context::default();
+        // A large file total must not reserve extra digits on this three-resource row.
+        workbench.resource_counts[0] = 123_456;
         let (before, button, id, _) = draw_tree(&mut workbench, &context, 12, 0.0, vec![]);
-        assert!(button.is_none());
+        assert!(
+            button.is_some(),
+            "directory loading does not depend on the model bundle index"
+        );
         let arrow = context.read_response(id).unwrap().rect;
         workbench.refresh_document(document);
         let (label, button, _, _) = draw_tree(&mut workbench, &context, 12, 0.01, vec![]);
@@ -2651,18 +3266,15 @@ mod tests {
             pointer(button.rect.center(), false),
         );
         assert_eq!(workbench.node, 12);
-        assert!(workbench.tab == InspectorTab::Models);
+        assert!(workbench.tab == InspectorTab::Loaded);
         assert!(
             !egui::collapsing_header::CollapsingState::load(&context, id)
                 .unwrap()
                 .is_open()
         );
         assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::LoadAssets(bundles)] if bundles.len() == 1 && bundles[0].model.node == 5)
+            matches!(workbench.control.commands().as_slice(), [Command::LoadResource(source)] if source.node == 12)
         );
-        assert_eq!(workbench.model.as_ref().unwrap().node, 5);
-        assert_eq!(workbench.skeleton.as_ref().unwrap().node, 6);
-        assert_eq!(workbench.textures[0].node, 7);
     }
 
     #[test]
@@ -2724,7 +3336,7 @@ mod tests {
         );
         assert_eq!(workbench.node, 0);
         assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::LoadAssets(bundles)] if bundles.len() == 2)
+            matches!(workbench.control.commands().as_slice(), [Command::LoadResource(source)] if source.node == 0)
         );
 
         workbench.view.show_encoding_layers = true;
@@ -2797,198 +3409,107 @@ mod tests {
     }
 
     #[test]
-    fn selecting_parts_and_loading_motion_remain_explicit() {
+    fn loading_resources_dispatches_immediately_without_a_pending_combination() {
         let mut workbench = preview_fixture();
         let document = multiple_models();
         workbench.loaded_document(document.clone());
-        for node in [5, 6, 7] {
-            workbench.select_resource(ResourceRef {
-                document: document.clone(),
-                node,
-            });
+        for node in [5, 6, 7, 7, 9] {
+            workbench.tab = InspectorTab::Resource;
+            workbench.load_node(node);
+            assert!(workbench.tab == InspectorTab::Loaded);
         }
-        assert_eq!(workbench.model.as_ref().unwrap().node, 5);
-        assert_eq!(workbench.skeleton.as_ref().unwrap().node, 6);
-        assert_eq!(workbench.textures[0].node, 7);
+        let commands = workbench.control.commands();
+        assert_eq!(commands.len(), 5);
+        for (command, node) in commands.iter().zip([5, 6, 7, 7, 9]) {
+            assert!(
+                matches!(command, Command::LoadResource(source) if source.node == node && Arc::ptr_eq(&source.document, &document))
+            );
+        }
+        workbench.loaded_document(multiple_models());
         assert!(workbench.control.commands().is_empty());
-        workbench.select_resource(ResourceRef { document, node: 9 });
-        assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::LoadMotion(source)] if source.node == 9)
-        );
     }
 
     #[test]
-    fn texture_selection_replaces_sources_and_append_buttons_keep_duplicates() {
-        for node in [3, 4, 8] {
-            let mut workbench = preview_fixture();
-            let mut document = (*multiple_models()).clone();
-            document.nodes[8].kind = Kind::Dds;
-            let document = Arc::new(document);
-            workbench.loaded_document(document.clone());
-            workbench.node = node;
-            workbench.textures = vec![ResourceRef {
-                document: document.clone(),
-                node: 7,
-            }];
-            let context = egui::Context::default();
-            let draw = |workbench: &mut Workbench, events| {
-                context
-                    .run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(
-                                egui::Pos2::ZERO,
-                                egui::vec2(300.0, 400.0),
-                            )),
-                            events,
-                            ..Default::default()
-                        },
-                        |ui| workbench.resource_actions(ui, &document),
-                    )
-                    .drop_without_applying_deltas();
-            };
-            let key = |key| {
-                [true, false]
-                    .into_iter()
-                    .map(|pressed| egui::Event::Key {
-                        key,
-                        physical_key: None,
-                        pressed,
-                        repeat: false,
-                        modifiers: egui::Modifiers::NONE,
-                    })
-                    .collect()
-            };
-            draw(&mut workbench, vec![]);
-            draw(&mut workbench, vec![]);
-            draw(&mut workbench, key(egui::Key::Tab));
-            draw(&mut workbench, key(egui::Key::Space));
-            assert_eq!(workbench.textures.len(), 1);
-            assert_eq!(workbench.textures[0].node, node);
-            draw(&mut workbench, key(egui::Key::Tab));
-            draw(&mut workbench, key(egui::Key::Space));
-            draw(&mut workbench, key(egui::Key::Space));
-            assert_eq!(workbench.textures.len(), 3);
-            assert!(workbench.textures.iter().all(|source| source.node == node));
-            assert!(workbench.control.commands().is_empty());
-        }
-    }
-
-    #[test]
-    fn ordered_texture_sources_survive_file_changes_and_removal_keeps_the_remaining_order() {
+    fn resource_removal_targets_its_loaded_source_after_browsing_another_file() {
         let mut workbench = preview_fixture();
         let first = multiple_models();
         let second = multiple_models();
-        workbench.loaded_document(first.clone());
-        workbench.select_resource(ResourceRef {
-            document: first.clone(),
-            node: 1,
-        });
-        workbench.textures = vec![
+        let mut resources = AssetBundle::find_with_nodes(first.clone()).0.remove(0);
+        resources.textures = vec![
             ResourceRef {
                 document: first.clone(),
-                node: 3,
+                node: 4,
             },
             ResourceRef {
                 document: second.clone(),
                 node: 8,
             },
-            ResourceRef {
-                document: first.clone(),
-                node: 3,
-            },
         ];
-        workbench.loaded_document(second.clone());
-        let bundle = workbench.selected_bundle().unwrap();
-        assert!(Arc::ptr_eq(&bundle.model.document, &first));
-        assert_eq!(
-            bundle
-                .textures
-                .iter()
-                .map(|source| source.node)
-                .collect::<Vec<_>>(),
-            [3, 8, 3]
-        );
-        let context = egui::Context::default();
-        let draw = |workbench: &mut Workbench, events| {
-            context
-                .run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(300.0, 400.0),
-                        )),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| workbench.texture_sources(ui),
-                )
-                .drop_without_applying_deltas();
+        let model = LoadedModel {
+            id: 41,
+            name: "model".into(),
+            resources,
+            visible: true,
+            error: None,
+            meshes: Arc::default(),
         };
-        draw(&mut workbench, vec![]);
-        draw(&mut workbench, vec![]);
-        for key in [egui::Key::Tab, egui::Key::Space] {
-            draw(
-                &mut workbench,
-                [true, false]
-                    .into_iter()
-                    .map(|pressed| egui::Event::Key {
-                        key,
-                        physical_key: None,
-                        pressed,
-                        repeat: false,
-                        modifiers: egui::Modifiers::NONE,
+        let snapshot = Snapshot {
+            resources: Arc::new(
+                model
+                    .resources
+                    .textures
+                    .iter()
+                    .enumerate()
+                    .map(|(index, source)| crate::preview::LoadedResource {
+                        id: 91 + index as u64,
+                        source: source.clone(),
+                        enabled: true,
                     })
                     .collect(),
-            );
-        }
-        assert_eq!(
-            workbench
-                .textures
-                .iter()
-                .map(|source| source.node)
-                .collect::<Vec<_>>(),
-            [8, 3]
-        );
-        assert!(Arc::ptr_eq(&workbench.textures[0].document, &second));
-        assert!(Arc::ptr_eq(&workbench.textures[1].document, &first));
-        assert!(workbench.control.commands().is_empty());
-        workbench.send(Command::AddAsset(workbench.selected_bundle().unwrap()));
-        assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::AddAsset(bundle)] if bundle.textures.iter().map(|source| source.node).collect::<Vec<_>>() == [8, 3])
-        );
-    }
-
-    #[test]
-    fn texture_slot_counts_follow_payloads_and_an_explicit_empty_group_is_valid() {
-        let mut workbench = preview_fixture();
-        let mut document = (*multiple_models()).clone();
-        document.nodes[3].children = vec![4, 8];
-        document.nodes[7].children.clear();
-        document.nodes[8].kind = Kind::Dds;
-        let mut wrapper = document.nodes[0].clone();
-        wrapper.kind = Kind::Ecd;
-        wrapper.children = vec![3];
-        document.nodes.push(wrapper);
-        let document = Arc::new(document);
-        let source = |node| ResourceRef {
-            document: document.clone(),
-            node,
+            ),
+            models: Arc::new(vec![model.clone()]),
+            ..Default::default()
         };
-        for (node, count) in [(3, 2), (4, 1), (7, 0), (8, 1), (12, 2)] {
-            assert_eq!(texture_count(&source(node)), count);
-        }
-        workbench.select_resource(source(1));
-        assert!(workbench.selected_bundle().is_none());
-        workbench.select_resource(source(7));
-        let bundle = workbench.selected_bundle().unwrap();
-        assert_eq!(bundle.textures.len(), 1);
-        assert_eq!(bundle.textures[0].node, 7);
+        workbench.loaded_document(second);
+        let context = egui::Context::default();
+        let draw = |workbench: &mut Workbench, events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 300.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| workbench.resource_list(ui, &snapshot, Kind::Txb),
+            )
+        };
+        let output = draw(&mut workbench, vec![]);
+        let point = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "卸载" => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .unwrap();
+        output.drop_without_applying_deltas();
+        draw(&mut workbench, pointer(point, true)).drop_without_applying_deltas();
+        draw(&mut workbench, pointer(point, false)).drop_without_applying_deltas();
+        assert!(matches!(
+            workbench.control.commands().as_slice(),
+            [Command::RemoveResource(91)]
+        ));
+        assert!(Arc::ptr_eq(&model.resources.textures[0].document, &first));
     }
 
     #[test]
     fn motion_rows_play_explicitly_while_tracks_and_channels_remain_inspection_only() {
         let mut workbench = preview_fixture();
-        workbench.tab = InspectorTab::Bones;
+        workbench.tab = InspectorTab::Resource;
         let mut document = (*multiple_models()).clone();
         document.nodes[9].deferred = true;
         workbench.loaded_document(Arc::new(document));
@@ -3012,6 +3533,7 @@ mod tests {
         let (_, button, id, details) = draw_tree(&mut workbench, &context, 9, 1.0, vec![]);
         assert_eq!(details, Some(9));
         assert_eq!(workbench.node, 9);
+        assert!(workbench.tab == InspectorTab::Resource);
         assert!(workbench.control.commands().is_empty());
         let position = button.unwrap().rect.center();
         for (time, pressed) in [(1.1, true), (1.2, false)] {
@@ -3024,9 +3546,9 @@ mod tests {
             );
         }
         assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::LoadMotion(source)] if source.node == 9)
+            matches!(workbench.control.commands().as_slice(), [Command::LoadResource(source)] if source.node == 9)
         );
-        assert!(workbench.tab == InspectorTab::Bones);
+        assert!(workbench.tab == InspectorTab::Loaded);
         assert!(
             egui::collapsing_header::CollapsingState::load(&context, id)
                 .unwrap()
@@ -3043,7 +3565,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_action_buttons_keep_add_and_scene_commands_scoped_to_the_selection() {
+    fn resource_action_button_loads_only_the_selected_scope() {
         let mut workbench = preview_fixture();
         let document = multiple_models();
         workbench.loaded_document(document.clone());
@@ -3081,22 +3603,11 @@ mod tests {
         };
         draw(vec![]);
         draw(vec![]);
-        // The container previews its groups; each following action targets
-        // the bundle next to that button.
+        // The details action uses the same selected scope as the tree button.
         draw(key(egui::Key::Tab));
         draw(key(egui::Key::Space));
         assert!(
-            matches!(control.commands().as_slice(), [Command::LoadAssets(bundles)] if bundles.len() == 2)
-        );
-        draw(key(egui::Key::Tab));
-        draw(key(egui::Key::Space));
-        assert!(
-            matches!(control.commands().as_slice(), [Command::AddAsset(bundle)] if bundle.model.node == 1)
-        );
-        draw(key(egui::Key::Tab));
-        draw(key(egui::Key::Space));
-        assert!(
-            matches!(control.commands().as_slice(), [Command::LoadScene(bundle)] if bundle.model.node == 1)
+            matches!(control.commands().as_slice(), [Command::LoadResource(source)] if source.node == 0)
         );
     }
 
@@ -3106,6 +3617,7 @@ mod tests {
         let control = workbench.control.clone();
         let model = LoadedModel {
             id: 41,
+            resources: AssetBundle::find_with_nodes(multiple_models()).0.remove(0),
             name: "model".into(),
             visible: false,
             error: None,
@@ -3196,7 +3708,7 @@ mod tests {
             offset: 0,
             size: 16,
         });
-        workbench.document = Some(Arc::new(document));
+        workbench.refresh_document(Arc::new(document));
         workbench.tab = InspectorTab::Resource;
         let context = egui::Context::default();
         egui_hunter::Theme::default().apply(&context);
@@ -3409,10 +3921,95 @@ mod tests {
     }
 
     #[test]
+    fn disabled_or_failed_skeletons_do_not_drive_focus_or_coordinate_overlays() {
+        let mut workbench = preview_fixture();
+        workbench.bone = Some((91, 0));
+        workbench.view.show_axes = true;
+        workbench.view.show_grid = false;
+        let mut snapshot = Snapshot {
+            ready: true,
+            camera: Some(crate::preview::Camera {
+                eye: [0.0, 0.0, 10.0],
+                target: [0.0; 3],
+                up: [0.0, 1.0, 0.0],
+                fov_y: std::f32::consts::FRAC_PI_3,
+                aspect: 1.0,
+            }),
+            resources: Arc::new(vec![crate::preview::LoadedResource {
+                id: 91,
+                source: ResourceRef {
+                    document: multiple_models(),
+                    node: 2,
+                },
+                enabled: true,
+            }]),
+            skeletons: Arc::new(vec![crate::preview::LoadedSkeleton {
+                id: 91,
+                bones: Arc::new(vec![crate::preview::Bone {
+                    index: 0,
+                    parent: None,
+                    position: [1.0, 2.0, 3.0],
+                }]),
+                bone_bindings: Arc::new(vec![None]),
+                error: None,
+            }]),
+            ..Default::default()
+        };
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0));
+        let context = egui::Context::default();
+        for (enabled, failed) in [(false, false), (true, true), (true, false)] {
+            Arc::make_mut(&mut snapshot.resources)[0].enabled = enabled;
+            Arc::make_mut(&mut snapshot.skeletons)[0].error =
+                failed.then(|| "invalid skeleton".into());
+            let visible = enabled && !failed;
+            assert_eq!(has_visible_resources(&snapshot), visible);
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events: vec![
+                        egui::Event::PointerMoved(screen.center()),
+                        egui::Event::Key {
+                            key: egui::Key::F,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| workbench.viewport(ui, &snapshot, screen),
+            );
+            let selected_coordinates = output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().starts_with("骨骼 0"))
+            });
+            assert_eq!(selected_coordinates, visible);
+            assert_eq!(workbench.bone, Some((91, 0)));
+            let commands = workbench.control.commands();
+            if visible {
+                assert!(matches!(commands.as_slice(), [Command::FocusAll]));
+            } else {
+                assert!(commands.is_empty());
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
     fn viewport_shortcuts_preserve_f_and_space_in_resource_search() {
         let mut workbench = preview_fixture();
         workbench.control.publish(Snapshot {
-            motion: Some("test motion".into()),
+            motions: Arc::new(vec![crate::preview::LoadedMotion {
+                id: 7,
+                source: ResourceRef {
+                    document: multiple_models(),
+                    node: 9,
+                },
+                enabled: true,
+                frames: 60.0,
+                frame: Some(15.0),
+                skeleton: None,
+            }]),
             ..Snapshot::default()
         });
         let context = egui::Context::default();
@@ -3469,7 +4066,7 @@ mod tests {
             None,
         );
         workbench.scanning = false;
-        workbench.document = Some(Arc::new(Document {
+        workbench.refresh_document(Arc::new(Document {
             root: 0, buffers: vec![Arc::from([0_u8; 16])],
             nodes: vec![Node {
                 name: "Z:\\game\\dat\\model\\long-resource-file-name.bin".into(),
