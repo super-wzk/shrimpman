@@ -66,14 +66,30 @@ let model = Fmod::parse(&decoded)?;
 
 ## ECD 与 EXF
 
-ECD 16 字节头：签名 `ecd\x1a`、`u16` key index、原样保留的 `unknown_06[2]`、
+ECD 16 字节头：签名 `ecd\x1a`、`u16` key index、`u16` filename checksum、
 `u32` payload size、`u32` 解密后 CRC32。支持参考实现的六组参数，解密后
 校验 IEEE CRC32。只处理声明 payload，外部尾字节仍在 `source`。
 
-EXF 16 字节头：签名 `exf\x1a`、`u16` key index、`unknown_06[2]`、
+`1158F510` 在 key index >=4 时，先检查 `+0x06` 的文件名校验，再解密并检查内容 CRC。
+文件名只包含 basename 与扩展名，去掉盘符和目录并转大写。校验以头中的内容 CRC
+作为 CRC32 累积初值，处理文件名字节后不做末尾取反，再取 `(state >> 7) & 0xffff`。
+它与内容 CRC 是两个独立检查；内容变化时不能只更新 `+0x0c` 而保留旧文件名校验。
+
+`Ecd::encode` 接受目标资源名，并在内容变化时重建两个校验。对受文件名约束的 key，
+缺少目标名且内容 CRC 变化时返回错误。文件名规范化支持 ASCII basename；
+工作台使用源文件名或 MHA 的原始成员名，不从显示标签或匿名父容器推测名称。
+整块导入和打包也会重查已命名 ECD/EXF 资源，修复遗留的文件名校验；嵌套修改仍重建外层编码。
+损坏的编码节点仍可检查和修复，不阻止编辑其他成员；打包时拒绝未通过编码解析校验的资源。
+
+EXF 16 字节头：签名 `exf\x1a`、`u16` key index、`u16` filename checksum、
 `unknown_08[4]`、`u32` seed。支持五组参数，解密从偏移 16 到文件末尾。
 参考实现不将 `unknown_08` 作为长度字段，本实现也不这样推断。EXF 可包装 Ogg
 音频；`seed` 用于解密，不作为通用输出 CRC 校验字段。
+
+`114D9C70` 在 key index ==4 时检查 EXF 的文件名校验，采用与 ECD 相同的累积算法，
+初值取 `+0x0c` 的 seed。`114D9BD0` 也用该 seed 生成解密密钥。
+`+0x08` 的用途尚未确认。`Exf::encode` 保留 seed 和该未知字；提供目标名时更新文件名校验。
+没有目标名时保留原校验；EXF 内容修改不要求按完整明文重算 seed。
 
 `open_layers` 保留 original source 与每一层的 decoded bytes。原样导出应使用
 `source` 或 `layer_source`。解密/解压后的字节并不等于原压缩文件，也不声称可以
@@ -90,13 +106,37 @@ EXF 16 字节头：签名 `exf\x1a`、`u16` key index、`unknown_06[2]`、
   `parse` 是显式解释；结构识别用 `probe`，还要求 slot 0 是完整的场景摆放表。
   不能仅凭 `.pac` 扩展名或零值猜测。
 - MHA：`mha\x01`，entry table offset、count、names offset、names size，
-  再加两个未知 `u16`；项为 name offset、payload offset、size、padded size、
+  再加 `i16 first_file_id` 资源 ID 起点（`+0x14`）和 `u16 file_id_count` ID 槽数量（`+0x16`）；项为 name offset、payload offset、size、padded size、
   file id，共 20 字节。name offset 相对 name block，其他偏移相对文件。
   名称保留原始字节，由显示层负责解码。目录可能在 payload 之后。
+
+MHA 的原生 ID 索引由 `1158C300` 构建。`1158C316` 将 `file_id_count` 作为
+无符号 16 位值读取，再按每槽 8 字节分配零初始化的 offset/size 表；
+`1158C370/1158C374` 对目录项 file id 的低 16 位和 `first_file_id` 做符号扩展，
+槽号为 `native_file_id - first_file_id`。范围比较在 `1158C37B` 将槽数也按
+有符号 16 位读取，因此有效槽数为 `0..=32767`。
+
+`MhaEntry::file_id` 保留完整的 `u32` 原值，`native_file_id()` 只返回有符号低字。
+高 16 位没有参与此索引，工作台将它单独显示为可编辑的 `file_id_high_raw`，
+不会为高字推断其他用途。重复 ID 由目录中最后一项覆盖，零长度项也参与覆盖。
+越界 ID 不能当作缺失槽跳过：原生在 `1158C396` 仅于成功写入槽后推进目录指针。
+
+`1158CB60` 从请求文件名取出数字 ID，按已声明范围选包；`1158CC8D` 检查槽内
+offset，零值表示未找到。读取入口 `1158C420` 在 `1158C443` 检查 size，零值不读取。
+因此未分配槽、写入 offset 为零的目录项和 size 为零的资源分别展示，
+不把它们合并成缺失目录项。
+
+`MhaArchive::file_id_index` 检查槽数和每项 ID 范围并建立映射；基础目录解析仍保留
+无效 ID 元数据，便于修复。工作台沿用物理成员树和 Typed Binding，ID 槽映射按需
+展开为派生字段，可定位到实际低 16 位字段；不增加虚拟所有权节点。修改起点、槽数
+或成员 ID 后重新解析映射，打包时拒绝越界的 ID 范围。
 
 零长度槽原样保留（包括其非零旧 offset）；非空数据不能越界。目录允许别名、
 间隙和尾部数据，不按“所有 size 之和必须等于文件长度”错误排除合法资源。
 这些读取器不跟随操作系统路径，不执行归档项，不写回。
+
+偏移寻址基准与原包填充规律是不同约束。MHA、MOMO、Stage、对象包及内部结构的
+布局规则、原生读取方式和重打包限制见 [资源寻址基准与打包布局](resource-alignment.md)。
 
 ## 验证与识别边界
 
@@ -106,6 +146,8 @@ EXF 16 字节头：签名 `exf\x1a`、`u16` key index、`unknown_06[2]`、
 
 目录测试检查空槽、别名、间隙、尾部、MHA 共享名称，以及 Stage 目录的独立布局
 和摆放表识别条件。场景资源 ID 与共享成员引用的验证见 [stage-formats.md](stage-formats.md)。
+`tests/mha_ids.rs` 另外覆盖 ID 的有符号低字、高字保留、槽数边界、重复覆盖、
+未分配槽与显式空项，以及无效索引的字段定位和修复。
 
 可选资源测试覆盖 JKR0/3/4、ECD、EXF、模型成员、TXB、MHA 和 MOMO。
 测试按资源相对路径读取原文件，并以指定参考资源的输出 CRC 检查解码回归；

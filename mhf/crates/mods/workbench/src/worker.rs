@@ -41,8 +41,8 @@ pub(crate) struct Updates {
 
 pub(crate) struct Packed {
     pub source: PathBuf,
-    pub bytes: Arc<[u8]>,
-    pub result: Result<PathBuf, String>,
+    pub requested: Arc<Document>,
+    pub result: Result<(PathBuf, Arc<Document>), String>,
 }
 
 struct Edit {
@@ -318,22 +318,25 @@ impl Worker {
                         });
                     }
                     if let Some(pack) = work.pack {
-                        let rebuilt = edit::apply_many(&pack.document, &pack.patches);
-                        let bytes = rebuilt
-                            .as_ref()
-                            .map(|document| document.buffers[0].clone())
-                            .unwrap_or_else(|_| pack.document.buffers[0].clone());
-                        let result = rebuilt.and_then(|_| {
-                            pack_bytes(&pack.source_root, &pack.root, &pack.source, &bytes)
-                                .map_err(|error| error.to_string())
-                        });
+                        let result = edit::prepare_pack(&pack.document, &pack.patches).and_then(
+                            |document| {
+                                let path = pack_bytes(
+                                    &pack.source_root,
+                                    &pack.root,
+                                    &pack.source,
+                                    &document.buffers[0],
+                                )
+                                .map_err(|error| error.to_string())?;
+                                Ok((path, Arc::new(document)))
+                            },
+                        );
                         state
                             .updates
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .packed = Some(Packed {
                             source: pack.source,
-                            bytes,
+                            requested: pack.document,
                             result,
                         });
                     }
@@ -814,6 +817,68 @@ mod tests {
         assert_eq!(fs::read(output.join("value.bin")).unwrap(), [9, 2]);
         assert_eq!(fs::read(source).unwrap(), [1, 2]);
         assert!(worker.updates().packed.unwrap().result.is_ok());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn packing_name_repairs_return_the_written_document_and_keep_raw_exports_verbatim() {
+        use crate::session::Session;
+        use mhf_resource::crypto::{Ecd, Exf};
+
+        let directory =
+            std::env::temp_dir().join(format!("mhf-workbench-name-repair-{}", std::process::id()));
+        let data = directory.join("dat");
+        let output = directory.join("redirect");
+        fs::create_dir_all(&data).unwrap();
+        let ecd = Ecd::parse(b"ecd\x1a\x04\0\0\0\0\0\0\0\0\0\0\0")
+            .unwrap()
+            .encode(b"payload", Some(b"donor.bin"))
+            .unwrap();
+        let exf = Exf::parse(b"exf\x1a\x04\0\0\0\0\0\0\0\x12\x34\x56\x78")
+            .unwrap()
+            .encode(b"audio", Some(b"donor.mus"))
+            .unwrap();
+        for (name, bytes) in [("target.bin", ecd), ("target.mus", exf)] {
+            let source = data.join(name);
+            fs::write(&source, &bytes).unwrap();
+            let document = Arc::new(read_document(&source).unwrap());
+            let raw = Export::from_node(&document, document.root).unwrap();
+            assert_eq!(&raw.bytes[raw.range], bytes);
+            let mut session = Session::new(document.clone());
+            let mut worker = Worker::start(data.clone(), directory.join("exports")).unwrap();
+            worker.pack(
+                source.clone(),
+                data.clone(),
+                output.clone(),
+                document.clone(),
+                Vec::new(),
+            );
+            worker.stop();
+            let packed = worker.updates().packed.unwrap();
+            let (target, saved) = packed.result.unwrap();
+            assert!(Arc::ptr_eq(&packed.requested, &document));
+            let written = fs::read(target).unwrap();
+            assert_eq!(written.as_slice(), saved.buffers[0].as_ref());
+            assert_ne!(written, bytes);
+            assert_eq!(&written[..6], &bytes[..6]);
+            assert_eq!(&written[8..], &bytes[8..]);
+            assert_eq!(fs::read(source).unwrap(), bytes);
+            match saved.nodes[saved.root].kind {
+                Kind::Ecd => Ecd::parse(&written)
+                    .unwrap()
+                    .validate_filename(name.as_bytes())
+                    .unwrap(),
+                Kind::Exf => Exf::parse(&written)
+                    .unwrap()
+                    .validate_filename(name.as_bytes())
+                    .unwrap(),
+                _ => panic!("packing must preserve the wrapper kind"),
+            }
+            assert!(session.saved(&packed.requested, &saved));
+            assert!(!session.dirty());
+            let raw = Export::from_node(&session.document, session.document.root).unwrap();
+            assert_eq!(&raw.bytes[raw.range], written);
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 

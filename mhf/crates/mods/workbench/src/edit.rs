@@ -7,7 +7,14 @@ use std::ops::Range;
 use crate::field::{FieldType, Patch};
 use crate::inspect::{self, Document, Kind};
 
+#[cfg(test)]
+mod alignment_native_tests;
+#[cfg(test)]
+mod alignment_tests;
 mod batch;
+#[cfg(test)]
+mod filename_tests;
+mod filenames;
 mod repack;
 #[cfg(test)]
 mod tests;
@@ -94,6 +101,30 @@ pub fn apply_many(document: &Document, patches: &[Patch]) -> Result<Document, St
         }
     }
     batch::rebuild(document, changes)
+}
+
+/// Validate encoded envelopes and MHA ID ranges before writing. Intermediate
+/// edits remain inspectable, and raw byte export remains a verbatim view.
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+pub(crate) fn prepare_pack(document: &Document, patches: &[Patch]) -> Result<Document, String> {
+    let updated = apply_many(document, patches)?;
+    for (index, node) in updated.nodes.iter().enumerate() {
+        match node.kind {
+            Kind::Mha => {
+                let bytes = updated.bytes(index).ok_or("MHA 数据不存在")?;
+                mhf_resource::container::MhaArchive::parse(bytes, bytes.len())
+                    .and_then(|archive| archive.file_id_index())
+                    .map_err(|error| format!("MHA 资源 ID 索引无效：{error}"))?;
+            }
+            Kind::Ecd | Kind::Exf | Kind::Jkr => {
+                if let Some(error) = &node.error {
+                    return Err(format!("{} 编码资源未通过解析校验：{error}", node.kind));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(updated)
 }
 
 /// Replace an entire file or directory member, including imported image,

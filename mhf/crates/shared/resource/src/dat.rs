@@ -53,6 +53,9 @@ pub struct TableLayout {
 #[derive(Clone, Copy, Debug)]
 pub struct Dat<'a> {
     source: &'a [u8],
+    /// Header +0x08 is neither read nor relocated by the DAT initialization
+    /// path in 10AF5140. No pointer, count or checksum semantics are established;
+    /// the outer ECD header's +0x08 belongs to a different resource layer.
     pub unknown_08: u32,
 }
 

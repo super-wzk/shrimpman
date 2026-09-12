@@ -139,6 +139,14 @@ fn absent_directory_entries_are_checked_before_dereferencing() {
 #[test]
 fn header_validation_and_schema_fields_are_bounded() {
     let bytes = image(dat::HEADER_SIZE);
+    // Header +8 is opaque, even when it resembles an invalid root pointer.
+    for unknown in [8, dat::HEADER_SIZE as u32, u32::MAX] {
+        let mut source = bytes.clone();
+        set_u32(&mut source, 8, unknown);
+        let file = Dat::parse(&source).unwrap();
+        assert_eq!(file.unknown_08, unknown);
+        assert_eq!(file.as_bytes(), source);
+    }
     for end in [0, 3, 4, 7, 12, dat::HEADER_SIZE - 1] {
         assert!(Dat::parse(&bytes[..end]).is_err());
     }

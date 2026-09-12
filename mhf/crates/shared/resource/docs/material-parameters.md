@@ -45,6 +45,12 @@ groups. Each group header is immediately followed by its counted records.
 Negative counts are rejected before allocation, and every header and complete
 record must fit the input. Empty groups retain their ordinals.
 
+`108FCD70` copies each complete 16-byte header to temporary storage. Its
+allocation and record loops read only the signed byte at +0; `108FBA70` likewise
+uses only that byte when checking group and material counts. Bytes +1..+15 have
+no established subfields or resource-reference semantics in these paths. They
+remain unknown header bytes, not removable padding or inferred indices.
+
 | Record range | Representation |
 | --- | --- |
 | 0x00..0x10 | `color_00: [u32; 4]`, original float bits |

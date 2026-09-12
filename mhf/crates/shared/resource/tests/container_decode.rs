@@ -128,7 +128,7 @@ fn exf_transparent_value_keeps_its_exact_source_and_unknown_header() {
     let decoded = Exf::parse(source).unwrap().decode(0).unwrap();
     assert!(decoded.is_empty());
     assert_eq!(decoded.encoding.source.as_ptr(), source.as_ptr());
-    assert_eq!(decoded.encoding.header.unknown_06, [0xaa, 0xbb]);
+    assert_eq!(decoded.encoding.header.filename_checksum, 0xbbaa);
     assert_eq!(decoded.encoding.header.unknown_08, [0x11, 0x22, 0x33, 0x44]);
     assert_eq!(decoded.encoding.header.seed, 0x8877_6655);
 }
@@ -173,7 +173,7 @@ fn stage_and_named_archive_have_their_own_layouts() {
     mha.extend(words(&[0, 47, 3, 4, 0xaabbccdd]));
     mha.extend_from_slice(b"\xffx\0abc\xee");
     let parsed = MhaArchive::parse(&mha, 1).unwrap();
-    assert_eq!(parsed.header.unknown_14, 0x2211);
+    assert_eq!(parsed.header.first_file_id, 0x2211);
     assert_eq!(parsed.entries[0].name, b"\xffx");
     assert_eq!(parsed.entries[0].entry.payload(&mha).unwrap(), b"abc");
     assert_eq!(parsed.entries[0].padded_size, 4);
@@ -207,7 +207,7 @@ fn crc32_known_answer_and_ecd_header_bounds() {
     let file = Ecd::parse(&encoded).unwrap();
     let decoded = file.decode(0).unwrap();
     assert_eq!(&**decoded, b"");
-    assert_eq!(decoded.encoding.header.unknown_06, [0xaa, 0xbb]);
+    assert_eq!(decoded.encoding.header.filename_checksum, 0xbbaa);
     assert_eq!(decoded.encoding.trailing_bytes().unwrap(), b"trailer");
     assert_eq!(decoded.encoding.source.as_ptr(), encoded.as_ptr());
     encoded[8..12].copy_from_slice(&100u32.to_le_bytes());
@@ -217,7 +217,7 @@ fn crc32_known_answer_and_ecd_header_bounds() {
 #[test]
 fn ecd_known_answers_cover_all_key_sets_and_detect_corruption() {
     // Produced by the independent ReFrontier EncodeEcd algorithm for
-    // "123456789", unknown_06=aabb. Decoding must also validate its CRC.
+    // "123456789", raw +0x06 bytes aabb (no filename binding). Decoding validates its CRC.
     let encrypted = [
         "6563641a0000aabb090000002639f4cbf577b418203c37b628",
         "6563641a0100aabb090000002639f4cbdeb25b2b8fdaea8924",

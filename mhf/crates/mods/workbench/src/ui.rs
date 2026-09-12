@@ -196,16 +196,7 @@ impl Workbench {
             self.finish_edit(edited);
         }
         if let Some(packed) = updates.packed {
-            self.editing.saving = false;
-            match packed.result {
-                Ok(path) => {
-                    if let Some(session) = self.editing.sessions.get_mut(&packed.source) {
-                        session.saved(packed.bytes);
-                    }
-                    self.status = format!("已打包 {}", path.display());
-                }
-                Err(error) => self.error = error,
-            }
+            self.finish_pack(packed);
         }
     }
 

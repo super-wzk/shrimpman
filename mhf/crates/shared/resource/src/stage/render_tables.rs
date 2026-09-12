@@ -43,7 +43,10 @@ impl<'a> RenderTable<'a> {
 #[derive(Clone, Debug)]
 pub struct RenderTables<'a> {
     pub version: u16,
+    /// 11394DA0 copies this word to a runtime scalar; its purpose is unknown.
+    /// It does not participate in table counts, offsets or record traversal.
     pub unknown_02: u16,
+    /// Not consumed by the table setup in 11394DA0. Preserve the original word.
     pub unknown_1e: u16,
     /// Physical table order, retaining tables whose count is zero.
     pub tables: Vec<RenderTable<'a>>,

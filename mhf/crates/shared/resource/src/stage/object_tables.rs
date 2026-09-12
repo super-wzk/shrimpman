@@ -27,7 +27,10 @@ impl<'a> ObjectTable<'a> {
 #[derive(Clone, Debug)]
 pub struct ObjectTables<'a> {
     pub version: u16,
+    /// 113DA520 and the five-table readers use counts only at +2 through +10.
+    /// No additional table or reference is established by this header word.
     pub unknown_0c: u16,
+    /// Not consumed by the known table setup; retained independently of +12.
     pub unknown_0e: u16,
     /// Physical order, including tables whose count is zero.
     pub tables: Vec<ObjectTable<'a>>,

@@ -23,7 +23,9 @@ const EXF_PARAMETERS: [(u32, u32); 5] = [
 pub struct EcdHeader {
     pub magic: [u8; 4],
     pub key_index: u16,
-    pub unknown_06: [u8; 2],
+    /// Native 1158F510 checks this against the uppercase basename and payload
+    /// CRC for key indices >= 4. Lower key indices preserve but do not use it.
+    pub filename_checksum: u16,
     pub payload_size: u32,
     pub crc32: u32,
 }
@@ -42,7 +44,7 @@ impl<'a> Ecd<'a> {
         let header = EcdHeader {
             magic: bytes[..4].try_into().unwrap(),
             key_index: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
-            unknown_06: bytes[6..8].try_into().unwrap(),
+            filename_checksum: u16::from_le_bytes(bytes[6..8].try_into().unwrap()),
             payload_size: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
             crc32: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
         };
@@ -64,9 +66,28 @@ impl<'a> Ecd<'a> {
             .ok_or_else(|| Error::new(8, "truncated ECD payload"))
     }
 
-    /// Replace the decoded payload, preserving the key, unknown header bytes
-    /// and trailer. The checksum also seeds encryption, so every byte is encoded.
-    pub fn encode(&self, payload: &[u8]) -> Result<Vec<u8>> {
+    /// Check the independent filename binding consumed before native decrypt.
+    /// Decoding without a name validates only the payload CRC.
+    pub fn validate_filename(&self, filename: &[u8]) -> Result<()> {
+        if self.header.key_index >= 4 {
+            let expected = filename_checksum(self.header.crc32, filename)?;
+            if self.header.filename_checksum != expected {
+                return Err(Error::new(
+                    6,
+                    format!(
+                        "ECD filename checksum mismatch: stored {:04x}, expected {expected:04x}",
+                        self.header.filename_checksum,
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace the decoded payload, preserving the key and trailer. The payload
+    /// CRC seeds both encryption and the filename checksum. A changed payload
+    /// under a filename-bound key requires its destination resource name.
+    pub fn encode(&self, payload: &[u8], filename: Option<&[u8]>) -> Result<Vec<u8>> {
         let &(multiplier, increment) = ECD_PARAMETERS
             .get(usize::from(self.header.key_index))
             .ok_or_else(|| Error::new(4, "unsupported ECD key index"))?;
@@ -75,9 +96,19 @@ impl<'a> Ecd<'a> {
         let trailer = self.trailing_bytes()?;
         let mut output = encoded_buffer(payload.len(), trailer.len())?;
         let checksum = crc32(payload);
+        let filename_checksum = match filename {
+            Some(name) if self.header.key_index >= 4 => filename_checksum(checksum, name)?,
+            None if self.header.key_index >= 4 && checksum != self.header.crc32 => {
+                return Err(Error::new(
+                    6,
+                    "ECD payload changes require the destination filename",
+                ));
+            }
+            _ => self.header.filename_checksum,
+        };
         output.extend_from_slice(b"ecd\x1a");
         output.extend_from_slice(&self.header.key_index.to_le_bytes());
-        output.extend_from_slice(&self.header.unknown_06);
+        output.extend_from_slice(&filename_checksum.to_le_bytes());
         output.extend_from_slice(&size.to_le_bytes());
         output.extend_from_slice(&checksum.to_le_bytes());
         let mut state = checksum.rotate_left(16) | 1;
@@ -148,8 +179,10 @@ impl<'a> Ecd<'a> {
 pub struct ExfHeader {
     pub magic: [u8; 4],
     pub key_index: u16,
-    pub unknown_06: [u8; 2],
-    /// EXF's reference decoder does not use these bytes as a payload length.
+    /// Native 114D9C70 checks the uppercase basename against seed for key 4.
+    pub filename_checksum: u16,
+    /// Neither the native stream opener (114D9C70) nor key derivation
+    /// (114D9BD0) consumes this word. Its producer-side purpose is unconfirmed.
     pub unknown_08: [u8; 4],
     pub seed: u32,
 }
@@ -168,7 +201,7 @@ impl<'a> Exf<'a> {
         let header = ExfHeader {
             magic: bytes[..4].try_into().unwrap(),
             key_index: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
-            unknown_06: bytes[6..8].try_into().unwrap(),
+            filename_checksum: u16::from_le_bytes(bytes[6..8].try_into().unwrap()),
             unknown_08: bytes[8..12].try_into().unwrap(),
             seed: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
         };
@@ -191,13 +224,35 @@ impl<'a> Exf<'a> {
         Ok(key)
     }
 
-    /// Replace the decoded payload while retaining all EXF header metadata.
-    pub fn encode(&self, payload: &[u8]) -> Result<Vec<u8>> {
+    pub fn validate_filename(&self, filename: &[u8]) -> Result<()> {
+        if self.header.key_index == 4 {
+            let expected = filename_checksum(self.header.seed, filename)?;
+            if self.header.filename_checksum != expected {
+                return Err(Error::new(
+                    6,
+                    format!(
+                        "EXF filename checksum mismatch: stored {:04x}, expected {expected:04x}",
+                        self.header.filename_checksum,
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Keep the stream seed and unknown word; a known destination name rebinds
+    /// the filename checksum. Unlike ECD, the native stream loader does not
+    /// require the seed to be recomputed from the complete decoded payload.
+    pub fn encode(&self, payload: &[u8], filename: Option<&[u8]>) -> Result<Vec<u8>> {
         let key = self.key()?;
+        let filename_checksum = match filename {
+            Some(name) if self.header.key_index == 4 => filename_checksum(self.header.seed, name)?,
+            _ => self.header.filename_checksum,
+        };
         let mut output = encoded_buffer(payload.len(), 0)?;
         output.extend_from_slice(b"exf\x1a");
         output.extend_from_slice(&self.header.key_index.to_le_bytes());
-        output.extend_from_slice(&self.header.unknown_06);
+        output.extend_from_slice(&filename_checksum.to_le_bytes());
         output.extend_from_slice(&self.header.unknown_08);
         output.extend_from_slice(&self.header.seed.to_le_bytes());
         for (position, &plain) in payload.iter().enumerate() {
@@ -246,6 +301,32 @@ fn allocate(size: usize, budget: usize) -> Result<Vec<u8>> {
 
 /// IEEE CRC32, including initial/final inversion (the ECD payload checksum).
 pub fn crc32(bytes: &[u8]) -> u32 {
+    !crc32_state(u32::MAX, bytes.iter().copied())
+}
+
+/// Native ECD 1158F510 and EXF 114D9C70 fold an uppercase filename plus
+/// extension into the stored payload CRC or stream seed, respectively.
+/// The returned checksum does not alter the encryption stream.
+pub fn filename_checksum(seed: u32, filename: &[u8]) -> Result<u16> {
+    let basename = filename
+        .rsplit(|&byte| matches!(byte, b'/' | b'\\'))
+        .next()
+        .unwrap();
+    let basename = if basename.get(1) == Some(&b':') {
+        &basename[2..]
+    } else {
+        basename
+    };
+    if basename.is_empty() || !basename.is_ascii() || basename.contains(&0) {
+        return Err(Error::new(
+            6,
+            "resource filename binding requires a nonempty ASCII basename",
+        ));
+    }
+    Ok((crc32_state(seed, basename.iter().map(u8::to_ascii_uppercase)) >> 7) as u16)
+}
+
+fn crc32_state(mut crc: u32, bytes: impl IntoIterator<Item = u8>) -> u32 {
     const TABLE: [u32; 256] = {
         let mut table = [0; 256];
         let mut index = 0;
@@ -261,9 +342,8 @@ pub fn crc32(bytes: &[u8]) -> u32 {
         }
         table
     };
-    let mut crc = u32::MAX;
-    for &byte in bytes {
+    for byte in bytes {
         crc = (crc >> 8) ^ TABLE[usize::from(crc as u8 ^ byte)];
     }
-    !crc
+    crc
 }

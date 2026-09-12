@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use crate::{
     Decoded, Error, Result,
+    binary::Reader,
     crypto::{Ecd, EcdHeader, Exf, ExfHeader},
     jkr::{Header as JkrHeader, Jkr},
 };
@@ -280,8 +281,37 @@ pub struct MhaHeader {
     pub count: u32,
     pub names_offset: u32,
     pub names_size: u32,
-    pub unknown_14: u16,
-    pub unknown_16: u16,
+    /// Signed base subtracted from each directory record's low 16-bit file ID.
+    pub first_file_id: i16,
+    /// Native allocation reads an unsigned word, while lookup reads a signed
+    /// word. Values above i16::MAX are retained but fail file_id_index().
+    pub file_id_count: u16,
+}
+
+impl MhaHeader {
+    pub const SIZE: usize = 24;
+
+    /// Header reads are independent of directory and ID-index validation so an
+    /// editor can retain the fields of an incomplete or malformed archive.
+    pub fn parse(source: &[u8]) -> Result<Self> {
+        let bytes = source
+            .get(..Self::SIZE)
+            .ok_or_else(|| Error::new(0, "truncated MHA header"))?;
+        let mut reader = Reader::new(bytes);
+        let header = Self {
+            magic: reader.read::<[u8; 4]>()?.value,
+            entries_offset: reader.read::<u32>()?.value,
+            count: reader.read::<u32>()?.value,
+            names_offset: reader.read::<u32>()?.value,
+            names_size: reader.read::<u32>()?.value,
+            first_file_id: reader.read::<i16>()?.value,
+            file_id_count: reader.read::<u16>()?.value,
+        };
+        if header.magic != *b"mha\x01" {
+            return Err(Error::new(0, "expected MHA signature"));
+        }
+        Ok(header)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -290,9 +320,40 @@ pub struct MhaEntry<'a> {
     /// Relative to MhaHeader::names_offset, not the whole file.
     pub name_offset: u32,
     pub padded_size: u32,
+    /// Raw storage. Native ID lookup uses only the signed low 16 bits; the
+    /// upper word has no confirmed meaning and is retained verbatim.
     pub file_id: u32,
     /// Original name bytes; decoding and display escaping are UI concerns.
     pub name: &'a [u8],
+}
+
+impl MhaEntry<'_> {
+    pub const fn native_file_id(&self) -> i16 {
+        self.file_id as i16
+    }
+}
+
+/// Derived native lookup slots, not another physical directory in the file.
+/// Each value is an index into MhaArchive::entries. Missing slots are None;
+/// an explicit zero-size entry still occupies its slot and can replace a
+/// previous entry with the same ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MhaFileIdIndex {
+    pub first_file_id: i16,
+    pub slots: Vec<Option<usize>>,
+}
+
+impl MhaFileIdIndex {
+    /// Return the last directory record assigned to this ID. The caller still
+    /// checks its offset/size: native name lookup treats offset zero as absent,
+    /// and native file reads skip zero-size entries.
+    pub fn entry_index(&self, file_id: i32) -> Option<usize> {
+        let slot = file_id.checked_sub(i32::from(self.first_file_id))?;
+        self.slots
+            .get(usize::try_from(slot).ok()?)
+            .copied()
+            .flatten()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -303,23 +364,13 @@ pub struct MhaArchive<'a> {
 }
 
 impl<'a> MhaArchive<'a> {
+    /// Parse physical directory records, retaining malformed ID metadata for
+    /// inspection and repair. Call file_id_index() before native loading.
     pub fn parse(source: &'a [u8], max_entries: usize) -> Result<Self> {
-        let bytes = source
-            .get(..24)
-            .ok_or_else(|| Error::new(0, "truncated MHA header"))?;
-        let header = MhaHeader {
-            magic: bytes[..4].try_into().unwrap(),
-            entries_offset: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            count: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            names_offset: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-            names_size: u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
-            unknown_14: u16::from_le_bytes(bytes[20..22].try_into().unwrap()),
-            unknown_16: u16::from_le_bytes(bytes[22..24].try_into().unwrap()),
-        };
-        if header.magic != *b"mha\x01" {
-            return Err(Error::new(0, "expected MHA signature"));
-        }
-        if header.entries_offset < 24 || header.names_offset < 24 {
+        let header = MhaHeader::parse(source)?;
+        if (header.entries_offset as usize) < MhaHeader::SIZE
+            || (header.names_offset as usize) < MhaHeader::SIZE
+        {
             return Err(Error::new(4, "MHA directory overlaps header"));
         }
         let entries_end = table_end(
@@ -344,7 +395,7 @@ impl<'a> MhaArchive<'a> {
             .0;
         for (index, bytes) in records.iter().enumerate() {
             let field = header.entries_offset as usize + index * 20;
-            let offset = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+            let offset = Reader::with_base(bytes, field).read::<u32>()?.value as usize;
             if offset >= names.len() {
                 return Err(Error::new(field, "MHA name offset outside name block"));
             }
@@ -374,15 +425,16 @@ impl<'a> MhaArchive<'a> {
             .map_err(|_| Error::new(8, "cannot allocate MHA directory"))?;
         for (index, bytes) in records.iter().enumerate() {
             let field = header.entries_offset as usize + index * 20;
-            let name_offset = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+            let mut reader = Reader::with_base(bytes, field);
+            let name_offset = reader.read::<u32>()?.value;
             let entry = Entry {
                 index,
-                offset: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                size: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+                offset: reader.read::<u32>()?.value,
+                size: reader.read::<u32>()?.value,
             };
-            let padded_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-            let file_id = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
-            check_entry(source, &entry, 24, field + 4)?;
+            let padded_size = reader.read::<u32>()?.value;
+            let file_id = reader.read::<u32>()?.value;
+            check_entry(source, &entry, MhaHeader::SIZE, field + 4)?;
             if padded_size < entry.size {
                 return Err(Error::new(
                     field + 12,
@@ -409,6 +461,46 @@ impl<'a> MhaArchive<'a> {
             source,
             header,
             entries,
+        })
+    }
+
+    /// Build the native 1158C300 ID table in directory order. Both the starting
+    /// ID and each record ID are signed 16-bit values. Duplicate IDs overwrite
+    /// earlier slots, even when the later record is empty.
+    ///
+    /// Out-of-range records are errors rather than ignored entries: the native
+    /// loop advances its record pointer only after a successful slot write.
+    pub fn file_id_index(&self) -> Result<MhaFileIdIndex> {
+        let count = self.header.file_id_count;
+        if count > i16::MAX as u16 {
+            return Err(Error::new(
+                22,
+                "MHA file ID count exceeds native signed 16-bit range",
+            ));
+        }
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(usize::from(count))
+            .map_err(|_| Error::new(22, "cannot allocate MHA file ID index"))?;
+        slots.resize(usize::from(count), None);
+        let first = i32::from(self.header.first_file_id);
+        for item in &self.entries {
+            let id = i32::from(item.native_file_id());
+            let slot = id - first;
+            if !(0..i32::from(count)).contains(&slot) {
+                return Err(Error::new(
+                    self.header.entries_offset as usize + item.entry.index * 20 + 16,
+                    format!(
+                        "MHA file ID {id} is outside native ID range {first}..{}",
+                        first + i32::from(count),
+                    ),
+                ));
+            }
+            slots[slot as usize] = Some(item.entry.index);
+        }
+        Ok(MhaFileIdIndex {
+            first_file_id: self.header.first_file_id,
+            slots,
         })
     }
 }

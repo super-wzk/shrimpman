@@ -74,7 +74,8 @@ pub struct Lighting<'a> {
     /// PointLight, CubeMapLight, LightGroup, LightColision, PointLightAnimGroup.
     /// Native 10021670 treats each byte separately as signed, including +8.
     pub counts: [i8; 5],
-    /// Observed debug-fill bytes (FE/CC), not part of the animation-group count.
+    /// 10021670 copies the DWORD at +8 but consumes only its signed low byte.
+    /// These three bytes are not counts or references in that loading path.
     pub reserved_09: [u8; 3],
     pub point_lights: Vec<Record>,
     /// Two groups of three six-word DirectionalLight records.

@@ -132,6 +132,32 @@ cargo test -p mhf-resource --target "<host-target>" --test motion_native_samples
 These tests validate file structure and encoded values. Native animation binding,
 interpolation and in-game playback require separate verification.
 
+## Event-camera headers
+
+`10829EE0` loads `motion/evcam%04d.bin`; `10829E70` copies each camera member
+into a 32-byte runtime slot and relocates its four array offsets. All offsets
+below are relative to the decoded camera member:
+
+| Offset | Stored type | Confirmed use |
+|---|---|---|
+| `00`, `04` | u32 | Copied unchanged; no flag, ID or reference semantics established |
+| `08` | f32 bits | Copied through x87 `FLD`/`FSTP` at `10829E8D`/`10829E90`; role remains unknown |
+| `0c` | u32 | Frame count used by `1082A6E0` |
+| `10`, `14`, `18`, `1c` | u32 offsets | FOV, XYZ position, roll and XYZ target arrays, relative to this member |
+
+`1082A6E0` consumes the count and arrays with strides 4/12/4/12; it does not
+read the first three header words. `10820940` also reads only the position or
+target array. Copying a word through the floating-point unit establishes its
+storage type, not an aspect-ratio or other camera-setting meaning.
+
+[`EventCamera::parse`](../src/event_camera.rs) preserves the three unknown
+words, including arbitrary float bits, and checks each array's declared extent
+independently. The stricter `probe` requires zero values at +0/+4 and a finite
+positive float at +8 as recognition conditions; these are not enums or
+constraints imposed by the frame reader. Known array fields retain their actual
+source ranges for inspection and fixed-width edits; the unknown words do not
+create additional resource references.
+
 ## Equipment effects are four distinct tables
 
 DAT indices refer to the game's DAT pointer table after loading, not standalone

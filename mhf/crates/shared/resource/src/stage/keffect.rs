@@ -33,6 +33,8 @@ impl KEffectRecord {
 pub struct KEffect<'a> {
     /// The native magic check does not inspect byte 7.
     pub unknown_07: u8,
+    /// 105EECF0/105EED60 use +12 and records at +16, without consuming +8.
+    /// Preserve it as a scalar; no version, length or reference role is known.
     pub unknown_08: u32,
     pub count: u32,
     pub records: Vec<KEffectRecord>,

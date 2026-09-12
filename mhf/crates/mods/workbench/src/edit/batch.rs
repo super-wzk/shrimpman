@@ -7,7 +7,7 @@ use mhf_resource::{
 
 use crate::inspect::{self, Document, Kind};
 
-use super::{parents, repack, restore_expanded};
+use super::{filenames, parents, repack, restore_expanded};
 
 pub(super) struct Change {
     pub buffer: usize,
@@ -17,6 +17,13 @@ pub(super) struct Change {
 }
 
 pub(super) fn rebuild(document: &Document, changes: Vec<Change>) -> Result<Document, String> {
+    filenames::refresh(rebuild_layers(document, changes)?)
+}
+
+pub(super) fn rebuild_layers(
+    document: &Document,
+    changes: Vec<Change>,
+) -> Result<Document, String> {
     if changes.is_empty() {
         return Ok(document.clone());
     }
@@ -65,8 +72,14 @@ pub(super) fn rebuild(document: &Document, changes: Vec<Change>) -> Result<Docum
         let node = &document.nodes[owner];
         let source = document.bytes(owner).ok_or("编码层原始数据不存在")?;
         let bytes = match node.kind {
-            Kind::Ecd => Ecd::parse(source).and_then(|file| file.encode(&bytes)),
-            Kind::Exf => Exf::parse(source).and_then(|file| file.encode(&bytes)),
+            Kind::Ecd => {
+                let filename = filenames::resource_name(document, &ownership, owner)?;
+                Ecd::parse(source).and_then(|file| file.encode(&bytes, filename))
+            }
+            Kind::Exf => {
+                let filename = filenames::resource_name(document, &ownership, owner)?;
+                Exf::parse(source).and_then(|file| file.encode(&bytes, filename))
+            }
             Kind::Jkr => Jkr::parse(source).and_then(|file| file.encode_stored(&bytes)),
             _ => unreachable!("owner is a decoded envelope"),
         }
@@ -110,11 +123,16 @@ fn rebuild_buffer(
     while let Some((parent, mut children)) = groups.pop_last() {
         validate_changes(&mut children)?;
         let node = &document.nodes[parent];
-        let mut bytes = source[node.range.clone()].to_vec();
-        for child in children.into_iter().rev() {
-            let range = child.range.start - node.range.start..child.range.end - node.range.start;
-            bytes = repack::replace(node.kind, &bytes, range, &child.bytes)?;
-        }
+        let replacements: Vec<_> = children
+            .iter()
+            .map(|child| {
+                (
+                    child.range.start - node.range.start..child.range.end - node.range.start,
+                    child.bytes.as_slice(),
+                )
+            })
+            .collect();
+        let bytes = repack::replace_many(node.kind, &source[node.range.clone()], &replacements)?;
         if node.range == (0..source.len()) {
             if !groups.is_empty() {
                 return Err("同一数据层存在不相连的目录所有者".into());

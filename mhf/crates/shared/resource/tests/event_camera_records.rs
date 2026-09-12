@@ -97,11 +97,22 @@ fn truncation_overflow_and_header_overlap_are_rejected_before_reading_frames() {
     let empty = camera(0);
     assert!(EventCamera::parse(&empty).is_ok());
     assert!(EventCamera::probe(&empty).is_err());
-    for value in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
-        let mut invalid = bytes.clone();
-        invalid[8..12].copy_from_slice(&value.to_bits().to_le_bytes());
-        assert!(EventCamera::parse(&invalid).is_ok());
-        assert!(EventCamera::probe(&invalid).is_err());
+    // Native float copying does not justify normalizing the file's NaNs or
+    // treating +8 as an array reference. Only the recognition probe constrains it.
+    for bits in [
+        0_u32,
+        0x8000_0000,
+        (-1.0_f32).to_bits(),
+        0x7fa0_1234,
+        0xffc0_4321,
+        f32::INFINITY.to_bits(),
+    ] {
+        let mut candidate = bytes.clone();
+        candidate[8..12].copy_from_slice(&bits.to_le_bytes());
+        let parsed = EventCamera::parse(&candidate).unwrap();
+        assert_eq!(parsed.unknown_08_bits, bits);
+        assert_eq!(parsed.as_bytes(), candidate);
+        assert!(EventCamera::probe(&candidate).is_err());
     }
 }
 

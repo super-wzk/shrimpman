@@ -15,6 +15,7 @@ use crate::field::{
 mod archive_tests;
 mod dat;
 mod legacy_stage;
+mod mha;
 #[cfg(test)]
 mod motion_tests;
 mod stage;
@@ -255,6 +256,11 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
     };
     builder.document.nodes[node].deferred = false;
     match kind {
+        Kind::Mha => {
+            let archive =
+                MhaArchive::parse(bytes, bytes.len()).map_err(|error| error.to_string())?;
+            builder.mha_id_details(node, &archive, range.start)?;
+        }
         Kind::DatTable(index) => builder.dat_table_records(node, index)?,
         Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
         Kind::Motion => {
@@ -714,8 +720,11 @@ impl Builder {
                 self.field(node, "key_index", file.header.key_index, base + 4, 2);
                 self.field(
                     node,
-                    "unknown_06",
-                    hex(&file.header.unknown_06),
+                    "filename_checksum",
+                    formatted(
+                        file.header.filename_checksum,
+                        format!("{:04X}", file.header.filename_checksum),
+                    ),
                     base + 6,
                     2,
                 );
@@ -739,8 +748,11 @@ impl Builder {
                 self.field(node, "key_index", file.header.key_index, base + 4, 2);
                 self.field(
                     node,
-                    "unknown_06",
-                    hex(&file.header.unknown_06),
+                    "filename_checksum",
+                    formatted(
+                        file.header.filename_checksum,
+                        format!("{:04X}", file.header.filename_checksum),
+                    ),
                     base + 6,
                     2,
                 );
@@ -803,79 +815,7 @@ impl Builder {
             return;
         }
         if bytes.starts_with(b"mha\x01") {
-            self.document.nodes[node].kind = Kind::Mha;
-            match MhaArchive::parse(bytes, bytes.len()) {
-                Ok(archive) => {
-                    let h = archive.header;
-                    for (name, value, offset) in [
-                        ("entries_offset", h.entries_offset, 4),
-                        ("count", h.count, 8),
-                        ("names_offset", h.names_offset, 12),
-                        ("names_size", h.names_size, 16),
-                    ] {
-                        self.field(
-                            node,
-                            name,
-                            formatted(value, format!("{value} ({value:#X})")),
-                            base + offset,
-                            4,
-                        );
-                    }
-                    self.field(node, "unknown_14", h.unknown_14, base + 20, 2);
-                    self.field(node, "unknown_16", h.unknown_16, base + 22, 2);
-                    for item in &archive.entries {
-                        let entry = item.entry;
-                        let name = archive_name(item.name);
-                        let at = if entry.size == 0 {
-                            base
-                        } else {
-                            base + entry.offset as usize
-                        };
-                        let Some(child) = self.child(
-                            node,
-                            format!("{:04} · {name}", entry.index),
-                            Kind::Unknown,
-                            buffer_index,
-                            at..at + entry.size as usize,
-                        ) else {
-                            break;
-                        };
-                        if let Some(value) = std::str::from_utf8(item.name)
-                            .ok()
-                            .and_then(metadata::from_filename)
-                        {
-                            self.document.nodes[child].metadata.insert(value);
-                        }
-                        let meta = base + h.entries_offset as usize + entry.index * 20;
-                        self.field(child, "name_offset", item.name_offset, meta, 4);
-                        self.field(
-                            child,
-                            "原始名称",
-                            hex(item.name),
-                            base + h.names_offset as usize + item.name_offset as usize,
-                            item.name.len(),
-                        );
-                        self.field(
-                            child,
-                            "offset",
-                            formatted(entry.offset, format!("{:#X}", entry.offset)),
-                            meta + 4,
-                            4,
-                        );
-                        self.field(child, "size", entry.size, meta + 8, 4);
-                        self.field(child, "padded_size", item.padded_size, meta + 12, 4);
-                        self.field(child, "file_id", item.file_id, meta + 16, 4);
-                        self.inspect_node(
-                            child,
-                            Hint {
-                                directory: true,
-                                ..Hint::from_path(&name)
-                            },
-                        );
-                    }
-                }
-                Err(error) => self.fail(node, error.to_string()),
-            }
+            self.inspect_mha(node, bytes, base);
             return;
         }
         if hint.legacy_render_tables {

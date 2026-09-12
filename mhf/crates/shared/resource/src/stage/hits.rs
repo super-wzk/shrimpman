@@ -3,8 +3,8 @@
 //! 108C78A0 and 108C7960 resolve the cell directory and each terminated cell
 //! list relative to file +8; list members are relative to the record table.
 //! 108C7B90 copies 56-byte records, and 108CBE30 uses their three vertices and
-//! four plane coefficients. Metadata bits and the two unused header words are
-//! retained without assigning surface or gameplay meanings.
+//! four plane coefficients. Metadata bits and the two header words skipped by
+//! the known relocation paths retain their original values and unknown meaning.
 
 use std::collections::BTreeMap;
 
@@ -23,7 +23,9 @@ pub struct HitsHeader {
     pub cell_size_z: u32,
     pub cells_x: u32,
     pub cells_z: u32,
+    /// Skipped by 108C78A0/108C7960 and object loaders 105F30A0/105F3210.
     pub unknown_18: u32,
+    /// Those same loaders do not treat this word as a count or an offset.
     pub unknown_1c: u32,
     /// Encoded offsets are relative to file +8, not the file start.
     pub cell_table_offset: u32,

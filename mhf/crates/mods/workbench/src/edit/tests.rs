@@ -22,16 +22,16 @@ fn jkr(encoding: u16, size: usize, payload: &[u8]) -> Vec<u8> {
 }
 
 fn ecd(payload: &[u8]) -> Vec<u8> {
-    Ecd::parse(b"ecd\x1a\x04\0\xaa\xbb\0\0\0\0\0\0\0\0trailer")
+    Ecd::parse(b"ecd\x1a\x03\0\xaa\xbb\0\0\0\0\0\0\0\0trailer")
         .unwrap()
-        .encode(payload)
+        .encode(payload, None)
         .unwrap()
 }
 
 fn exf(payload: &[u8]) -> Vec<u8> {
     Exf::parse(b"exf\x1a\x04\0\xaa\xbb\x11\x22\x33\x44\x55\x66\x77\x88")
         .unwrap()
-        .encode(payload)
+        .encode(payload, None)
         .unwrap()
 }
 
@@ -59,7 +59,7 @@ fn mha(payload: &[u8]) -> Vec<u8> {
         (8, 1),
         (12, 44),
         (16, 11),
-        (20, 0xbbaa),
+        (20, 739 | (1 << 16)),
         (28, 64),
         (32, payload.len() as u32),
         (36, payload.len() as u32 + 3),
@@ -89,7 +89,7 @@ fn ecd_encoding_matches_independent_vectors_and_preserves_metadata() {
         let template = ecd(b"");
         let mut file = Ecd::parse(&template).unwrap();
         file.header.key_index = key as u16;
-        let encoded = file.encode(b"123456789").unwrap();
+        let encoded = file.encode(b"123456789", Some(b"test.bin")).unwrap();
         let expected: Vec<u8> = (0..hex.len())
             .step_by(2)
             .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
@@ -97,7 +97,11 @@ fn ecd_encoding_matches_independent_vectors_and_preserves_metadata() {
         assert_eq!(&encoded[16..25], expected);
         let decoded = Ecd::parse(&encoded).unwrap().decode(9).unwrap();
         assert_eq!(&**decoded, b"123456789");
-        assert_eq!(decoded.encoding.header.unknown_06, [0xaa, 0xbb]);
+        if key < 4 {
+            assert_eq!(decoded.encoding.header.filename_checksum, 0xbbaa);
+        } else {
+            decoded.encoding.validate_filename(b"test.bin").unwrap();
+        }
         assert_eq!(decoded.encoding.trailing_bytes().unwrap(), b"trailer");
     }
 }
@@ -109,7 +113,7 @@ fn exf_encoding_covers_every_byte_and_key_without_changing_header() {
         let template = exf(b"");
         let mut file = Exf::parse(&template).unwrap();
         file.header.key_index = key;
-        let encoded = file.encode(&payload).unwrap();
+        let encoded = file.encode(&payload, None).unwrap();
         let decoded = Exf::parse(&encoded).unwrap().decode(payload.len()).unwrap();
         assert_eq!(&**decoded, payload);
         assert_eq!(decoded.encoding.header, file.header);
@@ -137,7 +141,7 @@ fn edits_rebuild_nested_envelopes_and_relocate_momo_and_mha_members() {
     assert!(updated.nodes.iter().all(|node| node.error.is_none()));
     let decoded = open_layers(&updated.buffers[0], usize::MAX, 10).unwrap();
     let named = MhaArchive::parse(&decoded, 10).unwrap();
-    assert_eq!(named.header.unknown_14, 0xbbaa);
+    assert_eq!(named.header.first_file_id, 739);
     assert_eq!(named.entries[0].file_id, 739);
     assert_eq!(named.entries[0].name, b"member.bin");
     assert_eq!(

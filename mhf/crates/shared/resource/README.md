@@ -10,9 +10,9 @@
 | 模块 | 数据 |
 | --- | --- |
 | `binary` | 带来源位置的类型化字段、游标／偏移读取与统一数值编解码 |
-| `crypto` | ECD、EXF 头与编解码，ECD 校验和 |
+| `crypto` | ECD、EXF 头与编解码、文件名校验及 ECD 内容 CRC |
 | `jkr` | JKR 原始、Huffman、LZ、HFI 编码与边界检查 |
-| `container` | offset/size、MOMO、MHA 命名目录、场景专用目录与嵌套封装 |
+| `container` | offset/size、MOMO、MHA 命名目录及资源 ID 索引、场景专用目录与嵌套封装 |
 | `dat` | DAT v89 根结构、装备／物品／生产记录、特效绑定与定义表，以及按布局解析的文本记录 |
 | `fmod` | 对象、顶点、法线、UV、颜色、权重、骨骼映射、三角带、材质、贴图引用、18字渲染参数块 |
 | `fskl` | 原始节点序号、层级索引、根节点目录、变换、动画分组标签与未知尾部 |

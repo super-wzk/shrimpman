@@ -11,7 +11,8 @@ fn named_aliases(count: usize, payload: &[u8]) -> Vec<u8> {
     for word in [24, count, names_offset, names_size] {
         bytes.extend_from_slice(&(word as u32).to_le_bytes());
     }
-    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&0i16.to_le_bytes());
+    bytes.extend_from_slice(&u16::try_from(count).unwrap().to_le_bytes());
     let mut name_offset = 0;
     for (index, name) in names.iter().enumerate() {
         for word in [
@@ -40,13 +41,10 @@ fn named_directories_inspect_every_entry_without_fixed_count_or_node_limits() {
     assert_eq!(document.nodes[0].children.len(), 16_385);
     assert_eq!(document.buffers.len(), 1);
     assert!(Arc::ptr_eq(&document.buffers[0], &source));
-    assert!(
-        document
-            .nodes
-            .iter()
-            .all(|node| node.error.is_none() && !node.deferred)
-    );
+    assert!(document.nodes.iter().all(|node| node.error.is_none()));
+    assert!(document.nodes[0].deferred);
     for &member in &document.nodes[0].children {
+        assert!(!document.nodes[member].deferred);
         assert_eq!(document.bytes(member), Some(&b"raw"[..]));
     }
     let repeated = expand(&document, 0).unwrap();

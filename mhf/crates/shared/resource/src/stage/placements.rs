@@ -28,7 +28,10 @@ impl Placement {
 pub struct PlacementTable<'a> {
     pub version: u32,
     pub count: u32,
+    /// The offline probe requires 0xffffffff. Native 113E8DA0 does not inspect
+    /// this word before walking count records from +16; its role is unknown.
     pub unknown_08: u32,
+    /// Not consumed by the known placement loader and not a second count.
     pub unknown_0c: u32,
     pub placements: Vec<Placement>,
     pub trailing: &'a [u8],
@@ -91,7 +94,7 @@ impl<'a> PlacementTable<'a> {
     }
 
     /// A signatureless table is recognized only with its complete record extent
-    /// and the +8 sentinel observed in all 225 audited stage placement tables.
+    /// and the expected +8 marker. Explicit parsing retains other marker values.
     pub fn probe(source: &'a [u8]) -> Result<Self> {
         let table = Self::parse(source)?;
         if table.unknown_08 != u32::MAX {

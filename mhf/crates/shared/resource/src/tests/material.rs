@@ -37,17 +37,29 @@ fn sample(marker: Option<u8>) -> Vec<u8> {
 fn both_record_layouts_preserve_original_bits_headers_and_tails() {
     for marker in [None, Some(0x20), Some(0xfe)] {
         let mut source = sample(marker);
+        // Opaque header tails are not required to contain 0xCC or valid offsets.
+        let unknown = if marker == Some(0xfe) {
+            [
+                0x34, 0x12, 0, 0, 0xff, 0xff, 0xff, 0xff, 1, 0, 0, 0, 0x80, 0xaa, 0x55,
+            ]
+        } else {
+            [0xcc; 15]
+        };
+        for offset in [0, 16, 32] {
+            let start = usize::from(marker.is_some()) + offset + 1;
+            source[start..start + unknown.len()].copy_from_slice(&unknown);
+        }
         source.extend_from_slice(&[0xfa, 0xfb, 0xfc]);
         let file = GroupedMaterials::parse(&source).unwrap();
         assert_eq!(file.version_marker, marker);
         assert_eq!(file.header.offset, usize::from(marker.is_some()));
         assert_eq!(file.header.count, 2);
-        assert_eq!(file.header.unknown, [0xcc; 15]);
+        assert_eq!(file.header.unknown, unknown);
         assert_eq!(file.groups.len(), 2);
         assert!(file.groups[0].records.is_empty());
         let group = &file.groups[1];
         assert_eq!(group.header.offset, file.header.offset + 32);
-        assert_eq!(group.header.unknown, [0xcc; 15]);
+        assert_eq!(group.header.unknown, unknown);
         let value = &group.records[0];
         assert_eq!(value.offset, file.header.offset + 48);
         assert_eq!(value.color_00[0], 0x7fc0_1234);

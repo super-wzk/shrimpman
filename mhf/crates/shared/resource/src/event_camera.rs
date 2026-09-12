@@ -10,10 +10,14 @@ use crate::{Error, Result};
 #[derive(Clone, Debug)]
 pub struct EventCamera<'a> {
     bytes: &'a [u8],
+    /// Copied to the runtime camera slot by 10829E70. The frame reader
+    /// 1082A6E0 does not consume it; no flags or reference semantics are known.
     pub unknown_00: u32,
+    /// Copied with +0x00; it is not a confirmed resource ID or array offset.
     pub unknown_04: u32,
-    /// Loaded as a float by 10829E70, but not consumed by 1082A6E0. The local
-    /// corpus contains 1.333 and 16/9; retain it without assigning a new role.
+    /// 10829E8D/10829E90 copy this word through x87 FLD/FSTP as an f32.
+    /// 1082A6E0 does not consume it. Its role remains unknown, so the parser
+    /// retains all source bits rather than inferring an aspect-ratio setting.
     pub unknown_08_bits: u32,
     pub frame_count: u32,
     /// Relative to the start of this bounded camera member, not its archive.

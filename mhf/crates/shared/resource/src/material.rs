@@ -18,6 +18,10 @@ pub struct MaterialHeader {
     pub offset: usize,
     /// Native code reads a signed byte; negative counts are rejected by parse.
     pub count: u8,
+    /// 108FCD70 copies the complete 16-byte header, but its allocation/record
+    /// loops and 108FBA70's material matching read only the signed count at +0.
+    /// These bytes have no established subfields or reference semantics and
+    /// remain part of the header even when they contain repeated 0xCC bytes.
     pub unknown: [u8; 15],
 }
 

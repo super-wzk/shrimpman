@@ -66,10 +66,18 @@ impl Session {
         }
     }
 
-    /// Mark only the snapshot actually written, even if newer edits exist.
-    pub fn saved(&mut self, bytes: Arc<[u8]>) {
-        self.saved = bytes;
-        self.update_dirty();
+    /// Adopt packing repairs only while the requested revision is still current.
+    /// Always mark the written snapshot, even when newer edits must be retained.
+    pub fn saved(&mut self, requested: &Document, packed: &Arc<Document>) -> bool {
+        self.saved = packed.buffers[0].clone();
+        let updated = self.document.buffers[0] == requested.buffers[0]
+            && self.document.buffers[0] != self.saved;
+        if updated {
+            self.apply(packed.clone());
+        } else {
+            self.update_dirty();
+        }
+        updated
     }
 
     fn history_bytes(&self) -> usize {
@@ -171,9 +179,9 @@ mod tests {
         let document = |byte| Arc::new(inspect("test.bin", Arc::from([byte])));
         let mut session = Session::new(document(1));
         session.apply(document(2));
-        let saved = session.document.buffers[0].clone();
+        let saved = session.document.clone();
         session.apply(document(3));
-        session.saved(saved);
+        assert!(!session.saved(&saved, &saved));
         assert!(session.dirty());
         session.undo();
         assert!(!session.dirty());
@@ -183,5 +191,40 @@ mod tests {
         assert!(!session.dirty());
         session.apply(document(4));
         assert!(!session.can_redo());
+    }
+
+    #[test]
+    fn packing_repairs_update_the_current_document_and_remain_undoable() {
+        let requested = Arc::new(inspect("file.bin", Arc::from([1, 2])));
+        let packed = Arc::new(inspect("file.bin", Arc::from([3, 2])));
+        let mut session = Session::new(requested.clone());
+        // Expanding inspector details may clone the Document without editing bytes.
+        session.document = Arc::new((*requested).clone());
+        assert!(session.saved(&requested, &packed));
+        assert!(Arc::ptr_eq(&session.document, &packed));
+        assert!(!session.dirty());
+        session.undo();
+        assert_eq!(session.document.buffers[0].as_ref(), &[1, 2]);
+        assert!(session.dirty());
+        session.redo();
+        assert!(Arc::ptr_eq(&session.document, &packed));
+        assert!(!session.dirty());
+        assert!(!session.saved(&packed, &packed));
+    }
+
+    #[test]
+    fn packing_repairs_do_not_replace_a_newer_edited_document() {
+        let requested = Arc::new(inspect("file.bin", Arc::from([1, 2])));
+        let packed = Arc::new(inspect("file.bin", Arc::from([3, 2])));
+        let newer = Arc::new(inspect("file.bin", Arc::from([3, 4])));
+        let mut session = Session::new(requested.clone());
+        session.apply(packed.clone());
+        session.apply(newer.clone());
+        assert!(!session.saved(&requested, &packed));
+        assert!(Arc::ptr_eq(&session.document, &newer));
+        assert!(session.dirty());
+        session.undo();
+        assert!(Arc::ptr_eq(&session.document, &packed));
+        assert!(!session.dirty());
     }
 }

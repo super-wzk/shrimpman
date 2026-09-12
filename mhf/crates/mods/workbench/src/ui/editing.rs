@@ -10,7 +10,7 @@ use crate::{
     inspect::{Document, Kind, Node},
     preview::Command,
     session::Session,
-    worker::Expanded,
+    worker::{Expanded, Packed},
 };
 use std::{
     collections::BTreeMap,
@@ -86,6 +86,32 @@ impl Input {
                 self.pending = false;
                 self.revision = revision;
                 self.conflicted = true;
+            }
+        }
+    }
+
+    fn refresh(
+        &mut self,
+        document: &Document,
+        submitted: Option<u64>,
+        conflict: &str,
+    ) -> Result<(), String> {
+        if submitted == Some(self.revision) {
+            self.pending = false;
+        }
+        self.binding = self.resolve(document)?;
+        if !self.pending {
+            self.reset(document);
+            return Ok(());
+        }
+        match self.binding.bytes(&document.buffers) {
+            Ok(bytes) if submitted.is_some() || bytes == self.original => {
+                self.original = bytes.to_vec();
+                Ok(())
+            }
+            _ => {
+                self.conflicted = true;
+                Err(conflict.into())
             }
         }
     }
@@ -328,36 +354,16 @@ impl Workbench {
                     }
                     if let Some(inputs) = self.editing.inputs.get_mut(path) {
                         for (index, input) in inputs.iter_mut().enumerate() {
-                            let was_submitted =
-                                submitted.iter().find(|(submitted, _)| *submitted == index);
-                            if was_submitted
-                                .is_some_and(|(_, revision)| *revision == input.revision)
-                            {
-                                input.pending = false;
-                            }
-                            match input.resolve(&document) {
-                                Ok(binding) => input.binding = binding,
-                                Err(error) => {
-                                    input.error = error;
-                                    continue;
-                                }
-                            }
-                            if input.pending {
-                                match input.binding.bytes(&document.buffers) {
-                                    Ok(bytes)
-                                        if was_submitted.is_some() || bytes == input.original =>
-                                    {
-                                        input.original = bytes.to_vec()
-                                    }
-                                    _ => {
-                                        input.conflicted = true;
-                                        input.error =
-                                            "该字节范围同时被其他编辑修改，请撤回此输入后重新编辑。"
-                                                .into()
-                                    }
-                                }
-                            } else {
-                                input.reset(&document);
+                            let revision = submitted
+                                .iter()
+                                .find(|(submitted, _)| *submitted == index)
+                                .map(|(_, revision)| *revision);
+                            if let Err(error) = input.refresh(
+                                &document,
+                                revision,
+                                "该字节范围同时被其他编辑修改，请撤回此输入后重新编辑。",
+                            ) {
+                                input.error = error;
                             }
                         }
                     }
@@ -381,6 +387,52 @@ impl Workbench {
                 }
             }
         }
+    }
+
+    pub(super) fn finish_pack(&mut self, packed: Packed) {
+        self.editing.saving = false;
+        let (path, document) = match packed.result {
+            Ok(saved) => saved,
+            Err(error) => {
+                self.error = error;
+                return;
+            }
+        };
+        let updated = self
+            .editing
+            .sessions
+            .get_mut(&packed.source)
+            .is_some_and(|session| session.saved(&packed.requested, &document));
+        if updated {
+            self.editing
+                .pending_preview
+                .insert(packed.source.clone(), document.clone());
+            if self.path.as_ref() == Some(&packed.source) {
+                if !self.editing.busy {
+                    // Ignore expansion of the old image without invalidating an
+                    // in-flight edit's request or acknowledging its drafts early.
+                    self.request = self.request.wrapping_add(1);
+                    self.expanding = None;
+                    if let Some(inputs) = self.editing.inputs.get_mut(&packed.source) {
+                        for input in inputs {
+                            if !input.pending {
+                                input.reset(&document);
+                            } else if let Err(error) = input.refresh(
+                                &document,
+                                None,
+                                "打包更新了该字节范围，请撤回此输入后重新编辑。",
+                            ) {
+                                input.conflicted = true;
+                                input.error = error;
+                            }
+                        }
+                    }
+                }
+                self.refresh_document(document);
+            }
+            self.flush_previews();
+        }
+        self.status = format!("已打包 {}", path.display());
     }
 
     fn refresh_preview(&mut self, document: Arc<Document>) {
