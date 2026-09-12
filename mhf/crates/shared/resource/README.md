@@ -19,6 +19,11 @@
 | `stage` | 旧版环境参数与渲染表、HD 光照与后处理、区域相机、HITS 碰撞、KEFFECT 关键记录、场景摆放、对象包种类与跨资源引用 |
 | `txb`、`png`、`dds` | 纹理目录、原始 PNG 块与 CRC、DDS 头及 mip/面/数组/体积范围 |
 
+`resources/layout.json` 和 `resources/native/` 保存共用的文本布局与原生地址定义。
+`build/resource_layout.rs` 供 Unicode、Translation 和 Workbench 构建脚本复用，
+分别生成运行时资源绑定、校验词典 Key 和生成 DAT 检查布局。布局说明见
+[资源布局与转码](../../mods/unicode/resources/README.md)。
+
 模型和动作的局部编辑 API 返回字节副本，只修改对应字段。
 纹理提取保留 PNG/DDS 文件原文。解析器不重排数据、归一化权重或为未知字段补造语义。
 MOT 的原生消费组数由客户端调用方传入，不能从扩展名统一设为常数。

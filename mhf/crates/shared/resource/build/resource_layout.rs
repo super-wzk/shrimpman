@@ -1,5 +1,5 @@
 #[allow(dead_code, unused_imports)]
-#[path = "../src/provider/resources/native/layout.rs"]
+#[path = "../resources/native/layout.rs"]
 mod native_layout;
 
 use serde::Deserialize;
@@ -277,7 +277,13 @@ pub(super) fn read_catalog(manifest_directory: &Path) -> Result<ResourceCatalog,
     println!(
         "cargo:rerun-if-changed={}",
         manifest_directory
-            .join("src/provider/resources/native/layout.rs")
+            .join("resources/native/layout.rs")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_directory
+            .join("resources/native/bindings.rs")
             .display()
     );
     let layouts = read_resource_layouts(&layout_path)?;
@@ -312,7 +318,7 @@ pub(super) fn generate_dat_inspection(
     let ResourceBody::Records(tables) = &resource.body else {
         return Err("mhfdat must contain record tables".into());
     };
-    let mut output = String::from("// Generated from Unicode resources/layout.json.\n");
+    let mut output = String::from("// Generated from shared/resource/resources/layout.json.\n");
     output.push_str("static TEXT_TABLES: &[TableLayout] = &[\n");
     for table in tables {
         writeln!(

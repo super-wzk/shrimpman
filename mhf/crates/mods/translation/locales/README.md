@@ -3,7 +3,7 @@
 翻译源文件是无 BOM 的 UTF-8 JSON Lines。每个文件独立定义一个 locale，文件可以为空。
 `mhf-translation/provider` 负责词典生成与运行时查询；默认 API 与配置层不读取字典。
 Unicode provider 可独立转码和绘制原文。二者共用
-[Unicode 资源布局](../../unicode/resources/layout.json) 的稳定字符串 ID，但词典 ordinal
+[共享资源布局](../../../shared/resource/resources/layout.json) 的稳定字符串 ID，但词典 ordinal
 只属于 Translation 实现。省略 Translation provider 时，宿主保留配置且原文照常转码。
 文件名就是 locale ID，不要求采用特定语言代码格式；例如 `zh-CN.jsonl` 对应：
 
@@ -138,7 +138,7 @@ python3 tools/generate_translation_dictionary.py \
 `my_translation` 等自定义 ID。原始日文写入 `source`；目标文件中已有的翻译字段和未由
 主资源生成的记录会保留，因此可以再次运行生成器刷新原文。通过 `--output-dir` 可以指定
 其他输出目录。游戏资源只在执行生成器时需要；Unicode provider 的 `build.rs` 只需读取
-`../unicode/resources/layout.json`；Translation provider 的构建才额外读取 `locales/*.jsonl`。
+`../../shared/resource/resources/layout.json`；Translation provider 的构建才额外读取 `locales/*.jsonl`。
 
 ## Missing translations
 
@@ -166,7 +166,7 @@ UTF-8，不依赖字典列出了哪些 key。若目录重复使用 section ID，
 The dictionary also accepts `native:rank:<0..4>`, `native:room:<0..5>` and
 `native:literal:<decimal source RVA>`. Japanese sources are included in
 `ja-JP.jsonl`; use the same keys in another locale. Native keys are validated
-against `../unicode/src/provider/resources/native/layout.rs`, which is shared with the native
+against `../../shared/resource/resources/native/layout.rs`, which is shared with the native
 record reader. Rank records and room pointer fields are parsed by shape;
 only scattered compiled operands use explicit bindings. No runtime scan or
 encoding heuristic is used. The same missing-translation setting applies.

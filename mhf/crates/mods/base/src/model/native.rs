@@ -173,7 +173,7 @@ pub unsafe fn catalog(client: Client) -> EquipmentCatalog {
             return catalog;
         }
         catalog.appearances = appearance_options(dat);
-        // Name-table extents match mhf-unicode/resources/layout.json for this ZZ DAT.
+        // Name-table extents match shared/resource/resources/layout.json for this ZZ DAT.
         // Native 10A9BDF0 resolves these spec tables and record strides.
         // 10BAD8B0 reads weapon model +0; 108F9D00 reads armor male/female +0/+2.
         for (kind, root, count, specs, stride, class_offset) in [

@@ -1,6 +1,6 @@
 #[cfg(feature = "provider")]
 #[allow(dead_code)]
-#[path = "build/resource_layout.rs"]
+#[path = "../../shared/resource/build/resource_layout.rs"]
 mod resource_layout;
 
 fn main() {
@@ -9,7 +9,12 @@ fn main() {
     {
         let directory = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
         let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-        resource_layout::generate(&directory, &output)
+        let resource = directory.join("../../shared/resource");
+        println!(
+            "cargo::rerun-if-changed={}",
+            resource.join("build/resource_layout.rs").display()
+        );
+        resource_layout::generate(&resource, &output)
             .expect("failed to generate Unicode resource layout");
     }
 }

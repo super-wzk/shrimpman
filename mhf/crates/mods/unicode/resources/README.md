@@ -4,8 +4,9 @@
 它不要求启用 Translation provider；所有原文按明确的源代码页转为 UTF-8。
 字体资源、注册和度量修正属于 Font Mod。
 
-Unicode 构建脚本读取 `layout.json` 与 `src/provider/resources/native/layout.rs`，
-由 `build/resource_layout.rs` 统一解析并生成 `OUT_DIR/resources.rs`。Translation 的
+共享定义位于 [资源布局](../../../shared/resource/resources/layout.json) 与
+[原生文本布局](../../../shared/resource/resources/native/layout.rs)。Unicode 构建脚本通过
+`shared/resource/build/resource_layout.rs` 统一解析并生成 `OUT_DIR/resources.rs`。Translation 的
 构建脚本复用同一个 catalog 解析源及此份资源数据，独立生成词典；不会建立
 Translation → Unicode Cargo provider 依赖。Unicode 运行时只携带稳定字符串 Key，
 词典 ordinal 保留在 Translation 实现内部。

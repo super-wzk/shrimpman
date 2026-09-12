@@ -20,8 +20,8 @@ IME/capture 共享槽交给 `UnicodeMod::new`；Unicode 不作为独立运行时
 和文本 Hook。stop 先停原生 IME，detach 停文本和资源入口；prepare_release 只
 返还游戏 DLL 引用，arena、字形和适配器状态继续保留到宿主完成原生卸载。
 
-资源结构的唯一来源是 [resources/layout.json](resources/layout.json) 和
-原生 [layout.rs](src/provider/resources/native/layout.rs)。Unicode build.rs 生成
+资源结构的唯一来源是 [共享资源布局](../../shared/resource/resources/layout.json) 和
+原生 [layout.rs](../../shared/resource/resources/native/layout.rs)。Unicode build.rs 生成
 `OUT_DIR/resources.rs`；Translation 的构建脚本复用同一个 catalog 解析源，独立生成
 词典，不依赖 Unicode Cargo provider。运行时跨领域仅传稳定字符串 Key，词典 ordinal
 不进入 Unicode 资源结构。

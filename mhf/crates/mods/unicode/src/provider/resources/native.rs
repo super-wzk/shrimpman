@@ -15,6 +15,7 @@ use windows::Win32::{
     },
 };
 
+#[path = "../../../../../shared/resource/resources/native/layout.rs"]
 mod layout;
 use super::{
     Key, MemoryRange, ModuleReference, TextArena, replacement, resource::read_image_string,

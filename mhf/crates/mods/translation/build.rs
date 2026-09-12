@@ -3,7 +3,7 @@
 mod dictionary;
 #[cfg(feature = "provider")]
 #[allow(dead_code)]
-#[path = "../unicode/build/resource_layout.rs"]
+#[path = "../../shared/resource/build/resource_layout.rs"]
 mod resource_layout;
 
 fn main() {
@@ -12,13 +12,13 @@ fn main() {
     {
         let directory = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
         let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-        let unicode = directory.join("../unicode");
+        let resource = directory.join("../../shared/resource");
         println!(
             "cargo::rerun-if-changed={}",
-            unicode.join("build/resource_layout.rs").display()
+            resource.join("build/resource_layout.rs").display()
         );
-        let catalog = resource_layout::read_catalog(&unicode)
-            .expect("failed to read the shared Unicode catalog");
+        let catalog = resource_layout::read_catalog(&resource)
+            .expect("failed to read the shared resource catalog");
         dictionary::generate(&directory.join("locales"), &output, &catalog)
             .expect("failed to generate translation dictionaries");
     }
