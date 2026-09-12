@@ -15,8 +15,9 @@
 | [`runtime/mod-host`](../crates/runtime/mod-host/README.md) | 内置／DLL／数据实例、阶段、接口发布、依赖绑定和失败保留 |
 | [`runtime/mod-api`](../crates/runtime/mod-api/src/lib.rs) / [`mod-sdk`](../crates/runtime/mod-sdk/README.md) | 基础 C 协议及 Rust 生命周期、Host、Hook 绑定 |
 | [`runtime/hooks`](../crates/runtime/hooks/src/lib.rs) | Hook 所有权、目标占用、排空与退役状态 |
-| [`runtime/mod-package`](../crates/runtime/mod-package/README.md) | 清单、semver、包发现、依赖解析、ZIP 读写，以及 `BuiltinCatalog` 内置清单 |
+| [`runtime/mod-package`](../crates/runtime/mod-package/README.md) | 通用清单、semver、包发现、依赖解析与 ZIP 读写 |
 | [`apps/mod-manager`](../crates/apps/mod-manager/README.md) | `mhf-mods` 独立管理界面、命令行及启用设置编辑 |
+| [`apps/launcher-catalog`](../crates/apps/launcher-catalog/README.md) | Launcher 与管理器共用的内建 Mod 元数据和默认项 |
 | [`apps/launcher`](../crates/apps/launcher/README.md) | 唯一启动入口、配置准备、Mod 组合、头文件聚合 |
 | [`shared/egui-hunter`](../crates/shared/egui-hunter/README.md) | 复用的 egui 组件与输入交互 |
 
@@ -56,7 +57,9 @@ flowchart TD
 | `mhf.config` | 独立配置存储与通用 INI 桥，提供 `mhf.config.v1`；不依赖配置消费者 |
 | `mhf.base` | 基础支持，按消费者声明的依赖启用；统一 Font、UI、Geometry 和 Quest，提供 `mhf.font.v1`、`mhf.ui.v1`，向配置桥注册游戏字段与 INI 映射 |
 | `mhf.login` | 默认登录启动；依赖 Base 和 Config，提供 `mhf.launch.fallback.v1` |
-| `mhf.debug` | 调试启动、临时猎人和游戏工具；只依赖 Base，提供 `mhf.launch.v1` 与 `mhf.debug-tools.v1` |
+| `mhf.debug` | 调试启动、临时猎人和游戏工具；仅依赖 Base，提供 `mhf.launch.v1` 与 `mhf.debug-tools.v1` |
+| `mhf.workbench` | 资源检查与独立预览；依赖 Base 和 Config，提供普通 `mhf.launch.v1`，与 Debug 同时启用会产生启动提供方冲突 |
+| `mhf.dat-redirect` | 默认关闭，独立启用后对所有启动模式生效；将游戏 `dat` 下的只读文件打开映射到配置根目录，缺失或打开失败时回退原文件；无 Mod 依赖，配置见 [DatRedirect](../crates/mods/dat-redirect/README.md) |
 
 Font、UI、Quest、Geometry 和 DebugTools 按职责分 crate，但不独立参与运行选择。Unicode 和 Translation 的代码保留，当前不接入应用。
 Cargo feature 决定可用实现，配置决定选择。启用 Debug 时，普通启动提供方自动覆盖默认 Login 的 fallback。

@@ -1,0 +1,11 @@
+[package]
+name = "mhf-launcher-catalog"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+mhf-mod-package = { path = "../../runtime/mod-package" }
+
+[dev-dependencies]
+toml = "1"

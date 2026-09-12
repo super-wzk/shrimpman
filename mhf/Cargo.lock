@@ -1646,6 +1646,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mhf-dat-redirect"
+version = "0.1.0"
+dependencies = [
+ "mhf-hooks",
+ "mhf-mod-host",
+ "serde",
+ "toml",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "mhf-debug"
 version = "0.1.0"
 dependencies = [
@@ -1722,10 +1733,12 @@ dependencies = [
  "embed-resource",
  "mhf-base",
  "mhf-config",
+ "mhf-dat-redirect",
  "mhf-debug",
  "mhf-debug-tools",
  "mhf-font",
  "mhf-game",
+ "mhf-launcher-catalog",
  "mhf-login",
  "mhf-mod-api",
  "mhf-mod-host",
@@ -1733,6 +1746,15 @@ dependencies = [
  "mhf-quest",
  "mhf-ui",
  "mhf-workbench",
+ "toml",
+]
+
+[[package]]
+name = "mhf-launcher-catalog"
+version = "0.1.0"
+dependencies = [
+ "mhf-mod-package",
+ "toml",
 ]
 
 [[package]]
@@ -1793,6 +1815,7 @@ dependencies = [
  "egui-hunter",
  "embed-resource",
  "mhf-font",
+ "mhf-launcher-catalog",
  "mhf-mod-package",
  "serde",
  "toml",

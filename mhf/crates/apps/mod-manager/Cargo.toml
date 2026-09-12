@@ -7,15 +7,17 @@ publish = false
 [features]
 default = ["gui", "login", "debug", "workbench"]
 gui = ["dep:eframe", "dep:egui", "dep:egui-hunter", "dep:mhf-font"]
-login = []
-debug = []
-workbench = []
+base = []
+login = ["base"]
+debug = ["base"]
+workbench = ["base"]
 
 [[bin]]
 name = "mhf-mods"
 path = "src/main.rs"
 
 [dependencies]
+mhf-launcher-catalog = { path = "../launcher-catalog" }
 mhf-mod-package = { path = "../../runtime/mod-package" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

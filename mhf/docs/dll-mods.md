@@ -36,7 +36,7 @@ entry = "mod.dll"
 
 `dependencies` 是唯一依赖声明，不另设 `host_services`、所需接口列表或接口版本清单。宿主通过 `mhf_mod_query_v2` 获取生命周期入口，再按 `example.counter.v1` 等标识查询提供方接口；包版本始终来自清单。
 
-内置实现使用 `Source::Builtin`，由 `BuiltinCatalog` 提供元数据，再由[应用工厂](../crates/apps/launcher/src/builtins.rs)构造，当前内置版本为 `1.0.0`。数据包使用 `kind = "data"` 且不设 `entry`；宿主为其提供 `mhf.data.v1` 资源访问接口，无需空 DLL。
+内置实现使用 `Source::Builtin`，由应用层 [`BuiltinCatalog`](../crates/apps/launcher-catalog/README.md) 提供元数据，再由[应用工厂](../crates/apps/launcher/src/builtins.rs)构造，当前内置版本为 `1.0.0`。数据包使用 `kind = "data"` 且不设 `entry`；宿主为其提供 `mhf.data.v1` 资源访问接口，无需空 DLL。
 
 ## 公开 C ABI 与 safer-ffi
 

@@ -1,5 +1,6 @@
 //! Configuration and paths shared by the game host and application assembly.
 
+#[cfg(feature = "base")]
 use mhf_base::MhfConfig;
 use mhf_config::{Registration, Store};
 use mhf_game::{LaunchConfig, MhfLaunchParams32};
@@ -11,6 +12,7 @@ use std::{
 
 pub struct PreparedLaunch {
     pub game: LaunchConfig,
+    #[cfg(feature = "base")]
     pub mhf: MhfConfig,
     pub store: Arc<Mutex<Store>>,
     pub mods_dir: PathBuf,
@@ -40,10 +42,18 @@ pub fn prepare(
         .map_err(|error| format!("invalid Mod configuration: {error}"))?;
     let mods_dir = invocation_dir.join(&mods.directory);
     let store = Arc::new(Mutex::new(store));
-    let service = mhf_config::ConfigService::new(store.clone());
-    // This temporary view borrows the local service only while producing owned settings.
-    let config = unsafe { mhf_config::bind(service.api()) };
-    let mhf = mhf_base::register_config(config)?;
+    #[cfg(feature = "base")]
+    let mhf = {
+        let service = mhf_config::ConfigService::new(store.clone());
+        // This temporary view borrows the service while producing owned settings.
+        let config = unsafe { mhf_config::bind(service.api()) };
+        mhf_base::register_config(config)?
+    };
+    #[cfg(feature = "base")]
+    let params = launch_params(&mhf)?;
+    // Without built-in Base, the external startup provider supplies game settings.
+    #[cfg(not(feature = "base"))]
+    let params = MhfLaunchParams32::default();
     if !game_dir.is_dir() {
         return Err(format!(
             "game directory does not exist: {}",
@@ -53,15 +63,17 @@ pub fn prepare(
     Ok(PreparedLaunch {
         game: LaunchConfig {
             game_dir,
-            params: launch_params(&mhf)?,
+            params,
             mods,
         },
+        #[cfg(feature = "base")]
         mhf,
         store,
         mods_dir,
     })
 }
 
+#[cfg(feature = "base")]
 fn launch_params(config: &MhfConfig) -> Result<MhfLaunchParams32, String> {
     let mut params = MhfLaunchParams32 {
         preset_level: config.set.preset_level,
@@ -106,6 +118,7 @@ fn launch_params(config: &MhfConfig) -> Result<MhfLaunchParams32, String> {
     Ok(params)
 }
 
+#[cfg(feature = "base")]
 fn copy_c_string(field: &str, destination: &mut [u8], value: &[u8]) -> Result<(), String> {
     if value.len() >= destination.len() {
         return Err(format!(
@@ -119,7 +132,7 @@ fn copy_c_string(field: &str, destination: &mut [u8], value: &[u8]) -> Result<()
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "base"))]
 mod tests {
     use super::*;
 

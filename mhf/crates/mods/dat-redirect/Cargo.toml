@@ -1,0 +1,17 @@
+[package]
+name = "mhf-dat-redirect"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+mhf-hooks = { path = "../../runtime/hooks" }
+mhf-mod-host = { path = "../../runtime/mod-host" }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }

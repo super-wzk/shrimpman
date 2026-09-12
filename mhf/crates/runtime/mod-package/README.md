@@ -37,15 +37,9 @@ for candidate in selected.mods {
 但不会覆盖明确禁用。解析尝试最新兼容版本，遇到传递约束或循环时回溯。
 同一 ID 只选择一个版本，相同 ID/版本的重复来源需要宿主先消除歧义。
 
-启动应用与管理器通过 `BuiltinCatalog` 共用已编译内置 Mod 的元数据。
-编译能力字段只有 `login`、`debug`；运行清单为 Config、Base、Login、Debug。
-Config 不依赖配置消费者；Base 依赖 Config，Login 依赖 Base 和 Config，Debug 依赖 Base。
-Quest 是 Base 的内部能力，Unicode／Translation crate 暂未接入。
-
-启动器合并内置与外部候选后，以 Login 为默认项，使用空的 `required` 集合；
-Base 由 Login、Debug 等 Mod 的声明依赖按需带入。
-管理器使用 `diagnose_resolution` 按启动组合检查依赖；保存和导出使用通用 `resolve` 解析明确启用项及声明依赖。
-启动提供方由 ModHost 从公开接口选出，启用普通 Debug 自动覆盖 Login 的 fallback。
+具体应用提供候选清单、默认项和必需项。本 crate 不识别 Base、Debug 等功能，也不按候选来源附加依赖约束。
+Launcher 的内建清单位于应用层 [`mhf-launcher-catalog`](../../apps/launcher-catalog/README.md)，由启动器与管理器共用。
+`Source` 记录加载或打包位置，宿主据此调用应用工厂或加载 DLL；依赖解析统一使用清单里的 ID 和版本范围。
 
 `export_archive(path, &selected.mods)` 导出传入的精确版本与全部包资源，
 不会重新挑选版本。ZIP 内布局为 `mods/<id>/<version>/*`；`pack.toml`

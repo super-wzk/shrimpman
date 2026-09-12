@@ -33,9 +33,11 @@ mhf-mods --config ./mhf.toml --mods-dir ./packages
 cargo build --manifest-path mhf/Cargo.toml -p mhf-mod-manager --release --target i686-pc-windows-msvc
 ```
 
-Cargo 默认启用 `gui`、`login`、`debug`。
-`login`、`debug` 决定管理器可列出的启动提供方，手动裁剪时与所管理的游戏构建对应。
+Cargo 默认启用 `gui`、`login`、`debug`、`workbench`。
+`login`、`debug`、`workbench` 决定管理器可列出的启动提供方，手动裁剪时与所管理的游戏构建对应。
 关闭 `gui` feature 后仍可使用命令行子命令。
+`base`、`login`、`debug`、`workbench` 与启动器的编译能力对应，后三者均依赖 `base`。
+不启用 `base` 时，内置清单不包含 Base；这只控制管理器展示的能力，不加载游戏组件。
 
 在项目 Nix 开发环境中，`mhf-mods-build` 构建 Windows i686 release 管理器，
 `mhf-mods` 构建后打开图形界面；也可使用 `nix run --impure .#mhf-mods`。

@@ -1,4 +1,5 @@
-use mhf_mod_package::{BuiltinCatalog, Candidate, Resolved, RuntimeConfig, Selection, VersionReq};
+use mhf_launcher_catalog::BuiltinCatalog;
+use mhf_mod_package::{Candidate, Resolved, RuntimeConfig, Selection, VersionReq};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,11 +10,7 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 type Result<T> = std::result::Result<T, String>;
 
-pub(crate) const CATALOG: BuiltinCatalog = BuiltinCatalog {
-    login: cfg!(feature = "login"),
-    debug: cfg!(feature = "debug"),
-    workbench: cfg!(feature = "workbench"),
-};
+pub(crate) const CATALOG: BuiltinCatalog = mhf_launcher_catalog::builtin_catalog!();
 
 #[derive(Deserialize)]
 pub(crate) struct ConfigFile {

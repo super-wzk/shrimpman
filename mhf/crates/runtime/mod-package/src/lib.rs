@@ -6,14 +6,12 @@
 mod archive;
 mod diagnostics;
 mod manifest;
-mod profile;
 mod resolve;
 mod runtime_config;
 
 pub use archive::{Pack, PackEntry, export_archive, import_archive};
 pub use diagnostics::{DependencyIssue, DependencyIssueKind, ModDiagnostic, diagnose_resolution};
 pub use manifest::{Candidate, Kind, Manifest, Source, discover};
-pub use profile::BuiltinCatalog;
 pub use resolve::{Resolved, Selection, resolve};
 pub use runtime_config::{ModSettings, RuntimeConfig};
 pub use semver::{Version, VersionReq};

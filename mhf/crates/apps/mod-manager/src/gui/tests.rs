@@ -1,7 +1,8 @@
 use super::*;
 use eframe::App as _;
 use egui::{Event, Id, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
-use mhf_mod_package::{BuiltinCatalog, RuntimeConfig};
+use mhf_launcher_catalog::{BASE, BuiltinCatalog, CONFIG, DAT_REDIRECT, DEBUG, LOGIN};
+use mhf_mod_package::RuntimeConfig;
 
 fn app(context: &egui::Context) -> App {
     mhf_font::install(context);
@@ -11,13 +12,9 @@ fn app(context: &egui::Context) -> App {
         snapshot: Some(Snapshot {
             config: RuntimeConfig::default(),
             mods_dir: "mods".into(),
-            candidates: BuiltinCatalog {
-                login: true,
-                debug: true,
-                workbench: false,
-            }
-            .candidates()
-            .unwrap(),
+            candidates: BuiltinCatalog::new(&[CONFIG, DAT_REDIRECT, BASE, LOGIN, DEBUG])
+                .candidates()
+                .unwrap(),
         }),
         draft: BTreeMap::new(),
         preview: Err(String::new()),

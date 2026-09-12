@@ -1,11 +1,9 @@
 use super::*;
-use crate::Source;
+use mhf_mod_package::Source;
 
-const CATALOG: BuiltinCatalog = BuiltinCatalog {
-    login: true,
-    debug: true,
-    workbench: false,
-};
+const CATALOG: BuiltinCatalog = BuiltinCatalog::new(&[CONFIG, DAT_REDIRECT, BASE, LOGIN, DEBUG]);
+const WITH_WORKBENCH: BuiltinCatalog =
+    BuiltinCatalog::new(&[CONFIG, DAT_REDIRECT, BASE, LOGIN, DEBUG, WORKBENCH]);
 
 fn plan(catalog: BuiltinCatalog, text: &str) -> Result<Resolved> {
     let config = toml::from_str(text).unwrap();
@@ -67,6 +65,7 @@ fn explicit_debug_keeps_default_login_and_adds_its_dependencies() {
         assert!(selected(&resolved, id), "{id}");
     }
     assert!(position(&resolved, "mhf.base") < position(&resolved, "mhf.debug"));
+    assert!(!selected(&resolved, "mhf.dat-redirect"));
     // Choosing the startup callback is a host concern; resolution keeps both.
     let resolved = plan(
         CATALOG,
@@ -76,6 +75,7 @@ fn explicit_debug_keeps_default_login_and_adds_its_dependencies() {
     assert!(selected(&resolved, "mhf.base"));
     assert!(selected(&resolved, "mhf.config"));
     assert!(selected(&resolved, "mhf.debug"));
+    assert!(!selected(&resolved, "mhf.dat-redirect"));
     assert!(!selected(&resolved, "mhf.login"));
     assert!(
         plan(
@@ -84,27 +84,44 @@ fn explicit_debug_keeps_default_login_and_adds_its_dependencies() {
         )
         .is_err()
     );
+    for debug in [false, true] {
+        for redirect in [false, true] {
+            let resolved = plan(
+                CATALOG,
+                &format!(
+                    "['mhf.debug']\nenabled = {debug}\n['mhf.dat-redirect']\nenabled = {redirect}"
+                ),
+            )
+            .unwrap();
+            assert_eq!(selected(&resolved, "mhf.dat-redirect"), redirect);
+            assert_eq!(selected(&resolved, "mhf.debug"), debug);
+        }
+    }
 }
 
 #[test]
-fn the_catalog_only_exposes_compiled_packages() {
-    let minimal = BuiltinCatalog {
-        login: false,
-        debug: false,
-        workbench: false,
-    };
+fn the_catalog_only_exposes_registered_packages() {
+    let minimal = BuiltinCatalog::new(&[CONFIG, DAT_REDIRECT]);
     let candidates = minimal.candidates().unwrap();
-    assert_eq!(candidates.len(), 2);
-    assert_eq!(candidates[0].manifest.id, "mhf.config");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.manifest.id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["mhf.config", "mhf.dat-redirect"]),
+    );
     assert!(plan(minimal, "").unwrap().mods.is_empty());
     assert_eq!(
-        plan(minimal, "['mhf.base']\nenabled = true")
-            .unwrap()
-            .mods
-            .len(),
+        plan(
+            BuiltinCatalog::new(&[CONFIG, DAT_REDIRECT, BASE]),
+            "['mhf.base']\nenabled = true"
+        )
+        .unwrap()
+        .mods
+        .len(),
         2
     );
-    for id in ["mhf.login", "mhf.debug", "mhf.quest"] {
+    for id in ["mhf.base", "mhf.login", "mhf.debug", "mhf.quest"] {
         assert!(plan(minimal, &format!("['{id}']\nenabled = true")).is_err());
     }
     let ids: BTreeSet<_> = CATALOG
@@ -123,10 +140,7 @@ fn the_catalog_only_exposes_compiled_packages() {
 
 #[test]
 fn workbench_is_explicit_and_shares_base_without_pulling_debug() {
-    let catalog = BuiltinCatalog {
-        workbench: true,
-        ..CATALOG
-    };
+    let catalog = WITH_WORKBENCH;
     let ordinary = plan(catalog, "").unwrap();
     assert!(!selected(&ordinary, "mhf.workbench"));
     let workbench = plan(catalog, "['mhf.workbench']\nenabled = true").unwrap();
@@ -134,6 +148,7 @@ fn workbench_is_explicit_and_shares_base_without_pulling_debug() {
         assert!(selected(&workbench, id));
     }
     assert!(!selected(&workbench, "mhf.debug"));
+    assert!(!selected(&workbench, "mhf.dat-redirect"));
     let dependencies = &workbench.mods[position(&workbench, "mhf.workbench")]
         .manifest
         .dependencies;
@@ -143,12 +158,17 @@ fn workbench_is_explicit_and_shares_base_without_pulling_debug() {
 }
 
 #[test]
-fn external_base_can_replace_builtin_support() {
-    let mut candidates = CATALOG.candidates().unwrap();
+fn external_base_can_satisfy_all_startup_dependencies() {
+    let catalog = WITH_WORKBENCH;
+    let mut candidates = catalog.candidates().unwrap();
     add_external(&mut candidates, "mhf.base");
-    for text in ["", "['mhf.debug']\nenabled = true"] {
+    for text in [
+        "",
+        "['mhf.debug']\nenabled = true",
+        "['mhf.workbench']\nenabled = true",
+    ] {
         let config: RuntimeConfig = toml::from_str(text).unwrap();
-        let resolved = CATALOG.resolve(&config, &candidates).unwrap();
+        let resolved = catalog.resolve(&config, &candidates).unwrap();
         assert!(matches!(
             resolved.mods[position(&resolved, "mhf.base")].source,
             Source::Directory(_)
@@ -183,4 +203,21 @@ fn configuration_provider_has_no_consumer_dependencies() {
         .find(|candidate| candidate.manifest.id == "mhf.base")
         .unwrap();
     assert!(base.manifest.dependencies.contains_key("mhf.config"));
+}
+
+#[test]
+fn dat_redirect_is_independent_and_opt_in() {
+    let resolved = plan(
+        CATALOG,
+        "['mhf.login']\nenabled = false\n['mhf.dat-redirect']\nenabled = true",
+    )
+    .unwrap();
+    assert_eq!(
+        resolved
+            .mods
+            .iter()
+            .map(|candidate| candidate.manifest.id.as_str())
+            .collect::<Vec<_>>(),
+        ["mhf.dat-redirect"],
+    );
 }

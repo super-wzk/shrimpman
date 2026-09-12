@@ -9,13 +9,13 @@
 `MhfConfig`。`video.graphics_version` 通过通用 `fixed` 定义固定为 HD，保证游戏参数与
 INI 读值一致；注册和读取不修改配置文件。
 
-`BaseMod::new(settings)` 接收 `MhfConfig`。Geometry 和 Monster 始终包含，Font 使用原生文本路径。
-Base 创建 `OverlayRegistry` 与 UI 输入状态，不提供游戏原生 IME 适配器，也不持有 Store 或 INI 桥。
+`BaseMod::new(settings, registry)` 接收 `MhfConfig` 和应用创建的共享 `OverlayRegistry`。Geometry 和 Monster 始终包含，Font 使用原生文本路径。
+Base 创建 UI 输入状态，不提供游戏原生 IME 适配器，也不持有 Store 或 INI 桥。
 配置服务通过 `mhf.config.v1` 提供能力，自身不依赖任何游戏配置类型。
 
 Font、UI 和 Quest 都由 `mhf.base` 发布，接口名称分别为 `mhf.font.v1`、`mhf.ui.v1`、
 `mhf.quest.v1`、`mhf.quest.control.v2` 和 `mhf.quest.launch.v1`。
-消费者声明对 `mhf.base` 的依赖。`registry()` 供同一宿主二进制内的内置调试面板使用；
+消费者声明对 `mhf.base` 的依赖。应用将同一个注册表传给 Base、内置 Debug 与 Workbench；
 外部 Mod 使用公开 UI 能力，不传递 Rust egui 对象。
 
 Quest 初始没有本地会话。Debug 的启动回调通过 `QuestLaunch::prepare_local` 提交自己的预设

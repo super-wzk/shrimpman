@@ -6,20 +6,24 @@ publish = false
 
 [features]
 default = ["login", "debug", "workbench"]
-login = ["dep:mhf-login"]
-debug = ["dep:mhf-debug"]
-workbench = ["dep:mhf-workbench"]
+base = ["dep:mhf-base", "dep:mhf-ui"]
+login = ["base", "dep:mhf-login"]
+debug = ["base", "dep:mhf-debug"]
+workbench = ["base", "dep:mhf-workbench"]
 
 [[bin]]
 name = "mhf-launcher"
 path = "src/main.rs"
 
 [dependencies]
+mhf-launcher-catalog = { path = "../launcher-catalog" }
 clap = { version = "4", features = ["derive"] }
 mhf-game = { path = "../../runtime/game" }
 mhf-mod-host = { path = "../../runtime/mod-host" }
 mhf-mod-package = { path = "../../runtime/mod-package" }
-mhf-base = { path = "../../mods/base" }
+mhf-base = { path = "../../mods/base", optional = true }
+mhf-ui = { path = "../../mods/ui", features = ["provider"], optional = true }
+mhf-dat-redirect = { path = "../../mods/dat-redirect" }
 mhf-config = { path = "../../mods/config", features = ["provider"] }
 mhf-login = { path = "../../mods/login", optional = true }
 mhf-debug = { path = "../../mods/debug", optional = true }
@@ -35,3 +39,6 @@ mhf-debug-tools = { path = "../../mods/debug-tools", features = ["headers"] }
 mhf-ui = { path = "../../mods/ui", features = ["headers"] }
 
 mhf-config = { path = "../../mods/config", features = ["headers"] }
+
+[dev-dependencies]
+toml = "1"

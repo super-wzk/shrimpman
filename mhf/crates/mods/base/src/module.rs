@@ -15,12 +15,10 @@ pub struct BaseMod {
     geometry: GeometryMod,
     monster: MonsterMod,
     ui: UiMod,
-    registry: OverlayRegistry,
 }
 
 impl BaseMod {
-    pub fn new(settings: &MhfConfig) -> Result<Self> {
-        let registry = OverlayRegistry::default();
+    pub fn new(settings: &MhfConfig, registry: OverlayRegistry) -> Result<Self> {
         let ime_adapter = Rc::new(RefCell::new(None));
         let capture = Rc::new(RefCell::new(None));
         Ok(Self {
@@ -28,15 +26,8 @@ impl BaseMod {
             font: FontMod::new(settings.font.name.clone(), None)?,
             geometry: GeometryMod::default(),
             monster: MonsterMod::default(),
-            ui: UiMod::new(registry.clone(), ime_adapter, capture),
-            registry,
+            ui: UiMod::new(registry, ime_adapter, capture),
         })
-    }
-
-    /// Shared Rust registry for built-in overlays in the same host binary.
-    /// External Mods use the published `mhf.ui.v1` capability instead.
-    pub fn registry(&self) -> OverlayRegistry {
-        self.registry.clone()
     }
 }
 

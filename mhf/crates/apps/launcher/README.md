@@ -37,7 +37,14 @@ Debug 调用 Base 的 `mhf.quest.launch.v1` 准备本地会话，随后 Base 在
 任务与游戏内操作见 [Debug](../../mods/debug/README.md)。资源工作台使用
 `[mods."mhf.workbench"] enabled = true`，并关闭 Debug；两者都提供普通启动接口，不能同时启用。
 
-Cargo features 决定可用的启动提供方，`[mods]` 决定实际选择。
+[`mhf.dat-redirect`](../../mods/dat-redirect/README.md) 将 `dat` 下的只读文件打开映射到配置根目录，缺失时回退原文件。
+通过 `[mods."mhf.dat-redirect"] enabled = true` 独立启用，对正常登录和 Debug 均生效；启用 Debug 不会自动加载它。
+默认替换根目录是游戏目录下的 `dat-redirect`，可在 `[mods."mhf.dat-redirect".settings]` 设置 `root` 覆盖。
+
+Cargo features 决定编译进应用的内置实现，`[mods]` 决定实际选择。
+`base` feature 启用 `mhf-base` 和用于组装共享注册表的 `mhf-ui`；`login`、`debug`、`workbench` 均显式依赖 `base`。
+`--no-default-features` 不编译内置 Base，也不列出它；可用 `--features base` 单独加入。
+无 Base 构建不解析 Base 的游戏设置，使用零初始化的启动参数，由外部启动提供方填充；Config 和 DatRedirect 仍可用。
 当前保留原生文本与 CP932 任务，Unicode／Translation crate 暂未接入应用。
 共享游戏字段、字体、INI 和 Mod 配置语义见 [游戏库](../../runtime/game/README.md#共享配置与资源)。
 
@@ -47,7 +54,7 @@ Cargo features 决定可用的启动提供方，`[mods]` 决定实际选择。
 - [`src/builtins.rs`](src/builtins.rs)：编译能力、Factory 及内置 Base、Debug、Workbench 注册表接线。
 - [`mods/login`](../../mods/login/README.md)、[`mods/debug`](../../mods/debug/README.md)、[`mods/workbench`](../../mods/workbench/README.md)：启动提供方。
 
-内置清单由 `mhf_mod_package::BuiltinCatalog` 提供；配置和路径准备位于应用的
+内置清单由应用层 [`mhf_launcher_catalog::BuiltinCatalog`](../launcher-catalog/README.md) 提供；配置和路径准备位于应用的
 [`src/runtime.rs`](src/runtime.rs)，固定客户端描述是 `mhf_game::runtime::PROFILE`。
 游戏设置类型及 INI 映射属于 `mhf-base`，配置桥仅存储与执行注册规则；
 共享界面组件来自 `shared/egui-hunter`。
