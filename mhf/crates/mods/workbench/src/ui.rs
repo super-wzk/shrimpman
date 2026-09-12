@@ -1951,20 +1951,52 @@ fn tree(
                 *details = Some(index);
                 ui.spinner();
             }
-            for &child in &node.children {
-                let Some(child) = source.related(child) else {
-                    continue;
+            // Closed branches and leaves occupy one row. Only expanded branches
+            // need recursive layout; clip fixed rows before creating widgets.
+            let mut start = 0;
+            while start < node.children.len() {
+                let context = ui.ctx().clone();
+                let parent_id = ui.id();
+                let is_leaf = |child: usize| {
+                    let child = visible_node(document, child, show_encoding_layers);
+                    let node = &document.nodes[child];
+                    (node.children.is_empty() && !node.deferred)
+                        || egui::collapsing_header::CollapsingState::load(
+                            &context,
+                            parent_id.with(("resource-node", child)),
+                        )
+                        .is_none_or(|state| state.openness(&context) == 0.0)
                 };
-                let _ = tree(
-                    ui,
-                    &child,
-                    resource_counts,
-                    show_encoding_layers,
-                    selected,
-                    selection,
-                    load_resource,
-                    details,
-                );
+                let end = if is_leaf(node.children[start]) {
+                    start
+                        + node.children[start..]
+                            .iter()
+                            .take_while(|&&child| is_leaf(child))
+                            .count()
+                } else {
+                    start + 1
+                };
+                let mut render = |ui: &mut egui::Ui, rows: std::ops::Range<usize>| {
+                    for offset in rows {
+                        let child = source.child_at(start + offset).unwrap();
+                        let _ = tree(
+                            ui,
+                            &child,
+                            resource_counts,
+                            show_encoding_layers,
+                            selected,
+                            selection,
+                            load_resource,
+                            details,
+                        );
+                    }
+                };
+                if is_leaf(node.children[start]) {
+                    visible_leaf_rows(ui, end - start, &mut render);
+                } else {
+                    render(ui, 0..1);
+                }
+                start = end;
             }
         });
         header.inner
@@ -1979,6 +2011,39 @@ fn tree(
         *load_resource = Some(source);
     }
     Some(response)
+}
+
+/// Reserve the whole run, but only build widgets intersecting the viewport.
+fn visible_leaf_rows(
+    ui: &mut egui::Ui,
+    count: usize,
+    render: impl FnOnce(&mut egui::Ui, std::ops::Range<usize>),
+) {
+    let spacing = ui.spacing().item_spacing.y;
+    let stride = ui.spacing().interact_size.y + spacing;
+    let top = ui.next_widget_position().y;
+    let first = (((ui.clip_rect().top() - top) / stride).floor().max(0.0) as usize).min(count);
+    let end = ((((ui.clip_rect().bottom() - top) / stride).ceil().max(0.0) as usize)
+        .saturating_add(1))
+    .min(count)
+    .max(first);
+    let rect = egui::Rect::from_min_size(
+        ui.next_widget_position(),
+        egui::vec2(
+            ui.available_width(),
+            (stride * count as f32 - spacing).max(0.0),
+        ),
+    );
+    let visible = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), top + first as f32 * stride),
+        rect.max,
+    );
+    ui.allocate_space(rect.size());
+    // Keep collapsing-state IDs identical when a row moves between a fixed
+    // run and expanded recursive layout.
+    let mut rows = ui.new_child(egui::UiBuilder::new().id(ui.id()).max_rect(visible));
+    rows.skip_ahead_auto_ids(first);
+    render(&mut rows, first..end);
 }
 
 fn visible_node(document: &Document, original: usize, show_encoding_layers: bool) -> usize {
@@ -2094,6 +2159,46 @@ mod tests {
     use super::*;
     use crate::inspect::{Field, Node};
     use crate::preview::AssetBundle;
+
+    #[test]
+    fn large_leaf_runs_only_render_the_viewport_and_keep_full_height() {
+        let context = egui::Context::default();
+        for offset in [0.0, 120_000.0, 239_500.0] {
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(300.0, 400.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .vertical_scroll_offset(offset)
+                            .show(ui, |ui| {
+                                let top = ui.next_widget_position().y;
+                                let stride =
+                                    ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                                visible_leaf_rows(ui, 10_000, |ui, range| {
+                                    assert!(range.len() < 30, "rendered {} rows", range.len());
+                                    assert!(!range.is_empty());
+                                    for row in range {
+                                        ui.horizontal(|ui| {
+                                            tree_row(ui, &row.to_string(), false, 0, None);
+                                        });
+                                    }
+                                });
+                                assert!(
+                                    (ui.next_widget_position().y - top - stride * 10_000.0).abs()
+                                        < 1.0
+                                );
+                            });
+                    },
+                )
+                .drop_without_applying_deltas();
+        }
+    }
 
     fn loaded_effect_fixture(
         source: &ResourceRef,

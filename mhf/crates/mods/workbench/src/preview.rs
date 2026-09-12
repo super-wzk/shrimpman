@@ -107,6 +107,14 @@ impl ResourceRef {
         Some(key)
     }
 
+    /// Follow a known child ordinal without searching a wide sibling list.
+    pub(crate) fn child_at(&self, ordinal: usize) -> Option<Self> {
+        let node = *self.document.nodes.get(self.node)?.children.get(ordinal)?;
+        let mut context = self.context.clone();
+        context.push(node);
+        Some(Self::at_context(self.document.clone(), node, context))
+    }
+
     fn children(&self) -> Vec<Self> {
         let Ok(payload) = resource_node(&self.document, self.node) else {
             return Vec::new();
