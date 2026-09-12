@@ -16,6 +16,7 @@ pub mod effect_archive;
 pub mod event_camera;
 pub mod fmod;
 pub mod fskl;
+pub mod inf;
 pub mod jkr;
 pub mod material;
 pub mod motion;

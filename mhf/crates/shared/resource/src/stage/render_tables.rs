@@ -6,6 +6,11 @@
 
 use crate::{Error, Result};
 
+mod animation;
+pub use animation::{
+    AnimationChannel, AnimationCommand, AnimationRecords, KeyframeHeader, PointLightSelection,
+};
+
 const HEADER_SIZE: usize = 32;
 const TABLE_LAYOUT: [(usize, usize); 13] = [
     (4, 28),

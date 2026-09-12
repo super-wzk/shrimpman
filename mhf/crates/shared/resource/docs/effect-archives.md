@@ -59,8 +59,7 @@ complete semantic names remain unconfirmed.
 Emission offsets 0/12, 24/36 and 48/60 hold position, rotation and scale vectors
 and their random ranges. `113D37E0`, `113D3BD0` and `113D3D80` respectively apply
 those pairs; all floats are represented as original u32 bits. The remaining
-emission fields and definition bytes stay raw rather than receiving guessed
-names.
+emission fields and unconfirmed definition regions retain their original bytes.
 
 `113CCD10/113CCD90` establish 24-byte vector keys: three float bits at +0,
 signed frame at +12, flags at +16, curve ID byte at +18. `113CCAB0/113CCAF0`
@@ -68,6 +67,57 @@ establish 16-byte color keys: u32 frame +0, flags +4, curve ID byte +6, RGBA +8.
 `113CC8A0/113CC970` establish 16-byte integer keys: u32 frame +0, flags +4,
 u16 curve ID +6 and i32 value +8. These parsers preserve order, duplicate
 keys, unknown bytes and original bits; they do not resample curves.
+
+### 56-byte definitions and curve references
+
+`113CD4B0` constructs the runtime instance from a 56-byte definition. The
+following names describe fields supported by its reads and their consumers;
+unconfirmed regions remain available as raw bytes.
+
+| Definition offset | Storage | Exposed field / native use |
+|---|---|---|
+| 0x00 | u32 | `flags`, retained as individual bits without speculative labels |
+| 0x04 | u16 | `definition_id`, matched by the emission record |
+| 0x06, 0x08 | u16 each | Unconfirmed values |
+| 0x0a | u16 | Integer-curve selector; semantic role unconfirmed |
+| 0x0c | u16 | `duration_steps`, threshold for the native age counter |
+| 0x0e | u16 | Position-curve selector |
+| 0x10 | u16 | Rotation-curve selector |
+| 0x12 | u16 | Scale-curve selector |
+| 0x14 | 12 bytes | Unconfirmed region |
+| 0x20 | u16 | Color-curve selector |
+| 0x22 | u16 | Vector-curve selector; semantic role unconfirmed |
+| 0x24 | i16 | Integer-curve selector, sign-extended by the constructor |
+| 0x26 | u16 | Vector-curve selector; semantic role unconfirmed |
+| 0x28 | 16 bytes | Unconfirmed region |
+
+The constructor resolves vector selectors through `113CCD10`, color through
+`113CCAB0`, and integer through `113CC8A0`. The position, rotation and scale
+references occupy runtime offsets +0xb4, +0xc0 and +0xcc and are consumed by
+`113CECF0`, `113CF6B0` and `113CFFA0`. These are references into bank-wide key
+tables: a definition does not own or duplicate those physical records.
+
+Vector and color key IDs occupy one byte, but lookup compares that byte with
+the complete definition selector. For example, selector `0x0101` does not match
+key ID `1`. Integer key IDs are unsigned words; definition +0x24 is instead
+sign-extended, so its stored `0xffff` passes `-1` and does not match key `65535`.
+Zero is an ordinary possible key ID, not an implicit absent-curve marker.
+
+Each lookup helper records the first matching key and the total number of
+matches. Evaluators traverse that contiguous first-plus-count span without
+checking every subsequent key's ID again. Matching records need not be adjacent:
+for IDs `[7, 8, 7]`, selecting `7` finds indices `[0, 2]`, while the native span
+is `[0, 2)` and includes key `8`. `curve_lookup` exposes both the original
+matching indices and this native span. It preserves order and does not sort,
+regroup or reject interleaved keys. Workbench presents both views and binds its
+read-only reference to the actual key-table span; editable key records retain
+their physical table as their sole parent.
+
+`113CDD70` compares the age counter against definition +0x0c after instance
+time scaling, handles ending/repeating at the threshold, and advances the age
+counter by two. `duration_steps` therefore does not express seconds, nor does
+it model owner lifetime, repeat flags or the complete runtime lifecycle. The
+140-byte definition remains a raw record apart from its confirmed ID at +4.
 
 ## Kind 2: motion events
 
@@ -108,15 +158,22 @@ identical payloads. For example, bank 152 in `emmodel/em004.pac` and
 must use the bytes belonging to the selected package.
 
 Synthetic tests cover descriptor mismatches, array truncation, aliases, unknown
-kinds, empty resources, signed motion ranges, sentinel and invalid indices, and
-byte-identical record serialization. Optional integration tests accept a client
-`dat` directory through `MHF_CLIENT_DATA_DIR` and decoded motion-event samples
+kinds, empty resources, signed motion ranges, sentinel and invalid indices,
+definition selector widths, interleaved curve keys, and byte-identical record
+serialization. Workbench tests also edit definitions and physical key fields
+inside a JKR envelope while retaining unknown bytes and unchanged float bits.
+Optional integration tests accept a client `dat` directory through
+`MHF_CLIENT_DATA_DIR` and decoded motion-event samples
 through `MHF_EFFECT_SAMPLE_DIR`. No proprietary fixtures are committed.
 
 ```sh
 MHF_CLIENT_DATA_DIR="<client-dat-directory>" \
 cargo test -p mhf-resource --target "<host-target>" \
   --test effect_archive_native_samples -- --ignored
+
+MHF_CLIENT_DATA_DIR="<client-dat-directory>" \
+cargo test -p mhf-resource --target "<host-target>" \
+  --test effect_definition_records -- --ignored
 ```
 
 Run from the `mhf` workspace with `<host-target>` replaced by the host triple

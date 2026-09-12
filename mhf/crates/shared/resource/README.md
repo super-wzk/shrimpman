@@ -14,13 +14,14 @@
 | `jkr` | JKR 原始、Huffman、LZ、HFI 编码与边界检查 |
 | `container` | offset/size、MOMO、MHA 命名目录及资源 ID 索引、场景专用目录与嵌套封装 |
 | `dat` | DAT v89 根结构、装备／物品／生产记录、特效绑定与定义表，以及按布局解析的文本记录 |
+| `inf` | INF v6 任务分类、任务指针槽、原生 ID 查找及任务文本 |
 | `fmod` | 对象、顶点、法线、UV、颜色、权重、骨骼映射、三角带、材质、贴图引用、18字渲染参数块 |
 | `fskl` | 原始节点序号、层级索引、根节点目录、变换、动画分组标签与未知尾部 |
 | `motion` | 显式组数的 MOT 目录、经完整验证的文件目录记录、动作、轨道、通道及六种关键帧编码 |
 | `material` | 模型包内独立的分组材质参数，保留96/100字节记录 |
-| `effect_archive` | 包内特效索引、发射器与曲线、定义表、动作事件及稀疏索引 |
+| `effect_archive` | 包内特效索引、发射器与曲线、定义字段与原生曲线查找、动作事件及稀疏索引 |
 | `effect` | DAT 160、161、165、166 的独立定长装备效果记录 |
-| `stage` | 旧版环境参数与渲染表、HD 光照与后处理、区域相机、HITS 碰撞、KEFFECT 关键记录、场景摆放、对象包种类与跨资源引用 |
+| `stage` | 旧版环境与 HD 渲染动画表、光照与后处理、区域相机、HITS 碰撞、KEFFECT 关键记录、场景摆放、对象包种类与跨资源引用 |
 | `txb`、`png`、`dds` | 纹理目录、原始 PNG 块与 CRC、DDS 头及 mip/面/数组/体积范围 |
 
 `resources/layout.json` 和 `resources/native/` 保存共用的文本布局与原生地址定义。
@@ -38,6 +39,7 @@ MOT 的原生消费组数由客户端调用方传入，不能从扩展名统一�
 [`docs/model-formats.md`](docs/model-formats.md)、
 [`docs/motion-effects.md`](docs/motion-effects.md) 与
 [`docs/dat-format.md`](docs/dat-format.md)、
+[`docs/inf-format.md`](docs/inf-format.md)、
 [`docs/container-formats.md`](docs/container-formats.md)、
 [`docs/material-parameters.md`](docs/material-parameters.md) 与
 [`docs/effect-archives.md`](docs/effect-archives.md) 与

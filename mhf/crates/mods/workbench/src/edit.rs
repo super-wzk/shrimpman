@@ -15,6 +15,8 @@ mod batch;
 #[cfg(test)]
 mod filename_tests;
 mod filenames;
+#[cfg(test)]
+mod inf_tests;
 mod repack;
 #[cfg(test)]
 mod tests;

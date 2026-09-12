@@ -11,6 +11,6 @@ fn main() {
         "cargo::rerun-if-changed={}",
         resource.join("build/resource_layout.rs").display()
     );
-    resource_layout::generate_dat_inspection(&resource, &output)
-        .expect("failed to generate DAT inspection layout");
+    resource_layout::generate_inspection(&resource, &output)
+        .expect("failed to generate resource inspection layouts");
 }

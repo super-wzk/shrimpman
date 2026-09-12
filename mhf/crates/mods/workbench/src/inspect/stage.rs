@@ -1,10 +1,11 @@
 //! Typed stage fields share their original inspection buffer and offsets.
 
+mod render;
+
 use super::{Builder, Kind, hex, summary};
 use crate::field::{FieldType, ScalarType, formatted, typed};
 use mhf_resource::stage::{
-    Hits, KEffect, KEffectRecord, Lighting, MatchRecord, Placement, PlacementTable, Record,
-    RenderTables,
+    Hits, KEffect, KEffectRecord, Lighting, Placement, PlacementTable, Record, RenderTables,
 };
 
 impl Builder {
@@ -444,78 +445,6 @@ impl Builder {
         }
         self.stage_record(node, "色调映射标记", &tone.flags, base);
     }
-
-    pub(super) fn stage_render_details(
-        &mut self,
-        node: usize,
-        file: &RenderTables<'_>,
-        base: usize,
-    ) {
-        let buffer = self.document.nodes[node].buffer;
-        for table in &file.tables {
-            let at = base + table.offset;
-            let Some(parent) = self.child(
-                node,
-                format!(
-                    "表 {:02X} · {} 项 × {} 字节",
-                    table.count_offset, table.count, table.record_size
-                ),
-                Kind::Block,
-                buffer,
-                at..at + table.records.len(),
-            ) else {
-                break;
-            };
-            self.field(
-                parent,
-                "记录数量",
-                table.count,
-                base + table.count_offset,
-                2,
-            );
-            for (index, bytes) in table.records().enumerate() {
-                let offset = at + index * table.record_size;
-                if table.count_offset == 24 {
-                    let record = MatchRecord::parse(bytes).expect("validated stage match stride");
-                    let Some(child) = self.child(
-                        parent,
-                        format!("记录 {index}"),
-                        Kind::Block,
-                        buffer,
-                        offset..offset + bytes.len(),
-                    ) else {
-                        break;
-                    };
-                    self.field(child, "kind", record.kind, offset, 1);
-                    self.field(child, "unknown_01", record.unknown_01, offset + 1, 1);
-                    self.field(child, "unknown_02", record.unknown_02, offset + 2, 2);
-                    self.field(child, "match_04", record.match_04, offset + 4, 2);
-                    self.field(child, "match_06", record.match_06, offset + 6, 2);
-                    self.field(child, "value", record.value, offset + 8, 4);
-                } else {
-                    let record = Record {
-                        offset: offset - base,
-                        words: bytes
-                            .as_chunks::<4>()
-                            .0
-                            .iter()
-                            .map(|word| u32::from_le_bytes(*word))
-                            .collect(),
-                    };
-                    self.stage_record(parent, format!("记录 {index}"), &record, base);
-                }
-            }
-        }
-        if !file.trailing.is_empty() {
-            self.field(
-                node,
-                "尾部原始字节",
-                hex(file.trailing),
-                base + file.source.len() - file.trailing.len(),
-                file.trailing.len(),
-            );
-        }
-    }
 }
 
 #[cfg(test)]
@@ -616,11 +545,18 @@ mod tests {
                         for record in &expanded.nodes[*child].children {
                             let record = &expanded.nodes[*record];
                             for field in &record.fields {
-                                assert!(
-                                    field.binding.range.start >= record.range.start
-                                        && field.binding.range.start + field.binding.range.len()
-                                            <= record.range.end
-                                );
+                                if field.name == "目标动画记录" && !field.binding.range.is_empty()
+                                {
+                                    assert!(!field.writable);
+                                    assert_eq!(field.binding.format, FieldType::ReadOnly);
+                                    assert!(field.binding.range.start >= node.range.start);
+                                    assert!(field.binding.range.end <= node.range.end);
+                                } else {
+                                    assert!(
+                                        field.binding.range.start >= record.range.start
+                                            && field.binding.range.end <= record.range.end
+                                    );
+                                }
                             }
                         }
                     }

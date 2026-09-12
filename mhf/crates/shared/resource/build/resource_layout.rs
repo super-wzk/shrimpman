@@ -303,9 +303,9 @@ pub(super) fn generate(manifest_directory: &Path, output_directory: &Path) -> Re
     Ok(())
 }
 
-/// Offline DAT inspection shares the validated text catalog, without runtime
+/// Offline inspection shares the validated text catalog, without runtime
 /// hooks or a dependency on the Unicode/Translation providers.
-pub(super) fn generate_dat_inspection(
+pub(super) fn generate_inspection(
     manifest_directory: &Path,
     output_directory: &Path,
 ) -> Result<(), String> {
@@ -339,7 +339,34 @@ pub(super) fn generate_dat_inspection(
     }
     output.push_str("];\n");
     fs::write(output_directory.join("dat_text.rs"), output)
-        .map_err(|error| format!("failed to write DAT inspection layout: {error}"))
+        .map_err(|error| format!("failed to write DAT inspection layout: {error}"))?;
+
+    let resource = catalog
+        .layouts
+        .iter()
+        .find(|layout| layout.id == "mhfinf")
+        .ok_or("missing mhfinf resource layout")?;
+    let ResourceBody::Quest(layout) = &resource.body else {
+        return Err("mhfinf must contain a quest directory".into());
+    };
+    let output = format!(
+        "// Generated from shared/resource/resources/layout.json.\n\
+         const QUEST_LAYOUT: mhf_resource::inf::QuestLayout = mhf_resource::inf::QuestLayout {{\n\
+             root_field: {}, count_root_field: {}, category_stride: {},\n\
+             category_count_field: {}, category_records_field: {},\n\
+             record_text_field: {}, record_id_field: {}, parts: {},\n\
+         }};\n",
+        layout.root,
+        layout.count_root,
+        layout.category_stride,
+        layout.category_count_field,
+        layout.category_records_field,
+        layout.record_text_field,
+        layout.record_id_field,
+        layout.parts,
+    );
+    fs::write(output_directory.join("inf_layout.rs"), output)
+        .map_err(|error| format!("failed to write INF inspection layout: {error}"))
 }
 
 fn read_resource_layouts(path: &Path) -> Result<Vec<ResourceLayout>, String> {

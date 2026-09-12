@@ -14,6 +14,8 @@ use crate::field::{
 #[cfg(test)]
 mod archive_tests;
 mod dat;
+mod effect_bank;
+mod inf;
 mod legacy_stage;
 mod mha;
 #[cfg(test)]
@@ -51,6 +53,9 @@ pub enum Kind {
     Dat,
     DatTable(usize),
     DatRecord(usize),
+    Inf,
+    InfCategory(usize),
+    InfQuest,
     Stage,
     StageLighting,
     LegacyStageLighting,
@@ -108,6 +113,9 @@ impl Kind {
             Self::Dat => "DAT 游戏数据",
             Self::DatTable(_) => "DAT 数据表",
             Self::DatRecord(_) => "DAT 记录",
+            Self::Inf => "INF 任务资料",
+            Self::InfCategory(_) => "INF 任务分类",
+            Self::InfQuest => "INF 任务记录前缀",
             Self::Stage => "场景专用目录",
             Self::StageLighting => "场景光照与后处理",
             Self::LegacyStageLighting => "旧版场景环境参数",
@@ -263,6 +271,8 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         }
         Kind::DatTable(index) => builder.dat_table_records(node, index)?,
         Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
+        Kind::InfCategory(index) => builder.inf_category_records(node, index)?,
+        Kind::InfQuest => builder.inf_quest_fields(node)?,
         Kind::Motion => {
             let motion = Motion::parse(bytes).map_err(|error| error.to_string())?;
             builder.motion_tracks(node, &motion, range.start);
@@ -323,7 +333,7 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         }
         Kind::EffectBank => {
             let bank = EffectBank::parse(bytes).map_err(|error| error.to_string())?;
-            builder.effect_bank_details(node, &bank, range.start);
+            builder.effect_bank_details(node, &bank, range.start)?;
         }
         Kind::EffectMotionEvents => {
             let events = MotionEvents::parse(bytes).map_err(|error| error.to_string())?;
@@ -812,6 +822,11 @@ impl Builder {
         if bytes.starts_with(mhf_resource::dat::MAGIC) {
             self.document.nodes[node].kind = Kind::Dat;
             self.inspect_dat(node, bytes, base);
+            return;
+        }
+        if bytes.starts_with(mhf_resource::inf::MAGIC) {
+            self.document.nodes[node].kind = Kind::Inf;
+            self.inspect_inf(node, bytes, base);
             return;
         }
         if bytes.starts_with(b"mha\x01") {
@@ -1923,105 +1938,6 @@ impl Builder {
                 Err(error) => self.fail(child, error.to_string()),
             }
         }
-    }
-
-    fn effect_bank_details(&mut self, node: usize, bank: &EffectBank<'_>, base: usize) {
-        let buffer = self.document.nodes[node].buffer;
-        let at = base + bank.table_offsets[0];
-        if !bank.emitters.is_empty()
-            && let Some(parent) = self.child(
-                node,
-                "发射器",
-                Kind::Block,
-                buffer,
-                at..at + bank.emitters.len() * 112,
-            )
-        {
-            for (index, emitter) in bank.emitters.iter().enumerate() {
-                let at = at + index * 112;
-                let Some(child) = self.child(
-                    parent,
-                    format!("发射器 {index} · {}", emitter.emitter_id),
-                    Kind::Block,
-                    buffer,
-                    at..at + 112,
-                ) else {
-                    break;
-                };
-                for (i, (name, bits)) in [
-                    ("position", emitter.position_bits),
-                    ("position_random", emitter.position_random_bits),
-                    ("rotation", emitter.rotation_bits),
-                    ("rotation_random", emitter.rotation_random_bits),
-                    ("scale", emitter.scale_bits),
-                    ("scale_random", emitter.scale_random_bits),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    self.field(
-                        child,
-                        name,
-                        typed(
-                            format!("{:?} · {:08X?}", bits.map(f32::from_bits), bits),
-                            FieldType::Array(ScalarType::F32),
-                        ),
-                        at + i * 12,
-                        12,
-                    );
-                }
-                self.field(
-                    child,
-                    "unknown_48",
-                    formatted(emitter.unknown_48, format!("{:#010X}", emitter.unknown_48)),
-                    at + 72,
-                    4,
-                );
-                for (name, value, offset) in [
-                    ("definition_id", emitter.definition_id, 76),
-                    ("trigger_frame", emitter.trigger_frame, 78),
-                    ("emitter_id", emitter.emitter_id, 80),
-                    ("unknown_52", emitter.unknown_52, 82),
-                    ("flags", emitter.flags, 84),
-                    ("unknown_56", emitter.unknown_56, 86),
-                    ("unknown_5a", emitter.unknown_5a, 90),
-                ] {
-                    self.field(child, name, value, at + offset, 2);
-                }
-                self.field(child, "spawn_count", emitter.spawn_count, at + 88, 2);
-                self.field(
-                    child,
-                    "unknown_5c",
-                    formatted(emitter.unknown_5c, format!("{:#010X}", emitter.unknown_5c)),
-                    at + 92,
-                    4,
-                );
-                self.field(child, "unknown_60", hex(&emitter.unknown_60), at + 96, 16);
-            }
-        }
-        for (index, name, stride, value) in [
-            (1, "三分量曲线", 24, summary(&bank.vector_keys)),
-            (2, "颜色曲线", 16, summary(&bank.color_keys)),
-            (3, "整数曲线", 16, summary(&bank.integer_keys)),
-            (4, "定义 · 56 字节", 56, summary(&bank.definitions_56)),
-            (5, "定义 · 140 字节", 140, summary(&bank.definitions_140)),
-        ] {
-            let count = bank.counts[index] as usize;
-            if count == 0 {
-                continue;
-            }
-            let at = base + bank.table_offsets[index];
-            if let Some(child) =
-                self.child(node, name, Kind::Block, buffer, at..at + count * stride)
-            {
-                self.field(child, "count", count, base + 2 + index * 2, 2);
-                self.field(child, "records", value, at, count * stride);
-            }
-        }
-        if let Some(lookup) = &bank.motion_lookup {
-            self.effect_lookup(node, lookup, base);
-        }
-        self.effect_events(node, &bank.motion_events, base);
     }
 
     fn effect_lookup(&mut self, node: usize, lookup: &MotionLookup, base: usize) {

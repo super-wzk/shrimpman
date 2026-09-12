@@ -4,8 +4,10 @@
 //! following member as `(u16 kind, u16 resource_id)`. Kind 1 is an effect bank;
 //! kind 2 is a motion-event table. Compression is handled by `container` first.
 
+mod definition;
 mod motion_events;
 
+pub use definition::{CurveKind, CurveLookup, CurveReference, Definition56};
 pub use motion_events::{MotionEvent, MotionEvents, MotionLookup};
 
 use crate::{Error, Result, container::SimpleArchive};
@@ -461,32 +463,6 @@ impl IntegerKey {
         bytes[6..8].copy_from_slice(&self.curve_id.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.value.to_le_bytes());
         bytes[12..].copy_from_slice(&self.unknown_0c);
-        bytes
-    }
-}
-
-/// Definition selected when emission flags bit 0 is clear (113CD4B0).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Definition56 {
-    pub unknown_00: [u8; 4],
-    pub definition_id: u16,
-    pub unknown_06: [u8; 50],
-}
-
-impl Definition56 {
-    pub const SIZE: usize = 56;
-    pub fn from_record(record: &[u8; Self::SIZE]) -> Self {
-        Self {
-            unknown_00: record[..4].try_into().unwrap(),
-            definition_id: u16::from_le_bytes(record[4..6].try_into().unwrap()),
-            unknown_06: record[6..].try_into().unwrap(),
-        }
-    }
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
-        let mut bytes = [0; Self::SIZE];
-        bytes[..4].copy_from_slice(&self.unknown_00);
-        bytes[4..6].copy_from_slice(&self.definition_id.to_le_bytes());
-        bytes[6..].copy_from_slice(&self.unknown_06);
         bytes
     }
 }
