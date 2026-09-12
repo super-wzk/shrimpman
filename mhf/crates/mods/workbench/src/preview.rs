@@ -3,12 +3,16 @@
 use crate::inspect::{Document, Kind};
 use std::{
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, PoisonError},
 };
 
 pub(crate) mod effects;
 mod equipment;
-pub(crate) use equipment::EquipmentModel;
+mod resource_counts;
+pub(crate) use resource_counts::loadable_resource_counts;
+#[cfg(test)]
+mod scope_tests;
 
 pub(crate) const DEFAULT_BACKGROUND_COLOR: [u8; 3] = [16, 19, 22];
 
@@ -49,30 +53,178 @@ impl Default for PreviewOptions {
 pub(crate) struct ResourceRef {
     pub document: Arc<Document>,
     pub node: usize,
+    /// The actual loading path, including reference edges. Physical byte
+    /// ownership is still resolved independently by `resource_node`.
+    context: Vec<usize>,
 }
 
 impl ResourceRef {
+    pub fn new(document: Arc<Document>, node: usize) -> Self {
+        let context = document.metadata().path(node).unwrap_or_else(|| vec![node]);
+        Self::at_context(document, node, context)
+    }
+
+    fn at_context(document: Arc<Document>, node: usize, mut context: Vec<usize>) -> Self {
+        if let Some(target) = document.payload(node) {
+            let mut current = node;
+            while current != target {
+                current = document.nodes[current].children[0];
+                context.push(current);
+            }
+        }
+        Self {
+            document,
+            node,
+            context,
+        }
+    }
+
+    pub fn scope(&self) -> crate::metadata::Scope<'_, '_> {
+        crate::metadata::Scope::new(&self.document, &self.context)
+    }
+
+    pub fn scope_source(&self, node: usize) -> Self {
+        let end = self
+            .context
+            .iter()
+            .position(|&value| value == node)
+            .expect("resolved metadata belongs to the loading path");
+        Self::at_context(self.document.clone(), node, self.context[..=end].to_vec())
+    }
+
+    fn context_key(&self) -> Option<Vec<usize>> {
+        if self.context.first() != Some(&self.document.root) {
+            return None;
+        }
+        let mut key = Vec::new();
+        for edge in self.context.windows(2) {
+            let parent = self.document.nodes.get(edge[0])?;
+            let ordinal = parent.children.iter().position(|&node| node == edge[1])?;
+            if !parent.kind.is_transparent() {
+                key.push(ordinal);
+            }
+        }
+        Some(key)
+    }
+
+    fn children(&self) -> Vec<Self> {
+        let Ok(payload) = resource_node(&self.document, self.node) else {
+            return Vec::new();
+        };
+        self.document.nodes[payload]
+            .children
+            .iter()
+            .map(|&node| {
+                let mut context = self.context.clone();
+                context.push(node);
+                Self::at_context(self.document.clone(), node, context)
+            })
+            .collect()
+    }
+
+    /// Resolve a declared association in the current loading branch. A
+    /// reference to a package keeps that package's children in its caller's
+    /// scope rather than falling back to their unrelated physical ancestors.
+    pub fn related(&self, node: usize) -> Option<Self> {
+        // Tree traversal already knows the direct edge. Preserve its context
+        // without rebuilding the document's physical parent index per row.
+        for (prefix, &ancestor) in self.context.iter().enumerate().rev() {
+            let context = if ancestor == node {
+                self.context[..=prefix].to_vec()
+            } else if self.document.nodes[ancestor].children.contains(&node) {
+                let mut context = self.context[..=prefix].to_vec();
+                context.push(node);
+                context
+            } else {
+                continue;
+            };
+            return Some(Self::at_context(self.document.clone(), node, context));
+        }
+        self.related_in(node, &self.document.metadata())
+    }
+
+    fn related_in(&self, node: usize, scopes: &crate::metadata::Scopes<'_>) -> Option<Self> {
+        let target = scopes.path(node)?;
+        let current = &self.context;
+        let (at, prefix) = target.iter().enumerate().rev().find_map(|(at, target)| {
+            current
+                .iter()
+                .rposition(|value| value == target)
+                .map(|prefix| (at, prefix))
+        })?;
+        let mut context = current[..=prefix].to_vec();
+        context.extend_from_slice(&target[at + 1..]);
+        Some(Self::at_context(self.document.clone(), node, context))
+    }
+
+    pub fn belongs_to(&self, path: &Path) -> bool {
+        Path::new(&self.document.nodes[self.document.root].name) == path
+    }
+
+    /// Container member ordinals identify a loaded resource. Transparent
+    /// payload links are rebuilt, so adding or removing encoding layers does
+    /// not redirect an old payload path into the new resource's detail nodes.
+    pub fn remap_path(&self, document: Arc<Document>) -> Result<Self, String> {
+        let key = self.context_key().ok_or("已加载资源的原始路径失效")?;
+        let selected_payload = self.document.payload(self.node) == Some(self.node);
+        let mut replacement = Self::new(document.clone(), document.root);
+        for ordinal in key {
+            let payload = document
+                .payload(replacement.node)
+                .ok_or("编辑后资源路径中的包装或引用链失效")?;
+            let node = document.nodes[payload]
+                .children
+                .get(ordinal)
+                .copied()
+                .ok_or_else(|| format!("编辑后找不到已加载资源：{}", self.short_name()))?;
+            let mut context = replacement.context;
+            context.push(node);
+            replacement = Self::at_context(document.clone(), node, context);
+        }
+        if selected_payload {
+            replacement.node = document
+                .payload(replacement.node)
+                .unwrap_or(replacement.node);
+        }
+        Ok(replacement)
+    }
+
+    pub fn remap(&self, document: Arc<Document>) -> Result<Self, String> {
+        let replacement = self.remap_path(document)?;
+        if replacement.kind() != self.kind() {
+            return Err(format!("编辑后资源类型发生变化：{}", self.short_name()));
+        }
+        replacement.bytes()?;
+        Ok(replacement)
+    }
+
+    pub fn same_origin(&self, other: &Self) -> bool {
+        self.document.nodes[self.document.root].name
+            == other.document.nodes[other.document.root].name
+            && self.kind() == other.kind()
+            && self
+                .context_key()
+                .is_some_and(|key| other.context_key().as_ref() == Some(&key))
+    }
+
     /// Enumerate the selected subtree, stopping at complete resource boundaries.
     /// Model dependency associations never expand the selection's scope.
     pub fn loadable_resources(&self) -> Vec<Self> {
         let mut resources = Vec::new();
-        let mut seen = vec![false; self.document.nodes.len()];
-        let mut pending = vec![self.node];
-        while let Some(selected) = pending.pop() {
-            let Ok(node) = resource_node(&self.document, selected) else {
+        let mut seen = HashSet::new();
+        let mut pending = vec![self.clone()];
+        while let Some(source) = pending.pop() {
+            let Ok(node) = resource_node(&self.document, source.node) else {
                 continue;
             };
-            if std::mem::replace(&mut seen[node], true) {
+            if !seen.insert((node, source.scope().origins())) {
                 continue;
             }
             let value = &self.document.nodes[node];
             if is_loadable_resource(value.kind) {
-                resources.push(Self {
-                    document: self.document.clone(),
-                    node: selected,
-                });
+                resources.push(source);
             } else {
-                pending.extend(value.children.iter().rev().copied());
+                pending.extend(source.children().into_iter().rev());
             }
         }
         resources
@@ -82,20 +234,13 @@ impl ResourceRef {
         if !matches!(self.kind(), Kind::Txb | Kind::Archive) {
             return vec![self.clone()];
         }
-        let Some(node) = self.document.payload(self.node) else {
-            return vec![self.clone()];
-        };
-        self.document.nodes[node]
-            .children
-            .iter()
-            .map(|&node| {
-                if self.document.nodes[node].range.is_empty() {
+        self.children()
+            .into_iter()
+            .map(|source| {
+                if self.document.nodes[source.node].range.is_empty() {
                     Self::white_texture()
                 } else {
-                    Self {
-                        document: self.document.clone(),
-                        node,
-                    }
+                    source
                 }
             })
             .collect()
@@ -128,10 +273,7 @@ impl ResourceRef {
                 Arc::new(crate::inspect::inspect("默认白色贴图", bytes.into()))
             })
             .clone();
-        Self {
-            node: document.root,
-            document,
-        }
+        Self::new(document.clone(), document.root)
     }
 
     pub fn bytes(&self) -> Result<&[u8], String> {
@@ -186,10 +328,33 @@ impl ResourceRef {
             )
     }
 
-    pub fn kind(&self) -> Kind {
-        resource_node(&self.document, self.node)
-            .map_or(Kind::Unknown, |node| self.document.nodes[node].kind)
+    pub fn same_instance(&self, other: &Self) -> bool {
+        self.same_source(other) && self.scope().origins() == other.scope().origins()
     }
+
+    /// Independently loaded resources may associate when their shared defaults
+    /// agree. A local declaration present on only one side is not a conflict.
+    pub fn compatible_scope(&self, other: &Self) -> bool {
+        if !self.same_document(other) {
+            return false;
+        }
+        let first = self.scope().origins();
+        let second = other.scope().origins();
+        first.iter().all(|origin| {
+            second
+                .iter()
+                .find(|other| other.type_id == origin.type_id)
+                .is_none_or(|other| other.source == origin.source)
+        })
+    }
+
+    pub fn kind(&self) -> Kind {
+        resource_kind(&self.document, self.node)
+    }
+}
+
+pub(crate) fn resource_kind(document: &Document, node: usize) -> Kind {
+    resource_node(document, node).map_or(Kind::Unknown, |node| document.nodes[node].kind)
 }
 
 fn is_loadable_resource(kind: Kind) -> bool {
@@ -198,72 +363,6 @@ fn is_loadable_resource(kind: Kind) -> bool {
         Kind::Fmod | Kind::Fskl | Kind::Png | Kind::Dds | Kind::Motion
     ) || effects::is_binding(kind)
         || effects::is_definition(kind)
-}
-
-/// Cache once when an inspection document changes. Shared reference targets
-/// count once per subtree, and complete resources hide their inspector fields.
-pub(crate) fn loadable_resource_counts(document: &Document) -> Vec<usize> {
-    let empty = Arc::new(HashSet::<usize>::new());
-    let mut descendants: Vec<Option<Arc<HashSet<usize>>>> = vec![None; document.nodes.len()];
-    let mut visiting = vec![false; document.nodes.len()];
-    let mut pending = Vec::new();
-    for start in 0..document.nodes.len() {
-        pending.push((start, false));
-        while let Some((index, expanded)) = pending.pop() {
-            if descendants[index].is_some() {
-                continue;
-            }
-            let Ok(payload) = resource_node(document, index) else {
-                descendants[index] = Some(empty.clone());
-                continue;
-            };
-            let value = &document.nodes[payload];
-            if is_loadable_resource(value.kind) {
-                descendants[index] = Some(Arc::new(HashSet::from([payload])));
-                continue;
-            }
-            if !expanded {
-                if std::mem::replace(&mut visiting[index], true) {
-                    continue;
-                }
-                pending.push((index, true));
-                if payload != index {
-                    pending.push((payload, false));
-                } else {
-                    pending.extend(value.children.iter().rev().map(|&child| (child, false)));
-                }
-                continue;
-            }
-            let resources = if payload != index {
-                descendants[payload]
-                    .clone()
-                    .unwrap_or_else(|| empty.clone())
-            } else {
-                let mut children = value
-                    .children
-                    .iter()
-                    .filter_map(|&child| descendants[child].as_ref())
-                    .filter(|resources| !resources.is_empty());
-                match (children.next(), children.next()) {
-                    (None, _) => empty.clone(),
-                    (Some(only), None) => only.clone(),
-                    (Some(first), Some(second)) => {
-                        let mut combined = (**first).clone();
-                        combined.extend(second.iter().copied());
-                        for resources in children {
-                            combined.extend(resources.iter().copied());
-                        }
-                        Arc::new(combined)
-                    }
-                }
-            };
-            descendants[index] = Some(resources);
-        }
-    }
-    descendants
-        .into_iter()
-        .map(|resources| resources.map_or(0, |resources| resources.len()))
-        .collect()
 }
 
 /// The inspection document retains every encoded layer. Runtime resource
@@ -297,22 +396,22 @@ pub(crate) struct AssetBundle {
 
 impl AssetBundle {
     pub fn contains(&self, source: &ResourceRef) -> bool {
-        self.model.same_source(source)
+        self.model.same_instance(source)
             || self
                 .skeleton
                 .as_ref()
-                .is_some_and(|skeleton| skeleton.same_source(source))
+                .is_some_and(|skeleton| skeleton.same_instance(source))
             || self
                 .textures
                 .iter()
-                .any(|texture| texture.same_source(source))
+                .any(|texture| texture.same_instance(source))
     }
 
     pub fn loaded_from(&self, resources: &[LoadedResource]) -> Self {
         let loaded = |source: &ResourceRef| {
             resources
                 .iter()
-                .any(|entry| entry.enabled && entry.source.same_source(source))
+                .any(|entry| entry.enabled && entry.source.same_instance(source))
         };
         Self {
             model: self.model.clone(),
@@ -347,220 +446,113 @@ impl AssetBundle {
             }
     }
 
-    /// Containers index the bundles found in their own branches.
-    /// Reference targets remain owned by their original branch; the referring
-    /// package gets the combination selected by its own member descriptors.
+    pub fn same_instance(&self, other: &Self) -> bool {
+        self.same_source(other)
+            && self.model.same_instance(&other.model)
+            && self
+                .skeleton
+                .iter()
+                .zip(&other.skeleton)
+                .all(|(a, b)| a.same_instance(b))
+            && self
+                .textures
+                .iter()
+                .zip(&other.textures)
+                .all(|(a, b)| a.same_instance(b))
+    }
+
+    fn from_metadata(source: ResourceRef, scopes: &crate::metadata::Scopes<'_>) -> Self {
+        let dependencies = source.scope().get::<crate::metadata::ModelResources>();
+        let skeleton = dependencies
+            .as_ref()
+            .and_then(|value| value.value.skeleton)
+            .and_then(|node| source.related_in(node, scopes));
+        let textures = dependencies
+            .into_iter()
+            .flat_map(|value| &value.value.textures)
+            .filter_map(|&node| source.related_in(node, scopes))
+            .collect();
+        Self {
+            name: source.name(),
+            model: source,
+            skeleton,
+            textures,
+        }
+    }
+
+    pub fn from_source(source: ResourceRef, named: &[Self]) -> Self {
+        let document = source.document.clone();
+        let mut bundle = Self::from_metadata(source, &document.metadata());
+        if let Some(named) = named
+            .iter()
+            .find(|candidate| candidate.same_source(&bundle))
+        {
+            bundle.name.clone_from(&named.name);
+        }
+        bundle
+    }
+
+    /// Format parsers declare associations; every resource consumes the same
+    /// scope resolver. This index only provides browser grouping and names.
     pub fn find_with_nodes(document: Arc<Document>) -> (Vec<Self>, Vec<Vec<usize>>) {
-        fn payload(document: &Document, index: usize) -> usize {
-            resource_node(document, index).unwrap_or(index)
-        }
-        let mut parents = vec![None; document.nodes.len()];
-        for (parent, node) in document.nodes.iter().enumerate() {
-            if node.kind != Kind::StageResourceReference {
-                for &child in &node.children {
-                    parents[child] = Some(parent);
-                }
-            }
-        }
+        let scopes = document.metadata();
         let mut by_node = vec![Vec::new(); document.nodes.len()];
         let mut ordinals = HashMap::<usize, usize>::new();
         let mut result: Vec<Self> = Vec::new();
-        let mut add = |owner: usize, model: usize, skeleton: Option<usize>, textures: usize| {
-            let texture = &document.nodes[textures];
-            let valid_texture = match texture.kind {
-                Kind::Png | Kind::Dds => true,
-                Kind::Txb | Kind::Archive => {
-                    (texture.kind == Kind::Txb || !texture.children.is_empty())
-                        && texture.children.iter().all(|&index| {
-                            let image = &document.nodes[payload(&document, index)];
-                            matches!(image.kind, Kind::Png | Kind::Dds) || image.range.is_empty()
-                        })
-                }
-                _ => false,
-            };
-            if document.nodes[model].kind != Kind::Fmod
-                || skeleton.is_some_and(|index| document.nodes[index].kind != Kind::Fskl)
-                || !valid_texture
-                || [Some(model), skeleton, Some(textures)]
-                    .into_iter()
-                    .flatten()
-                    .any(|index| document.nodes[index].error.is_some())
+        for node in 0..document.nodes.len() {
+            if resource_node(&document, node)
+                .ok()
+                .is_none_or(|payload| document.nodes[payload].kind != Kind::Fmod)
             {
-                return;
-            }
-            let resource = |node| ResourceRef {
-                document: document.clone(),
-                node,
-            };
-            let mut bundle = Self {
-                model: resource(model),
-                skeleton: skeleton.map(resource),
-                textures: vec![resource(textures)],
-                name: String::new(),
-            };
-            // References resolve to the existing target node. A second path to
-            // the same complete bundle is one preview; distinct original alias
-            // entries still retain different node identities in same_source.
-            let bundle_index = match result
-                .iter()
-                .position(|existing| existing.same_source(&bundle))
-            {
-                Some(index) => index,
-                None => {
-                    let mut named = document.root;
-                    let mut current = owner;
-                    while let Some(parent) = parents[current] {
-                        if document.nodes[parent].kind == Kind::Mha {
-                            named = current;
-                            break;
-                        }
-                        current = parent;
-                    }
-                    let ordinal = ordinals.entry(named).or_default();
-                    *ordinal += 1;
-                    bundle.name = if named == document.root {
-                        format!("{} · 模型 {ordinal}", document.nodes[named].name)
-                    } else {
-                        format!(
-                            "{} / {} · 模型 {ordinal}",
-                            document.nodes[document.root].name, document.nodes[named].name
-                        )
-                    };
-                    let index = result.len();
-                    result.push(bundle);
-                    index
-                }
-            };
-            let mut current = Some(owner);
-            while let Some(index) = current {
-                if by_node[index].contains(&bundle_index) {
-                    break;
-                }
-                by_node[index].push(bundle_index);
-                current = parents[index];
-            }
-        };
-        for (node_index, node) in document.nodes.iter().enumerate() {
-            if node.kind == Kind::StageObjectPackage {
-                if node.error.is_some() {
-                    continue;
-                }
-                let Some(bytes) = document.bytes(node_index) else {
-                    continue;
-                };
-                let Ok(package) =
-                    mhf_resource::stage::ObjectPackage::parse(bytes, node.children.len())
-                else {
-                    continue;
-                };
-                let member_node = |kind| {
-                    package
-                        .member(kind)
-                        .and_then(|member| node.children.get(member.entry.index).copied())
-                };
-                let Some(texture_member) = member_node(3) else {
-                    continue;
-                };
-                let Ok(textures) = resource_node(&document, texture_member) else {
-                    continue;
-                };
-                let skeleton = match member_node(2) {
-                    Some(index) => {
-                        let Ok(index) = resource_node(&document, index) else {
-                            continue;
-                        };
-                        (document.nodes[index].kind != Kind::Empty).then_some(index)
-                    }
-                    None => None,
-                };
-                for member in package.members.iter().filter(|member| member.kind == 1) {
-                    let Some(&model_member) = node.children.get(member.entry.index) else {
-                        continue;
-                    };
-                    if let Ok(model) = resource_node(&document, model_member) {
-                        add(node_index, model, skeleton, textures);
-                    }
-                }
                 continue;
             }
-            if !matches!(
-                node.kind,
-                Kind::Archive | Kind::Momo | Kind::Mha | Kind::Stage
-            ) {
+            let Some(context) = scopes.path(node) else {
+                continue;
+            };
+            let mut source = ResourceRef::at_context(document.clone(), node, context);
+            source.node = *source.context.last().unwrap();
+            if source
+                .scope()
+                .get::<crate::metadata::ModelResources>()
+                .is_none()
+            {
                 continue;
             }
-            let children: Vec<_> = node
-                .children
-                .iter()
-                .map(|&index| payload(&document, index))
-                .collect();
-            for (position, &member) in children.iter().enumerate() {
-                let member_node = &document.nodes[member];
-                let (group, model, skeleton, texture_position) = if member_node.kind == Kind::Fmod {
-                    // Some directories store parallel model, skeleton, and
-                    // texture lists instead of interleaving complete bundles.
-                    let start = children[..position]
-                        .iter()
-                        .rposition(|&index| document.nodes[index].kind != Kind::Fmod)
-                        .map_or(0, |index| index + 1);
-                    let count = children[start..]
-                        .iter()
-                        .take_while(|&&index| document.nodes[index].kind == Kind::Fmod)
-                        .count();
-                    let columns = count > 1
-                        && children.get(start + count..start + 3 * count).is_some_and(
-                            |remaining| {
-                                remaining[..count]
-                                    .iter()
-                                    .all(|&index| document.nodes[index].kind == Kind::Fskl)
-                                    && remaining[count..].iter().all(|&index| {
-                                        matches!(
-                                            document.nodes[index].kind,
-                                            Kind::Txb | Kind::Png | Kind::Dds
-                                        )
-                                    })
-                            },
-                        );
-                    if columns {
-                        (
-                            node_index,
-                            member,
-                            Some(children[position + count]),
-                            position + 2 * count,
-                        )
-                    } else {
-                        let Some(&next) = children.get(position + 1) else {
-                            continue;
-                        };
-                        let skeleton = (document.nodes[next].kind == Kind::Fskl).then_some(next);
-                        (
-                            node_index,
-                            member,
-                            skeleton,
-                            position + 1 + usize::from(skeleton.is_some()),
-                        )
-                    }
-                } else if matches!(member_node.kind, Kind::Archive | Kind::Momo | Kind::Mha)
-                    && member_node.error.is_none()
-                    && member_node.children.len() == 2
-                {
-                    // A model package can keep geometry + skeleton together in
-                    // an inner directory, with its texture bank beside it.
-                    let model = payload(&document, member_node.children[0]);
-                    let skeleton = payload(&document, member_node.children[1]);
-                    if document.nodes[model].kind != Kind::Fmod
-                        || document.nodes[skeleton].kind != Kind::Fskl
-                    {
-                        continue;
-                    }
-                    (member, model, Some(skeleton), position + 1)
+            let mut bundle = Self::from_metadata(source, &scopes);
+            let index = if let Some(index) = result.iter().position(|old| old.same_source(&bundle))
+            {
+                index
+            } else {
+                let named = bundle
+                    .model
+                    .context
+                    .windows(2)
+                    .rev()
+                    .find(|edge| document.nodes[edge[0]].kind == Kind::Mha)
+                    .map_or(document.root, |edge| edge[1]);
+                let ordinal = ordinals.entry(named).or_default();
+                *ordinal += 1;
+                bundle.name = if named == document.root {
+                    format!("{} · 模型 {ordinal}", document.nodes[named].name)
                 } else {
-                    continue;
+                    format!(
+                        "{} / {} · 模型 {ordinal}",
+                        document.nodes[document.root].name, document.nodes[named].name
+                    )
                 };
-                let Some(&textures) = children.get(texture_position) else {
+                let index = result.len();
+                result.push(bundle.clone());
+                index
+            };
+            for &ancestor in &bundle.model.context {
+                if resource_node(&document, ancestor)
+                    .is_ok_and(|node| document.nodes[node].kind == Kind::Fmod)
+                {
                     continue;
-                };
-                add(group, model, skeleton, textures);
+                }
+                if !by_node[ancestor].contains(&index) {
+                    by_node[ancestor].push(index);
+                }
             }
         }
         (result, by_node)
@@ -915,6 +907,10 @@ pub(crate) enum PlaybackTrack {
 }
 
 pub(crate) enum Command {
+    RefreshDocument {
+        path: PathBuf,
+        document: Arc<Document>,
+    },
     LoadResource(ResourceRef),
     RemoveResource(u64),
     ResourceEnabled {
@@ -1085,6 +1081,10 @@ impl Control {
         // resource switch, whose ordering changes its meaning.
         if let Some(last) = shared.commands.last_mut()
             && match (&*last, &command) {
+                (
+                    Command::RefreshDocument { path: first, .. },
+                    Command::RefreshDocument { path: second, .. },
+                ) => first == second,
                 (Command::Seek { track: first, .. }, Command::Seek { track: second, .. }) => {
                     first == second
                 }
@@ -1124,6 +1124,13 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metadata_fixture(mut document: Document) -> Arc<Document> {
+        for (scope, value) in crate::metadata::model_resources(&document) {
+            document.nodes[scope].metadata.insert(value);
+        }
+        Arc::new(document)
+    }
 
     #[test]
     fn viewport_rounds_edges_and_reports_the_actual_render_rectangle() {
@@ -1374,9 +1381,10 @@ mod tests {
             children,
             deferred: false,
             fields: Vec::new(),
+            metadata: Default::default(),
             error: None,
         };
-        let document = Arc::new(Document {
+        let document = metadata_fixture(Document {
             root: 0,
             buffers: vec![
                 Arc::from(*b"root"),
@@ -1398,10 +1406,7 @@ mod tests {
                 node("cycle B", Kind::Exf, 2, vec![8]),
             ],
         });
-        let source = |node| ResourceRef {
-            document: document.clone(),
-            node,
-        };
+        let source = |node| ResourceRef::new(document.clone(), node);
         assert_eq!(
             source(0)
                 .loadable_resources()
@@ -1430,10 +1435,7 @@ mod tests {
         for index in [1, 2, 3, 4, 5] {
             let mut invalid = (*document).clone();
             invalid.nodes[index].error = Some("original layer error".into());
-            let invalid = ResourceRef {
-                document: Arc::new(invalid),
-                node: 5,
-            };
+            let invalid = ResourceRef::new(Arc::new(invalid), 5);
             assert_eq!(invalid.bytes().unwrap_err(), "original layer error");
             assert_eq!(invalid.kind(), Kind::Unknown);
             assert!(!invalid.same_source(&source(4)));
@@ -1452,9 +1454,10 @@ mod tests {
             children,
             deferred: false,
             fields: Vec::new(),
+            metadata: Default::default(),
             error: None,
         };
-        let document = Arc::new(Document {
+        let document = metadata_fixture(Document {
             root: 0,
             buffers: vec![Arc::from(*b"data")],
             nodes: vec![
@@ -1474,13 +1477,7 @@ mod tests {
                 node(Kind::Motion, vec![]),
             ],
         });
-        let sources = |node| {
-            ResourceRef {
-                document: document.clone(),
-                node,
-            }
-            .loadable_resources()
-        };
+        let sources = |node| ResourceRef::new(document.clone(), node).loadable_resources();
         assert_eq!(
             sources(6)
                 .iter()
@@ -1510,9 +1507,10 @@ mod tests {
             children,
             deferred: false,
             fields: Vec::new(),
+            metadata: Default::default(),
             error: None,
         };
-        let document = Arc::new(Document {
+        let document = metadata_fixture(Document {
             root: 0,
             buffers: vec![Arc::from([0_u8; 16])],
             nodes: vec![
@@ -1580,9 +1578,10 @@ mod tests {
             children,
             deferred: false,
             fields: Vec::new(),
+            metadata: Default::default(),
             error: None,
         };
-        let document = Arc::new(Document {
+        let document = metadata_fixture(Document {
             root: 0,
             buffers: vec![Arc::from([0u8; 16])],
             nodes: vec![
@@ -1594,10 +1593,7 @@ mod tests {
                 node(Kind::Dds, vec![]),
             ],
         });
-        let source = |node| ResourceRef {
-            document: document.clone(),
-            node,
-        };
+        let source = |node| ResourceRef::new(document.clone(), node);
         let images = source(2).texture_images();
         assert_eq!(
             images.iter().map(|image| image.node).collect::<Vec<_>>(),
@@ -1654,30 +1650,56 @@ mod tests {
             children: Vec::new(),
             deferred: false,
             fields: Vec::new(),
+            metadata: Default::default(),
             error: None,
         };
-        let document = Arc::new(Document {
+        let document = metadata_fixture(Document {
             buffers: vec![Arc::from([0u8; 8])],
             nodes: vec![node(), node()],
             root: 0,
         });
-        let first = ResourceRef {
-            document: document.clone(),
-            node: 0,
-        };
-        let second = ResourceRef {
-            document: document.clone(),
-            node: 1,
-        };
+        let first = ResourceRef::new(document.clone(), 0);
+        let second = ResourceRef::new(document.clone(), 1);
         assert_eq!(first.bytes().unwrap(), second.bytes().unwrap());
         assert!(!first.same_source(&second));
         // Detail expansion clones metadata while retaining these buffer owners
         // and node indices; it must still select an existing loaded instance.
-        let expanded = ResourceRef {
-            document: Arc::new((*document).clone()),
-            node: 0,
-        };
+        let expanded = ResourceRef::new(Arc::new((*document).clone()), 0);
         assert!(first.same_source(&expanded));
+    }
+
+    #[test]
+    fn consecutive_document_edits_coalesce_without_crossing_load_operations() {
+        let control = Control::default();
+        let first = Arc::new(crate::inspect::inspect("edited.bin", vec![1u8].into()));
+        let latest = Arc::new(crate::inspect::inspect("edited.bin", vec![2u8].into()));
+        for document in [first, latest.clone()] {
+            control
+                .send(Command::RefreshDocument {
+                    path: "edited.bin".into(),
+                    document,
+                })
+                .unwrap();
+        }
+        control
+            .send(Command::LoadResource(ResourceRef::new(
+                latest.clone(),
+                latest.root,
+            )))
+            .unwrap();
+        control
+            .send(Command::RefreshDocument {
+                path: "edited.bin".into(),
+                document: latest.clone(),
+            })
+            .unwrap();
+        let commands = control.commands();
+        assert_eq!(commands.len(), 3);
+        let Command::RefreshDocument { document, .. } = &commands[0] else {
+            panic!()
+        };
+        assert!(Arc::ptr_eq(document, &latest));
+        assert!(matches!(commands[1], Command::LoadResource(_)));
     }
 
     #[test]

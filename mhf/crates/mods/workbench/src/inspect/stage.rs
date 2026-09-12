@@ -1,6 +1,7 @@
 //! Typed stage fields share their original inspection buffer and offsets.
 
 use super::{Builder, Kind, hex, summary};
+use crate::field::{FieldType, ScalarType, formatted, typed};
 use mhf_resource::stage::{
     Hits, KEffect, KEffectRecord, Lighting, MatchRecord, Placement, PlacementTable, Record,
     RenderTables,
@@ -150,10 +151,13 @@ impl Builder {
             self.field(
                 child,
                 format!("word_{:02X}", index * 4),
-                format!(
-                    "{word:#010X} · i32 {} · f32 {}",
-                    word as i32,
-                    f32::from_bits(word)
+                typed(
+                    format!(
+                        "{word:#010X} · i32 {} · f32 {}",
+                        word as i32,
+                        f32::from_bits(word)
+                    ),
+                    FieldType::Scalar(ScalarType::U32),
                 ),
                 at + index * 4,
                 4,
@@ -193,7 +197,10 @@ impl Builder {
             self.field(
                 child,
                 "记录相对偏移",
-                summary(&cell.record_offsets().collect::<Vec<_>>()),
+                typed(
+                    summary(&cell.record_offsets().collect::<Vec<_>>()),
+                    FieldType::Array(ScalarType::U32),
+                ),
                 at,
                 cell.references.len(),
             );
@@ -235,7 +242,7 @@ impl Builder {
             self.field(
                 child,
                 "unknown_00",
-                format!("{:#010X}", record.unknown_00),
+                formatted(record.unknown_00, format!("{:#010X}", record.unknown_00)),
                 at,
                 4,
             );
@@ -243,7 +250,7 @@ impl Builder {
                 self.field(
                     child,
                     format!("顶点 {index}"),
-                    format!("{vertex:?}"),
+                    typed(format!("{vertex:?}"), FieldType::Array(ScalarType::F32)),
                     at + 4 + index * 12,
                     12,
                 );
@@ -251,7 +258,10 @@ impl Builder {
             self.field(
                 child,
                 "平面系数",
-                format!("{:?}", record.plane),
+                typed(
+                    format!("{:?}", record.plane),
+                    FieldType::Array(ScalarType::F32),
+                ),
                 at + 40,
                 16,
             );
@@ -288,11 +298,14 @@ impl Builder {
                 self.field(
                     child,
                     name,
-                    format!(
-                        "{:?} · {bits:08X?}",
-                        bits.iter()
-                            .map(|&value| f32::from_bits(value))
-                            .collect::<Vec<_>>()
+                    typed(
+                        format!(
+                            "{:?} · {bits:08X?}",
+                            bits.iter()
+                                .map(|&value| f32::from_bits(value))
+                                .collect::<Vec<_>>()
+                        ),
+                        FieldType::Array(ScalarType::F32),
                     ),
                     at + offset,
                     bits.len() * 4,
@@ -334,7 +347,10 @@ impl Builder {
             self.field(
                 child,
                 "frame",
-                format!("{} ({:#010X})", record.frame(), record.frame_bits),
+                formatted(
+                    record.frame(),
+                    format!("{} ({:#010X})", record.frame(), record.frame_bits),
+                ),
                 at + 8,
                 4,
             );
@@ -346,7 +362,10 @@ impl Builder {
                     self.field(
                         child,
                         format!("word_{:02X}", offset + index * 4),
-                        format!("{bits:#010X} · f32 {}", f32::from_bits(bits)),
+                        typed(
+                            format!("{bits:#010X} · f32 {}", f32::from_bits(bits)),
+                            FieldType::Scalar(ScalarType::U32),
+                        ),
                         at + offset + index * 4,
                         4,
                     );
@@ -514,7 +533,10 @@ mod tests {
             for field in &node.fields {
                 assert!(
                     document.buffers[node.buffer]
-                        .get(field.offset..field.offset + field.size)
+                        .get(
+                            field.binding.range.start
+                                ..field.binding.range.start + field.binding.range.len()
+                        )
                         .is_some(),
                     "{}: {}",
                     node.name,
@@ -595,8 +617,9 @@ mod tests {
                             let record = &expanded.nodes[*record];
                             for field in &record.fields {
                                 assert!(
-                                    field.offset >= record.range.start
-                                        && field.offset + field.size <= record.range.end
+                                    field.binding.range.start >= record.range.start
+                                        && field.binding.range.start + field.binding.range.len()
+                                            <= record.range.end
                                 );
                             }
                         }
@@ -621,10 +644,11 @@ mod tests {
                         .find(|field| field.name == "resource_id")
                         .unwrap();
                     assert_eq!(
-                        (field.offset, field.size),
+                        (field.binding.range.start, field.binding.range.len()),
                         (node.range.start + 28 + (item.entry.index - 3) * 12, 4)
                     );
-                    let bytes = &document.buffers[node.buffer][field.offset..field.offset + 4];
+                    let bytes = &document.buffers[node.buffer]
+                        [field.binding.range.start..field.binding.range.start + 4];
                     assert_eq!(
                         u32::from_le_bytes(bytes.try_into().unwrap()),
                         item.resource_id.unwrap()

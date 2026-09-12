@@ -4,8 +4,6 @@
 //! Unrecognized formats remain inspectable; `surfaces` reports that their byte
 //! layout is unsupported instead of guessing a stride.
 
-use std::io::{Cursor, Read};
-
 use crate::{Error, Result};
 
 pub const MAGIC: [u8; 4] = *b"DDS ";
@@ -110,18 +108,16 @@ pub struct Dds<'a> {
 
 impl<'a> Dds<'a> {
     pub fn parse(source: &'a [u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(source);
-        let mut magic = [0; 4];
-        cursor
-            .read_exact(&mut magic)
-            .map_err(|_| Error::new(0, "truncated DDS magic"))?;
+        let magic = source
+            .get(..4)
+            .ok_or_else(|| Error::new(0, "truncated DDS magic"))?;
         if magic != MAGIC {
             return Err(Error::new(0, "expected DDS signature"));
         }
-        let mut bytes = [0; HEADER_SIZE];
-        cursor
-            .read_exact(&mut bytes)
-            .map_err(|_| Error::new(4, "truncated DDS header"))?;
+        let mut data_offset = 4 + HEADER_SIZE;
+        let bytes = source
+            .get(4..data_offset)
+            .ok_or_else(|| Error::new(4, "truncated DDS header"))?;
         let values: [u32; 31] = std::array::from_fn(|i| {
             u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
         });
@@ -158,10 +154,11 @@ impl<'a> Dds<'a> {
             return Err(Error::new(76, "DDS pixel format size must be 32"));
         }
         let dx10 = if pixel_format.flags & DDPF_FOURCC != 0 && pixel_format.four_cc == *b"DX10" {
-            let mut bytes = [0; DX10_HEADER_SIZE];
-            cursor
-                .read_exact(&mut bytes)
-                .map_err(|_| Error::new(128, "truncated DDS DX10 header"))?;
+            let end = data_offset + DX10_HEADER_SIZE;
+            let bytes = source
+                .get(data_offset..end)
+                .ok_or_else(|| Error::new(128, "truncated DDS DX10 header"))?;
+            data_offset = end;
             let values: [u32; 5] = std::array::from_fn(|i| {
                 u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
             });
@@ -178,7 +175,7 @@ impl<'a> Dds<'a> {
         Ok(Self {
             header,
             dx10,
-            data_offset: cursor.position() as usize,
+            data_offset,
             source,
         })
     }

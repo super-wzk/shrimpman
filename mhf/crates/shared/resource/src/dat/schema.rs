@@ -1,51 +1,16 @@
 use super::{RecordCount, RecordFormat, TableLayout};
-use crate::{Error, Result};
-
-#[derive(Clone, Copy, Debug)]
-pub enum Scalar {
-    U8,
-    I8,
-    U16,
-    I16,
-    U32,
-}
-
-impl Scalar {
-    pub const fn size(self) -> usize {
-        match self {
-            Self::U8 | Self::I8 => 1,
-            Self::U16 | Self::I16 => 2,
-            Self::U32 => 4,
-        }
-    }
-
-    pub fn read(self, bytes: &[u8], offset: usize) -> Result<i64> {
-        let end = offset
-            .checked_add(self.size())
-            .ok_or_else(|| Error::new(offset, "DAT scalar offset overflow"))?;
-        let bytes = bytes
-            .get(offset..end)
-            .ok_or_else(|| Error::new(offset, "DAT scalar outside record"))?;
-        Ok(match self {
-            Self::U8 => i64::from(bytes[0]),
-            Self::I8 => i64::from(bytes[0] as i8),
-            Self::U16 => i64::from(u16::from_le_bytes(bytes.try_into().unwrap())),
-            Self::I16 => i64::from(i16::from_le_bytes(bytes.try_into().unwrap())),
-            Self::U32 => i64::from(u32::from_le_bytes(bytes.try_into().unwrap())),
-        })
-    }
-}
+use crate::binary::ScalarType;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FieldLayout {
     pub name: &'static str,
     pub offset: u16,
-    pub scalar: Scalar,
+    pub scalar: ScalarType,
 }
 
 macro_rules! fields {
     ($($offset:literal => $name:literal : $scalar:ident),* $(,)?) => {
-        &[$(FieldLayout { name: $name, offset: $offset, scalar: Scalar::$scalar }),*]
+        &[$(FieldLayout { name: $name, offset: $offset, scalar: ScalarType::$scalar }),*]
     };
 }
 

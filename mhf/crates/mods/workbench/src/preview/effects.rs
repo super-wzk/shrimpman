@@ -132,41 +132,57 @@ pub(crate) struct Entry {
 }
 
 #[derive(Clone)]
+pub(crate) struct ModelMetadata {
+    pub value: ModelEffectBinding,
+    pub source: ResourceRef,
+}
+
+#[derive(Clone)]
 pub(crate) struct Binding {
     pub id: u64,
     pub source: ResourceRef,
     pub entries: Vec<Entry>,
+    pub metadata: Option<ModelMetadata>,
 }
 
 impl Binding {
     pub fn read(source: ResourceRef) -> Result<Self, String> {
+        Self::parse(source, false)
+    }
+
+    pub fn refreshed(&self, source: ResourceRef, clock: f32) -> Result<Self, String> {
+        let mut replacement = Self::parse(source, true)?;
+        replacement.id = self.id;
+        for entry in &mut replacement.entries {
+            if let Some(previous) = self.entries.iter().find(|old| old.slot == entry.slot) {
+                entry.started_at = previous.started_at.map(|start| {
+                    if entry.id == previous.id {
+                        start
+                    } else {
+                        clock
+                    }
+                });
+            }
+        }
+        Ok(replacement)
+    }
+
+    fn parse(source: ResourceRef, allow_empty: bool) -> Result<Self, String> {
         if !is_binding(source.kind()) && !is_definition(source.kind()) {
             return Err("请选择 DAT 特效定义或绑定记录".into());
         }
         let document = &source.document;
         let index = document.payload(source.node).ok_or("特效绑定节点失效")?;
         // Follow the actual tree, so an embedded DAT uses its own image base.
-        let mut parents = vec![None; document.nodes.len()];
-        for (parent, node) in document.nodes.iter().enumerate() {
-            if node.kind != Kind::StageResourceReference {
-                for &child in &node.children {
-                    if let Some(value) = parents.get_mut(child) {
-                        *value = Some(parent);
-                    }
-                }
-            }
-        }
-        let mut owner = parents[index];
-        let mut found = None;
-        for _ in &document.nodes {
-            let Some(parent) = owner else { break };
-            if document.nodes[parent].kind == Kind::Dat {
-                found = Some(parent);
-                break;
-            }
-            owner = parents[parent];
-        }
-        let owner = found.ok_or("特效绑定缺少所属 DAT 文件")?;
+        let owner = document
+            .metadata()
+            .path(index)
+            .and_then(|path| {
+                path.into_iter()
+                    .rev()
+                    .find(|&node| document.nodes[node].kind == Kind::Dat)
+            })
+            .ok_or("特效绑定缺少所属 DAT 文件")?;
         let root = &document.nodes[owner];
         let node = &document.nodes[index];
         let file = Dat::parse(document.bytes(owner).ok_or("DAT 数据失效")?)
@@ -212,7 +228,7 @@ impl Binding {
                 .active_definition_ids()
                 .to_vec()
         };
-        if ids.is_empty() {
+        if ids.is_empty() && !allow_empty {
             return Err("此绑定没有有效特效定义（定义列表在首个零处结束）".into());
         }
         let definitions = file
@@ -242,10 +258,18 @@ impl Binding {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let metadata = source
+            .scope()
+            .get::<ModelEffectBinding>()
+            .map(|resolved| ModelMetadata {
+                value: resolved.value.clone(),
+                source: source.scope_source(resolved.source),
+            });
         Ok(Self {
             id: NEXT_BINDING_ID.fetch_add(1, Ordering::Relaxed),
             source,
             entries,
+            metadata,
         })
     }
 }
@@ -716,6 +740,66 @@ pub(crate) mod tests {
     use super::*;
     use crate::inspect::{expand, inspect};
 
+    #[test]
+    fn edited_definitions_refresh_through_bindings_and_preserve_playback_identity() {
+        let (_, source) = fixture();
+        let mut binding = Binding::read(source.clone()).unwrap();
+        binding.entries[0].started_at = Some(17.0);
+        let mut bytes = source.document.buffers[0].to_vec();
+        let range = 32 + 5180..32 + 5360;
+        let mut definition = ModelEffectDefinition::parse(&bytes[range.clone()]).unwrap();
+        definition.start_delay = 25;
+        bytes[range].copy_from_slice(&definition.to_bytes());
+        let mut document = inspect("effects.bin", bytes.into());
+        let tables: Vec<_> = document.nodes.iter().enumerate().filter_map(|(index, node)| {
+            matches!(node.kind, Kind::DatTable(table) if table == dat::DATA_TABLES.len() || table == dat::DATA_TABLES.len() + 2)
+                .then_some(index)
+        }).collect();
+        for table in tables.into_iter().rev() {
+            document = expand(&document, table).unwrap();
+        }
+        let remapped = source.remap(Arc::new(document)).unwrap();
+        assert_ne!(
+            source.node, remapped.node,
+            "expansion order changes node indices"
+        );
+        assert!(source.same_origin(&remapped));
+        assert!(!source.same_source(&remapped));
+        let refreshed = binding.refreshed(remapped, 40.0).unwrap();
+        assert_eq!(refreshed.id, binding.id);
+        assert_eq!(refreshed.entries[0].started_at, Some(17.0));
+        let Definition::Model(definition) = &refreshed.entries[0].definition else {
+            panic!()
+        };
+        assert_eq!(definition.start_delay, 25);
+    }
+
+    #[test]
+    fn edited_binding_references_replace_definitions_and_accept_an_empty_list() {
+        let (_, source) = fixture();
+        let mut binding = Binding::read(source.clone()).unwrap();
+        binding.entries[0].started_at = Some(17.0);
+        let mut document = (*source.document).clone();
+        let mut bytes = document.buffers[0].to_vec();
+        let node = &document.nodes[source.node];
+        let mut metadata = ModelEffectBinding::parse(&bytes[node.range.clone()]).unwrap();
+        metadata.definition_ids[0] = 2;
+        bytes[node.range.clone()].copy_from_slice(&metadata.to_bytes());
+        document.buffers[0] = bytes.clone().into();
+        let refreshed = binding
+            .refreshed(source.remap(Arc::new(document.clone())).unwrap(), 40.0)
+            .unwrap();
+        assert_eq!(refreshed.entries[0].id, 2);
+        assert_eq!(refreshed.entries[0].started_at, Some(40.0));
+        metadata.definition_ids[0] = 0;
+        bytes[node.range.clone()].copy_from_slice(&metadata.to_bytes());
+        document.buffers[0] = bytes.into();
+        let refreshed = binding
+            .refreshed(source.remap(Arc::new(document)).unwrap(), 40.0)
+            .unwrap();
+        assert!(refreshed.entries.is_empty());
+    }
+
     pub(crate) fn fixture() -> (ResourceRef, ResourceRef) {
         let mut bytes = vec![0; 5600];
         bytes[..4].copy_from_slice(dat::MAGIC);
@@ -789,15 +873,139 @@ pub(crate) mod tests {
         let nodes = tables.map(|table| document.nodes[table].children[1]);
         let document = Arc::new(document);
         (
-            ResourceRef {
-                document: document.clone(),
-                node: nodes[0],
-            },
-            ResourceRef {
-                document,
-                node: nodes[1],
-            },
+            ResourceRef::new(document.clone(), nodes[0]),
+            ResourceRef::new(document, nodes[1]),
         )
+    }
+
+    /// The same DAT 166 definition is selected through two DAT 165 parents and
+    /// directly through its table. Those are three distinct loading contexts.
+    pub(crate) fn model_scopes() -> [ResourceRef; 3] {
+        let (_, source) = fixture();
+        let mut bytes = source.document.buffers[0].to_vec();
+        bytes[32 + 3100 + 0x7c..32 + 3100 + 0x7e].copy_from_slice(&3_u16.to_le_bytes());
+        let mut first = ModelEffectBinding::parse(source.bytes().unwrap()).unwrap();
+        first.definition_ids = [1, 2, 0, 0, 0, 0, 0, 0];
+        bytes[32 + 4624..32 + 4648].copy_from_slice(&first.to_bytes());
+        let mut second = first.clone();
+        second.model_id = 55;
+        bytes[32 + 4648..32 + 4672].copy_from_slice(&second.to_bytes());
+        let mut document = inspect("effects.bin", bytes.into());
+        let table = document
+            .nodes
+            .iter()
+            .position(|node| node.kind == Kind::DatTable(dat::DATA_TABLES.len() + 2))
+            .unwrap();
+        document = expand(&document, table).unwrap();
+        let parents = [
+            document.nodes[table].children[1],
+            document.nodes[table].children[2],
+        ];
+        for parent in parents {
+            document = expand(&document, parent).unwrap();
+        }
+        let children = parents.map(|parent| document.nodes[parent].children[0]);
+        let definitions = document
+            .nodes
+            .iter()
+            .position(|node| node.kind == Kind::DatTable(dat::DATA_TABLES.len() + 3))
+            .unwrap();
+        document = expand(&document, definitions).unwrap();
+        let direct = document.nodes[definitions].children[1];
+        let document = Arc::new(document);
+        [children[0], children[1], direct].map(|node| ResourceRef::new(document.clone(), node))
+    }
+
+    pub(crate) fn shared_definition_scopes() -> [ResourceRef; 3] {
+        let [first, second, direct] = model_scopes();
+        let mut document = (*direct.document).clone();
+        let mut references = Vec::new();
+        for source in [first, second] {
+            let value = Binding::read(source).unwrap().metadata.unwrap().value;
+            let mut reference = document.nodes[direct.node].clone();
+            reference.name = format!("scope {}", value.model_id);
+            reference.kind = Kind::StageResourceReference;
+            reference.children = vec![direct.node];
+            reference.fields.clear();
+            reference.deferred = false;
+            reference.metadata = Default::default();
+            reference.metadata.insert(value);
+            let index = document.nodes.len();
+            document.nodes.push(reference);
+            document.nodes[document.root].children.push(index);
+            references.push(index);
+        }
+        let document = Arc::new(document);
+        [references[0], references[1], direct.node]
+            .map(|node| ResourceRef::new(document.clone(), node))
+    }
+
+    #[test]
+    fn shared_payload_metadata_comes_from_the_loading_path_not_its_physical_owner() {
+        let [first, second, direct] = shared_definition_scopes();
+        assert!(first.same_source(&second));
+        assert!(first.same_source(&direct));
+        assert!(!first.same_instance(&second));
+        for (source, expected) in [(first, 44), (second, 55)] {
+            let binding = Binding::read(source.clone()).unwrap();
+            assert_eq!(binding.entries.len(), 1);
+            let metadata = binding.metadata.unwrap();
+            assert_eq!(metadata.value.model_id, expected);
+            assert!(metadata.source.same_instance(&source));
+        }
+        assert!(Binding::read(direct).unwrap().metadata.is_none());
+    }
+
+    #[test]
+    fn selected_definitions_inherit_metadata_without_loading_the_parent_binding() {
+        let [first, second, direct] = model_scopes();
+        for (source, expected) in [(first, 44), (second, 55)] {
+            let binding = Binding::read(source.clone()).unwrap();
+            assert!(binding.source.same_instance(&source));
+            assert_eq!(binding.entries.len(), 1);
+            assert_eq!(binding.entries[0].id, 1);
+            let metadata = binding.metadata.as_ref().unwrap();
+            assert_eq!(metadata.value.model_id, expected);
+            assert!(is_binding(metadata.source.kind()));
+            assert_eq!(
+                Binding::read(metadata.source.clone())
+                    .unwrap()
+                    .entries
+                    .len(),
+                2
+            );
+        }
+        assert!(Binding::read(direct).unwrap().metadata.is_none());
+    }
+
+    #[test]
+    fn refreshing_a_selected_slot_updates_both_its_definition_and_inherited_model_id() {
+        let [source, _, _] = model_scopes();
+        let mut binding = Binding::read(source.clone()).unwrap();
+        binding.entries[0].started_at = Some(5.0);
+        let metadata = binding.metadata.as_ref().unwrap();
+        let mut record = metadata.value.clone();
+        record.model_id = 66;
+        record.definition_ids[0] = 2;
+        let owner = &metadata.source.document.nodes[metadata.source.node];
+        let document = Arc::new(
+            crate::edit::apply(
+                &source.document,
+                owner.buffer,
+                owner.range.clone(),
+                &record.to_bytes(),
+            )
+            .unwrap(),
+        );
+        let refreshed = binding
+            .refreshed(source.remap(document).unwrap(), 40.0)
+            .unwrap();
+        assert_eq!(refreshed.id, binding.id);
+        assert_eq!(refreshed.entries.len(), 1);
+        assert_eq!(refreshed.entries[0].id, 2);
+        assert_eq!(refreshed.entries[0].started_at, Some(40.0));
+        assert_eq!(refreshed.metadata.as_ref().unwrap().value.model_id, 66);
+        assert_eq!(binding.metadata.as_ref().unwrap().value.model_id, 44);
     }
 
     fn effects() -> Effects {
@@ -850,10 +1058,7 @@ pub(crate) mod tests {
             let at = document.nodes[model.node].range.start + 8;
             bytes[at..at + 2].copy_from_slice(&id.to_le_bytes());
             document.buffers[0] = bytes.into();
-            let bad = ResourceRef {
-                document: Arc::new(document),
-                node: model.node,
-            };
+            let bad = ResourceRef::new(Arc::new(document), model.node);
             assert!(Binding::read(bad).is_err());
         }
         assert!(Binding::read(model).is_ok());
@@ -1026,10 +1231,7 @@ pub(crate) mod tests {
         for source in [attachment, model] {
             let document = expand(&source.document, source.node).unwrap();
             let reference = document.nodes[source.node].children[0];
-            let selected = ResourceRef {
-                document: Arc::new(document),
-                node: reference,
-            };
+            let selected = ResourceRef::new(Arc::new(document), reference);
             assert!(is_definition(selected.kind()));
             let definition = Binding::read(selected.clone()).unwrap();
             let original = Binding::read(source).unwrap();
@@ -1071,10 +1273,7 @@ pub(crate) mod tests {
             bytes[at..at + 180].copy_from_slice(&value.to_bytes());
         }
         document.buffers[0] = bytes.into();
-        let source = ResourceRef {
-            document: Arc::new(document),
-            node: source.node,
-        };
+        let source = ResourceRef::new(Arc::new(document), source.node);
         let mut effects = Effects {
             bindings: vec![Binding::read(source).unwrap()],
             target: Target {
@@ -1260,10 +1459,7 @@ pub(crate) mod tests {
             .unwrap();
         let document = expand(&document, table).unwrap();
         let node = document.nodes[table].children[819];
-        let source = ResourceRef {
-            document: Arc::new(document),
-            node,
-        };
+        let source = ResourceRef::new(Arc::new(document), node);
         let original = source.bytes().unwrap().to_vec();
         let record = ModelEffectBinding::parse(&original).unwrap();
         assert_eq!(record.model_id, 4521);
@@ -1338,10 +1534,7 @@ pub(crate) mod tests {
             .unwrap();
         let document = Arc::new(expand(&document, table).unwrap());
         for id in [1, 12] {
-            let source = ResourceRef {
-                document: document.clone(),
-                node: document.nodes[table].children[id],
-            };
+            let source = ResourceRef::new(document.clone(), document.nodes[table].children[id]);
             let original = source.bytes().unwrap().to_vec();
             let mut effects = Effects {
                 bindings: vec![Binding::read(source.clone()).unwrap()],

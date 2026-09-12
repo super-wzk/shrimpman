@@ -4,12 +4,12 @@
 
 use std::ops::Range;
 
-use crate::{Error, Result};
+use crate::{Error, Result, binary::Reader};
 
 mod effects;
 mod schema;
 pub use effects::{EFFECT_TABLES, EffectRecordKind};
-pub use schema::{DATA_TABLES, FieldLayout, Scalar};
+pub use schema::{DATA_TABLES, FieldLayout};
 
 pub const MAGIC: &[u8; 4] = b"mhf\x1a";
 pub const VERSION: u32 = 89;
@@ -118,15 +118,15 @@ impl<'a> Dat<'a> {
     }
 
     pub fn u16(&self, offset: usize) -> Result<u16> {
-        Ok(u16::from_le_bytes(
-            self.bytes(offset, 2)?.try_into().unwrap(),
-        ))
+        Reader::new(self.source)
+            .read_at::<u16>(offset)
+            .map(|field| field.value)
     }
 
     pub fn u32(&self, offset: usize) -> Result<u32> {
-        Ok(u32::from_le_bytes(
-            self.bytes(offset, 4)?.try_into().unwrap(),
-        ))
+        Reader::new(self.source)
+            .read_at::<u32>(offset)
+            .map(|field| field.value)
     }
 
     /// Resolve each intermediate pointer, preserving null as an absent path.

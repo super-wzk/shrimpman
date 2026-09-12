@@ -8,14 +8,13 @@
 
 use super::{
     Client,
-    skeleton::Skeleton,
+    skeleton::{self, Skeleton},
     textures::{self, NativeTextures},
 };
 use crate::preview::effects::{Sample, Target};
 use crate::preview::{AssetBundle, Bone, LoadedMesh};
 use mhf_resource::{
     fmod::{Component, FaceGroup, Fmod, MaterialEntry, ObjectEntry, Section, TextureEntry},
-    fskl::{Fskl, NodeEntry},
     txb::Image,
 };
 use std::{
@@ -202,71 +201,10 @@ fn validate_files(
     if meshes.entries.is_empty() || table.records.is_empty() {
         return Err("模型没有可预览的网格或材质".into());
     }
-    let mut node_ids = Vec::new();
-    if let Some(skeleton) = skeleton {
-        let skeleton = Fskl::parse(skeleton).map_err(|e| e.to_string())?;
-        skeleton.validate_hierarchy().map_err(|e| e.to_string())?;
-        if skeleton.nodes.is_empty() || skeleton.nodes.len() > i16::MAX as usize {
-            return Err("骨架节点数量超出原生资源头的有符号 WORD 范围".into());
-        }
-        if skeleton.root_tables.len() != 1 || skeleton.blocks.len() != skeleton.nodes.len() + 1 {
-            return Err("当前预览尚未支持含额外元数据的骨架编译布局".into());
-        }
-        if skeleton.root_indices().is_empty() || skeleton.root_indices().len() > 4 {
-            return Err("原生资源头需要有效骨架根，最多容纳 4 组骨架".into());
-        }
-        // Native 100022A0 copies a contiguous node range for each root traversal.
-        let mut visited = vec![false; skeleton.nodes.len()];
-        for &root in skeleton.root_indices() {
-            let mut stack = vec![root as usize];
-            let mut subtree = Vec::new();
-            while let Some(index) = stack.pop() {
-                if visited[index] {
-                    return Err("骨架节点顺序不符合原生连续子树布局".into());
-                }
-                visited[index] = true;
-                subtree.push(index);
-                let NodeEntry::Bone(node) = &skeleton.nodes[index] else {
-                    return Err("未知原生骨骼布局".into());
-                };
-                if node.next_sibling_index >= 0 {
-                    stack.push(node.next_sibling_index as usize);
-                }
-                if node.first_child_index >= 0 {
-                    stack.push(node.first_child_index as usize);
-                }
-            }
-            // The compiler copies a contiguous index range; it does not require
-            // child/sibling traversal to encounter that range in ascending order.
-            let end = root as usize + subtree.len();
-            if subtree
-                .iter()
-                .any(|&index| index < root as usize || index >= end)
-            {
-                return Err("骨架根所引用的节点不构成原生要求的连续索引范围".into());
-            }
-        }
-        if visited.iter().any(|v| !v) {
-            return Err("存在不属于任何根骨架的节点".into());
-        }
-        for bone in skeleton.bones() {
-            let id = u16::try_from(bone.node_id).map_err(|_| "骨架节点 ID 超出原生 WORD 范围")?;
-            if node_ids.contains(&id) {
-                return Err("骨架节点 ID 重复，无法唯一绑定网格矩阵".into());
-            }
-            if bone.transform.scale[..3]
-                .iter()
-                .any(|v| !v.is_finite() || *v == 0.0)
-                || bone.transform.rotation[..3]
-                    .iter()
-                    .chain(&bone.transform.translation[..3])
-                    .any(|v| !v.is_finite())
-            {
-                return Err("骨骼变换包含无法用于原生矩阵运算的值".into());
-            }
-            node_ids.push(id);
-        }
-    }
+    let node_ids = skeleton
+        .map(skeleton::model_node_ids)
+        .transpose()?
+        .unwrap_or_default();
     if textures.len() > textures::TEXTURE_CAPACITY {
         return Err(format!(
             "此资源需要 {} 张贴图，超过原生 4095 个可分配贴图句柄",
@@ -666,10 +604,7 @@ fn preview_resources(mut bundle: AssetBundle) -> Result<AssetBundle, String> {
 
 fn generated_resource(name: &str, bytes: Vec<u8>) -> crate::preview::ResourceRef {
     let document = Arc::new(crate::inspect::inspect(name, bytes.into()));
-    crate::preview::ResourceRef {
-        node: document.root,
-        document,
-    }
+    crate::preview::ResourceRef::new(document.clone(), document.root)
 }
 
 pub(crate) unsafe fn validate(client: Client) -> Result<(), String> {
@@ -1096,19 +1031,24 @@ impl NativeAsset {
         // model with the framebuffer/background on the following frame.
         unsafe { reset_render_options() };
         let mut transformed = false;
+        let mut transforms = Vec::new();
+        let mut materials = Vec::<[u8; 140]>::new();
+        let mut material_entries = Vec::new();
         for index in 0..self.requirements.mesh_vertices.len() {
             if !self.meshes[index].visible {
                 continue;
             }
             let mesh = unsafe { &*((resource.meshes + index * size_of::<Mesh>()) as *const Mesh) };
             let map = &self.requirements.bone_maps[index];
-            let transforms: Vec<_> = effects
-                .as_ref()
-                .into_iter()
-                .flat_map(|sample| &sample.transforms)
-                .filter(|transform| transform.mesh == index)
-                .copied()
-                .collect();
+            transforms.clear();
+            transforms.extend(
+                effects
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|sample| &sample.transforms)
+                    .filter(|transform| transform.mesh == index)
+                    .copied(),
+            );
             if transformed || !transforms.is_empty() {
                 unsafe { skeleton.update(client, motion_frames, world, &transforms) }?;
             }
@@ -1119,11 +1059,10 @@ impl NativeAsset {
             let matrices = skeleton.skin_matrices();
             // Copies stay alive through drawing, including when two meshes use
             // the same original material with different effects.
-            let mut materials: Vec<[u8; 140]> = (0..mesh.material_count as usize)
-                .map(|local| unsafe {
-                    super::get(resource.materials + mesh.materials[local] as usize * 140)
-                })
-                .collect();
+            materials.clear();
+            materials.extend((0..mesh.material_count as usize).map(|local| unsafe {
+                super::get::<[u8; 140]>(resource.materials + mesh.materials[local] as usize * 140)
+            }));
             let mesh_effects = effects
                 .as_ref()
                 .into_iter()
@@ -1138,8 +1077,8 @@ impl NativeAsset {
                 }
                 material[16..20].copy_from_slice(&effect.opacity.to_le_bytes());
             }
-            let material_entries: Vec<_> =
-                mesh_effects.clone().map(|effect| effect.entry).collect();
+            material_entries.clear();
+            material_entries.extend(mesh_effects.clone().map(|effect| effect.entry));
             // 10BBE150 visits local slots in order before drawing the group;
             // the last UV-writing slot supplies its shared texture matrix.
             let uv_offset = mesh_effects
@@ -1311,6 +1250,7 @@ unsafe extern "C" fn draw_model(_target: usize, _handle: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mhf_resource::fskl::Fskl;
 
     #[test]
     fn rigid_material_consumer_sees_current_alpha_and_originals_are_restored() {
@@ -1422,7 +1362,7 @@ mod tests {
 
     fn asset_with_meshes(vertex_counts: &[usize]) -> NativeAsset {
         let document = Arc::new(crate::inspect::inspect("mesh fixture", Arc::from([])));
-        let source = crate::preview::ResourceRef { document, node: 0 };
+        let source = crate::preview::ResourceRef::new(document, 0);
         NativeAsset {
             _bundle: AssetBundle {
                 model: source.clone(),
@@ -1528,11 +1468,8 @@ mod tests {
                 if node.kind != crate::inspect::Kind::Archive {
                     return None;
                 }
-                let resources = crate::preview::ResourceRef {
-                    document: document.clone(),
-                    node: index,
-                }
-                .loadable_resources();
+                let resources =
+                    crate::preview::ResourceRef::new(document.clone(), index).loadable_resources();
                 (resources.len() == 2
                     && resources
                         .iter()
@@ -1543,11 +1480,8 @@ mod tests {
                 .then_some(index)
             })
             .unwrap();
-        let selected = crate::preview::ResourceRef {
-            document: document.clone(),
-            node: parent,
-        }
-        .loadable_resources();
+        let selected =
+            crate::preview::ResourceRef::new(document.clone(), parent).loadable_resources();
         assert_eq!(selected.len(), 2);
         assert!(
             selected
@@ -1564,16 +1498,13 @@ mod tests {
             crate::inspect::Kind::Png | crate::inspect::Kind::Dds | crate::inspect::Kind::Txb
         )));
         assert!(
-            crate::preview::ResourceRef {
-                node: document.root,
-                document
-            }
-            .loadable_resources()
-            .iter()
-            .any(|source| matches!(
-                source.kind(),
-                crate::inspect::Kind::Png | crate::inspect::Kind::Dds
-            ))
+            crate::preview::ResourceRef::new(document.clone(), document.root)
+                .loadable_resources()
+                .iter()
+                .any(|source| matches!(
+                    source.kind(),
+                    crate::inspect::Kind::Png | crate::inspect::Kind::Dds
+                ))
         );
         let original = group.model.bytes().unwrap().to_vec();
         let bare = AssetBundle {
@@ -1676,10 +1607,7 @@ mod tests {
             let shared_skin = (name == "dat/extend/f00_body.abn").then(|| {
                 let source = std::fs::read(root.join("dat/parts/f00/f_skin.txb")).unwrap();
                 let document = Arc::new(crate::inspect::inspect("f_skin.txb", source.into()));
-                crate::preview::ResourceRef {
-                    node: document.root,
-                    document,
-                }
+                crate::preview::ResourceRef::new(document.clone(), document.root)
             });
             let mut supplied = 0;
             for bundle in bundles {

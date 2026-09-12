@@ -1,6 +1,7 @@
 //! Context-selected scene camera regions, before native pointer relocation.
 
 use super::{Builder, Kind, hex};
+use crate::field::{FieldType, ScalarType, formatted, typed};
 use mhf_resource::stage::AreaCamera;
 
 impl Builder {
@@ -24,7 +25,7 @@ impl Builder {
                     self.field(
                         node,
                         format!("word_{offset:02X}"),
-                        format!("{value:#010X}"),
+                        formatted(value, format!("{value:#010X}")),
                         base + offset,
                         4,
                     );
@@ -61,7 +62,10 @@ impl Builder {
                 self.field(
                     child,
                     format!("word_{:03X}", index * 4),
-                    format!("{word:#010X} · f32 {}", f32::from_bits(word)),
+                    typed(
+                        format!("{word:#010X} · f32 {}", f32::from_bits(word)),
+                        FieldType::Scalar(ScalarType::U32),
+                    ),
                     at + index * 4,
                     4,
                 );

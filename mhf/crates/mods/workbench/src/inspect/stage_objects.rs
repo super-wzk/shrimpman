@@ -1,6 +1,7 @@
 //! Native stage member descriptors and references share the original nodes.
 
 use super::{Builder, Document, Hint, InspectionTask, Kind, hex};
+use crate::field::formatted;
 use mhf_resource::{
     container::StageArchive,
     stage::{ObjectPackage, ObjectTables, ResourceReference},
@@ -51,7 +52,7 @@ impl Builder {
         self.field(
             descriptor,
             "offset",
-            format!("{:#X}", index.offset),
+            formatted(index.offset, format!("{:#X}", index.offset)),
             base + package.archive.table_offset,
             4,
         );
@@ -106,7 +107,13 @@ impl Builder {
                 break;
             };
             let meta = base + package.archive.table_offset + entry.index * 8;
-            self.field(child, "offset", format!("{:#X}", entry.offset), meta, 4);
+            self.field(
+                child,
+                "offset",
+                formatted(entry.offset, format!("{:#X}", entry.offset)),
+                meta,
+                4,
+            );
             self.field(child, "size", entry.size, meta + 4, 4);
             self.field(child, "kind", member.kind, index_base + 3 + entry.index, 1);
             if ResourceReference::has_magic(member.bytes) {
@@ -157,7 +164,7 @@ impl Builder {
         self.field(
             node,
             "unknown_00",
-            format!("{:#010X}", file.unknown_00),
+            formatted(file.unknown_00, format!("{:#010X}", file.unknown_00)),
             base,
             4,
         );
@@ -184,7 +191,7 @@ impl Builder {
             self.field(
                 node,
                 format!("值 {index}"),
-                format!("{value:#010X} · {value}"),
+                formatted(value, format!("{value:#010X} · {value}")),
                 base + 8 + index * 4,
                 4,
             );
@@ -252,7 +259,7 @@ impl Builder {
                 self.field(
                     child,
                     format!("记录 {record}"),
-                    format!("{words:08X?}"),
+                    formatted(&words, format!("{words:08X?}")),
                     offset,
                     bytes.len(),
                 );
@@ -536,7 +543,10 @@ mod tests {
             for field in &node.fields {
                 assert!(
                     document.buffers[node.buffer]
-                        .get(field.offset..field.offset + field.size)
+                        .get(
+                            field.binding.range.start
+                                ..field.binding.range.start + field.binding.range.len()
+                        )
                         .is_some()
                 );
             }
@@ -646,7 +656,8 @@ mod tests {
                     expanded.nodes[node]
                         .fields
                         .iter()
-                        .any(|field| field.offset == offset && field.size == 4)
+                        .any(|field| field.binding.range.start == offset
+                            && field.binding.range.len() == 4)
                 );
                 assert_eq!(
                     u32::from_le_bytes(expanded.buffers[0][offset..offset + 4].try_into().unwrap()),

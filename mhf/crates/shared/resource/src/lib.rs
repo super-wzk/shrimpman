@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+pub mod binary;
 pub mod container;
 pub mod crypto;
 pub mod dat;

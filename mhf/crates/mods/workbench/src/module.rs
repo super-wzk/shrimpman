@@ -77,13 +77,31 @@ impl Module for WorkbenchModule {
                 .map_err(|error| format!("资源工作线程启动失败：{error}"))?,
         );
         self.worker = Some(worker.clone());
-        let workbench = Workbench::new(
+        let mods: toml::Table = configuration
+            .read("mods")
+            .map_err(|error| error.to_string())?
+            .parse()
+            .map_err(|error| format!("读取替换资源目录失败：{error}"))?;
+        let redirect = mods
+            .get("mhf.dat-redirect")
+            .and_then(|value| value.get("settings"))
+            .and_then(|value| value.get("root"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("dat-redirect");
+        let mut workbench = Workbench::new(
             self.control.clone(),
             worker,
             self.data_root.clone(),
             self.view,
             Some(configuration),
         );
+        let game_dat = self.game_dir.join("dat");
+        let source_root = if self.data_root.starts_with(&game_dat) {
+            game_dat
+        } else {
+            self.data_root.clone()
+        };
+        workbench.set_redirect_paths(source_root, self.game_dir.join(redirect));
         self.registration = Some(self.registry.register(Box::new(workbench)));
         Ok(())
     }

@@ -1,8 +1,8 @@
 # FMOD / FSKL file representation
 
 These parsers describe unwrapped file data, not the client's relocated objects,
-Direct3D buffers, or the 32-bit index extension in `mhf.geometry`. They use
-`std::io::Cursor`, `Read::read_exact`, and standard little-endian conversions.
+Direct3D buffers, or the 32-bit index extension in `mhf.geometry`. They read
+bounded source slices with standard little-endian conversions.
 The complete source slice remains authoritative: block order, duplicate kinds,
 unknown payload, counted-record tails, and file tails are all retained.
 

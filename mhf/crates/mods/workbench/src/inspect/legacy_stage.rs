@@ -2,6 +2,7 @@
 //! filename, isolated payload length, or the newer HD lighting/table layout.
 
 use super::{Builder, Hint, Kind, hex};
+use crate::field::{FieldType, ScalarType, formatted, typed};
 use mhf_resource::{
     container::SimpleArchive,
     stage::{LegacyLighting, LegacyRenderTables},
@@ -121,7 +122,7 @@ impl Builder {
         self.field(
             node,
             "color_02",
-            format!("{:#010X}", file.color_02),
+            formatted(file.color_02, format!("{:#010X}", file.color_02)),
             base + 2,
             4,
         );
@@ -129,7 +130,10 @@ impl Builder {
             self.field(
                 node,
                 format!("value_{offset:02X}"),
-                format!("{} ({bits:#010X})", f32::from_bits(bits)),
+                typed(
+                    format!("{} ({bits:#010X})", f32::from_bits(bits)),
+                    FieldType::Scalar(ScalarType::F32),
+                ),
                 base + offset,
                 4,
             );
@@ -158,7 +162,10 @@ impl Builder {
                 self.field(
                     node,
                     format!("向量组 {group} · {index}"),
-                    format!("{:?} · {bits:08X?}", bits.map(f32::from_bits)),
+                    formatted(
+                        bits.map(f32::from_bits),
+                        format!("{:?} · {bits:08X?}", bits.map(f32::from_bits)),
+                    ),
                     base + offset,
                     12,
                 );
@@ -169,7 +176,7 @@ impl Builder {
                 self.field(
                     node,
                     format!("扩展 word_{:02X}", index * 4),
-                    format!("{bits:#010X}"),
+                    formatted(bits, format!("{bits:#010X}")),
                     base + 122 + index * 4,
                     4,
                 );
@@ -178,7 +185,7 @@ impl Builder {
                 self.field(
                     node,
                     format!("扩展 color_{:02X}", 16 + index * 4),
-                    format!("{bits:#010X}"),
+                    formatted(bits, format!("{bits:#010X}")),
                     base + 138 + index * 4,
                     4,
                 );
@@ -209,7 +216,7 @@ impl Builder {
                     self.field(
                         child,
                         format!("word_{:02X}", word * 4),
-                        format!("{bits:#010X}"),
+                        formatted(bits, format!("{bits:#010X}")),
                         at + word * 4,
                         4,
                     );
@@ -232,7 +239,7 @@ impl Builder {
                     self.field(
                         child,
                         format!("word_{:02X}", word * 4),
-                        format!("{bits:#010X}"),
+                        formatted(bits, format!("{bits:#010X}")),
                         at + word * 4,
                         4,
                     );
@@ -306,7 +313,7 @@ impl Builder {
                 self.field(
                     child,
                     format!("记录 {index}"),
-                    format!("{words:08X?}"),
+                    formatted(&words, format!("{words:08X?}")),
                     at + index * table.record_size,
                     record.len(),
                 );

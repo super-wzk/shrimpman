@@ -49,10 +49,11 @@ fn assert_camera_expansion(document: &Document, node_index: usize) {
         assert!(child.error.is_none());
         for (frame, field) in child.fields.iter().enumerate() {
             assert_eq!(
-                (field.offset, field.size),
+                (field.binding.range.start, field.binding.range.len()),
                 (offset + frame * stride, stride)
             );
-            let encoded = &document.buffers[node.buffer][field.offset..field.offset + field.size];
+            let encoded = &document.buffers[node.buffer]
+                [field.binding.range.start..field.binding.range.start + field.binding.range.len()];
             assert_eq!(
                 encoded,
                 &camera.arrays[array][frame * stride..(frame + 1) * stride]
@@ -112,8 +113,20 @@ fn utf16_line_break_placeholders_keep_bom_and_content_in_the_original_buffer() {
         assert!(Arc::ptr_eq(&document.buffers[node.buffer], &source));
         assert_eq!(document.bytes(document.root).unwrap(), source.as_ref());
         assert_eq!(node.fields.len(), 2);
-        assert_eq!((node.fields[0].offset, node.fields[0].size), (0, 2));
-        assert_eq!((node.fields[1].offset, node.fields[1].size), (2, 4));
+        assert_eq!(
+            (
+                node.fields[0].binding.range.start,
+                node.fields[0].binding.range.len()
+            ),
+            (0, 2)
+        );
+        assert_eq!(
+            (
+                node.fields[1].binding.range.start,
+                node.fields[1].binding.range.len()
+            ),
+            (2, 4)
+        );
         assert_eq!(node.fields[1].value, format!("{:?}", "\r\n"));
     }
 }

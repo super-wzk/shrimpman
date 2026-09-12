@@ -7,7 +7,12 @@
 use super::{Client, animation, get, put};
 use crate::preview::{Bone, ResourceRef, effects::NodeTransform};
 use mhf_resource::fskl::{Fskl, NodeEntry};
-use std::{cmp::Reverse, collections::BinaryHeap, mem::transmute, sync::Arc};
+use std::{
+    cmp::Reverse,
+    collections::{BinaryHeap, HashSet},
+    mem::transmute,
+    sync::Arc,
+};
 
 const NODE_SIZE: usize = 448;
 const NODE_LOCAL: usize = 64;
@@ -44,12 +49,13 @@ struct Group {
     count: usize,
 }
 
-struct StandalonePlan {
+/// Both the model pool and standalone owner use the same FSKL compiler.
+struct CompilePlan {
     groups: Vec<Group>,
-    count: usize,
+    node_ids: Vec<u16>,
 }
 
-impl StandalonePlan {
+impl CompilePlan {
     fn read(bytes: &[u8]) -> Result<Self, String> {
         let source = Fskl::parse(bytes).map_err(|error| error.to_string())?;
         source
@@ -65,9 +71,13 @@ impl StandalonePlan {
         if source.root_indices().is_empty() {
             return Err("骨架没有根节点".into());
         }
-        let mut ids = Vec::with_capacity(count);
+        let mut node_ids = Vec::with_capacity(count);
+        let mut ids = HashSet::with_capacity(count);
         for node in source.bones() {
             let id = u16::try_from(node.node_id).map_err(|_| "骨架节点 ID 超出原生 WORD 范围")?;
+            if !ids.insert(id) {
+                return Err("骨架节点 ID 重复，无法唯一映射节点".into());
+            }
             if node.transform.scale[..3]
                 .iter()
                 .any(|value| !value.is_finite() || *value == 0.0)
@@ -78,11 +88,7 @@ impl StandalonePlan {
             {
                 return Err("骨骼变换包含无法用于原生矩阵运算的值".into());
             }
-            ids.push(id);
-        }
-        ids.sort_unstable();
-        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err("骨架节点 ID 重复，无法唯一映射节点".into());
+            node_ids.push(id);
         }
         let mut groups = Vec::with_capacity(source.root_indices().len());
         let mut visited = vec![false; count];
@@ -120,8 +126,16 @@ impl StandalonePlan {
         if visited.iter().any(|visited| !visited) {
             return Err("存在不属于任何根骨架的节点".into());
         }
-        Ok(Self { groups, count })
+        Ok(Self { groups, node_ids })
     }
+}
+
+pub(super) fn model_node_ids(bytes: &[u8]) -> Result<Vec<u16>, String> {
+    let plan = CompilePlan::read(bytes)?;
+    if plan.groups.len() > 4 {
+        return Err("原生资源头需要有效骨架根，最多容纳 4 组骨架".into());
+    }
+    Ok(plan.node_ids)
 }
 
 impl Standalone {
@@ -130,13 +144,13 @@ impl Standalone {
     /// Release every motion bound to these nodes before dropping this owner.
     pub(super) unsafe fn load(client: Client, source: ResourceRef) -> Result<Self, String> {
         let bytes = source.bytes()?;
-        let plan = StandalonePlan::read(bytes)?;
+        let plan = CompilePlan::read(bytes)?;
         unsafe { validate(client) }?;
         let compile: unsafe extern "C" fn(*mut u32, *mut u32, *const u8, u32) -> i32 =
             unsafe { transmute(client.address(0x1000_22a0)) };
         // The constructor leaves root parent and unused bind-value words alone.
         // Zeroed memory is essential when its storage is not a fresh game pool.
-        let mut nodes = vec![RuntimeNode([0; NODE_SIZE]); plan.count].into_boxed_slice();
+        let mut nodes = vec![RuntimeNode([0; NODE_SIZE]); plan.node_ids.len()].into_boxed_slice();
         let base = nodes.as_mut_ptr() as usize;
         let mut roots = Vec::with_capacity(plan.groups.len());
         let mut offset = 0;
@@ -167,7 +181,7 @@ impl Standalone {
             roots.push(root);
             offset += group.count;
         }
-        let skeleton = unsafe { Skeleton::prepare(&roots, (base, plan.count)) }?;
+        let skeleton = unsafe { Skeleton::prepare(&roots, (base, plan.node_ids.len())) }?;
         let mut result = Self {
             _source: source,
             nodes,
@@ -413,6 +427,9 @@ impl Skeleton {
     /// Install a complete validated graph atomically; replaying one edge at a
     /// time can introduce a transient cycle when restoring a valid saved graph.
     pub(super) fn set_bindings(&mut self, bindings: Arc<Vec<Option<usize>>>) -> Result<(), String> {
+        if self.bindings == bindings {
+            return Ok(());
+        }
         if bindings.len() != self.bindings.len()
             || bindings.iter().enumerate().any(|(target, source)| {
                 source.is_some_and(|source| source >= bindings.len() || source == target)
@@ -663,10 +680,6 @@ fn traversal(roots: &[usize], links: &[Links]) -> Result<Vec<Step>, String> {
 mod tests {
     use super::*;
 
-    const IDENTITY: Matrix = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-
     fn fskl_fixture(roots: &[u32], links: &[(i32, i32, i32)]) -> Vec<u8> {
         let root_size = 12 + roots.len() * 4;
         let size = 12 + root_size + links.len() * 268;
@@ -704,17 +717,19 @@ mod tests {
             &[2, 0],
             &[(-1, 1, -1), (0, -1, -1), (-1, 3, -1), (2, -1, -1)],
         );
-        let plan = StandalonePlan::read(&bytes).unwrap();
-        assert_eq!(plan.count, 4);
+        let plan = CompilePlan::read(&bytes).unwrap();
+        assert_eq!(plan.node_ids.len(), 4);
+        assert_eq!(model_node_ids(&bytes).unwrap(), [1000, 1001, 1002, 1003]);
         assert_eq!(
             plan.groups,
             [Group { first: 2, count: 2 }, Group { first: 0, count: 2 }]
         );
         let roots: Vec<_> = (0..8).collect();
         let bytes = fskl_fixture(&roots, &[(-1, -1, -1); 8]);
-        let plan = StandalonePlan::read(&bytes).unwrap();
+        let plan = CompilePlan::read(&bytes).unwrap();
         assert_eq!(plan.groups.len(), 8);
         assert!(plan.groups.iter().all(|group| group.count == 1));
+        assert!(model_node_ids(&bytes).is_err());
     }
 
     #[test]
@@ -729,17 +744,17 @@ mod tests {
             fskl_fixture(&[], &[(-1, -1, -1)]),
             fskl_fixture(&[0], &[(-1, -1, -1), (-1, -1, -1)]),
         ] {
-            assert!(StandalonePlan::read(&bytes).is_err());
+            assert!(CompilePlan::read(&bytes).is_err());
         }
         for value in [0.0f32, f32::NAN, f32::INFINITY] {
             let mut bytes = fskl_fixture(&[0], &[(-1, -1, -1)]);
             // Root header 12 + root table 16 + node header 12 + scale offset 16.
             bytes[56..60].copy_from_slice(&value.to_le_bytes());
-            assert!(StandalonePlan::read(&bytes).is_err());
+            assert!(CompilePlan::read(&bytes).is_err());
         }
         let mut duplicate_ids = fskl_fixture(&[0, 1], &[(-1, -1, -1); 2]);
         duplicate_ids[312..316].copy_from_slice(&1000u32.to_le_bytes());
-        assert!(StandalonePlan::read(&duplicate_ids).is_err());
+        assert!(CompilePlan::read(&duplicate_ids).is_err());
     }
 
     #[unsafe(naked)]
@@ -779,14 +794,11 @@ mod tests {
             if entry.kind != crate::inspect::Kind::Fskl {
                 continue;
             }
-            let source = ResourceRef {
-                document: document.clone(),
-                node,
-            };
-            let plan = StandalonePlan::read(source.bytes().unwrap()).unwrap();
+            let source = ResourceRef::new(document.clone(), node);
+            let plan = CompilePlan::read(source.bytes().unwrap()).unwrap();
             assert_eq!(
                 plan.groups.iter().map(|group| group.count).sum::<usize>(),
-                plan.count
+                plan.node_ids.len()
             );
             checked += 1;
         }

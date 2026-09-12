@@ -1,8 +1,6 @@
 //! ECD/EXF resource wrappers. Headers and encrypted input remain available;
 //! decoded payloads are separate allocations, never replacement source images.
 
-use std::io::{Cursor, Read};
-
 use crate::{Decoded, Error, Result};
 
 const ECD_PARAMETERS: [(u32, u32); 6] = [
@@ -38,11 +36,9 @@ pub struct Ecd<'a> {
 
 impl<'a> Ecd<'a> {
     pub fn parse(source: &'a [u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(source);
-        let mut bytes = [0u8; 16];
-        cursor
-            .read_exact(&mut bytes)
-            .map_err(|_| Error::new(0, "truncated ECD header"))?;
+        let bytes = source
+            .get(..16)
+            .ok_or_else(|| Error::new(0, "truncated ECD header"))?;
         let header = EcdHeader {
             magic: bytes[..4].try_into().unwrap(),
             key_index: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
@@ -66,6 +62,39 @@ impl<'a> Ecd<'a> {
         self.source
             .get(end..)
             .ok_or_else(|| Error::new(8, "truncated ECD payload"))
+    }
+
+    /// Replace the decoded payload, preserving the key, unknown header bytes
+    /// and trailer. The checksum also seeds encryption, so every byte is encoded.
+    pub fn encode(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        let &(multiplier, increment) = ECD_PARAMETERS
+            .get(usize::from(self.header.key_index))
+            .ok_or_else(|| Error::new(4, "unsupported ECD key index"))?;
+        let size = u32::try_from(payload.len())
+            .map_err(|_| Error::new(8, "ECD payload exceeds 32-bit size"))?;
+        let trailer = self.trailing_bytes()?;
+        let mut output = encoded_buffer(payload.len(), trailer.len())?;
+        let checksum = crc32(payload);
+        output.extend_from_slice(b"ecd\x1a");
+        output.extend_from_slice(&self.header.key_index.to_le_bytes());
+        output.extend_from_slice(&self.header.unknown_06);
+        output.extend_from_slice(&size.to_le_bytes());
+        output.extend_from_slice(&checksum.to_le_bytes());
+        let mut state = checksum.rotate_left(16) | 1;
+        state = state.wrapping_mul(multiplier).wrapping_add(increment);
+        let mut previous = state as u8;
+        for &plain in payload {
+            state = state.wrapping_mul(multiplier).wrapping_add(increment);
+            let mut low = u32::from(plain >> 4);
+            let mut high = u32::from(plain & 15);
+            for shift in (0..8).rev() {
+                (low, high) = ((high ^ low ^ (state >> (shift * 4))) & 15, low);
+            }
+            output.push(((high << 4) | low) as u8 ^ previous);
+            previous = plain;
+        }
+        output.extend_from_slice(trailer);
+        Ok(output)
     }
 
     /// Validate the stored CRC32 after decoding the declared payload.
@@ -133,11 +162,9 @@ pub struct Exf<'a> {
 
 impl<'a> Exf<'a> {
     pub fn parse(source: &'a [u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(source);
-        let mut bytes = [0u8; 16];
-        cursor
-            .read_exact(&mut bytes)
-            .map_err(|_| Error::new(0, "truncated EXF header"))?;
+        let bytes = source
+            .get(..16)
+            .ok_or_else(|| Error::new(0, "truncated EXF header"))?;
         let header = ExfHeader {
             magic: bytes[..4].try_into().unwrap(),
             key_index: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
@@ -151,21 +178,43 @@ impl<'a> Exf<'a> {
         Ok(Self { source, header })
     }
 
-    pub fn decode(self, max_output_bytes: usize) -> Result<Decoded<Self, Box<[u8]>>> {
+    fn key(&self) -> Result<[u8; 16]> {
         let &(multiplier, increment) = EXF_PARAMETERS
             .get(usize::from(self.header.key_index))
             .ok_or_else(|| Error::new(4, "unsupported EXF key index"))?;
-        let encoded = self
-            .source
-            .get(16..)
-            .ok_or_else(|| Error::new(0, "truncated EXF header"))?;
-        let mut output = allocate(encoded.len(), max_output_bytes)?;
         let mut key = [0u8; 16];
         let mut state = self.header.seed;
         for chunk in key.as_chunks_mut::<4>().0 {
             state = state.wrapping_mul(multiplier).wrapping_add(increment);
             chunk.copy_from_slice(&(state ^ self.header.seed).to_le_bytes());
         }
+        Ok(key)
+    }
+
+    /// Replace the decoded payload while retaining all EXF header metadata.
+    pub fn encode(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        let key = self.key()?;
+        let mut output = encoded_buffer(payload.len(), 0)?;
+        output.extend_from_slice(b"exf\x1a");
+        output.extend_from_slice(&self.header.key_index.to_le_bytes());
+        output.extend_from_slice(&self.header.unknown_06);
+        output.extend_from_slice(&self.header.unknown_08);
+        output.extend_from_slice(&self.header.seed.to_le_bytes());
+        for (position, &plain) in payload.iter().enumerate() {
+            let high = ((plain >> 4) ^ key[position & 15]) & 15;
+            let low = (plain ^ (key[usize::from(high)] >> 4)) & 15;
+            output.push(((high << 4) | low) ^ position as u8);
+        }
+        Ok(output)
+    }
+
+    pub fn decode(self, max_output_bytes: usize) -> Result<Decoded<Self, Box<[u8]>>> {
+        let key = self.key()?;
+        let encoded = self
+            .source
+            .get(16..)
+            .ok_or_else(|| Error::new(0, "truncated EXF header"))?;
+        let mut output = allocate(encoded.len(), max_output_bytes)?;
         for (position, &encrypted) in encoded.iter().enumerate() {
             let mixed = encrypted ^ position as u8;
             let high = (mixed >> 4) ^ key[position & 15];
@@ -174,6 +223,14 @@ impl<'a> Exf<'a> {
         }
         Ok(Decoded::new(self, output.into_boxed_slice()))
     }
+}
+
+fn encoded_buffer(payload: usize, trailer: usize) -> Result<Vec<u8>> {
+    let size = payload
+        .checked_add(trailer)
+        .and_then(|size| size.checked_add(16))
+        .ok_or_else(|| Error::new(8, "encoded resource size overflow"))?;
+    allocate(size, size)
 }
 
 fn allocate(size: usize, budget: usize) -> Result<Vec<u8>> {

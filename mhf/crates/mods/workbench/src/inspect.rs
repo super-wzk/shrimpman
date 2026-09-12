@@ -3,6 +3,14 @@
 
 use std::{fmt, ops::Range, path::Path, sync::Arc};
 
+use crate::metadata::{self, Metadata};
+
+pub use crate::field::Field;
+use crate::field::{
+    Binding, Endian, FieldType, FieldValue, IntoFieldValue, ScalarType, TextEncoding, formatted,
+    typed,
+};
+
 #[cfg(test)]
 mod archive_tests;
 mod dat;
@@ -15,6 +23,7 @@ mod stage_objects;
 
 use mhf_resource::{
     Decoded,
+    binary::{BinaryValue, Reader},
     container::{MhaArchive, SimpleArchive, StageArchive},
     crypto::{Ecd, Exf},
     effect_archive::{
@@ -28,7 +37,7 @@ use mhf_resource::{
     motion::{Motion, MotionArchive, ObservedMotionDirectory},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Unknown,
     Empty,
@@ -78,6 +87,13 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub const fn is_transparent(self) -> bool {
+        matches!(
+            self,
+            Self::Ecd | Self::Exf | Self::Jkr | Self::StageResourceReference
+        )
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Unknown => "未识别资源",
@@ -136,21 +152,13 @@ impl fmt::Display for Kind {
 }
 
 #[derive(Clone, Debug)]
-pub struct Field {
-    pub name: String,
-    pub value: String,
-    /// Absolute offset in Node::buffer, also suitable for hex selection.
-    pub offset: usize,
-    pub size: usize,
-}
-
-#[derive(Clone, Debug)]
 pub struct Node {
     pub name: String,
     pub kind: Kind,
     pub buffer: usize,
     pub range: Range<usize>,
     pub fields: Vec<Field>,
+    pub metadata: Metadata,
     /// Ordinary children are appended after their parent. A validated stage
     /// reference instead points to its original target member, which may have
     /// an earlier index or appear elsewhere in this acyclic resource graph.
@@ -180,10 +188,7 @@ impl Document {
         // A valid chain cannot visit more nodes than the document contains.
         for _ in 0..self.nodes.len() {
             let node = self.nodes.get(index)?;
-            if !matches!(
-                node.kind,
-                Kind::Ecd | Kind::Exf | Kind::Jkr | Kind::StageResourceReference
-            ) {
+            if !node.kind.is_transparent() {
                 return Some(index);
             }
             if node.children.len() != 1 {
@@ -204,6 +209,7 @@ pub fn inspect(name: &str, source: Arc<[u8]>) -> Document {
                 buffer: 0,
                 range: 0..source.len(),
                 fields: Vec::new(),
+                metadata: Metadata::default(),
                 children: Vec::new(),
                 deferred: false,
                 error: None,
@@ -214,6 +220,9 @@ pub fn inspect(name: &str, source: Arc<[u8]>) -> Document {
         parents: vec![None],
         work: Vec::new(),
     };
+    if let Some(value) = metadata::from_filename(name) {
+        builder.document.nodes[0].metadata.insert(value);
+    }
     builder.inspect_node(0, Hint::from_path(name));
     builder.finish();
     builder.document
@@ -319,7 +328,11 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         }
         _ => return Err("此资源没有可展开的明细解析器".into()),
     }
-    builder.finish();
+    // Details retain the already resolved resource graph and declarations.
+    // Only newly scheduled resource inspection needs the full completion pass.
+    if !builder.work.is_empty() {
+        builder.finish();
+    }
     Ok(builder.document)
 }
 
@@ -378,6 +391,11 @@ impl Builder {
         self.resolve_stage_references();
         self.inspect_legacy_stage_contexts();
         self.run();
+        for (scope, value) in metadata::model_resources(&self.document) {
+            if let Some(node) = self.document.nodes.get_mut(scope) {
+                node.metadata.insert(value);
+            }
+        }
     }
 
     fn run(&mut self) {
@@ -470,16 +488,92 @@ impl Builder {
         &mut self,
         node: usize,
         name: impl Into<String>,
-        value: impl ToString,
+        value: impl IntoFieldValue,
         offset: usize,
         size: usize,
     ) {
-        self.document.nodes[node].fields.push(Field {
+        let value = value.into_field_value(size);
+        let current = &mut self.document.nodes[node];
+        current.fields.push(Field {
             name: name.into(),
-            value: value.to_string(),
-            offset,
-            size,
+            value: value.display,
+            writable: size != 0 && value.edit != FieldType::ReadOnly,
+            binding: Binding {
+                buffer: current.buffer,
+                range: offset..offset + size,
+                endian: Endian::Little,
+                format: if size == 0 {
+                    FieldType::ReadOnly
+                } else {
+                    value.edit
+                },
+            },
         });
+    }
+
+    /// Parse a value directly from its backing buffer. The shared codec owns
+    /// width, byte order and field range; callers supply only the source offset.
+    fn read<T: BinaryValue + fmt::Debug>(
+        &mut self,
+        node: usize,
+        name: impl Into<String>,
+        offset: usize,
+    ) -> Result<usize, String> {
+        self.read_endian::<T>(node, name, offset, Endian::Little)
+    }
+
+    fn read_scalar(
+        &mut self,
+        node: usize,
+        name: impl Into<String>,
+        offset: usize,
+        scalar: ScalarType,
+    ) -> Result<usize, String> {
+        match scalar {
+            ScalarType::U8 => self.read::<u8>(node, name, offset),
+            ScalarType::U16 => self.read::<u16>(node, name, offset),
+            ScalarType::U32 => self.read::<u32>(node, name, offset),
+            ScalarType::U64 => self.read::<u64>(node, name, offset),
+            ScalarType::I8 => self.read::<i8>(node, name, offset),
+            ScalarType::I16 => self.read::<i16>(node, name, offset),
+            ScalarType::I32 => self.read::<i32>(node, name, offset),
+            ScalarType::I64 => self.read::<i64>(node, name, offset),
+            ScalarType::F32 => self.read::<f32>(node, name, offset),
+            ScalarType::F64 => self.read::<f64>(node, name, offset),
+        }
+    }
+
+    fn read_endian<T: BinaryValue + fmt::Debug>(
+        &mut self,
+        node: usize,
+        name: impl Into<String>,
+        offset: usize,
+        endian: Endian,
+    ) -> Result<usize, String> {
+        let buffer = self.document.nodes[node].buffer;
+        let source = Reader::new(&self.document.buffers[buffer])
+            .with_endian(endian)
+            .read_at::<T>(offset)
+            .map_err(|error| error.to_string())?;
+        let field = Field::from_binary(name, buffer, source);
+        let fields = &mut self.document.nodes[node].fields;
+        let index = fields.len();
+        fields.push(field);
+        Ok(index)
+    }
+
+    fn read_as<T: BinaryValue + fmt::Debug>(
+        &mut self,
+        node: usize,
+        name: impl Into<String>,
+        offset: usize,
+        format: FieldType,
+    ) -> Result<(), String> {
+        let index = self.read::<T>(node, name, offset)?;
+        let field = &mut self.document.nodes[node].fields[index];
+        field.binding.format = format;
+        field.value = field.read(&self.document.buffers)?;
+        Ok(())
     }
 
     fn child(
@@ -514,6 +608,7 @@ impl Builder {
             buffer,
             range,
             fields: Vec::new(),
+            metadata: Metadata::default(),
             children: Vec::new(),
             deferred: false,
             error: None,
@@ -581,19 +676,15 @@ impl Builder {
                 _ => None,
             }
         {
-            let words = bytes[2..]
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|word| {
-                    if little_endian {
-                        u16::from_le_bytes(*word)
-                    } else {
-                        u16::from_be_bytes(*word)
-                    }
-                })
-                .collect::<Vec<_>>();
-            if let Ok(text) = String::from_utf16(&words) {
+            let format = FieldType::Text {
+                encoding: if little_endian {
+                    TextEncoding::Utf16Le
+                } else {
+                    TextEncoding::Utf16Be
+                },
+                terminated: false,
+            };
+            if let Ok(text) = format.decode(&bytes[2..]) {
                 self.document.nodes[node].kind = Kind::Text;
                 self.field(
                     node,
@@ -609,7 +700,7 @@ impl Builder {
                 self.field(
                     node,
                     "文本内容",
-                    format!("{text:?}"),
+                    typed(format!("{text:?}"), format),
                     base + 2,
                     bytes.len() - 2,
                 );
@@ -632,7 +723,7 @@ impl Builder {
                 self.field(
                     node,
                     "CRC32",
-                    format!("{:08X}", file.header.crc32),
+                    formatted(file.header.crc32, format!("{:08X}", file.header.crc32)),
                     base + 12,
                     4,
                 );
@@ -663,7 +754,7 @@ impl Builder {
                 self.field(
                     node,
                     "seed",
-                    format!("{:08X}", file.header.seed),
+                    formatted(file.header.seed, format!("{:08X}", file.header.seed)),
                     base + 12,
                     4,
                 );
@@ -678,7 +769,7 @@ impl Builder {
                 self.field(
                     node,
                     "version",
-                    format!("{:#06X}", file.header.version),
+                    formatted(file.header.version, format!("{:#06X}", file.header.version)),
                     base + 4,
                     2,
                 );
@@ -692,7 +783,10 @@ impl Builder {
                 self.field(
                     node,
                     "data_offset",
-                    format!("{:#X}", file.header.data_offset),
+                    formatted(
+                        file.header.data_offset,
+                        format!("{:#X}", file.header.data_offset),
+                    ),
                     base + 8,
                     4,
                 );
@@ -722,7 +816,7 @@ impl Builder {
                         self.field(
                             node,
                             name,
-                            format!("{value} ({value:#X})"),
+                            formatted(value, format!("{value} ({value:#X})")),
                             base + offset,
                             4,
                         );
@@ -746,6 +840,12 @@ impl Builder {
                         ) else {
                             break;
                         };
+                        if let Some(value) = std::str::from_utf8(item.name)
+                            .ok()
+                            .and_then(metadata::from_filename)
+                        {
+                            self.document.nodes[child].metadata.insert(value);
+                        }
                         let meta = base + h.entries_offset as usize + entry.index * 20;
                         self.field(child, "name_offset", item.name_offset, meta, 4);
                         self.field(
@@ -755,7 +855,13 @@ impl Builder {
                             base + h.names_offset as usize + item.name_offset as usize,
                             item.name.len(),
                         );
-                        self.field(child, "offset", format!("{:#X}", entry.offset), meta + 4, 4);
+                        self.field(
+                            child,
+                            "offset",
+                            formatted(entry.offset, format!("{:#X}", entry.offset)),
+                            meta + 4,
+                            4,
+                        );
                         self.field(child, "size", entry.size, meta + 8, 4);
                         self.field(child, "padded_size", item.padded_size, meta + 12, 4);
                         self.field(child, "file_id", item.file_id, meta + 16, 4);
@@ -853,39 +959,43 @@ impl Builder {
             self.event_camera(node, &camera, base);
             return;
         }
-        if hint.motion || Motion::probe(bytes).is_ok() {
-            if let Ok(motion) = Motion::parse(bytes) {
-                self.document.nodes[node].kind = Kind::Motion;
-                self.motion_summary(node, &motion, base);
-                self.motion_tracks(node, &motion, base);
-                return;
-            } else {
-                match ObservedMotionDirectory::probe_with_budget(bytes, usize::MAX) {
-                    Ok(observed) => {
-                        self.document.nodes[node].kind = Kind::MotionArchive;
-                        self.field(
-                            node,
-                            "目录记录数（结构识别）",
-                            observed.record_count(),
-                            base,
-                            observed.record_count() * 8,
-                        );
-                        self.field(
-                            node,
-                            "原生消费组数",
-                            "未存储在该文件中，由调用方指定",
-                            base,
-                            0,
-                        );
-                        self.motion_archive(node, &observed.directory, base);
-                        return;
-                    }
-                    Err(error) => {
-                        hinted_error = Some((
-                            Kind::Unknown,
-                            format!("MOT 目录记录无法完整验证：{error}；文件没有原生消费组数字段"),
-                        ));
-                    }
+        let motion = if hint.motion {
+            Motion::parse(bytes)
+        } else {
+            Motion::probe(bytes)
+        };
+        if let Ok(motion) = motion {
+            self.document.nodes[node].kind = Kind::Motion;
+            self.motion_summary(node, &motion, base);
+            self.motion_tracks(node, &motion, base);
+            return;
+        }
+        if hint.motion {
+            match ObservedMotionDirectory::probe_with_budget(bytes, usize::MAX) {
+                Ok(observed) => {
+                    self.document.nodes[node].kind = Kind::MotionArchive;
+                    self.field(
+                        node,
+                        "目录记录数（结构识别）",
+                        observed.record_count(),
+                        base,
+                        observed.record_count() * 8,
+                    );
+                    self.field(
+                        node,
+                        "原生消费组数",
+                        "未存储在该文件中，由调用方指定",
+                        base,
+                        0,
+                    );
+                    self.motion_archive(node, &observed.directory, base);
+                    return;
+                }
+                Err(error) => {
+                    hinted_error = Some((
+                        Kind::Unknown,
+                        format!("MOT 目录记录无法完整验证：{error}；文件没有原生消费组数字段"),
+                    ));
                 }
             }
         }
@@ -938,7 +1048,13 @@ impl Builder {
                             break;
                         };
                         let meta = base + archive.table_offset + entry.index * 8;
-                        self.field(child, "offset", format!("{:#X}", entry.offset), meta, 4);
+                        self.field(
+                            child,
+                            "offset",
+                            formatted(entry.offset, format!("{:#X}", entry.offset)),
+                            meta,
+                            4,
+                        );
                         self.field(child, "size", entry.size, meta + 4, 4);
                         self.inspect_node(
                             child,
@@ -999,7 +1115,13 @@ impl Builder {
                 } else {
                     meta
                 };
-                self.field(child, "offset", format!("{:#X}", entry.offset), location, 4);
+                self.field(
+                    child,
+                    "offset",
+                    formatted(entry.offset, format!("{:#X}", entry.offset)),
+                    location,
+                    4,
+                );
                 self.field(child, "size", entry.size, location + 4, 4);
                 self.inspect_node(
                     child,
@@ -1016,8 +1138,14 @@ impl Builder {
             self.document.nodes[node].kind = Kind::Png;
             match mhf_resource::png::Png::parse(bytes) {
                 Ok(file) => {
-                    self.field(node, "width", file.header.width, base + 16, 4);
-                    self.field(node, "height", file.header.height, base + 20, 4);
+                    let first_field = self.document.nodes[node].fields.len();
+                    for (name, offset) in [("width", 16), ("height", 20)] {
+                        if let Err(error) =
+                            self.read_endian::<u32>(node, name, base + offset, Endian::Big)
+                        {
+                            self.fail(node, error);
+                        }
+                    }
                     self.field(node, "bit_depth", file.header.bit_depth, base + 24, 1);
                     self.field(node, "color_type", file.header.color_type, base + 25, 1);
                     self.field(
@@ -1041,6 +1169,11 @@ impl Builder {
                         base + 28,
                         1,
                     );
+                    // Image properties cannot be changed independently of
+                    // chunk checksums and encoded pixels. Replace the image.
+                    for field in &mut self.document.nodes[node].fields[first_field..] {
+                        field.writable = false;
+                    }
                     if let Err(error) = file.validate() {
                         self.fail(node, error.to_string());
                     }
@@ -1055,15 +1188,23 @@ impl Builder {
                         ) else {
                             break;
                         };
-                        self.field(child, "length", chunk.length, at, 4);
+                        if let Err(error) =
+                            self.read_endian::<u32>(child, "length", at, Endian::Big)
+                        {
+                            self.fail(child, error);
+                        }
                         self.field(child, "kind", hex(&chunk.kind), at + 4, 4);
-                        self.field(
+                        if let Err(error) = self.read_endian::<u32>(
                             child,
                             "CRC32",
-                            format!("{:08X}", chunk.crc),
                             at + 8 + chunk.data.len(),
-                            4,
-                        );
+                            Endian::Big,
+                        ) {
+                            self.fail(child, error);
+                        }
+                        for field in &mut self.document.nodes[child].fields {
+                            field.writable = false;
+                        }
                     }
                 }
                 Err(error) => self.fail(node, error.to_string()),
@@ -1097,7 +1238,7 @@ impl Builder {
                         self.field(
                             node,
                             name,
-                            format!("{value} ({value:#X})"),
+                            formatted(value, format!("{value} ({value:#X})")),
                             base + offset,
                             4,
                         );
@@ -1105,7 +1246,10 @@ impl Builder {
                     self.field(
                         node,
                         "reserved_1",
-                        summary(&header.reserved_1),
+                        typed(
+                            summary(&header.reserved_1),
+                            FieldType::Array(ScalarType::U32),
+                        ),
                         base + 32,
                         44,
                     );
@@ -1205,7 +1349,13 @@ impl Builder {
 
     fn block_fields(&mut self, node: usize, block: Block<'_>, base: usize) {
         let at = base + block.offset();
-        self.field(node, "kind", format!("{:#010X}", block.header.kind), at, 4);
+        self.field(
+            node,
+            "kind",
+            formatted(block.header.kind, format!("{:#010X}", block.header.kind)),
+            at,
+            4,
+        );
         self.field(node, "count", block.header.count, at + 4, 4);
         self.field(node, "size", block.header.size, at + 8, 4);
     }
@@ -1305,31 +1455,43 @@ impl Builder {
                                 self.field(
                                     child,
                                     "color_00",
-                                    format!("{:?}", material.color_00),
+                                    typed(
+                                        format!("{:?}", material.color_00),
+                                        FieldType::Array(ScalarType::F32),
+                                    ),
                                     at,
                                     16,
                                 );
                                 self.field(
                                     child,
                                     "color_10",
-                                    format!("{:?}", material.color_10),
+                                    typed(
+                                        format!("{:?}", material.color_10),
+                                        FieldType::Array(ScalarType::F32),
+                                    ),
                                     at + 16,
                                     16,
                                 );
                                 self.field(
                                     child,
                                     "color_20",
-                                    format!("{:?}", material.color_20),
+                                    typed(
+                                        format!("{:?}", material.color_20),
+                                        FieldType::Array(ScalarType::F32),
+                                    ),
                                     at + 32,
                                     16,
                                 );
                                 self.field(
                                     child,
                                     "parameter_30",
-                                    format!(
-                                        "{} ({:#010X})",
+                                    formatted(
                                         material.parameter_30,
-                                        material.parameter_30.to_bits()
+                                        format!(
+                                            "{} ({:#010X})",
+                                            material.parameter_30,
+                                            material.parameter_30.to_bits()
+                                        ),
                                     ),
                                     at + 48,
                                     4,
@@ -1344,7 +1506,10 @@ impl Builder {
                                 self.field(
                                     child,
                                     "texture_indices",
-                                    summary(&material.texture_indices),
+                                    typed(
+                                        summary(&material.texture_indices),
+                                        FieldType::Array(ScalarType::U32),
+                                    ),
                                     at + 256,
                                     material.texture_indices.len() * 4,
                                 );
@@ -1440,21 +1605,21 @@ impl Builder {
             Component::Positions(value) | Component::Normals(value) => self.field(
                 node,
                 "f32[3]",
-                summary(&value.values),
+                typed(summary(&value.values), FieldType::Array(ScalarType::F32)),
                 at,
                 value.values.len() * 12,
             ),
             Component::Uvs(value) => self.field(
                 node,
                 "f32[2]",
-                summary(&value.values),
+                typed(summary(&value.values), FieldType::Array(ScalarType::F32)),
                 at,
                 value.values.len() * 8,
             ),
             Component::Colors(value) | Component::Attribute12(value) => self.field(
                 node,
                 "f32[4]",
-                summary(&value.values),
+                typed(summary(&value.values), FieldType::Array(ScalarType::F32)),
                 at,
                 value.values.len() * 16,
             ),
@@ -1463,7 +1628,7 @@ impl Builder {
             | Component::BoneMap(value) => self.field(
                 node,
                 "u32 索引",
-                summary(&value.values),
+                typed(summary(&value.values), FieldType::Array(ScalarType::U32)),
                 at,
                 value.values.len() * 4,
             ),
@@ -1529,7 +1694,7 @@ impl Builder {
                     self.field(
                         child,
                         "u32 words",
-                        format!("{:08X?}", group.words),
+                        formatted(&group.words, format!("{:08X?}", group.words)),
                         at + 4,
                         group.words.len() * 4,
                     );
@@ -1549,7 +1714,7 @@ impl Builder {
                     self.field(
                         node,
                         format!("word_{:02X}", index * 4),
-                        format!("{word:#010X}"),
+                        formatted(word, format!("{word:#010X}")),
                         at + index * 4,
                         4,
                     );
@@ -1575,35 +1740,34 @@ impl Builder {
         }
         // File order is preserved. Hierarchy links remain properties, so cycles
         // or a corrupt link cannot make the UI's tree recursive.
+        let mut root_tables = file.root_tables.iter().peekable();
+        let mut bones = file
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| match item {
+                NodeEntry::Bone(bone) => Some((index, bone)),
+                NodeEntry::Unknown(_) => None,
+            })
+            .peekable();
         for block in &file.blocks {
-            if let Some(table) = file
-                .root_tables
-                .iter()
-                .find(|table| table.block.offset() == block.offset())
+            if let Some(table) = root_tables.next_if(|table| table.block.offset() == block.offset())
             {
                 if let Some(child) = self.block_child(node, "根节点索引", Kind::Block, *block, base)
                 {
                     self.field(
                         child,
                         "indices",
-                        summary(&table.values),
+                        typed(summary(&table.values), FieldType::Array(ScalarType::U32)),
                         base + block.offset() + 12,
                         table.values.len() * 4,
                     );
                 }
                 continue;
             }
-            let found = file
-                .nodes
-                .iter()
-                .enumerate()
-                .find_map(|(index, item)| match item {
-                    NodeEntry::Bone(bone) if bone.block.offset() == block.offset() => {
-                        Some((index, bone))
-                    }
-                    _ => None,
-                });
-            if let Some((index, bone)) = found {
+            if let Some((index, bone)) =
+                bones.next_if(|(_, bone)| bone.block.offset() == block.offset())
+            {
                 let Some(child) = self.block_child(
                     node,
                     format!("节点 {index} · ID {}", bone.node_id),
@@ -1625,35 +1789,50 @@ impl Builder {
                 self.field(
                     child,
                     "scale",
-                    format!("{:?}", bone.transform.scale),
+                    typed(
+                        format!("{:?}", bone.transform.scale),
+                        FieldType::Array(ScalarType::F32),
+                    ),
                     at + 16,
                     16,
                 );
                 self.field(
                     child,
                     "rotation",
-                    format!("{:?}", bone.transform.rotation),
+                    typed(
+                        format!("{:?}", bone.transform.rotation),
+                        FieldType::Array(ScalarType::F32),
+                    ),
                     at + 32,
                     16,
                 );
                 self.field(
                     child,
                     "translation",
-                    format!("{:?}", bone.transform.translation),
+                    typed(
+                        format!("{:?}", bone.transform.translation),
+                        FieldType::Array(ScalarType::F32),
+                    ),
                     at + 48,
                     16,
                 );
                 self.field(
                     child,
                     "unknown_40",
-                    format!("{}（{:#010X}）", bone.unknown_40 as i16, bone.unknown_40),
+                    formatted(
+                        bone.unknown_40,
+                        format!("{}（{:#010X}）", bone.unknown_40 as i16, bone.unknown_40),
+                    ),
                     at + 64,
                     4,
                 );
                 self.field(
                     child,
                     "motion_tag（动画分组）",
-                    format!("{}（{:#010X}）", bone.motion_tag as u16, bone.motion_tag),
+                    formatted(
+                        bone.motion_tag,
+                        format!("{}（{:#010X}）", bone.motion_tag as u16, bone.motion_tag),
+                    ),
                     at + 68,
                     4,
                 );
@@ -1741,7 +1920,13 @@ impl Builder {
                 break;
             };
             let meta = base + file.directory.table_offset + member.index * 8;
-            self.field(child, "offset", format!("{:#X}", member.offset), meta, 4);
+            self.field(
+                child,
+                "offset",
+                formatted(member.offset, format!("{:#X}", member.offset)),
+                meta,
+                4,
+            );
             self.field(child, "size", member.size, meta + 4, 4);
             let descriptor = base + file.index.offset as usize + 4 + (member.index - 1) * 4;
             self.field(child, "kind", member.reference.kind, descriptor, 2);
@@ -1837,7 +2022,10 @@ impl Builder {
                     self.field(
                         child,
                         name,
-                        format!("{:?} · {:08X?}", bits.map(f32::from_bits), bits),
+                        typed(
+                            format!("{:?} · {:08X?}", bits.map(f32::from_bits), bits),
+                            FieldType::Array(ScalarType::F32),
+                        ),
                         at + i * 12,
                         12,
                     );
@@ -1845,7 +2033,7 @@ impl Builder {
                 self.field(
                     child,
                     "unknown_48",
-                    format!("{:#010X}", emitter.unknown_48),
+                    formatted(emitter.unknown_48, format!("{:#010X}", emitter.unknown_48)),
                     at + 72,
                     4,
                 );
@@ -1864,7 +2052,7 @@ impl Builder {
                 self.field(
                     child,
                     "unknown_5c",
-                    format!("{:#010X}", emitter.unknown_5c),
+                    formatted(emitter.unknown_5c, format!("{:#010X}", emitter.unknown_5c)),
                     at + 92,
                     4,
                 );
@@ -1945,10 +2133,13 @@ impl Builder {
             self.field(
                 child,
                 "position",
-                format!(
-                    "{:?} · {:08X?}",
-                    event.position_bits.map(f32::from_bits),
-                    event.position_bits
+                typed(
+                    format!(
+                        "{:?} · {:08X?}",
+                        event.position_bits.map(f32::from_bits),
+                        event.position_bits
+                    ),
+                    FieldType::Array(ScalarType::F32),
                 ),
                 at,
                 12,
@@ -1962,7 +2153,13 @@ impl Builder {
             ] {
                 self.field(child, name, value, at + offset, 2);
             }
-            self.field(child, "flags", event.flags, at + 22, 2);
+            self.field(
+                child,
+                "flags",
+                typed(event.flags, FieldType::Flags(ScalarType::U16)),
+                at + 22,
+                2,
+            );
             self.field(child, "unknown_18", hex(&event.unknown_18), at + 24, 8);
         }
     }
@@ -1970,7 +2167,13 @@ impl Builder {
     fn grouped_materials(&mut self, node: usize, file: &GroupedMaterials<'_>, base: usize) {
         let buffer = self.document.nodes[node].buffer;
         if let Some(marker) = file.version_marker {
-            self.field(node, "version_marker", format!("{marker:#04X}"), base, 1);
+            self.field(
+                node,
+                "version_marker",
+                formatted(marker, format!("{marker:#04X}")),
+                base,
+                1,
+            );
         }
         self.field(
             node,
@@ -2031,7 +2234,10 @@ impl Builder {
                     self.field(
                         child,
                         name,
-                        format!("{:?} · {:08X?}", color.map(f32::from_bits), color),
+                        typed(
+                            format!("{:?} · {:08X?}", color.map(f32::from_bits), color),
+                            FieldType::Array(ScalarType::F32),
+                        ),
                         at + offset,
                         16,
                     );
@@ -2040,7 +2246,7 @@ impl Builder {
                     self.field(
                         child,
                         format!("word_{:02X}", 48 + index * 4),
-                        format!("{word:#010X}"),
+                        formatted(word, format!("{word:#010X}")),
                         at + 48 + index * 4,
                         4,
                     );
@@ -2088,7 +2294,7 @@ impl Builder {
             self.field(
                 parent,
                 "offsets_offset",
-                format!("{:#X}", group.offsets_offset),
+                formatted(group.offsets_offset, format!("{:#X}", group.offsets_offset)),
                 base + group_index * 8 + 4,
                 4,
             );
@@ -2112,7 +2318,7 @@ impl Builder {
                         self.field(
                             child,
                             "motion_offset",
-                            format!("{:#X}", motion.offset),
+                            formatted(motion.offset, format!("{:#X}", motion.offset)),
                             table + slot * 4,
                             4,
                         );
@@ -2129,7 +2335,13 @@ impl Builder {
                         ) else {
                             break;
                         };
-                        self.field(child, "motion_offset", "0xFFFFFFFF", table + slot * 4, 4);
+                        self.field(
+                            child,
+                            "motion_offset",
+                            typed("0xFFFFFFFF", FieldType::Scalar(ScalarType::U32)),
+                            table + slot * 4,
+                            4,
+                        );
                     }
                     Err(error) => {
                         let Some(child) = self.child(
@@ -2154,10 +2366,13 @@ impl Builder {
         self.field(
             node,
             "unknown_08",
-            format!(
-                "{} ({:#010X})",
-                f32::from_bits(camera.unknown_08_bits),
-                camera.unknown_08_bits
+            typed(
+                format!(
+                    "{} ({:#010X})",
+                    f32::from_bits(camera.unknown_08_bits),
+                    camera.unknown_08_bits
+                ),
+                FieldType::Scalar(ScalarType::F32),
             ),
             base + 8,
             4,
@@ -2168,7 +2383,10 @@ impl Builder {
             self.field(
                 node,
                 format!("{name}数组偏移"),
-                format!("{:#X}", camera.array_offsets[index]),
+                formatted(
+                    camera.array_offsets[index],
+                    format!("{:#X}", camera.array_offsets[index]),
+                ),
                 base + 16 + 4 * index,
                 4,
             );
@@ -2202,7 +2420,7 @@ impl Builder {
                 self.field(
                     child,
                     format!("帧 {frame}"),
-                    values.join(", "),
+                    typed(values.join(", "), FieldType::Array(ScalarType::F32)),
                     at + frame * stride,
                     stride,
                 );
@@ -2273,23 +2491,26 @@ impl Builder {
     }
 
     fn motion_header(&mut self, node: usize, header: mhf_resource::motion::BlockHeader, at: usize) {
-        self.field(node, "kind", format!("{:#010X}", header.kind), at, 4);
+        self.field(
+            node,
+            "kind",
+            formatted(header.kind, format!("{:#010X}", header.kind)),
+            at,
+            4,
+        );
         self.field(node, "count", header.count, at + 4, 4);
         self.field(node, "byte_size", header.byte_size, at + 8, 4);
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    let mut value = bytes
-        .iter()
-        .take(24)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ");
+fn hex(bytes: &[u8]) -> FieldValue {
+    let mut value = FieldType::Bytes
+        .decode(&bytes[..bytes.len().min(24)])
+        .expect("a byte preview is bounded to 24 bytes");
     if bytes.len() > 24 {
         value.push_str(&format!(" … 共 {} 字节", bytes.len()));
     }
-    value
+    typed(value, FieldType::Bytes)
 }
 
 fn archive_name(bytes: &[u8]) -> String {
@@ -2351,15 +2572,24 @@ mod tests {
             for field in &node.fields {
                 assert!(
                     buffer
-                        .get(field.offset..field.offset + field.size)
+                        .get(
+                            field.binding.range.start
+                                ..field.binding.range.start + field.binding.range.len()
+                        )
                         .is_some(),
                     "{} {}: {}+{} / {}",
                     node.name,
                     field.name,
-                    field.offset,
-                    field.size,
+                    field.binding.range.start,
+                    field.binding.range.len(),
                     buffer.len()
                 );
+                if field.binding.format != FieldType::ReadOnly {
+                    assert!(!field.binding.range.is_empty());
+                    field
+                        .read(&document.buffers)
+                        .unwrap_or_else(|error| panic!("{} {}: {error}", node.name, field.name));
+                }
             }
             for &child in &node.children {
                 assert!(child > index && child < document.nodes.len());
@@ -2432,7 +2662,45 @@ mod tests {
         let child = document.nodes[node].children[0];
         assert_eq!(document.nodes[child].range.start, 24);
         assert_eq!(document.bytes(child).unwrap(), &model[12..]);
-        assert_eq!(document.nodes[child].fields[0].offset, 24);
+        assert_eq!(document.nodes[child].fields[0].binding.range.start, 24);
+        all_ranges_are_in_owned_buffers(&document);
+    }
+
+    #[test]
+    fn skeleton_blocks_keep_native_ordinals_across_root_tables_and_unknown_metadata() {
+        use mhf_resource::fskl::{BONE, BONE_HD, BONE_RECORD_SIZE, ROOT_INDICES, SKELETON};
+
+        let bone = |kind, id| {
+            let mut bytes = words(&[kind, 1, (12 + BONE_RECORD_SIZE) as u32, id]);
+            bytes.extend(words(&[u32::MAX; 3]));
+            bytes.resize(12 + BONE_RECORD_SIZE, 0);
+            bytes
+        };
+        let blocks = [
+            words(&[ROOT_INDICES, 1, 16, 1]),
+            words(&[0x1234_0001, 0, 12]),
+            bone(BONE_HD, 17),
+            words(&[0x1234_0000, 0, 12]),
+            words(&[ROOT_INDICES, 1, 16, 2]),
+            bone(BONE, 29),
+        ];
+        let size = 12 + blocks.iter().map(Vec::len).sum::<usize>();
+        let mut skeleton = words(&[SKELETON, blocks.len() as u32, size as u32]);
+        skeleton.extend(blocks.iter().flatten());
+        let document = inspect("nested.bin", archive(&[skeleton]).into());
+        let root = document.nodes[document.root].children[0];
+        assert_eq!(document.nodes[root].kind, Kind::Fskl);
+        // Unknown node layouts remain inspectable even when validation fails.
+        assert!(document.nodes[root].error.is_some());
+        let children = &document.nodes[root].children;
+        assert_eq!(children.len(), blocks.len());
+        for (&child, expected) in children.iter().zip(&blocks) {
+            assert_eq!(document.bytes(child).unwrap(), expected);
+        }
+        assert_eq!(document.nodes[children[0]].name, "根节点索引");
+        assert_eq!(document.nodes[children[4]].name, "根节点索引");
+        assert_eq!(document.nodes[children[2]].name, "节点 1 · ID 17");
+        assert_eq!(document.nodes[children[5]].name, "节点 2 · ID 29");
         all_ranges_are_in_owned_buffers(&document);
     }
 
@@ -2560,6 +2828,52 @@ mod tests {
                 .start,
             24 + 20 + 12
         );
+        all_ranges_are_in_owned_buffers(&expanded);
+    }
+
+    #[test]
+    fn detail_expansion_preserves_existing_dependency_declarations() {
+        use crate::metadata::ModelResources;
+
+        let geometry = archive(&[words(&[1, 0, 12]), words(&[0xc000_0000, 0, 12])]);
+        let textures = archive(&[Vec::new()]);
+        let mut effects = b"KEFFECT\0".to_vec();
+        effects.extend(words(&[0, 0]));
+        effects.push(0xaa);
+        let mut document = inspect("model.pac", archive(&[geometry, textures, effects]).into());
+        let model = document
+            .nodes
+            .iter()
+            .position(|node| node.kind == Kind::Fmod)
+            .unwrap();
+        let scope = document
+            .metadata()
+            .resolve::<ModelResources>(model)
+            .unwrap()
+            .source;
+        document.nodes[scope].metadata.block::<ModelResources>();
+        let details = document
+            .nodes
+            .iter()
+            .position(|node| node.kind == Kind::KeyEffects)
+            .unwrap();
+        assert!(document.nodes[details].deferred);
+        let field_count = document.nodes[details].fields.len();
+
+        let expanded = expand(&document, details).unwrap();
+        assert!(!expanded.nodes[details].deferred);
+        assert!(expanded.nodes[details].fields.len() > field_count);
+        assert!(
+            expanded
+                .metadata()
+                .resolve::<ModelResources>(model)
+                .is_none()
+        );
+        assert_eq!(
+            expanded.metadata().origins(model),
+            document.metadata().origins(model)
+        );
+        assert!(document.nodes[details].deferred);
         all_ranges_are_in_owned_buffers(&expanded);
     }
 

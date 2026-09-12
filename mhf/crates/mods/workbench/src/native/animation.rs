@@ -288,24 +288,27 @@ impl BindingPlan {
                         }
                     }
                 }
-                available.push(format!("根 {root} / tag {tag}：{} 条", indices.len()));
+                available.push((root, tag, indices.len()));
                 if indices.len() == tracks {
                     candidates.push((available.len() - 1, indices));
                 }
             }
         }
         if candidates.len() != 1 {
+            let label = |&(root, tag, count): &(usize, u16, usize)| {
+                format!("根 {root} / tag {tag}：{count} 条")
+            };
             return Err(if candidates.is_empty() {
                 format!(
                     "MOT 的 {tracks} 条轨道不匹配任何完整动画分组（{}）",
-                    available.join("，")
+                    available.iter().map(label).collect::<Vec<_>>().join("，")
                 )
             } else {
                 format!(
                     "MOT 的 {tracks} 条轨道匹配多个动画分组，无法唯一绑定（{}）",
                     candidates
                         .iter()
-                        .map(|&(label, _)| available[label].as_str())
+                        .map(|&(index, _)| label(&available[index]))
                         .collect::<Vec<_>>()
                         .join("，")
                 )

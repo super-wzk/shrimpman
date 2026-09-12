@@ -6,7 +6,6 @@
 //! this parser retains the original coordinates and float encodings.
 
 use crate::{Error, Result};
-use std::io::{Cursor, Read};
 
 #[derive(Clone, Debug)]
 pub struct EventCamera<'a> {
@@ -31,11 +30,9 @@ impl<'a> EventCamera<'a> {
     /// Parse the native offsets independently, preserving aliases and ordering.
     /// No sample allocation, resampling or float normalization is performed.
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(bytes);
-        let mut header = [0; Self::HEADER_SIZE];
-        cursor
-            .read_exact(&mut header)
-            .map_err(|_| Error::new(0, "truncated event-camera header"))?;
+        let header = bytes
+            .get(..Self::HEADER_SIZE)
+            .ok_or_else(|| Error::new(0, "truncated event-camera header"))?;
         let unknown_00 = u32::from_le_bytes(header[0..4].try_into().unwrap());
         let unknown_04 = u32::from_le_bytes(header[4..8].try_into().unwrap());
         let unknown_08_bits = u32::from_le_bytes(header[8..12].try_into().unwrap());

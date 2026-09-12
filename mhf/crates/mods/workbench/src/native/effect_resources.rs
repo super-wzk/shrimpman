@@ -5,8 +5,8 @@ use crate::preview::{
     LoadedEffect, ResourceRef,
     effects::{Binding, BindingSnapshot, Effects, Target},
 };
-use mhf_resource::{dat, effect::ModelEffectBinding};
-use std::sync::Arc;
+use mhf_resource::effect::ModelEffectBinding;
+use std::{path::Path, sync::Arc};
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -14,14 +14,15 @@ enum Mode {
     Manual(Option<u64>),
 }
 
+#[derive(Clone)]
 struct Resource {
     binding: Binding,
-    metadata: Option<ModelEffectBinding>,
     enabled: bool,
     mode: Mode,
     model: Option<u64>,
     clock: f32,
     restart: bool,
+    removed_slots: Vec<usize>,
     message: Arc<str>,
 }
 
@@ -44,19 +45,29 @@ impl Resource {
                 }
             }
             Mode::Automatic => {
-                let Some(metadata) = &self.metadata else {
+                let Some(metadata) = &self.binding.metadata else {
                     return (None, "此资源没有模型 ID，请手动选择模型".into());
                 };
-                let mut targets = ready.iter().copied().filter(|&id| matches(metadata, id));
+                let mut targets = ready
+                    .iter()
+                    .copied()
+                    .filter(|&id| matches(&metadata.value, id));
                 match (targets.next(), targets.next()) {
                     (Some(id), None) => (Some(id), "自动绑定".into()),
                     (None, _) => (
                         None,
-                        format!("等待模型 ID {} 对应的模型", metadata.model_id),
+                        format!(
+                            "等待 {} 指定的模型 ID {}",
+                            metadata.source.short_name(),
+                            metadata.value.model_id
+                        ),
                     ),
                     _ => (
                         None,
-                        format!("模型 ID {} 对应多个模型，请手动选择", metadata.model_id),
+                        format!(
+                            "模型 ID {} 对应多个模型，请手动选择",
+                            metadata.value.model_id
+                        ),
                     ),
                 }
             }
@@ -64,45 +75,63 @@ impl Resource {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Registry {
     entries: Vec<Resource>,
 }
 
 impl Registry {
+    /// Read every affected binding before replacing any live instance. A DAT
+    /// definition may change without changing its referring binding bytes.
+    pub fn refreshed(
+        &self,
+        path: &Path,
+        document: Arc<crate::inspect::Document>,
+    ) -> Result<Self, String> {
+        let mut replacement = self.clone();
+        for entry in &mut replacement.entries {
+            if !entry.binding.source.belongs_to(path) {
+                continue;
+            }
+            let source = entry.binding.source.remap(document.clone())?;
+            entry.binding = entry.binding.refreshed(source, entry.clock)?;
+            entry
+                .binding
+                .entries
+                .retain(|definition| !entry.removed_slots.contains(&definition.slot));
+            entry.model = None;
+        }
+        Ok(replacement)
+    }
+
+    pub fn detach_refreshed(&self, models: &mut [Model], path: &Path) {
+        for entry in &self.entries {
+            if entry.binding.source.belongs_to(path) {
+                detach(models, entry.binding.id);
+            }
+        }
+    }
+
     pub fn load(&mut self, source: ResourceRef) -> Result<u64, String> {
         if let Some(entry) = self
             .entries
             .iter_mut()
-            .find(|entry| entry.binding.source.same_source(&source))
+            .find(|entry| entry.binding.source.same_instance(&source))
         {
             entry.enabled = true;
             entry.restart = true;
             return Ok(entry.binding.id);
         }
         let binding = Binding::read(source)?;
-        // Only DAT 165 carries a model ID. A definition selected from beneath a
-        // binding is still an independent definition, without inherited IDs.
-        let metadata = if matches!(
-            binding.source.kind(),
-            crate::inspect::Kind::DatRecord(index) if index == dat::DATA_TABLES.len() + 2
-        ) {
-            Some(
-                ModelEffectBinding::parse(binding.source.bytes()?)
-                    .map_err(|error| error.to_string())?,
-            )
-        } else {
-            None
-        };
         let id = binding.id;
         self.entries.push(Resource {
             binding,
-            metadata,
             enabled: true,
             mode: Mode::Automatic,
             model: None,
             clock: 0.0,
             restart: true,
+            removed_slots: Vec::new(),
             message: "未绑定模型".into(),
         });
         Ok(id)
@@ -318,6 +347,7 @@ impl Registry {
             .position(|entry| entry.slot == slot)
             .ok_or("特效定义已移除")?;
         entry.binding.entries.remove(index);
+        entry.removed_slots.push(slot);
         if entry.binding.entries.is_empty() {
             return self.remove(models, binding);
         }
@@ -380,7 +410,11 @@ impl Registry {
                         Mode::Manual(model) => model,
                     },
                     automatic: matches!(entry.mode, Mode::Automatic),
-                    model_id: entry.metadata.as_ref().map(|metadata| metadata.model_id),
+                    model_id: entry
+                        .binding
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| metadata.value.model_id),
                     message: entry.message.clone(),
                     binding: snapshot.unwrap_or_else(|| unbound_snapshot(entry)),
                 }
@@ -470,7 +504,10 @@ fn unbound_snapshot(entry: &Resource) -> BindingSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::preview::{AssetBundle, effects::tests::fixture};
+    use crate::preview::{
+        AssetBundle,
+        effects::tests::{fixture, model_scopes, shared_definition_scopes},
+    };
 
     fn model(id: u64, frame: f32, source: ResourceRef) -> Model {
         let definition = AssetBundle {
@@ -502,41 +539,44 @@ mod tests {
     }
 
     #[test]
-    fn only_a_binding_with_its_own_model_id_can_select_an_automatic_target() {
-        let (attachment, source) = fixture();
-        let expanded = Arc::new(crate::inspect::expand(&source.document, source.node).unwrap());
-        let definition = ResourceRef {
-            node: expanded.nodes[source.node].children[0],
-            document: expanded,
-        };
+    fn automatic_targets_follow_each_loading_context_without_replacing_the_selected_definition() {
+        let [first, second, direct] = model_scopes();
         let mut registry = Registry::default();
-        let attachment_id = registry.load(attachment).unwrap();
-        let binding_id = registry.load(source.clone()).unwrap();
-        let definition_id = registry.load(definition).unwrap();
-        assert_eq!(registry.load(source).unwrap(), binding_id);
+        let first_id = registry.load(first.clone()).unwrap();
+        let second_id = registry.load(second).unwrap();
+        let direct_id = registry.load(direct).unwrap();
+        assert_eq!(registry.load(first.clone()).unwrap(), first_id);
         assert_eq!(registry.entries.len(), 3);
-        let binding = registry.entry_mut(binding_id).unwrap();
-        let metadata = binding.metadata.as_ref().unwrap();
-        assert_eq!(
-            (
-                metadata.part_code,
-                metadata.weapon_class,
-                metadata.variant,
-                metadata.model_id
-            ),
-            (3, 7, 2, 44)
-        );
+        let binding = registry.entry_mut(first_id).unwrap();
+        assert!(binding.binding.source.same_instance(&first));
+        assert_eq!(binding.binding.entries.len(), 1);
         assert_eq!(binding.select_model(&[41], |_, _| true).0, Some(41));
         assert_eq!(binding.select_model(&[41, 42], |_, _| true).0, None);
-        assert_eq!(
-            binding.select_model(&[41, 42], |_, id| id == 42).0,
-            Some(42)
-        );
-        for id in [attachment_id, definition_id] {
+        for (id, model) in [(first_id, 44), (second_id, 55)] {
             let entry = registry.entry_mut(id).unwrap();
-            assert!(entry.metadata.is_none());
-            assert_eq!(entry.select_model(&[41], |_, _| true).0, None);
+            assert_eq!(
+                entry
+                    .select_model(&[44, 55], |metadata, id| u64::from(metadata.model_id) == id)
+                    .0,
+                Some(model)
+            );
         }
+        assert_eq!(
+            registry
+                .entry_mut(direct_id)
+                .unwrap()
+                .select_model(&[44, 55], |_, _| true)
+                .0,
+            None
+        );
+        assert_eq!(
+            registry
+                .snapshot(&[])
+                .iter()
+                .map(|entry| entry.model_id)
+                .collect::<Vec<_>>(),
+            [Some(44), Some(55), None]
+        );
         assert!(registry.snapshot(&[]).iter().all(|entry| {
             entry.model.is_none()
                 && entry.binding.definitions.iter().all(|definition| {
@@ -545,6 +585,82 @@ mod tests {
                         && definition.position.is_none()
                 })
         }));
+    }
+
+    #[test]
+    fn one_payload_loaded_through_distinct_scopes_remains_independently_bound() {
+        let [first, second, direct] = shared_definition_scopes();
+        assert!(first.same_source(&second));
+        let mut registry = Registry::default();
+        let id = registry.load(first.clone()).unwrap();
+        assert_ne!(registry.load(second).unwrap(), id);
+        assert_ne!(registry.load(direct).unwrap(), id);
+        assert_eq!(registry.load(first).unwrap(), id);
+        assert_eq!(registry.entries.len(), 3);
+        assert_eq!(
+            registry
+                .snapshot(&[])
+                .iter()
+                .map(|entry| entry.model_id)
+                .collect::<Vec<_>>(),
+            [Some(44), Some(55), None]
+        );
+    }
+
+    #[test]
+    fn refreshed_inherited_defaults_leave_manual_targets_and_other_scopes_intact() {
+        let [first, second, direct] = model_scopes();
+        let parent = Binding::read(first.clone()).unwrap().metadata.unwrap();
+        let mut registry = Registry::default();
+        let id = registry.load(first.clone()).unwrap();
+        registry.load(second).unwrap();
+        registry.load(direct).unwrap();
+        registry.set_target(id, Some(99)).unwrap();
+        let mut record = parent.value;
+        record.model_id = 66;
+        record.definition_ids[0] = 2;
+        let owner = &parent.source.document.nodes[parent.source.node];
+        let document = Arc::new(
+            crate::edit::apply(
+                &first.document,
+                owner.buffer,
+                owner.range.clone(),
+                &record.to_bytes(),
+            )
+            .unwrap(),
+        );
+        let mut refreshed = registry
+            .refreshed(Path::new("effects.bin"), document)
+            .unwrap();
+        let entry = refreshed.entry_mut(id).unwrap();
+        assert_eq!(entry.binding.entries[0].id, 2);
+        assert_eq!(
+            entry
+                .select_model(&[66, 99], |metadata, model| u64::from(metadata.model_id)
+                    == model)
+                .0,
+            Some(99)
+        );
+        let snapshot = refreshed.snapshot(&[]);
+        assert_eq!(snapshot[0].manual_target, Some(99));
+        assert!(!snapshot[0].automatic);
+        assert_eq!(
+            snapshot
+                .iter()
+                .map(|entry| entry.model_id)
+                .collect::<Vec<_>>(),
+            [Some(66), Some(55), None]
+        );
+        refreshed.set_automatic(id).unwrap();
+        assert_eq!(
+            refreshed
+                .entry_mut(id)
+                .unwrap()
+                .select_model(&[66, 99], |metadata, model| u64::from(metadata.model_id)
+                    == model)
+                .0,
+            Some(66)
+        );
     }
 
     #[test]

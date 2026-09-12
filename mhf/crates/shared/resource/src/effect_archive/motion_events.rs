@@ -1,7 +1,7 @@
 //! Motion-indexed effect events loaded by native functions `113D5380` and
 //! `113D4BB0`. The file stores indices and fixed records, not relocated pointers.
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use crate::{Error, Result};
 
@@ -21,13 +21,13 @@ impl<'a> MotionEvents<'a> {
     pub const HEADER_SIZE: usize = 8;
 
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(bytes);
-        let mut header = [0; Self::HEADER_SIZE];
-        cursor
-            .read_exact(&mut header)
-            .map_err(|_| Error::new(0, "truncated effect motion-event header"))?;
+        let header = bytes
+            .get(..Self::HEADER_SIZE)
+            .ok_or_else(|| Error::new(0, "truncated effect motion-event header"))?;
         let lookup_count = u16::from_le_bytes(header[2..4].try_into().unwrap());
         let event_count = u16::from_le_bytes(header[4..6].try_into().unwrap());
+        let mut cursor = Cursor::new(bytes);
+        cursor.set_position(Self::HEADER_SIZE as u64);
         let lookup = if lookup_count == 0 {
             None
         } else {
@@ -99,28 +99,25 @@ impl MotionLookup {
         if offset > cursor.get_ref().len() || size > cursor.get_ref().len() - offset {
             return Err(Error::new(offset, "truncated effect motion lookup"));
         }
-        let mut range = [0; 4];
-        cursor
-            .read_exact(&mut range)
-            .map_err(|_| Error::new(offset, "truncated effect motion range"))?;
-        let start = i16::from_le_bytes(range[0..2].try_into().unwrap());
-        let end = i16::from_le_bytes(range[2..4].try_into().unwrap());
+        let bytes = &cursor.get_ref()[offset..offset + size];
+        let start = i16::from_le_bytes(bytes[..2].try_into().unwrap());
+        let end = i16::from_le_bytes(bytes[2..4].try_into().unwrap());
         if i32::from(end) - i32::from(start) != i32::from(count) {
             return Err(Error::new(
                 offset,
                 "effect motion range does not match the lookup count",
             ));
         }
-        let mut event_indices = Vec::with_capacity(usize::from(count));
-        for _ in 0..count {
-            let at = cursor.position() as usize;
-            let mut bytes = [0; 4];
-            cursor
-                .read_exact(&mut bytes)
-                .map_err(|_| Error::new(at, "truncated effect motion event index"))?;
-            let index = u32::from_le_bytes(bytes);
-            event_indices.push((index != u32::MAX).then_some(index));
-        }
+        let event_indices = bytes[4..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| {
+                let index = u32::from_le_bytes(*bytes);
+                (index != u32::MAX).then_some(index)
+            })
+            .collect();
+        cursor.set_position((offset + size) as u64);
         Ok(Self {
             offset,
             start,
@@ -154,15 +151,13 @@ impl MotionEvent {
         if offset > cursor.get_ref().len() || size > cursor.get_ref().len() - offset {
             return Err(Error::new(offset, "truncated effect motion-event table"));
         }
-        let mut events = Vec::with_capacity(usize::from(count));
-        for _ in 0..count {
-            let offset = cursor.position() as usize;
-            let mut bytes = [0; Self::SIZE];
-            cursor
-                .read_exact(&mut bytes)
-                .map_err(|_| Error::new(offset, "truncated effect motion event"))?;
-            events.push(Self {
-                offset,
+        let events = cursor.get_ref()[offset..offset + size]
+            .as_chunks::<{ Self::SIZE }>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| Self {
+                offset: offset + index * Self::SIZE,
                 position_bits: std::array::from_fn(|i| {
                     u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
                 }),
@@ -173,8 +168,9 @@ impl MotionEvent {
                 resource_id: i16::from_le_bytes(bytes[20..22].try_into().unwrap()),
                 flags: u16::from_le_bytes(bytes[22..24].try_into().unwrap()),
                 unknown_18: bytes[24..32].try_into().unwrap(),
-            });
-        }
+            })
+            .collect();
+        cursor.set_position((offset + size) as u64);
         Ok(events)
     }
 

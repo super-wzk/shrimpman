@@ -38,11 +38,9 @@ pub struct Jkr<'a> {
 
 impl<'a> Jkr<'a> {
     pub fn parse(source: &'a [u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(source);
-        let mut bytes = [0u8; 16];
-        cursor
-            .read_exact(&mut bytes)
-            .map_err(|_| Error::new(0, "truncated JKR header"))?;
+        let bytes = source
+            .get(..16)
+            .ok_or_else(|| Error::new(0, "truncated JKR header"))?;
         let header = Header {
             magic: bytes[0..4].try_into().unwrap(),
             version: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
@@ -74,6 +72,44 @@ impl<'a> Jkr<'a> {
         self.source
             .get(16..self.header.data_offset as usize)
             .ok_or_else(|| Error::new(8, "JKR data offset outside payload"))
+    }
+
+    /// Emit the supported uncompressed representation. Preserve the version,
+    /// header extension, and a raw source's trailing bytes. Compressed stream
+    /// padding has no independent meaning and is replaced with the stream.
+    pub fn encode_stored(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        let encoding = self.encoding()?;
+        let extension = self.header_extension()?;
+        let size = u32::try_from(payload.len())
+            .map_err(|_| Error::new(12, "JKR payload exceeds 32-bit size"))?;
+        let trailer = if matches!(encoding, Encoding::Raw | Encoding::None) {
+            let end = (self.header.data_offset as usize)
+                .checked_add(self.header.decoded_size as usize)
+                .ok_or_else(|| Error::new(8, "JKR data range overflow"))?;
+            self.source
+                .get(end..)
+                .ok_or_else(|| Error::new(end, "truncated raw JKR payload"))?
+        } else {
+            &[]
+        };
+        let length = (self.header.data_offset as usize)
+            .checked_add(payload.len())
+            .and_then(|size| size.checked_add(trailer.len()))
+            .ok_or_else(|| Error::new(12, "JKR encoded size overflow"))?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(length)
+            .map_err(|_| Error::new(12, "cannot allocate JKR output"))?;
+        output.extend_from_slice(&MAGIC);
+        output.extend_from_slice(&self.header.version.to_le_bytes());
+        let stored = if encoding == Encoding::None { 1u16 } else { 0 };
+        output.extend_from_slice(&stored.to_le_bytes());
+        output.extend_from_slice(&self.header.data_offset.to_le_bytes());
+        output.extend_from_slice(&size.to_le_bytes());
+        output.extend_from_slice(extension);
+        output.extend_from_slice(payload);
+        output.extend_from_slice(trailer);
+        Ok(output)
     }
 
     /// Allocate at most the caller's output budget. No source bytes are changed.

@@ -1,8 +1,11 @@
 use super::{Builder, Kind, hex};
+use crate::field::{FieldType, ScalarType, TextEncoding, formatted, typed};
 use mhf_resource::dat::{self, Dat, RecordCount, RecordFormat, TableLayout};
 
 include!(concat!(env!("OUT_DIR"), "/dat_text.rs"));
 
+#[cfg(test)]
+mod edit_tests;
 mod effects;
 #[cfg(test)]
 mod tests;
@@ -35,7 +38,7 @@ impl Builder {
         self.field(
             node,
             "unknown_08",
-            format!("{:#010X}", file.unknown_08),
+            formatted(file.unknown_08, format!("{:#010X}", file.unknown_08)),
             base + 8,
             4,
         );
@@ -80,10 +83,11 @@ impl Builder {
                     Ok(table) => {
                         self.field(child, "记录数", table.count, base + table.range.start, 0);
                         if let Some(field) = table.root_field {
+                            let offset = file.u32(field).unwrap();
                             self.field(
                                 child,
                                 "表偏移",
-                                format!("{:#X}", file.u32(field).unwrap()),
+                                formatted(offset, format!("{offset:#X}")),
                                 base + field,
                                 4,
                             );
@@ -158,7 +162,7 @@ impl Builder {
             self.field(
                 child,
                 "原值",
-                format!("{value} ({value:#010X})"),
+                formatted(value, format!("{value} ({value:#010X})")),
                 base + field,
                 4,
             );
@@ -177,7 +181,7 @@ impl Builder {
                     ) else {
                         return;
                     };
-                    self.field(target, "来源根字段", format!("{field:#X}"), base + field, 4);
+                    self.field(target, "来源根字段", format!("{field:#X}"), base + field, 0);
                     self.field(
                         target,
                         "浏览范围",
@@ -234,6 +238,14 @@ impl Builder {
             ) else {
                 break;
             };
+            if matches!(
+                layout.format,
+                RecordFormat::Effect(dat::EffectRecordKind::ModelBinding)
+            ) {
+                let binding = mhf_resource::effect::ModelEffectBinding::parse(bytes)
+                    .map_err(|error| error.to_string())?;
+                self.document.nodes[child].metadata.insert(binding);
+            }
             self.field(child, "记录索引", record, base + offset, 0);
             if let Some(names) = names
                 && let Some(name) =
@@ -265,17 +277,8 @@ impl Builder {
                 for field in fields {
                     let offset = usize::from(field.offset);
                     let size = field.scalar.size();
-                    let value = field
-                        .scalar
-                        .read(bytes, offset)
-                        .map_err(|error| error.to_string())?;
-                    self.field(
-                        node,
-                        field.name,
-                        format!("{value} · {}", hex(&bytes[offset..offset + size])),
-                        range.start + offset,
-                        size,
-                    );
+                    let at = range.start + offset;
+                    self.read_scalar(node, field.name, at, field.scalar)?;
                     covered[offset..offset + size].fill(true);
                 }
             }
@@ -331,7 +334,7 @@ impl Builder {
             Ok(value) => self.field(
                 node,
                 format!("{label}偏移"),
-                format!("{value:#X}"),
+                formatted(value, format!("{value:#X}")),
                 base + cell,
                 4,
             ),
@@ -343,7 +346,19 @@ impl Builder {
         match file.text(cell) {
             Ok(Some((offset, bytes))) => {
                 let text = source_text(bytes);
-                self.field(node, label, &text, base + offset, bytes.len() + 1);
+                self.field(
+                    node,
+                    label,
+                    typed(
+                        &text,
+                        FieldType::Text {
+                            encoding: TextEncoding::ShiftJis,
+                            terminated: true,
+                        },
+                    ),
+                    base + offset,
+                    bytes.len() + 1,
+                );
                 Some(text)
             }
             Ok(None) => {

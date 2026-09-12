@@ -1,3 +1,4 @@
+use mhf_resource::binary::{Reader, ScalarType};
 use mhf_resource::dat::{self, Dat, RecordCount, RecordFormat, TableLayout};
 
 fn set_u32(bytes: &mut [u8], at: usize, value: u32) {
@@ -32,7 +33,14 @@ fn armor_records_keep_signed_values_unknown_bytes_and_short_terminator() {
         panic!()
     };
     let fire = fields.iter().find(|field| field.offset == 0x14).unwrap();
-    assert_eq!(fire.scalar.read(record, fire.offset.into()).unwrap(), -7);
+    assert_eq!(fire.scalar, ScalarType::I8);
+    assert_eq!(
+        Reader::new(record)
+            .read_at::<i8>(fire.offset.into())
+            .unwrap()
+            .value,
+        -7
+    );
     assert!(table.record(2).is_err());
     assert_eq!(file.as_bytes(), bytes);
     assert!(std::ptr::eq(record.as_ptr(), bytes[3200..].as_ptr()));
@@ -174,7 +182,8 @@ fn original_dat_core_tables_and_all_record_fields() {
         for record in 0..table.count {
             let (_, bytes) = table.record(record).unwrap();
             for field in fields {
-                field.scalar.read(bytes, field.offset.into()).unwrap();
+                let at = usize::from(field.offset);
+                assert!(bytes.get(at..at + field.scalar.size()).is_some());
             }
         }
         println!(

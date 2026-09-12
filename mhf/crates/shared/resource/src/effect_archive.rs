@@ -9,7 +9,7 @@ mod motion_events;
 pub use motion_events::{MotionEvent, MotionEvents, MotionLookup};
 
 use crate::{Error, Result, container::SimpleArchive};
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 #[derive(Clone, Debug)]
 pub struct EffectArchive<'a> {
@@ -168,11 +168,9 @@ impl<'a> EffectBank<'a> {
     pub const HEADER_SIZE: usize = 28;
 
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(bytes);
-        let mut header = [0; Self::HEADER_SIZE];
-        cursor
-            .read_exact(&mut header)
-            .map_err(|_| Error::new(0, "truncated effect bank header"))?;
+        let header = bytes
+            .get(..Self::HEADER_SIZE)
+            .ok_or_else(|| Error::new(0, "truncated effect bank header"))?;
         let version = u16::from_le_bytes(header[..2].try_into().unwrap());
         if version < 4 {
             return Err(Error::new(
@@ -233,6 +231,7 @@ impl<'a> EffectBank<'a> {
             .iter()
             .map(Definition140::from_record)
             .collect();
+        let mut cursor = Cursor::new(bytes);
         cursor.set_position(offset as u64);
         table_offsets[6] = offset;
         let motion_lookup = if counts[6] == 0 {

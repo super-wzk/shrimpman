@@ -2,6 +2,8 @@
 
 use crate::{
     catalog::Catalog,
+    edit,
+    field::Patch,
     inspect::{self, Document, Kind},
 };
 use std::{
@@ -32,7 +34,34 @@ pub(crate) struct Updates {
     pub catalog: Option<Result<Arc<Catalog>, String>>,
     pub loaded: Option<Loaded>,
     pub expanded: Option<Expanded>,
+    pub edited: Option<Expanded>,
+    pub packed: Option<Packed>,
     pub exported: Option<Result<PathBuf, String>>,
+}
+
+pub(crate) struct Packed {
+    pub source: PathBuf,
+    pub bytes: Arc<[u8]>,
+    pub result: Result<PathBuf, String>,
+}
+
+struct Edit {
+    request: u64,
+    document: Arc<Document>,
+    operation: EditOperation,
+}
+
+enum EditOperation {
+    Fields(Vec<Patch>),
+    Replace { node: usize, path: PathBuf },
+}
+
+struct Pack {
+    source: PathBuf,
+    source_root: PathBuf,
+    root: PathBuf,
+    document: Arc<Document>,
+    patches: Vec<Patch>,
 }
 
 struct Export {
@@ -171,6 +200,8 @@ struct Pending {
     load: Option<(u64, PathBuf)>,
     expand: Option<(u64, Arc<Document>, usize)>,
     export: Option<Export>,
+    edit: Option<Edit>,
+    pack: Option<Pack>,
 }
 
 #[derive(Default)]
@@ -206,6 +237,8 @@ impl Worker {
                             && pending.load.is_none()
                             && pending.export.is_none()
                             && pending.expand.is_none()
+                            && pending.edit.is_none()
+                            && pending.pack.is_none()
                             && !state.stopped.load(Ordering::Acquire)
                         {
                             pending = state
@@ -213,12 +246,15 @@ impl Worker {
                                 .wait(pending)
                                 .unwrap_or_else(PoisonError::into_inner);
                         }
-                        if state.stopped.load(Ordering::Acquire) {
+                        if state.stopped.load(Ordering::Acquire)
+                            && pending.pack.is_none()
+                            && pending.export.is_none()
+                        {
                             break;
                         }
                         std::mem::take(&mut *pending)
                     };
-                    if work.scan {
+                    if work.scan && !state.stopped.load(Ordering::Acquire) {
                         let catalog = Catalog::scan(&root, &state.stopped)
                             .map(Arc::new)
                             .map_err(|error| error.to_string());
@@ -228,10 +264,9 @@ impl Worker {
                             .unwrap_or_else(PoisonError::into_inner)
                             .catalog = Some(catalog);
                     }
-                    if state.stopped.load(Ordering::Acquire) {
-                        break;
-                    }
-                    if let Some((request, path)) = work.load {
+                    if let Some((request, path)) = work.load
+                        && !state.stopped.load(Ordering::Acquire)
+                    {
                         let document = read_document(&path).map(Arc::new);
                         state
                             .updates
@@ -243,19 +278,15 @@ impl Worker {
                             document,
                         });
                     }
-                    if state.stopped.load(Ordering::Acquire) {
-                        break;
-                    }
-                    if let Some((request, document, node)) = work.expand {
+                    if let Some((request, document, node)) = work.expand
+                        && !state.stopped.load(Ordering::Acquire)
+                    {
                         let document = inspect::expand(&document, node).map(Arc::new);
                         state
                             .updates
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .expanded = Some(Expanded { request, document });
-                    }
-                    if state.stopped.load(Ordering::Acquire) {
-                        break;
                     }
                     if let Some(export) = work.export {
                         let result =
@@ -265,6 +296,46 @@ impl Worker {
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .exported = Some(result);
+                    }
+                    if let Some(edit) = work.edit
+                        && !state.stopped.load(Ordering::Acquire)
+                    {
+                        let document = match edit.operation {
+                            EditOperation::Fields(patches) => {
+                                edit::apply_many(&edit.document, &patches)
+                            }
+                            EditOperation::Replace { node, path } => read_bytes(&path)
+                                .and_then(|bytes| edit::replace(&edit.document, node, &bytes)),
+                        }
+                        .map(Arc::new);
+                        state
+                            .updates
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .edited = Some(Expanded {
+                            request: edit.request,
+                            document,
+                        });
+                    }
+                    if let Some(pack) = work.pack {
+                        let rebuilt = edit::apply_many(&pack.document, &pack.patches);
+                        let bytes = rebuilt
+                            .as_ref()
+                            .map(|document| document.buffers[0].clone())
+                            .unwrap_or_else(|_| pack.document.buffers[0].clone());
+                        let result = rebuilt.and_then(|_| {
+                            pack_bytes(&pack.source_root, &pack.root, &pack.source, &bytes)
+                                .map_err(|error| error.to_string())
+                        });
+                        state
+                            .updates
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .packed = Some(Packed {
+                            source: pack.source,
+                            bytes,
+                            result,
+                        });
                     }
                 }
             })?;
@@ -321,6 +392,58 @@ impl Worker {
         Ok(())
     }
 
+    pub fn edit(&self, request: u64, document: Arc<Document>, patches: Vec<Patch>) {
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pending.expand = None;
+        pending.edit = Some(Edit {
+            request,
+            document,
+            operation: EditOperation::Fields(patches),
+        });
+        self.shared.wake.notify_one();
+    }
+
+    pub fn replace(&self, request: u64, document: Arc<Document>, node: usize, path: PathBuf) {
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pending.expand = None;
+        pending.edit = Some(Edit {
+            request,
+            document,
+            operation: EditOperation::Replace { node, path },
+        });
+        self.shared.wake.notify_one();
+    }
+
+    pub fn pack(
+        &self,
+        source: PathBuf,
+        source_root: PathBuf,
+        root: PathBuf,
+        document: Arc<Document>,
+        patches: Vec<Patch>,
+    ) {
+        self.shared
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pack = Some(Pack {
+            source,
+            source_root,
+            root,
+            document,
+            patches,
+        });
+        self.shared.wake.notify_one();
+    }
+
     pub fn updates(&self) -> Updates {
         std::mem::take(
             &mut *self
@@ -349,6 +472,65 @@ impl Worker {
     }
 }
 
+/// Replace only the corresponding override, after a complete write beside it.
+fn pack_bytes(
+    data_root: &Path,
+    output_root: &Path,
+    source: &Path,
+    bytes: &[u8],
+) -> io::Result<PathBuf> {
+    use std::{path::Component, sync::atomic::AtomicU64};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let invalid = |message| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let relative = source
+        .strip_prefix(data_root)
+        .map_err(|_| invalid("资源不在工作台数据目录中"))?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(invalid("资源相对路径无效"));
+    }
+    let target = output_root.join(relative);
+    let parent = target.parent().ok_or_else(|| invalid("打包目标缺少目录"))?;
+    fs::create_dir_all(parent)?;
+    let data_root = fs::canonicalize(data_root)?;
+    let canonical_parent = fs::canonicalize(parent)?;
+    let canonical_output = fs::canonicalize(output_root)?;
+    if canonical_parent.starts_with(&data_root) || !canonical_parent.starts_with(&canonical_output)
+    {
+        return Err(invalid("打包目录不能指向原资源目录或跳出替换目录"));
+    }
+    if fs::symlink_metadata(&target).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(invalid("打包目标不能是符号链接"));
+    }
+    let (temporary, mut file) = loop {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".workbench-{}-{sequence}.tmp", std::process::id()));
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &target)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    Ok(target)
+}
+
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop();
@@ -356,10 +538,14 @@ impl Drop for Worker {
 }
 
 fn read_document(path: &Path) -> Result<Document, String> {
+    let bytes = read_bytes(path)?;
+    Ok(inspect::inspect(&path.to_string_lossy(), bytes.into()))
+}
+
+fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let length = file.metadata().map_err(|error| error.to_string())?.len();
-    let bytes = read_resource(file, length).map_err(|error| error.to_string())?;
-    Ok(inspect::inspect(&path.to_string_lossy(), bytes.into()))
+    read_resource(file, length).map_err(|error| error.to_string())
 }
 
 fn file_length(length: u64) -> io::Result<usize> {
@@ -447,6 +633,7 @@ mod tests {
             buffer,
             range,
             fields: Vec::new(),
+            metadata: Default::default(),
             children: Vec::new(),
             deferred: false,
             error: None,
@@ -581,6 +768,69 @@ mod tests {
             )
             .is_err()
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn packing_replaces_the_corresponding_override_and_preserves_the_source() {
+        let directory =
+            std::env::temp_dir().join(format!("mhf-workbench-pack-{}", std::process::id()));
+        let data = directory.join("dat");
+        let output = directory.join("dat-redirect");
+        fs::create_dir_all(data.join("nested")).unwrap();
+        let source = data.join("nested/mhfdat.bin");
+        fs::write(&source, [1, 2, 3]).unwrap();
+        let target = pack_bytes(&data, &output, &source, &[4, 5, 6]).unwrap();
+        assert_eq!(target, output.join("nested/mhfdat.bin"));
+        pack_bytes(&data, &output, &source, &[7, 8]).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), [7, 8]);
+        assert_eq!(fs::read(&source).unwrap(), [1, 2, 3]);
+        assert!(pack_bytes(&data, &data, &source, &[9]).is_err());
+        assert!(pack_bytes(&data, &output, &data.join("../outside.bin"), &[9]).is_err());
+        assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stopping_drains_an_accepted_save_including_pending_field_input() {
+        let directory =
+            std::env::temp_dir().join(format!("mhf-workbench-save-stop-{}", std::process::id()));
+        let data = directory.join("dat");
+        let output = directory.join("redirect");
+        fs::create_dir_all(&data).unwrap();
+        let source = data.join("value.bin");
+        fs::write(&source, [1, 2]).unwrap();
+        let document = Arc::new(read_document(&source).unwrap());
+        let binding = crate::field::Binding {
+            buffer: 0,
+            range: 0..1,
+            format: crate::field::FieldType::Scalar(crate::field::ScalarType::U8),
+            endian: mhf_resource::binary::Endian::Little,
+        };
+        let patch = binding.write(&document.buffers, "9").unwrap().unwrap();
+        let mut worker = Worker::start(data.clone(), directory.join("exports")).unwrap();
+        worker.pack(source.clone(), data, output.clone(), document, vec![patch]);
+        worker.stop();
+        assert_eq!(fs::read(output.join("value.bin")).unwrap(), [9, 2]);
+        assert_eq!(fs::read(source).unwrap(), [1, 2]);
+        assert!(worker.updates().packed.unwrap().result.is_ok());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn packing_rejects_symlinked_subdirectories_outside_the_override_root() {
+        let directory =
+            std::env::temp_dir().join(format!("mhf-workbench-pack-link-{}", std::process::id()));
+        let data = directory.join("dat");
+        let output = directory.join("redirect");
+        let outside = directory.join("outside");
+        for path in [&data, &output, &outside] {
+            fs::create_dir_all(path).unwrap();
+        }
+        std::os::unix::fs::symlink(&outside, output.join("nested")).unwrap();
+        assert!(pack_bytes(&data, &output, &data.join("nested/a.bin"), &[9]).is_err());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -63,11 +63,9 @@ impl<'a> Block<'a> {
         let remaining = file
             .get(offset..)
             .ok_or_else(|| Error::new(offset, "block offset exceeds file"))?;
-        let mut cursor = Cursor::new(remaining);
-        let mut header_bytes = [0; HEADER_SIZE];
-        cursor
-            .read_exact(&mut header_bytes)
-            .map_err(|_| Error::new(offset, "truncated block header"))?;
+        let header_bytes = remaining
+            .get(..HEADER_SIZE)
+            .ok_or_else(|| Error::new(offset, "truncated block header"))?;
         let header = BlockHeader {
             kind: word(&header_bytes[..4]),
             count: word(&header_bytes[4..8]),
@@ -302,16 +300,15 @@ pub struct RenderingBlock<'a> {
 
 impl<'a> RenderingBlock<'a> {
     fn parse(block: Block<'a>) -> Result<Self> {
-        let mut cursor = Cursor::new(block.payload());
-        let mut bytes = [0; 72];
-        cursor
-            .read_exact(&mut bytes)
-            .map_err(|_| block.error(HEADER_SIZE, "truncated rendering record"))?;
+        let bytes = block
+            .payload()
+            .get(..72)
+            .ok_or_else(|| block.error(HEADER_SIZE, "truncated rendering record"))?;
         let words = std::array::from_fn(|i| word(&bytes[i * 4..i * 4 + 4]));
         Ok(Self {
             block,
             words,
-            trailing: &block.payload()[cursor.position() as usize..],
+            trailing: &block.payload()[bytes.len()..],
         })
     }
 }

@@ -1,12 +1,16 @@
 # MHF 资源格式
 
 `mhf-resource` 用 Rust 类型表示客户端资源文件，在原始字节上通过
-`std::io::Cursor`、`Read` 与明确的字节序读取字段，不依赖 Windows 或游戏进程。
+明确的字节序读取字段，不依赖 Windows 或游戏进程。`binary::Reader` 提供统一的类型化
+读取入口，`read::<u16>()`、`read::<[f32; 3]>()` 返回包含值、原始字节引用、绝对字节范围
+和端序的 `binary::Field<T>`；整数、浮点与数组的读取和写回共用 `BinaryValue`。
+原始 buffer 仍是完整数据来源，类型化读取不会丢弃未知字节或浮点位模式。
 文件偏移不转换为宿主指针。未知字段、原始位标记、空槽、别名和未识别块保留在源数据中。
 
 | 模块 | 数据 |
 | --- | --- |
-| `crypto` | ECD、EXF 头与解码，ECD 校验和 |
+| `binary` | 带来源位置的类型化字段、游标／偏移读取与统一数值编解码 |
+| `crypto` | ECD、EXF 头与编解码，ECD 校验和 |
 | `jkr` | JKR 原始、Huffman、LZ、HFI 编码与边界检查 |
 | `container` | offset/size、MOMO、MHA 命名目录、场景专用目录与嵌套封装 |
 | `dat` | DAT v89 根结构、装备／物品／生产记录、特效绑定与定义表，以及按布局解析的文本记录 |
@@ -45,3 +49,8 @@ cargo test --manifest-path mhf/Cargo.toml -p mhf-resource --target aarch64-apple
 ```
 
 在其他系统上将目标替换为对应的宿主三元组。
+
+从子资源读取时使用 `Reader::with_base(slice, offset)`；字段范围包含这段数据在完整
+buffer 中的起点。`Field::write` 的目标是完整 buffer。默认小端，通过
+`with_endian(Endian::Big)` 明确选择大端；失败读取不推进游标。工作台根据 `BinaryValue`
+的类型元数据构造 `Binding`，因此 UI 与写回不需要重复推断字段宽度或端序。

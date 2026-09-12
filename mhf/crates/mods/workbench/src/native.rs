@@ -4,6 +4,7 @@ mod animation;
 mod asset;
 mod effect_resources;
 mod guides;
+mod refresh;
 mod skeleton;
 mod textures;
 mod viewport;
@@ -79,7 +80,7 @@ struct Runtime {
 
 struct Model {
     id: u64,
-    identity: Option<crate::preview::EquipmentModel>,
+    identity: Option<crate::metadata::EquipmentModel>,
     definition: AssetBundle,
     bundle: AssetBundle,
     asset: Option<asset::NativeAsset>,
@@ -96,6 +97,14 @@ struct BoundMotion {
     native: animation::NativeMotion,
 }
 
+unsafe fn release_motions(client: Client, motions: &mut Vec<BoundMotion>) -> Result<(), String> {
+    for motion in motions.iter_mut() {
+        unsafe { motion.native.release(client) }?;
+    }
+    motions.clear();
+    Ok(())
+}
+
 struct SkeletonResource {
     id: u64,
     source: ResourceRef,
@@ -108,10 +117,7 @@ struct SkeletonResource {
 
 impl SkeletonResource {
     unsafe fn release(&mut self, client: Client) -> Result<(), String> {
-        for motion in &mut self.motions {
-            unsafe { motion.native.release(client) }?;
-        }
-        self.motions.clear();
+        unsafe { release_motions(client, &mut self.motions) }?;
         self.native = None;
         Ok(())
     }
@@ -144,16 +150,23 @@ impl MotionResource {
 }
 
 impl Model {
-    unsafe fn update_resources(
-        &mut self,
+    fn uses_skeleton(&self, source: &ResourceRef) -> bool {
+        self.bundle
+            .skeleton
+            .as_ref()
+            .is_some_and(|skeleton| skeleton.same_instance(source))
+    }
+
+    unsafe fn prepare_resources(
+        &self,
         client: Client,
-        bundle: AssetBundle,
-    ) -> Result<(), String> {
+        bundle: &AssetBundle,
+    ) -> Result<(asset::NativeAsset, effects::Target), String> {
         let mut replacement = unsafe { asset::NativeAsset::load(client, bundle.clone()) }?;
         let prepared = (|| {
             let target = unsafe { replacement.effect_target(client) }?;
             if let Some(previous) = &self.asset {
-                for mesh in previous.meshes().iter() {
+                for mesh in previous.meshes().iter().take(replacement.meshes().len()) {
                     replacement.set_mesh_visible(mesh.index, mesh.visible)?;
                 }
                 if self
@@ -161,9 +174,12 @@ impl Model {
                     .skeleton
                     .as_ref()
                     .zip(bundle.skeleton.as_ref())
-                    .is_some_and(|(a, b)| a.same_source(b))
+                    .is_some_and(|(a, b)| a.same_origin(b))
                 {
-                    replacement.set_bone_bindings(previous.bone_bindings())?;
+                    replacement.set_bone_bindings(refresh::compatible_bindings(
+                        &previous.bone_bindings(),
+                        replacement.bone_bindings().len(),
+                    ))?;
                 }
             }
             Ok::<_, String>(target)
@@ -175,9 +191,18 @@ impl Model {
                 return Err(error);
             }
         };
+        Ok((replacement, target))
+    }
+
+    unsafe fn update_resources(
+        &mut self,
+        client: Client,
+        bundle: AssetBundle,
+    ) -> Result<(), String> {
+        let (mut replacement, target) = unsafe { self.prepare_resources(client, &bundle) }?;
         let released = unsafe {
             (|| {
-                self.unload_motions(client)?;
+                release_motions(client, &mut self.motions)?;
                 if let Some(previous) = &mut self.asset {
                     previous.release(client)?;
                 }
@@ -197,16 +222,9 @@ impl Model {
         Ok(())
     }
 
-    unsafe fn unload_motions(&mut self, client: Client) -> Result<(), String> {
-        for motion in &mut self.motions {
-            unsafe { motion.native.release(client) }?;
-        }
-        self.motions.clear();
-        Ok(())
-    }
     unsafe fn release(&mut self, client: Client) -> Result<(), String> {
         unsafe {
-            self.unload_motions(client)?;
+            release_motions(client, &mut self.motions)?;
         }
         if let Some(asset) = &mut self.asset {
             unsafe {
@@ -441,10 +459,7 @@ fn edit_skeleton_binding(
             .iter_mut()
             .find_map(|model| {
                 model
-                    .bundle
-                    .skeleton
-                    .as_ref()
-                    .is_some_and(|value| value.same_source(&source))
+                    .uses_skeleton(&source)
                     .then_some(model.asset.as_mut())
                     .flatten()
             })
@@ -458,11 +473,7 @@ fn edit_skeleton_binding(
     };
     let result = (|| {
         for model in &mut runtime.models {
-            if model
-                .bundle
-                .skeleton
-                .as_ref()
-                .is_some_and(|value| value.same_source(&source))
+            if model.uses_skeleton(&source)
                 && let Some(asset) = &mut model.asset
             {
                 asset.set_bone_bindings(bindings.clone())?;
@@ -475,11 +486,7 @@ fn edit_skeleton_binding(
     })();
     if let Err(error) = result {
         for model in &mut runtime.models {
-            if model
-                .bundle
-                .skeleton
-                .as_ref()
-                .is_some_and(|value| value.same_source(&source))
+            if model.uses_skeleton(&source)
                 && let Some(asset) = &mut model.asset
             {
                 asset.set_bone_bindings(previous.clone())?;
@@ -501,7 +508,7 @@ fn register_resource(runtime: &mut Runtime, source: ResourceRef) {
     if let Some(entry) = runtime
         .resources
         .iter_mut()
-        .find(|entry| entry.source.same_source(&source))
+        .find(|entry| entry.source.same_instance(&source))
     {
         entry.enabled = true;
         return;
@@ -590,26 +597,23 @@ unsafe fn reconcile_skeletons(client: Client, runtime: &mut Runtime) -> Result<(
             unsafe { skeleton.release(client) }?;
             continue;
         }
-        let models: Vec<_> = runtime
+        let mut models = runtime
             .models
             .iter_mut()
-            .filter(|model| {
-                model.asset.is_some()
-                    && model
-                        .bundle
-                        .skeleton
-                        .as_ref()
-                        .is_some_and(|source| source.same_source(&resource.source))
-            })
-            .collect();
-        if !models.is_empty() {
+            .filter(|model| model.asset.is_some() && model.uses_skeleton(&resource.source))
+            .peekable();
+        if models.peek().is_some() {
             // Multiple model copies still share one logical FSKL resource.
             unsafe { skeleton.release(client) }?;
-            for (index, model) in models.into_iter().enumerate() {
+            for (index, model) in models.enumerate() {
                 let asset = model.asset.as_mut().unwrap();
                 if skeleton.bindings.is_empty() {
                     skeleton.bindings = asset.bone_bindings();
                 } else {
+                    skeleton.bindings = refresh::compatible_bindings(
+                        &skeleton.bindings,
+                        asset.bone_bindings().len(),
+                    );
                     asset.set_bone_bindings(skeleton.bindings.clone())?;
                 }
                 if model.bones.is_empty() {
@@ -627,6 +631,10 @@ unsafe fn reconcile_skeletons(client: Client, runtime: &mut Runtime) -> Result<(
             match unsafe { skeleton::Standalone::load(client, skeleton.source.clone()) } {
                 Ok(mut native) => {
                     if !skeleton.bindings.is_empty() {
+                        skeleton.bindings = refresh::compatible_bindings(
+                            &skeleton.bindings,
+                            native.bindings().len(),
+                        );
                         native.set_bindings(skeleton.bindings.clone())?;
                         unsafe { native.update(client, &[], &WORLD) }?;
                     }
@@ -767,18 +775,16 @@ unsafe fn reconcile_motions(client: Client, runtime: &mut Runtime) -> Result<(),
     for motion in runtime.motions.iter().filter(|motion| motion.enabled) {
         let mut matching = Vec::new();
         for skeleton in &runtime.skeletons {
-            if !motion.source.same_document(&skeleton.source) {
+            if !motion.source.compatible_scope(&skeleton.source) {
                 continue;
             }
             let mut instances = Vec::new();
             let mut complete = true;
-            for model in runtime.models.iter().filter(|model| {
-                model
-                    .bundle
-                    .skeleton
-                    .as_ref()
-                    .is_some_and(|source| source.same_source(&skeleton.source))
-            }) {
+            for model in runtime
+                .models
+                .iter()
+                .filter(|model| model.uses_skeleton(&skeleton.source))
+            {
                 let Some(asset) = &model.asset else { continue };
                 let nodes = unsafe {
                     asset.animation_nodes(client).and_then(|(roots, nodes)| {
@@ -841,7 +847,7 @@ unsafe fn reconcile_motions(client: Client, runtime: &mut Runtime) -> Result<(),
             .iter()
             .any(|motion| {
                 motion.resource == binding.resource
-                    && motion.native.source.same_source(source)
+                    && motion.native.source.same_instance(source)
                     && motion
                         .native
                         .target_nodes()
@@ -883,6 +889,9 @@ unsafe fn reconcile_motions(client: Client, runtime: &mut Runtime) -> Result<(),
             if selected
                 .iter()
                 .any(|binding| binding.target == target && binding.resource == motion.resource)
+                && !prepared.iter().any(|(replacement_target, replacement)| {
+                    *replacement_target == target && replacement.resource == motion.resource
+                })
             {
                 motion_index += 1;
             } else {
@@ -923,40 +932,13 @@ fn motion_resource(runtime: &mut Runtime, id: u64) -> Result<&mut MotionResource
         .ok_or_else(|| "动画已卸载".into())
 }
 
-fn resource_definition(source: ResourceRef) -> AssetBundle {
-    let (groups, by_node) = AssetBundle::find_with_nodes(source.document.clone());
-    let mut current = Some(source.node);
-    while let Some(node) = current {
-        if let Some(group) = by_node.get(node).and_then(|indices| {
-            indices
-                .iter()
-                .map(|&index| &groups[index])
-                .find(|group| group.model.same_source(&source))
-        }) {
-            return group.clone();
-        }
-        current = source.document.nodes.iter().position(|parent| {
-            parent.kind != Kind::StageResourceReference && parent.children.contains(&node)
-        });
-    }
-    groups
-        .into_iter()
-        .find(|group| group.model.same_source(&source))
-        .unwrap_or_else(|| AssetBundle {
-            name: source.name(),
-            model: source,
-            skeleton: None,
-            textures: Vec::new(),
-        })
-}
-
 unsafe fn add_model(client: Client, runtime: &mut Runtime, definition: AssetBundle) -> u64 {
     runtime.fx.capture(&runtime.models);
     let bundle = definition.loaded_from(&runtime.resources);
     if let Some(existing) = runtime
         .models
         .iter_mut()
-        .find(|model| model.definition.same_source(&definition))
+        .find(|model| model.definition.same_instance(&definition))
     {
         if existing.asset.is_none() || existing.error.is_some() {
             if let Err(error) = unsafe { existing.release(client) } {
@@ -1041,11 +1023,7 @@ fn refresh_snapshot(runtime: &mut Runtime) {
                         .iter()
                         .any(|bound| bound.resource == motion.id)
                         || runtime.models.iter().any(|model| {
-                            model
-                                .bundle
-                                .skeleton
-                                .as_ref()
-                                .is_some_and(|source| source.same_source(&skeleton.source))
+                            model.uses_skeleton(&skeleton.source)
                                 && model
                                     .motions
                                     .iter()
@@ -1078,9 +1056,9 @@ fn refresh_snapshot(runtime: &mut Runtime) {
 unsafe fn load_model(
     client: Client,
     runtime: &mut Runtime,
-    source: ResourceRef,
+    definition: AssetBundle,
 ) -> Result<(), String> {
-    let id = unsafe { add_model(client, runtime, resource_definition(source)) };
+    let id = unsafe { add_model(client, runtime, definition) };
     unsafe {
         reconcile_skeletons(client, runtime)?;
         reconcile_motions(client, runtime)?;
@@ -1113,7 +1091,7 @@ unsafe fn load_motion(
     if let Some(motion) = runtime
         .motions
         .iter_mut()
-        .find(|motion| motion.source.same_source(&source))
+        .find(|motion| motion.source.same_instance(&source))
     {
         motion.enabled = true;
         motion.activation = runtime.next_motion_activation;
@@ -1165,6 +1143,10 @@ unsafe fn command(
     }
     unsafe {
         match command {
+            Command::RefreshDocument { path, document } => {
+                refresh::document(client, runtime, &path, document)?;
+                Ok("已更新已加载资源的预览".into())
+            }
             Command::LoadResource(source) => {
                 source.bytes()?;
                 let mut resources = source.loadable_resources();
@@ -1202,9 +1184,15 @@ unsafe fn command(
                 }
                 // Definitions resolve against the complete selected dependency
                 // set; animations then see all models loaded by this operation.
+                let mut named_bundles = None;
                 for resource in resources {
                     let loaded = match resource.kind() {
-                        Kind::Fmod => load_model(client, runtime, resource),
+                        Kind::Fmod => {
+                            let named = named_bundles.get_or_insert_with(|| {
+                                AssetBundle::find_with_nodes(resource.document.clone()).0
+                            });
+                            load_model(client, runtime, AssetBundle::from_source(resource, named))
+                        }
                         Kind::Motion => load_motion(client, runtime, resource),
                         kind if effects::is_binding(kind) || effects::is_definition(kind) => {
                             runtime.fx.load(resource).and_then(|_| {
@@ -1228,7 +1216,7 @@ unsafe fn command(
                         && let Some(id) = runtime
                             .resources
                             .iter()
-                            .find(|resource| resource.source.same_source(source))
+                            .find(|resource| resource.source.same_instance(source))
                             .map(|resource| resource.id)
                     {
                         focus_skeleton(runtime, id)?;
@@ -1426,10 +1414,7 @@ unsafe fn command(
                             .map(|skeleton| &mut skeleton.motions),
                     )
                 {
-                    for motion in motions.iter_mut() {
-                        motion.native.release(client)?;
-                    }
-                    motions.clear();
+                    release_motions(client, motions)?;
                 }
                 runtime.motions.clear();
                 Ok("已清空动画".into())
@@ -1782,14 +1767,11 @@ unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), Strin
                     }
                     Err(error) => skeleton.error = Some(error.into()),
                 }
-            } else if let Some(model) = runtime.models.iter().find(|model| {
-                model.asset.is_some()
-                    && model
-                        .bundle
-                        .skeleton
-                        .as_ref()
-                        .is_some_and(|source| source.same_source(&skeleton.source))
-            }) {
+            } else if let Some(model) = runtime
+                .models
+                .iter()
+                .find(|model| model.asset.is_some() && model.uses_skeleton(&skeleton.source))
+            {
                 skeleton.bones = model.bones.clone();
             }
         }

@@ -351,9 +351,4 @@ fn installed_game_containers_and_jkr_0_3_4() {
         &opened.payload()[..16]
     );
     assert_eq!(crc32(opened.payload()), 0x94afcefc);
-    let source = std::fs::read(root.join("dat/stage-hd/st063-hd.pac")).unwrap();
-    assert_eq!(
-        std::fs::read(root.join("dat/stage-hd/st063-hd.pac")).unwrap(),
-        source
-    );
 }

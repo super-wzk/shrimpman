@@ -63,14 +63,31 @@ fn dat_inside_an_archive_expands_binary_fields_with_absolute_buffer_offsets() {
         .find(|field| field.name == "买入价格")
         .unwrap();
     assert!(price.value.starts_with("123456"));
-    assert_eq!((price.offset, price.size), (32 + 3248, 4));
+    assert_eq!(
+        (price.binding.range.start, price.binding.range.len()),
+        (32 + 3248, 4)
+    );
+    assert_eq!(price.binding.format, FieldType::Scalar(ScalarType::U32));
+    assert_eq!(
+        price
+            .binding
+            .format
+            .encode(
+                &archive[price.binding.range.start
+                    ..price.binding.range.start + price.binding.range.len()],
+                "42"
+            )
+            .unwrap(),
+        42_u32.to_le_bytes()
+    );
     let unknown = node
         .fields
         .iter()
-        .find(|field| field.offset == 32 + 3243)
+        .find(|field| field.binding.range.start == 32 + 3243)
         .unwrap();
     assert_eq!(
-        &archive[unknown.offset..unknown.offset + unknown.size],
+        &archive[unknown.binding.range.start
+            ..unknown.binding.range.start + unknown.binding.range.len()],
         [0xcc]
     );
     let text = node
@@ -78,11 +95,34 @@ fn dat_inside_an_archive_expands_binary_fields_with_absolute_buffer_offsets() {
         .iter()
         .find(|field| field.name == "名称")
         .unwrap();
-    assert_eq!((text.offset, text.size), (32 + 3350, 6));
+    assert_eq!(
+        (text.binding.range.start, text.binding.range.len()),
+        (32 + 3350, 6)
+    );
+    assert_eq!(
+        text.binding.format,
+        FieldType::Text {
+            encoding: TextEncoding::ShiftJis,
+            terminated: true
+        }
+    );
+    assert!(
+        text.binding
+            .format
+            .encode(
+                &archive
+                    [text.binding.range.start..text.binding.range.start + text.binding.range.len()],
+                "item too long"
+            )
+            .is_err()
+    );
     let mut coverage = [false; 36];
     for field in &node.fields {
-        if field.offset >= node.range.start && field.offset + field.size <= node.range.end {
-            coverage[field.offset - node.range.start..field.offset - node.range.start + field.size]
+        if field.binding.range.start >= node.range.start
+            && field.binding.range.start + field.binding.range.len() <= node.range.end
+        {
+            coverage[field.binding.range.start - node.range.start
+                ..field.binding.range.start - node.range.start + field.binding.range.len()]
                 .fill(true);
         }
     }
@@ -213,87 +253,121 @@ fn effect_bindings_follow_their_own_definitions_and_keep_unused_ids() {
         let definition = details.nodes[binding].children[0];
         assert_eq!(details.nodes[definition].range.start, definition_at);
         let details = expand(&details, definition).unwrap();
+        for field in &details.nodes[definition].fields {
+            assert_ne!(field.binding.format, FieldType::ReadOnly, "{}", field.name);
+            let bytes = &details.buffers[details.nodes[definition].buffer]
+                [field.binding.range.start..field.binding.range.start + field.binding.range.len()];
+            let input = field.binding.format.decode(bytes).unwrap();
+            assert_eq!(field.binding.format.encode(bytes, &input).unwrap(), bytes);
+        }
         let field = details.nodes[definition]
             .fields
             .iter()
             .find(|field| field.name == "骨骼节点索引")
             .unwrap();
-        assert_eq!((field.offset, field.value.as_str()), (node_at, node_index));
+        assert_eq!(
+            (field.binding.range.start, field.value.as_str()),
+            (node_at, node_index)
+        );
         if definition_at == 4256 {
             let node = &details.nodes[definition];
             let mut covered = [false; 128];
             for field in &node.fields {
-                if field.offset >= node.range.start && field.offset + field.size <= node.range.end {
-                    let start = field.offset - node.range.start;
+                if field.binding.range.start >= node.range.start
+                    && field.binding.range.start + field.binding.range.len() <= node.range.end
+                {
+                    let start = field.binding.range.start - node.range.start;
                     assert!(
-                        covered[start..start + field.size]
+                        covered[start..start + field.binding.range.len()]
                             .iter()
                             .all(|value| !value)
                     );
-                    covered[start..start + field.size].fill(true);
+                    covered[start..start + field.binding.range.len()].fill(true);
                 }
             }
             assert!(covered.into_iter().all(|value| value));
             assert_eq!(
                 node.fields
                     .iter()
-                    .find(|field| field.offset == definition_at + 0xf)
+                    .find(|field| field.binding.range.start == definition_at + 0xf)
                     .unwrap()
-                    .size,
+                    .binding
+                    .range
+                    .len(),
                 1
             );
             assert_eq!(
                 node.fields
                     .iter()
-                    .find(|field| field.offset == definition_at + 0x12)
+                    .find(|field| field.binding.range.start == definition_at + 0x12)
                     .unwrap()
-                    .size,
+                    .binding
+                    .range
+                    .len(),
                 2
             );
         }
         if definition_at == 5180 {
+            let position = details.nodes[definition]
+                .fields
+                .iter()
+                .find(|field| field.name == "节点位移增量 XYZ")
+                .unwrap();
+            assert_eq!(position.read(&details.buffers).unwrap(), "-0, 0, 0");
             assert!(
-                details.nodes[definition]
-                    .fields
-                    .iter()
-                    .any(|field| field.value.contains("0x80000000"))
+                position
+                    .write(&details.buffers, "-0, 0, 0")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                &position.binding.bytes(&details.buffers).unwrap()[..4],
+                &0x8000_0000u32.to_le_bytes()
             );
             let node = &details.nodes[definition];
             let mut covered = [false; 180];
             for field in &node.fields {
-                if field.offset >= node.range.start && field.offset + field.size <= node.range.end {
-                    let start = field.offset - node.range.start;
+                if field.binding.range.start >= node.range.start
+                    && field.binding.range.start + field.binding.range.len() <= node.range.end
+                {
+                    let start = field.binding.range.start - node.range.start;
                     assert!(
-                        covered[start..start + field.size]
+                        covered[start..start + field.binding.range.len()]
                             .iter()
                             .all(|value| !value)
                     );
-                    covered[start..start + field.size].fill(true);
+                    covered[start..start + field.binding.range.len()].fill(true);
                 }
             }
             assert!(covered.into_iter().all(|value| value));
             assert_eq!(
                 node.fields
                     .iter()
-                    .find(|field| field.offset == definition_at + 0x12)
+                    .find(|field| field.binding.range.start == definition_at + 0x12)
                     .unwrap()
-                    .size,
+                    .binding
+                    .range
+                    .len(),
                 2
             );
             assert_eq!(
                 node.fields
                     .iter()
-                    .find(|field| field.offset == definition_at + 0x26)
+                    .find(|field| field.binding.range.start == definition_at + 0x26)
                     .unwrap()
-                    .size,
+                    .binding
+                    .range
+                    .len(),
                 2
             );
             assert_eq!(
                 node.fields
                     .iter()
-                    .find(|field| field.offset == definition_at + 0x94)
+                    .find(|field| field.binding.range.start == definition_at + 0x94)
                     .unwrap()
-                    .size,
+                    .binding
+                    .range
+                    .len(),
                 2
             );
         }

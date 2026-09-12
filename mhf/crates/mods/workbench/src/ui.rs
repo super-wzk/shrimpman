@@ -1,7 +1,7 @@
 use crate::preview::effects;
 use crate::{
     catalog::Catalog,
-    inspect::{Document, Kind, Node},
+    inspect::{Document, Kind},
     preview::{
         Command, Control, DEFAULT_BACKGROUND_COLOR, LoadedModel, PlaybackTrack, ResourceRef,
         Snapshot, Viewport,
@@ -16,6 +16,17 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+
+mod editing;
+#[cfg(test)]
+mod field_layout_tests;
+mod fields;
+mod inspector;
+#[cfg(test)]
+mod popup_scroll_tests;
+#[cfg(test)]
+mod resource_scope_tests;
+use editing::Editing;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InspectorTab {
@@ -54,12 +65,14 @@ pub(crate) struct Workbench {
     document: Option<Arc<Document>>,
     resource_counts: Vec<usize>,
     node: usize,
+    selection: Option<ResourceRef>,
     hex_start: usize,
     hex_buffer: bool,
     hex_selection: Option<std::ops::Range<usize>>,
     bone: Option<(u64, usize)>,
     error: String,
     status: String,
+    editing: Editing,
 }
 
 impl Workbench {
@@ -73,7 +86,7 @@ impl Workbench {
         Self {
             control,
             worker,
-            root,
+            root: root.clone(),
             open: true,
             view,
             configuration,
@@ -94,6 +107,7 @@ impl Workbench {
             path: None,
             document: None,
             node: 0,
+            selection: None,
             hex_start: 0,
             resource_counts: Vec::new(),
             hex_buffer: false,
@@ -101,6 +115,7 @@ impl Workbench {
             bone: None,
             error: String::new(),
             status: String::new(),
+            editing: Editing::new(&root),
         }
     }
 
@@ -146,9 +161,17 @@ impl Workbench {
             self.hex_buffer = false;
             self.hex_selection = None;
             match loaded.document {
-                Ok(document) => self.loaded_document(document),
+                Ok(document) => {
+                    if let Some(path) = &self.path {
+                        self.editing
+                            .sessions
+                            .insert(path.clone(), crate::session::Session::new(document.clone()));
+                    }
+                    self.loaded_document(document);
+                }
                 Err(error) => {
                     self.document = None;
+                    self.selection = None;
                     self.resource_counts.clear();
                     self.error = error;
                 }
@@ -169,14 +192,53 @@ impl Workbench {
                 Err(error) => self.error = error,
             }
         }
+        if let Some(edited) = updates.edited {
+            self.finish_edit(edited);
+        }
+        if let Some(packed) = updates.packed {
+            self.editing.saving = false;
+            match packed.result {
+                Ok(path) => {
+                    if let Some(session) = self.editing.sessions.get_mut(&packed.source) {
+                        session.saved(packed.bytes);
+                    }
+                    self.status = format!("已打包 {}", path.display());
+                }
+                Err(error) => self.error = error,
+            }
+        }
     }
 
     fn loaded_document(&mut self, document: Arc<Document>) {
         self.node = visible_node(&document, document.root, self.view.show_encoding_layers);
+        self.selection = Some(ResourceRef::new(document.clone(), self.node));
         self.refresh_document(document);
     }
 
     fn refresh_document(&mut self, document: Arc<Document>) {
+        let selection = self
+            .selection
+            .as_ref()
+            .filter(|source| source.node == self.node)
+            .cloned()
+            .or_else(|| self.selected_source())
+            .and_then(|source| {
+                if Arc::ptr_eq(&source.document, &document) {
+                    Some(source)
+                } else {
+                    source.remap_path(document.clone()).ok()
+                }
+            })
+            .unwrap_or_else(|| {
+                let node = self
+                    .document
+                    .as_ref()
+                    .and_then(|old| crate::edit::node_key(old, self.node))
+                    .and_then(|key| crate::edit::locate(&document, &key))
+                    .unwrap_or(document.root);
+                ResourceRef::new(document.clone(), node)
+            });
+        self.select_source(selection);
         self.resource_counts = crate::preview::loadable_resource_counts(&document);
         self.status.clear();
         if !document.nodes.iter().any(|node| node.kind == Kind::Fmod)
@@ -188,6 +250,11 @@ impl Workbench {
             self.status =
                 "此包包含高清场景光照与环境贴图；几何模型请打开 stage 中对应编号的主场景资源。"
                     .into();
+        }
+        if let Some(path) = &self.path
+            && let Some(session) = self.editing.sessions.get_mut(path)
+        {
+            session.document = document.clone();
         }
         self.document = Some(document);
     }
@@ -206,7 +273,9 @@ impl Workbench {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.poll();
+        self.flush_previews();
         let context = ui.ctx().clone();
+        self.flush_edits(&context);
         let previous_view = self.view;
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
             self.open = !self.open;
@@ -258,6 +327,7 @@ impl Workbench {
         if !context.input(|input| input.pointer.any_down()) {
             self.save_view();
         }
+        self.flush_edits(&context);
     }
 
     fn layout(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
@@ -306,6 +376,10 @@ impl Workbench {
                             && let Some(document) = &self.document
                         {
                             self.node = visible_node(document, self.node, false);
+                            self.selection = self
+                                .selection
+                                .as_ref()
+                                .and_then(|source| source.related(self.node));
                             self.hex_start = 0;
                             self.hex_buffer = false;
                             self.hex_selection = None;
@@ -422,8 +496,19 @@ impl Workbench {
             }
         });
         ui.separator();
-        egui::ScrollArea::vertical()
+        let scroll_style = ui.spacing().scroll;
+        let mut margin = scroll_style.content_margin;
+        if scroll_style.floating {
+            // Floating bars use no layout space, including while appearing or
+            // expanding on hover. Reserve their full width before laying out rows.
+            let gutter = (scroll_style.bar_width + scroll_style.bar_inner_margin).ceil() as i8;
+            margin.right = margin.right.max(gutter);
+            margin.bottom = margin.bottom.max(gutter);
+        }
+        egui::ScrollArea::both()
             .id_salt("workbench-inspector-content")
+            .max_width(ui.available_width())
+            .content_margin(margin)
             .auto_shrink([false, false])
             .show(ui, |ui| match self.tab {
                 InspectorTab::Loaded => self.loaded_resources(ui, snapshot),
@@ -433,6 +518,7 @@ impl Workbench {
                         if let Some(node) = document.nodes.get(self.node) {
                             self.inspector(ui, &document, node);
                         }
+                        self.replacement_editor(ui, &document);
                     } else {
                         ui.weak("单击资源查看字段与原始字节，点击右侧按钮加载。");
                     }
@@ -649,6 +735,7 @@ impl Workbench {
                     &self.resource_counts,
                     self.view.show_encoding_layers,
                     &mut self.node,
+                    &mut self.selection,
                     &mut load,
                     &mut load_node,
                     &mut details,
@@ -666,24 +753,18 @@ impl Workbench {
         if let Some(index) = details {
             self.expand_node(index);
         }
-        if let Some(index) = load_node {
-            self.load_node(index);
+        if let Some(source) = load_node {
+            self.load_source(source);
         }
         if let Some(path) = load {
-            self.request = self.request.wrapping_add(1);
-            self.path = Some(path.clone());
-            self.document = None;
-            self.loading = true;
-            self.expanding = None;
-            self.error.clear();
-            self.resource_counts.clear();
-            self.worker.load(self.request, path);
+            self.open_document(path);
         }
         browser.inner_rect
     }
 
     fn expand_node(&mut self, index: usize) {
         if self.expanding.is_none()
+            && !self.editing.busy
             && let Some(document) = &self.document
             && document.nodes[index].deferred
         {
@@ -713,14 +794,37 @@ impl Workbench {
 
     fn load_node(&mut self, node: usize) {
         if let Some(document) = &self.document {
-            let source = ResourceRef {
-                document: document.clone(),
-                node,
-            };
-            self.node = node;
-            self.tab = InspectorTab::Loaded;
-            self.send(Command::LoadResource(source));
+            let source = self
+                .selected_source()
+                .filter(|source| source.node == node)
+                .unwrap_or_else(|| ResourceRef::new(document.clone(), node));
+            self.load_source(source);
         }
+    }
+
+    fn selected_source(&self) -> Option<ResourceRef> {
+        let document = self.document.as_ref()?;
+        document.nodes.get(self.node)?;
+        Some(
+            self.selection
+                .as_ref()
+                .filter(|source| {
+                    source.node == self.node && Arc::ptr_eq(&source.document, document)
+                })
+                .cloned()
+                .unwrap_or_else(|| ResourceRef::new(document.clone(), self.node)),
+        )
+    }
+
+    fn select_source(&mut self, source: ResourceRef) {
+        self.node = source.node;
+        self.selection = Some(source);
+    }
+
+    fn load_source(&mut self, source: ResourceRef) {
+        self.select_source(source.clone());
+        self.tab = InspectorTab::Loaded;
+        self.send(Command::LoadResource(source));
     }
 
     fn effect_controls(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
@@ -1044,15 +1148,7 @@ impl Workbench {
         let Some(camera) = snapshot.camera.filter(|_| snapshot.ready) else {
             return;
         };
-        let screen = ui.ctx().content_rect();
-        let region = snapshot.viewport;
-        let viewport = egui::Rect::from_min_size(
-            screen.min + egui::vec2(region.x * screen.width(), region.y * screen.height()),
-            egui::vec2(
-                region.width * screen.width(),
-                region.height * screen.height(),
-            ),
-        );
+        let viewport = rendered_viewport(ui, snapshot);
         let painter = ui
             .painter()
             .with_clip_rect(viewport.intersect(ui.clip_rect()));
@@ -1084,124 +1180,6 @@ impl Workbench {
                 );
             }
         }
-    }
-
-    fn inspector(&mut self, ui: &mut egui::Ui, document: &Document, node: &Node) {
-        ui.horizontal_wrapped(|ui| {
-            ui.strong(&node.name);
-            ui.weak(node.kind.label());
-            if ui.button("导出原始字节").clicked() {
-                self.error = self
-                    .worker
-                    .export(document, self.node)
-                    .err()
-                    .unwrap_or_default();
-            }
-        });
-        ui.monospace(format!(
-            "0x{:08X} · {} 字节 · 数据层 {}",
-            node.range.start,
-            node.range.len(),
-            node.buffer
-        ));
-        if let Some(error) = &node.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
-        }
-        let column_width = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(40.0);
-        egui::Grid::new(("resource-fields", self.node))
-            .num_columns(2)
-            .max_col_width(column_width)
-            .striped(true)
-            .show(ui, |ui| {
-                for field in &node.fields {
-                    if ui
-                        .selectable_label(false, &field.name)
-                        .on_hover_text(format!("0x{:08X} · {} 字节", field.offset, field.size))
-                        .clicked()
-                    {
-                        self.hex_buffer = true;
-                        self.hex_start = field.offset / 16 * 16;
-                        self.hex_selection =
-                            Some(field.offset..field.offset.saturating_add(field.size));
-                    }
-                    ui.add(egui::Label::new(&field.value).wrap());
-                    ui.end_row();
-                }
-            });
-        ui.collapsing("十六进制", |ui| {
-            if ui
-                .checkbox(&mut self.hex_buffer, "查看整个数据层（含目录字段）")
-                .changed()
-            {
-                self.hex_start = 0;
-            }
-            let range = if self.hex_buffer {
-                0..document.buffers[node.buffer].len()
-            } else {
-                node.range.clone()
-            };
-            if let Some(bytes) = document
-                .buffers
-                .get(node.buffer)
-                .and_then(|bytes| bytes.get(range.clone()))
-            {
-                self.hex_start = self.hex_start.min(bytes.len().saturating_sub(1) / 16 * 16);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(self.hex_start > 0, egui::Button::new("上一页"))
-                        .clicked()
-                    {
-                        self.hex_start = self.hex_start.saturating_sub(256);
-                    }
-                    if ui
-                        .add_enabled(
-                            self.hex_start + 256 < bytes.len(),
-                            egui::Button::new("下一页"),
-                        )
-                        .clicked()
-                    {
-                        self.hex_start += 256;
-                    }
-                    ui.small(format!("+0x{:X}", self.hex_start));
-                });
-                egui::ScrollArea::both()
-                    .id_salt("workbench-hex")
-                    .max_height(140.0)
-                    .show(ui, |ui| {
-                        for (row, bytes) in bytes
-                            [self.hex_start..bytes.len().min(self.hex_start + 256)]
-                            .chunks(16)
-                            .enumerate()
-                        {
-                            let hex = bytes
-                                .iter()
-                                .map(|byte| format!("{byte:02X}"))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            let ascii: String = bytes
-                                .iter()
-                                .map(|&byte| {
-                                    if byte.is_ascii_graphic() || byte == b' ' {
-                                        byte as char
-                                    } else {
-                                        '.'
-                                    }
-                                })
-                                .collect();
-                            let offset = range.start + self.hex_start + 16 * row;
-                            let mut text =
-                                RichText::new(format!("{offset:08X}  {hex:47}  {ascii}"))
-                                    .monospace();
-                            if self.hex_selection.as_ref().is_some_and(|selected| {
-                                selected.start < offset + bytes.len() && selected.end > offset
-                            }) {
-                                text = text.background_color(ui.visuals().selection.bg_fill);
-                            }
-                            ui.label(text);
-                        }
-                    });
-            }
-        });
     }
 
     fn loaded_resources(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
@@ -1709,15 +1687,7 @@ impl Workbench {
         if !self.view.show_bones && self.bone.is_none() {
             return;
         }
-        let screen = ui.ctx().content_rect();
-        let region = snapshot.viewport;
-        let viewport = egui::Rect::from_min_size(
-            screen.min + egui::vec2(region.x * screen.width(), region.y * screen.height()),
-            egui::vec2(
-                region.width * screen.width(),
-                region.height * screen.height(),
-            ),
-        );
+        let viewport = rendered_viewport(ui, snapshot);
         let painter = ui
             .painter()
             .with_clip_rect(ui.clip_rect().intersect(viewport));
@@ -1749,7 +1719,13 @@ impl Workbench {
                 };
                 if let Some(parent) = bone
                     .parent
-                    .and_then(|index| skeleton.bones.iter().find(|bone| bone.index == index))
+                    .and_then(|index| {
+                        skeleton
+                            .bones
+                            .binary_search_by_key(&index, |bone| bone.index)
+                            .ok()
+                    })
+                    .map(|index| &skeleton.bones[index])
                     && let Some(parent) = point(parent.position)
                 {
                     painter.line_segment(
@@ -1776,6 +1752,18 @@ impl Drop for Workbench {
     fn drop(&mut self) {
         self.save_view();
     }
+}
+
+fn rendered_viewport(ui: &egui::Ui, snapshot: &Snapshot) -> egui::Rect {
+    let screen = ui.ctx().content_rect();
+    let region = snapshot.viewport;
+    egui::Rect::from_min_size(
+        screen.min + egui::vec2(region.x * screen.width(), region.y * screen.height()),
+        egui::vec2(
+            region.width * screen.width(),
+            region.height * screen.height(),
+        ),
+    )
 }
 
 fn visible_skeleton(snapshot: &Snapshot, skeleton: &crate::preview::LoadedSkeleton) -> bool {
@@ -1834,8 +1822,9 @@ fn directory(
     resource_counts: &[usize],
     show_encoding_layers: bool,
     node: &mut usize,
+    selection: &mut Option<ResourceRef>,
     load: &mut Option<PathBuf>,
-    load_resource: &mut Option<usize>,
+    load_resource: &mut Option<ResourceRef>,
     details: &mut Option<usize>,
     expand: bool,
 ) {
@@ -1853,6 +1842,7 @@ fn directory(
                         resource_counts,
                         show_encoding_layers,
                         node,
+                        selection,
                         load,
                         load_resource,
                         details,
@@ -1873,11 +1863,11 @@ fn directory(
             ui.push_id(&entry.path, |ui| {
                 let _ = tree(
                     ui,
-                    document,
-                    document.root,
+                    &ResourceRef::new(document.clone(), document.root),
                     resource_counts,
                     show_encoding_layers,
                     node,
+                    selection,
                     load_resource,
                     details,
                 );
@@ -1900,17 +1890,23 @@ fn directory(
 #[allow(clippy::too_many_arguments)]
 fn tree(
     ui: &mut egui::Ui,
-    document: &Arc<Document>,
-    index: usize,
+    source: &ResourceRef,
     resource_counts: &[usize],
     show_encoding_layers: bool,
     selected: &mut usize,
-    load_resource: &mut Option<usize>,
+    selection: &mut Option<ResourceRef>,
+    load_resource: &mut Option<ResourceRef>,
     details: &mut Option<usize>,
 ) -> Option<(egui::Response, Option<egui::Response>)> {
-    let original = document.nodes.get(index)?;
-    let root = index == document.root;
-    let index = visible_node(document, index, show_encoding_layers);
+    let document = &source.document;
+    let original = document.nodes.get(source.node)?;
+    let root = source.node == document.root;
+    let index = visible_node(document, source.node, show_encoding_layers);
+    let source = if index == source.node {
+        source.clone()
+    } else {
+        source.related(index)?
+    };
     let node = document.nodes.get(index)?;
     let name = if root {
         original
@@ -1923,15 +1919,16 @@ fn tree(
     };
     let label = format!("{name} · {}", node.kind);
     let resource_count = resource_counts.get(index).copied().unwrap_or(0);
-    let kind = ResourceRef {
-        document: document.clone(),
-        node: index,
-    }
-    .kind();
+    let kind = crate::preview::resource_kind(document, index);
+    let selected_row = *selected == index
+        && selection
+            .as_ref()
+            .filter(|source| source.node == *selected)
+            .is_none_or(|selected| selected.same_origin(&source));
     let response = if node.children.is_empty() && !node.deferred {
         ui.horizontal(|ui| {
             ui.add_space(ui.spacing().indent);
-            tree_row(ui, &label, *selected == index, resource_count, Some(kind))
+            tree_row(ui, &label, selected_row, resource_count, Some(kind))
         })
         .inner
     } else {
@@ -1942,7 +1939,7 @@ fn tree(
             root,
         )
         .show_header(ui, |ui| {
-            let response = tree_row(ui, &label, *selected == index, resource_count, Some(kind));
+            let response = tree_row(ui, &label, selected_row, resource_count, Some(kind));
             clicked = response.0.clicked();
             response
         });
@@ -1955,13 +1952,16 @@ fn tree(
                 ui.spinner();
             }
             for &child in &node.children {
+                let Some(child) = source.related(child) else {
+                    continue;
+                };
                 let _ = tree(
                     ui,
-                    document,
-                    child,
+                    &child,
                     resource_counts,
                     show_encoding_layers,
                     selected,
+                    selection,
                     load_resource,
                     details,
                 );
@@ -1971,10 +1971,12 @@ fn tree(
     };
     if response.0.clicked() {
         *selected = index;
+        *selection = Some(source.clone());
     }
     if response.1.as_ref().is_some_and(egui::Response::clicked) {
         *selected = index;
-        *load_resource = Some(index);
+        *selection = Some(source.clone());
+        *load_resource = Some(source);
     }
     Some(response)
 }
@@ -2090,7 +2092,7 @@ fn tree_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inspect::Field;
+    use crate::inspect::{Field, Node};
     use crate::preview::AssetBundle;
 
     fn loaded_effect_fixture(
@@ -2425,10 +2427,7 @@ mod tests {
         let mut snapshot = Snapshot {
             motions: Arc::new(vec![crate::preview::LoadedMotion {
                 id: 7,
-                source: ResourceRef {
-                    document: multiple_models(),
-                    node: 9,
-                },
+                source: ResourceRef::new(multiple_models(), 9),
                 enabled: true,
                 frames: 60.0,
                 frame: Some(15.0),
@@ -2552,10 +2551,7 @@ mod tests {
                     .into_iter()
                     .map(|(id, node, frames)| crate::preview::LoadedMotion {
                         id,
-                        source: ResourceRef {
-                            document: document.clone(),
-                            node,
-                        },
+                        source: ResourceRef::new(document.clone(), node),
                         enabled: true,
                         frames,
                         frame: Some(15.0),
@@ -2684,10 +2680,7 @@ mod tests {
                     .into_iter()
                     .map(|(id, node)| crate::preview::LoadedResource {
                         id,
-                        source: ResourceRef {
-                            document: document.clone(),
-                            node,
-                        },
+                        source: ResourceRef::new(document.clone(), node),
                         enabled: true,
                     })
                     .collect(),
@@ -2884,8 +2877,9 @@ mod tests {
             deferred: false,
             error: None,
             fields: Vec::new(),
+            metadata: Default::default(),
         };
-        Arc::new(Document {
+        let mut document = Document {
             root: 0,
             buffers: vec![Arc::from([0_u8; 16])],
             nodes: vec![
@@ -2906,7 +2900,11 @@ mod tests {
                 node("effect-bank", Kind::EffectBank, vec![]),
                 node("unknown", Kind::Unknown, vec![]),
             ],
-        })
+        };
+        for (scope, value) in crate::metadata::model_resources(&document) {
+            document.nodes[scope].metadata.insert(value);
+        }
+        Arc::new(document)
     }
 
     fn encoded_models() -> Arc<Document> {
@@ -2934,14 +2932,11 @@ mod tests {
         document.nodes[0].children = vec![12, 3, 5, 6, 7, 9, 10, 11];
         let document = Arc::new(document);
         let resources = |node| {
-            ResourceRef {
-                document: document.clone(),
-                node,
-            }
-            .loadable_resources()
-            .iter()
-            .map(|source| source.node)
-            .collect::<Vec<_>>()
+            ResourceRef::new(document.clone(), node)
+                .loadable_resources()
+                .iter()
+                .map(|source| source.node)
+                .collect::<Vec<_>>()
         };
         assert_eq!(resources(12), [1, 2]);
         assert_eq!(resources(1), [1]);
@@ -2951,14 +2946,11 @@ mod tests {
         let mut nested = (*document).clone();
         nested.nodes[1].children = vec![4];
         assert_eq!(
-            ResourceRef {
-                document: Arc::new(nested),
-                node: 12
-            }
-            .loadable_resources()
-            .iter()
-            .map(|source| source.node)
-            .collect::<Vec<_>>(),
+            ResourceRef::new(Arc::new(nested), 12)
+                .loadable_resources()
+                .iter()
+                .map(|source| source.node)
+                .collect::<Vec<_>>(),
             [1, 2]
         );
     }
@@ -3136,19 +3128,19 @@ mod tests {
                     ));
                     responses = tree(
                         ui,
-                        workbench.document.as_ref().unwrap(),
-                        index,
+                        &ResourceRef::new(workbench.document.as_ref().unwrap().clone(), index),
                         &workbench.resource_counts,
                         workbench.view.show_encoding_layers,
                         &mut workbench.node,
+                        &mut workbench.selection,
                         &mut preview,
                         &mut details,
                     );
                 },
             )
             .drop_without_applying_deltas();
-        if let Some(index) = preview {
-            workbench.load_node(index);
+        if let Some(source) = preview {
+            workbench.load_source(source);
         }
         let (label, button) = responses.unwrap();
         (label, button, id, details)
@@ -3436,14 +3428,8 @@ mod tests {
         let second = multiple_models();
         let mut resources = AssetBundle::find_with_nodes(first.clone()).0.remove(0);
         resources.textures = vec![
-            ResourceRef {
-                document: first.clone(),
-                node: 4,
-            },
-            ResourceRef {
-                document: second.clone(),
-                node: 8,
-            },
+            ResourceRef::new(first.clone(), 4),
+            ResourceRef::new(second.clone(), 8),
         ];
         let model = LoadedModel {
             id: 41,
@@ -3703,10 +3689,15 @@ mod tests {
         let mut document = (*multiple_models()).clone();
         document.nodes[0].name = "long-resource-file-name".repeat(12);
         document.nodes[0].fields.push(Field {
+            writable: false,
+            binding: crate::field::Binding {
+                buffer: 0,
+                range: 0..16,
+                format: crate::field::FieldType::ReadOnly,
+                endian: mhf_resource::binary::Endian::Little,
+            },
             name: "unknown_00000010".repeat(4),
             value: "Long resource field content ".repeat(20),
-            offset: 0,
-            size: 16,
         });
         workbench.refresh_document(Arc::new(document));
         workbench.tab = InspectorTab::Resource;
@@ -3937,10 +3928,7 @@ mod tests {
             }),
             resources: Arc::new(vec![crate::preview::LoadedResource {
                 id: 91,
-                source: ResourceRef {
-                    document: multiple_models(),
-                    node: 2,
-                },
+                source: ResourceRef::new(multiple_models(), 2),
                 enabled: true,
             }]),
             skeletons: Arc::new(vec![crate::preview::LoadedSkeleton {
@@ -4001,10 +3989,7 @@ mod tests {
         workbench.control.publish(Snapshot {
             motions: Arc::new(vec![crate::preview::LoadedMotion {
                 id: 7,
-                source: ResourceRef {
-                    document: multiple_models(),
-                    node: 9,
-                },
+                source: ResourceRef::new(multiple_models(), 9),
                 enabled: true,
                 frames: 60.0,
                 frame: Some(15.0),
@@ -4071,7 +4056,8 @@ mod tests {
             nodes: vec![Node {
                 name: "Z:\\game\\dat\\model\\long-resource-file-name.bin".into(),
                 kind: Kind::Unknown, buffer: 0, range: 0..16, children: vec![], deferred: false, error: None,
-                fields: vec![Field {name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3), offset: 0, size: 16}],
+                metadata: Default::default(),
+                fields: vec![Field {writable: false, binding: crate::field::Binding { buffer: 0, range: 0..16, format: crate::field::FieldType::ReadOnly, endian: mhf_resource::binary::Endian::Little }, name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3)}],
             }],
         }));
         let context = egui::Context::default();
