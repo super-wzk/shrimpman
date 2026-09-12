@@ -1,9 +1,10 @@
+use crate::preview::effects;
 use crate::{
     catalog::Catalog,
     inspect::{Document, Kind, Node},
     preview::{
-        AssetBundle, Command, Control, DEFAULT_BACKGROUND_COLOR, LoadedModel, ResourceRef,
-        Snapshot, Viewport,
+        AssetBundle, Command, Control, DEFAULT_BACKGROUND_COLOR, LoadedModel, PlaybackTrack,
+        ResourceRef, Snapshot, Viewport,
     },
     settings::ViewSettings,
     worker::Worker,
@@ -21,6 +22,12 @@ enum InspectorTab {
     Models,
     Resource,
     Bones,
+}
+
+struct TimelineTrack {
+    target: PlaybackTrack,
+    range: [f32; 2],
+    frame: Option<f32>,
 }
 
 pub(crate) struct Workbench {
@@ -485,6 +492,7 @@ impl Workbench {
             );
         }
         self.draw_bones(ui, snapshot);
+        self.draw_effects(ui, snapshot);
         self.draw_coordinates(ui, snapshot);
         let mut distance = snapshot.distance;
         let mut pitch = snapshot.pitch;
@@ -526,7 +534,7 @@ impl Workbench {
                 self.send(Command::FocusAll);
             }
             if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space))
-                && snapshot.motion.is_some()
+                && (snapshot.motion.is_some() || !snapshot.effects.is_empty())
             {
                 self.send(Command::Playing(!snapshot.playing));
             }
@@ -535,7 +543,7 @@ impl Workbench {
 
     fn timeline(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
         ui.horizontal(|ui| {
-            ui.strong("动画");
+            ui.strong("模型动画");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(snapshot.motion.is_some(), egui::Button::new("卸载"))
@@ -556,40 +564,52 @@ impl Workbench {
                 .on_hover_text(snapshot.motion.as_deref().unwrap_or(""));
             });
         });
-        ui.add_enabled_ui(snapshot.motion.is_some(), |ui| {
+        if !snapshot.effects.is_empty() {
             ui.horizontal(|ui| {
-                if ui
-                    .button(if snapshot.playing && snapshot.motion.is_some() {
-                        "暂停"
-                    } else {
-                        "播放"
-                    })
-                    .clicked()
-                {
-                    self.send(Command::Playing(!snapshot.playing));
-                }
-                if ui.button("-1").on_hover_text("上一帧").clicked() {
-                    self.send(Command::Seek((snapshot.frame - 1.0).max(0.0)));
-                }
-                if ui.button("+1").on_hover_text("下一帧").clicked() {
-                    self.send(Command::Seek((snapshot.frame + 1.0).min(snapshot.frames)));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(format!("{:.0} / {:.0} 帧", snapshot.frame, snapshot.frames));
-                    let mut frame = snapshot.frame;
-                    ui.spacing_mut().slider_width = ui.available_width().max(1.0);
+                ui.strong("特效");
+                ui.weak(format!(
+                    "{} 个定义 · 30 预览步/秒",
+                    snapshot
+                        .effects
+                        .iter()
+                        .map(|binding| binding.definitions.len())
+                        .sum::<usize>()
+                ));
+                ui.weak("独立轨道").on_hover_text(
+                    "每条轨道从第 0 步到自身总步数占满宽度，播放进度互不影响。拖动或单步只调整本轨道；播放、暂停和速度统一控制。",
+                );
+            });
+        }
+        if snapshot.motion.is_some() || !snapshot.effects.is_empty() {
+            self.effect_track(ui, snapshot);
+        }
+        ui.add_enabled_ui(
+            snapshot.motion.is_some() || !snapshot.effects.is_empty(),
+            |ui| {
+                ui.horizontal(|ui| {
                     if ui
-                        .add(
-                            egui::Slider::new(&mut frame, 0.0..=snapshot.frames.max(0.0))
-                                .show_value(false),
-                        )
-                        .changed()
+                        .button(if snapshot.playing { "暂停" } else { "播放" })
+                        .clicked()
                     {
-                        self.send(Command::Seek(frame));
+                        self.send(Command::Playing(!snapshot.playing));
+                    }
+                    let mut speed = snapshot.playback_speed;
+                    egui::ComboBox::from_id_salt("preview-speed")
+                        .width(58.0)
+                        .selected_text(format!("{speed}×"))
+                        .show_ui(ui, |ui| {
+                            for value in [0.25, 0.5, 1.0, 2.0, 4.0] {
+                                ui.selectable_value(&mut speed, value, format!("{value}×"));
+                            }
+                        })
+                        .response
+                        .on_hover_text("同时调整动画与特效的预览速度");
+                    if speed != snapshot.playback_speed {
+                        self.send(Command::PlaybackSpeed(speed));
                     }
                 });
-            });
-        });
+            },
+        );
     }
 
     fn record_messages(&mut self, snapshot: &Snapshot) {
@@ -769,6 +789,11 @@ impl Workbench {
             {
                 self.select_resource(source.clone());
             }
+            if (effects::is_binding(kind) || effects::is_definition(kind))
+                && ui.button("追加并触发特效").clicked()
+            {
+                self.send(Command::TriggerEffect(source.clone()));
+            }
             if matches!(kind, Kind::Txb | Kind::Png | Kind::Dds)
                 && ui
                     .button("追加贴图")
@@ -843,6 +868,11 @@ impl Workbench {
                 document: document.clone(),
                 node,
             };
+            if effects::is_binding(source.kind()) || effects::is_definition(source.kind()) {
+                self.node = node;
+                self.send(Command::TriggerEffect(source));
+                return;
+            }
             if source.kind() == Kind::Motion {
                 self.node = node;
                 self.send(Command::LoadMotion(source));
@@ -868,6 +898,273 @@ impl Workbench {
             skeleton: self.skeleton.clone(),
             textures: self.textures.clone(),
         })
+    }
+
+    fn effect_controls(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot, model: u64) {
+        let count: usize = snapshot
+            .effects
+            .iter()
+            .map(|binding| binding.definitions.len())
+            .sum();
+        ui.horizontal(|ui| {
+            ui.strong(format!("特效 · {count}"));
+            ui.weak("说明").on_hover_text("追加特效直接加入并触发当前模型。相同目标以最近触发的定义为准。原生条件仅展示；旋转、缩放按标准周期预览；DAT166 模式 0 的 UV 滚动已支持；附着粒子、拖尾及依赖装备状态的 UV 模式与速度尚未预览。");
+        });
+        if count == 0 {
+            ui.weak("从资源列表追加特效，即时预览。");
+        }
+        for binding in snapshot.effects.iter() {
+            for entry in &binding.definitions {
+                ui.push_id(("model-effect", model, binding.id, entry.slot), |ui| {
+                    let header = egui::collapsing_header::CollapsingState::load_with_default_open(
+                        ui.ctx(),
+                        ui.id().with("details"),
+                        false,
+                    )
+                    .show_header(ui, |ui| {
+                        ui.strong(format!("定义 {}", entry.id));
+                        let status = if entry.frame.is_none() {
+                            "已停止"
+                        } else if entry.active {
+                            "播放中"
+                        } else if entry.message.contains("最近触发") {
+                            "已被接管"
+                        } else if entry.message.starts_with("等待启动") {
+                            "延迟中"
+                        } else if entry.message.starts_with("尚未到") {
+                            "待触发"
+                        } else {
+                            "不可预览"
+                        };
+                        ui.weak(status).on_hover_text(&entry.message);
+                        if ui
+                            .small_button(if entry.frame.is_some() {
+                                "重播"
+                            } else {
+                                "触发"
+                            })
+                            .clicked()
+                        {
+                            self.send(Command::TriggerEffectDefinition {
+                                model,
+                                binding: binding.id,
+                                slot: entry.slot,
+                            });
+                        }
+                        if ui
+                            .add_enabled(entry.frame.is_some(), egui::Button::new("停止").small())
+                            .clicked()
+                        {
+                            self.send(Command::StopEffectDefinition {
+                                model,
+                                binding: binding.id,
+                                slot: entry.slot,
+                            });
+                        }
+                        if ui.small_button("移除").clicked() {
+                            self.send(Command::RemoveEffectDefinition {
+                                model,
+                                binding: binding.id,
+                                slot: entry.slot,
+                            });
+                        }
+                    });
+                    header.body(|ui| {
+                        ui.add(egui::Label::new(&binding.name).wrap());
+                        let target = entry.draw.map_or_else(
+                            || "附着点".into(),
+                            |(group, item)| format!("绘制组 {group} / 材质槽 {item}"),
+                        );
+                        ui.label(format!(
+                            "节点 {} · {target} · 延迟 {} 步 · 原条件 {}",
+                            entry.node, entry.delay, entry.condition
+                        ));
+                        ui.label(&entry.message);
+                    });
+                });
+            }
+        }
+    }
+
+    fn effect_track(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
+        egui::ScrollArea::vertical()
+            .id_salt("effect-timeline")
+            .max_height(90.0)
+            .show(ui, |ui| {
+                if snapshot.motion.is_some() {
+                    self.track_row(
+                        ui,
+                        "模型动画",
+                        TimelineTrack {
+                            target: PlaybackTrack::Motion,
+                            range: [0.0, snapshot.motion_frames],
+                            frame: Some(snapshot.motion_frame),
+                        },
+                        Color32::from_rgb(75, 115, 205),
+                    )
+                    .on_hover_text(format!(
+                        "{} · {:.0} 帧",
+                        snapshot.motion.as_deref().unwrap_or(""),
+                        snapshot.motion_frames
+                    ));
+                }
+                for (binding_index, binding) in snapshot.effects.iter().enumerate() {
+                    for entry in &binding.definitions {
+                        let color = if entry.active {
+                            Color32::from_rgb(40, 150, 165)
+                        } else {
+                            Color32::from_gray(70)
+                        };
+                        self.track_row(
+                            ui,
+                            &format!("特效 {}:{} · {}", binding_index + 1, entry.slot, entry.id),
+                            TimelineTrack {
+                                target: PlaybackTrack::Effect {
+                                    binding: binding.id,
+                                    slot: entry.slot,
+                                },
+                                range: [f32::from(entry.delay), entry.frames],
+                                frame: entry.frame,
+                            },
+                            color,
+                        )
+                        .on_hover_text(format!(
+                            "{}\n轨道 {:.0} 步{} · 延迟 {} 步；{}",
+                            binding.name,
+                            entry.frames,
+                            if entry.looping {
+                                "（最长通道一轮）"
+                            } else {
+                                ""
+                            },
+                            entry.delay,
+                            entry.message
+                        ));
+                    }
+                }
+            });
+    }
+
+    fn track_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        track: TimelineTrack,
+        color: Color32,
+    ) -> egui::Response {
+        ui.horizontal(|ui| {
+            ui.add_sized([120.0, 18.0], egui::Label::new(label).truncate())
+                .on_hover_text(label);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for (caption, delta, help) in
+                    [("+1", 1, "本轨道下一步"), ("-1", -1, "本轨道上一步")]
+                {
+                    if ui
+                        .add_enabled(track.frame.is_some(), egui::Button::new(caption).small())
+                        .on_hover_text(help)
+                        .clicked()
+                    {
+                        self.send(Command::Step {
+                            track: track.target,
+                            delta,
+                        });
+                    }
+                }
+                let progress = track.frame.map_or_else(
+                    || format!("— / {:.0} 步", track.range[1]),
+                    |frame| format!("{frame:.0} / {:.0} 步", track.range[1]),
+                );
+                ui.add_sized([86.0, 18.0], egui::Label::new(&progress).truncate())
+                    .on_hover_text(progress);
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width().max(1.0), 16.0),
+                    if track.frame.is_some() {
+                        egui::Sense::click_and_drag()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                let painter = ui.painter();
+                painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+                let x = |step: f32| {
+                    rect.left() + rect.width() * (step / track.range[1].max(1.0)).clamp(0.0, 1.0)
+                };
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(x(track.range[0]), rect.top()),
+                        egui::pos2(x(track.range[1]), rect.bottom()),
+                    ),
+                    2.0,
+                    color,
+                );
+                if let Some(frame) = track.frame {
+                    let playhead = x(frame);
+                    painter.line_segment(
+                        [
+                            egui::pos2(playhead, rect.top()),
+                            egui::pos2(playhead, rect.bottom()),
+                        ],
+                        egui::Stroke::new(2.0, Color32::WHITE),
+                    );
+                }
+                if (response.clicked() || response.dragged())
+                    && let Some(pointer) = response.interact_pointer_pos()
+                {
+                    self.send(Command::Seek {
+                        track: track.target,
+                        frame: ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0)
+                            * track.range[1],
+                    });
+                }
+                response
+            })
+            .inner
+        })
+        .inner
+    }
+
+    fn draw_effects(&self, ui: &egui::Ui, snapshot: &Snapshot) {
+        let Some(camera) = snapshot.camera.filter(|_| snapshot.ready) else {
+            return;
+        };
+        if !snapshot.models.iter().any(|model| {
+            Some(model.id) == snapshot.active_model && model.visible && model.error.is_none()
+        }) {
+            return;
+        }
+        let screen = ui.ctx().content_rect();
+        let region = snapshot.viewport;
+        let viewport = egui::Rect::from_min_size(
+            screen.min + egui::vec2(region.x * screen.width(), region.y * screen.height()),
+            egui::vec2(
+                region.width * screen.width(),
+                region.height * screen.height(),
+            ),
+        );
+        let painter = ui
+            .painter()
+            .with_clip_rect(viewport.intersect(ui.clip_rect()));
+        for (binding_index, binding) in snapshot.effects.iter().enumerate() {
+            for entry in &binding.definitions {
+                let Some(position) = entry.position.filter(|_| entry.active) else {
+                    continue;
+                };
+                let Some(point) = camera.project(position) else {
+                    continue;
+                };
+                let point = viewport.min
+                    + egui::vec2(point[0] * viewport.width(), point[1] * viewport.height());
+                let color = Color32::from_rgb(entry.color[0], entry.color[1], entry.color[2]);
+                painter.circle_stroke(point, 6.0, egui::Stroke::new(2.0, color));
+                painter.text(
+                    point + egui::vec2(9.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{}:{} 定义 {}", binding_index + 1, entry.slot, entry.id),
+                    egui::FontId::monospace(12.0),
+                    color,
+                );
+            }
+        }
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui, document: &Document, node: &Node) {
@@ -998,10 +1295,11 @@ impl Workbench {
                             "{label}：{}",
                             source
                                 .as_ref()
-                                .map_or_else(|| "未选择".into(), ResourceRef::name)
+                                .map_or_else(|| "未选择".into(), ResourceRef::short_name)
                         ))
-                        .wrap(),
-                    );
+                        .truncate(),
+                    )
+                    .on_hover_text(source.as_ref().map_or_else(String::new, ResourceRef::name));
                 }
                 self.texture_sources(ui);
                 ui.horizontal_wrapped(|ui| {
@@ -1099,7 +1397,8 @@ impl Workbench {
         if let Some(model) = active.filter(|model| model.error.is_none()) {
             ui.separator();
             ui.strong("当前模型");
-            self.mesh_controls(ui, model);
+            self.effect_controls(ui, snapshot, model.id);
+            ui.collapsing("子网格", |ui| self.mesh_controls(ui, model));
             ui.collapsing("相机参数", |ui| self.camera_controls(ui, snapshot));
         }
         ui.separator();
@@ -1140,7 +1439,7 @@ impl Workbench {
                     }
                 });
                 let name = source.name();
-                ui.add(egui::Label::new(&name).truncate())
+                ui.add(egui::Label::new(source.short_name()).truncate())
                     .on_hover_text(name);
             });
             slot += count;
@@ -1546,7 +1845,7 @@ fn directory(
             let response = ui
                 .horizontal(|ui| {
                     ui.add_space(ui.spacing().indent);
-                    tree_row(ui, name.as_ref(), selected, 0, false, action_width).0
+                    tree_row(ui, name.as_ref(), selected, 0, false, false, action_width).0
                 })
                 .inner;
             if response.clicked() && !selected {
@@ -1590,6 +1889,7 @@ fn tree(
     }
     .kind()
         == Kind::Motion;
+    let binding = effects::is_binding(node.kind) || effects::is_definition(node.kind);
     let response = if node.children.is_empty() && !node.deferred {
         ui.horizontal(|ui| {
             ui.add_space(ui.spacing().indent);
@@ -1599,6 +1899,7 @@ fn tree(
                 *selected == index,
                 group_count,
                 motion,
+                binding,
                 action_width,
             )
         })
@@ -1617,6 +1918,7 @@ fn tree(
                 *selected == index,
                 group_count,
                 motion,
+                binding,
                 action_width,
             );
             clicked = response.0.clicked();
@@ -1721,6 +2023,7 @@ fn tree_row(
     selected: bool,
     group_count: usize,
     motion: bool,
+    binding: bool,
     action_width: f32,
 ) -> (egui::Response, Option<egui::Response>) {
     // Reserve this trailing area even when no group is present. Its contents
@@ -1739,13 +2042,15 @@ fn tree_row(
         )
         .on_hover_text(label);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(action_width, height), egui::Sense::hover());
-    let button = (group_count != 0 || motion).then(|| {
+    let button = (group_count != 0 || motion || binding).then(|| {
         let mut actions = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect)
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
-        let (caption, help) = if motion {
+        let (caption, help) = if binding {
+            ("追加特效", "直接加入并触发当前模型上的特效".to_owned())
+        } else if motion {
             ("播放", "将此动画加载到当前模型并从头播放".to_owned())
         } else {
             ("预览", format!("预览此节点下的全部 {group_count} 个模型组"))
@@ -1770,6 +2075,205 @@ fn tree_row(
 mod tests {
     use super::*;
     use crate::inspect::Field;
+
+    #[test]
+    fn manual_effect_buttons_target_the_definition_without_loading_a_motion() {
+        let (_, source) = effects::tests::fixture();
+        let mut effects = effects::Effects {
+            bindings: vec![effects::Binding::read(source).unwrap()],
+            ..Default::default()
+        };
+        let binding = effects.bindings[0].id;
+        let mut workbench = preview_fixture();
+        let context = egui::Context::default();
+        let mut snapshot = Snapshot {
+            active_model: Some(41),
+            effects: Arc::new(effects.sample(0.0).bindings),
+            ..Default::default()
+        };
+        let draw = |workbench: &mut Workbench, snapshot: &Snapshot, events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(700.0, 450.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| workbench.effect_controls(ui, snapshot, 41),
+            )
+        };
+        for (caption, stop) in [("触发", false), ("停止", true)] {
+            let output = draw(&mut workbench, &snapshot, vec![]);
+            let point = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == caption => {
+                        Some(text.pos + text.galley.rect.center().to_vec2())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            output.drop_without_applying_deltas();
+            draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
+            draw(&mut workbench, &snapshot, pointer(point, false)).drop_without_applying_deltas();
+            let commands = workbench.control.commands();
+            if stop {
+                assert!(
+                    matches!(commands.as_slice(), [Command::StopEffectDefinition { model: 41, binding: id, slot: 0 }] if *id == binding)
+                );
+            } else {
+                assert!(
+                    matches!(commands.as_slice(), [Command::TriggerEffectDefinition { model: 41, binding: id, slot: 0 }] if *id == binding)
+                );
+                effects.trigger(binding, 0, 20.0).unwrap();
+                snapshot.effects = Arc::new(effects.sample(20.0).bindings);
+            }
+        }
+    }
+
+    #[test]
+    fn definition_rows_trigger_immediately_and_retain_sources_across_file_switches() {
+        let (attachment, model) = effects::tests::fixture();
+        let mut document = crate::inspect::expand(&model.document, model.node).unwrap();
+        document = crate::inspect::expand(&document, attachment.node).unwrap();
+        let definition = document.nodes[model.node].children[0];
+        let other = document.nodes[attachment.node].children[0];
+        let document = Arc::new(document);
+        let mut workbench = preview_fixture();
+        workbench.loaded_document(document.clone());
+        let context = egui::Context::default();
+        let (_, button, _, _) = draw_tree(&mut workbench, &context, definition, 0.0, vec![]);
+        let center = button.unwrap().rect.center();
+        draw_tree(
+            &mut workbench,
+            &context,
+            definition,
+            0.1,
+            pointer(center, true),
+        );
+        draw_tree(
+            &mut workbench,
+            &context,
+            definition,
+            0.2,
+            pointer(center, false),
+        );
+        workbench.preview_node(other);
+        let commands = workbench.control.commands();
+        assert!(
+            matches!(commands.as_slice(), [Command::TriggerEffect(first), Command::TriggerEffect(second)] if first.node == definition && second.node == other)
+        );
+        workbench.loaded_document(multiple_models());
+        let Command::TriggerEffect(first) = &commands[0] else {
+            panic!()
+        };
+        assert!(Arc::ptr_eq(&first.document, &document));
+        assert!(workbench.control.commands().is_empty());
+    }
+
+    #[test]
+    fn independent_tracks_fill_their_own_width_and_target_only_the_selected_track() {
+        let (_, source) = effects::tests::fixture();
+        let effects = effects::Effects {
+            bindings: vec![effects::Binding::read(source).unwrap()],
+            ..Default::default()
+        };
+        let mut bindings = effects.sample(0.0).bindings;
+        let binding = bindings[0].id;
+        let definition = &mut bindings[0].definitions[0];
+        definition.frames = 30.0;
+        definition.delay = 0;
+        definition.frame = Some(5.0);
+        definition.active = true;
+        let mut snapshot = Snapshot {
+            motion: Some("motion".into()),
+            motion_frames: 60.0,
+            motion_frame: 15.0,
+            effects: Arc::new(bindings),
+            ..Default::default()
+        };
+        let mut workbench = preview_fixture();
+        let context = egui::Context::default();
+        let draw = |workbench: &mut Workbench, snapshot: &Snapshot, events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(700.0, 200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| workbench.effect_track(ui, snapshot),
+            )
+        };
+        let track_rects = |output: &egui::FullOutput| {
+            [
+                Color32::from_rgb(75, 115, 205),
+                Color32::from_rgb(40, 150, 165),
+            ]
+            .map(|fill| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect) if rect.fill == fill => Some(rect.rect),
+                        _ => None,
+                    })
+                    .unwrap()
+            })
+        };
+        let output = draw(&mut workbench, &snapshot, vec![]);
+        let [motion, effect] = track_rects(&output);
+        let step = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "+1" => {
+                    let center = text.pos + text.galley.rect.center().to_vec2();
+                    ((center.y - effect.center().y).abs() < 8.0).then_some(center)
+                }
+                _ => None,
+            })
+            .unwrap();
+        output.drop_without_applying_deltas();
+        assert!(motion.width() > 0.0);
+        assert!((motion.left() - effect.left()).abs() < 0.1);
+        assert!((motion.right() - effect.right()).abs() < 0.1);
+        let point = egui::pos2(effect.left() + effect.width() * 0.75, effect.center().y);
+        draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
+        draw(&mut workbench, &snapshot, pointer(point, false)).drop_without_applying_deltas();
+        assert!(
+            matches!(workbench.control.commands().as_slice(), [Command::Seek { track: PlaybackTrack::Effect { binding: id, slot: 0 }, frame }] if *id == binding && (*frame - 22.5).abs() < 0.1)
+        );
+        draw(&mut workbench, &snapshot, pointer(step, true)).drop_without_applying_deltas();
+        draw(&mut workbench, &snapshot, pointer(step, false)).drop_without_applying_deltas();
+        assert!(
+            matches!(workbench.control.commands().as_slice(), [Command::Step { track: PlaybackTrack::Effect { binding: id, slot: 0 }, delta: 1 }] if *id == binding)
+        );
+        let point = egui::pos2(motion.left() + motion.width() * 0.75, motion.center().y);
+        draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
+        draw(&mut workbench, &snapshot, pointer(point, false)).drop_without_applying_deltas();
+        assert!(
+            matches!(workbench.control.commands().as_slice(), [Command::Seek { track: PlaybackTrack::Motion, frame }] if (*frame - 45.0).abs() < 0.1)
+        );
+        Arc::make_mut(&mut snapshot.effects)[0].definitions[0].delay = 6;
+        let output = draw(&mut workbench, &snapshot, vec![]);
+        let [motion, effect] = track_rects(&output);
+        output.drop_without_applying_deltas();
+        assert!((effect.left() - motion.left() - motion.width() * 0.2).abs() < 0.1);
+        assert!((effect.right() - motion.right()).abs() < 0.1);
+        Arc::make_mut(&mut snapshot.effects)[0].definitions[0].frame = None;
+        let point = effect.center();
+        draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
+        draw(&mut workbench, &snapshot, pointer(point, false)).drop_without_applying_deltas();
+        draw(&mut workbench, &snapshot, pointer(step, true)).drop_without_applying_deltas();
+        draw(&mut workbench, &snapshot, pointer(step, false)).drop_without_applying_deltas();
+        assert!(workbench.control.commands().is_empty());
+    }
 
     fn preview_fixture() -> Workbench {
         let root = std::env::temp_dir().join("mhf-workbench-multiple-model-fixture");
@@ -2068,6 +2572,7 @@ mod tests {
                                 &"long-resource-name".repeat(8),
                                 false,
                                 count,
+                                false,
                                 false,
                                 action_width,
                             )

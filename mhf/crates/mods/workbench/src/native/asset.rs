@@ -11,6 +11,7 @@ use super::{
     skeleton::Skeleton,
     textures::{self, NativeTextures},
 };
+use crate::preview::effects::{Sample, Target};
 use crate::preview::{AssetBundle, Bone, LoadedMesh};
 use mhf_resource::{
     fmod::{Component, FaceGroup, Fmod, MaterialEntry, ObjectEntry, Section, TextureEntry},
@@ -69,6 +70,79 @@ struct Mesh {
     material_count: u32,
     materials: [u32; 32],
     render_options: u32,
+}
+
+/// 10017D10 reads baked local materials when registered-model flag 2 is set.
+/// Shader slots 58..89 alone cannot change RGB/alpha on that path. Temporarily
+/// force live material uploads (flag 0x80) and patch the selected baked colors.
+/// Restore both on all exits, retaining unrelated flags changed by the renderer.
+struct EffectMaterialScope {
+    colors: Vec<(usize, [u8; 16])>,
+    flags: (usize, u32),
+    texture_state: Option<(usize, u32)>,
+}
+
+impl EffectMaterialScope {
+    /// `model` is a live registered model allocation; retain it through Drop.
+    unsafe fn apply(
+        model: usize,
+        materials: &[[u8; 140]],
+        entries: &[usize],
+        animate_uv: bool,
+    ) -> Result<Self, String> {
+        if model == 0 {
+            return Err("原生网格已释放，无法更新特效材质".into());
+        }
+        if entries.iter().any(|&entry| entry >= materials.len()) {
+            return Err("特效材质条目超出网格材质范围".into());
+        }
+        let header: [u32; 24] = unsafe { super::get(model) };
+        let offset = textures::baked_material_offset(&header, materials.len())?;
+        // 10BBE150 sets bit 0x80 before drawing. In 10018D30 it forces the
+        // material-upload path instead of replaying cached draw commands.
+        let mut saved = Self {
+            colors: Vec::new(),
+            flags: (model + 4, header[1] & 0x80),
+            texture_state: (animate_uv && header[1] & 4 != 0)
+                .then_some((model + 8, header[2] & 0x4000)),
+        };
+        unsafe { super::put(model + 4, header[1] | 0x80) };
+        if saved.texture_state.is_some() {
+            // 10013440 can select the model's cached first render-state word
+            // instead of parameter 98. Both paths must enable UV transforms.
+            unsafe { super::put(model + 8, header[2] | 0x4000) };
+        }
+        let Some(offset) = offset else {
+            return Ok(saved);
+        };
+        for &entry in entries {
+            let at = model + offset + entry * 140 + 4;
+            // Deduplicate aliases so restoration always uses the original.
+            if saved.colors.iter().any(|(address, _)| *address == at) {
+                continue;
+            }
+            let original = unsafe { super::get::<[u8; 16]>(at) };
+            saved.colors.push((at, original));
+            let colors: [u8; 16] = materials[entry][4..20].try_into().unwrap();
+            unsafe { super::put(at, colors) };
+        }
+        Ok(saved)
+    }
+}
+
+impl Drop for EffectMaterialScope {
+    fn drop(&mut self) {
+        for &(at, colors) in &self.colors {
+            unsafe { super::put(at, colors) };
+        }
+        let (at, original) = self.flags;
+        let current: u32 = unsafe { super::get(at) };
+        unsafe { super::put(at, current & !0x80 | original) };
+        if let Some((at, original)) = self.texture_state {
+            let current: u32 = unsafe { super::get(at) };
+            unsafe { super::put(at, current & !0x4000 | original) };
+        }
+    }
 }
 
 const _: () = assert!(size_of::<Resource>() == 128);
@@ -418,6 +492,10 @@ fn validate_files(
 /// before absolute operands, so ASLR does not invalidate the signature check.
 const SIGNATURES: &[(usize, &[u8])] = &[
     (
+        0x114067e0,
+        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08, 0xf6, 0xc3, 0x10],
+    ),
+    (
         0x108f88e0,
         &[
             0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0xb8, 0x2c, 0x12, 0x00, 0x00,
@@ -725,6 +803,19 @@ impl NativeAsset {
         self.meshes.clone()
     }
 
+    pub(crate) unsafe fn effect_target(&self, client: Client) -> Result<Target, String> {
+        let resource = unsafe { self.owned_resource(client) }.ok_or("模型资源已释放")?;
+        let mut material_counts = Vec::with_capacity(self.meshes.len());
+        for index in 0..self.meshes.len() {
+            let mesh = unsafe { &*((resource.meshes + index * size_of::<Mesh>()) as *const Mesh) };
+            material_counts.push(mesh.material_count as usize);
+        }
+        Ok(Target {
+            nodes: self.requirements.node_ids.len(),
+            material_counts,
+        })
+    }
+
     pub(crate) fn bone_bindings(&self) -> Arc<Vec<Option<usize>>> {
         self.skeleton
             .as_ref()
@@ -850,6 +941,7 @@ impl NativeAsset {
         client: Client,
         world: &[f32; 16],
         frame: f32,
+        mut effects: Option<&mut Sample>,
     ) -> Result<(), String> {
         if world.iter().any(|v| !v.is_finite()) {
             return Err("预览世界矩阵无效".into());
@@ -858,49 +950,165 @@ impl NativeAsset {
             .copied()
             .ok_or("预览资源已随场景释放，请重新载入")?;
         let skeleton = self.skeleton.as_mut().ok_or("预览骨架尚未初始化")?;
-        let matrices = unsafe { skeleton.update(client, frame, world) }?;
+        unsafe { skeleton.update(client, frame, world, &[]) }?;
+        if let Some(effects) = effects.as_mut() {
+            effects.place(skeleton.worlds());
+        }
         let parameter: unsafe extern "fastcall" fn(usize, u32) -> i32 =
             unsafe { transmute(client.address(0x1000c7d0)) };
         let render_options: unsafe extern "fastcall" fn(u32) =
             unsafe { transmute(client.address(0x108f8440)) };
         let reset_render_options: unsafe extern "C" fn() =
             unsafe { transmute(client.address(0x108f8520)) };
+        let effect_options: unsafe extern "C" fn(u32) =
+            unsafe { transmute(client.address(0x114067e0)) };
         // Match the native draw helpers (e.g. 11203230): options with bit 0
         // unset inherit the caller's standard alpha blending. Establish that
         // baseline before the first mesh, then restore it after every draw.
         // Otherwise an additive mesh in em001's second model tints the first
         // model with the framebuffer/background on the following frame.
         unsafe { reset_render_options() };
+        let mut transformed = false;
         for index in 0..self.requirements.mesh_vertices.len() {
             if !self.meshes[index].visible {
                 continue;
             }
             let mesh = unsafe { &*((resource.meshes + index * size_of::<Mesh>()) as *const Mesh) };
             let map = &self.requirements.bone_maps[index];
+            let transforms: Vec<_> = effects
+                .as_ref()
+                .into_iter()
+                .flat_map(|sample| &sample.transforms)
+                .filter(|transform| transform.mesh == index)
+                .copied()
+                .collect();
+            if transformed || !transforms.is_empty() {
+                unsafe { skeleton.update(client, frame, world, &transforms) }?;
+            }
+            transformed = !transforms.is_empty();
+            if let Some(effects) = effects.as_mut() {
+                effects.place_mesh(index, skeleton.worlds());
+            }
+            let matrices = skeleton.skin_matrices();
+            // Copies stay alive through drawing, including when two meshes use
+            // the same original material with different effects.
+            let mut materials: Vec<[u8; 140]> = (0..mesh.material_count as usize)
+                .map(|local| unsafe {
+                    super::get(resource.materials + mesh.materials[local] as usize * 140)
+                })
+                .collect();
+            let mesh_effects = effects
+                .as_ref()
+                .into_iter()
+                .flat_map(|sample| &sample.materials)
+                .filter(|effect| effect.mesh == index);
+            for effect in mesh_effects.clone() {
+                let Some(material) = materials.get_mut(effect.entry) else {
+                    continue;
+                };
+                for (axis, value) in effect.rgb.into_iter().enumerate() {
+                    material[4 + axis * 4..8 + axis * 4].copy_from_slice(&value.to_le_bytes());
+                }
+                material[16..20].copy_from_slice(&effect.opacity.to_le_bytes());
+            }
+            let material_entries: Vec<_> =
+                mesh_effects.clone().map(|effect| effect.entry).collect();
+            // 10BBE150 visits local slots in order before drawing the group;
+            // the last UV-writing slot supplies its shared texture matrix.
+            let uv_offset = mesh_effects
+                .clone()
+                .filter(|effect| effect.uv_offset.is_some())
+                .max_by_key(|effect| effect.entry)
+                .and_then(|effect| effect.uv_offset);
+            let material_scope = if material_entries.is_empty() {
+                None
+            } else {
+                if !(1..2880).contains(&mesh.handle) {
+                    return Err("特效网格句柄无效".into());
+                }
+                let model = unsafe { client.read::<usize>(0x11aa_3dd8 + 4 * mesh.handle as usize) };
+                Some(unsafe {
+                    EffectMaterialScope::apply(
+                        model,
+                        &materials,
+                        &material_entries,
+                        uv_offset.is_some(),
+                    )
+                }?)
+            };
             unsafe {
                 if map.is_empty() {
-                    parameter(world.as_ptr() as usize, 26);
-                    parameter(world.as_ptr() as usize, 27);
+                    let rigid_world = transforms
+                        .first()
+                        .map_or(world, |transform| &matrices[transform.node]);
+                    parameter(rigid_world.as_ptr() as usize, 26);
+                    parameter(rigid_world.as_ptr() as usize, 27);
                 } else {
                     for &(slot, node) in map {
                         parameter(matrices[node].as_ptr() as usize, 26 + slot);
                     }
                 }
+                for (local, material) in materials.iter().enumerate() {
+                    parameter(material.as_ptr() as usize, 58 + local as u32);
+                }
+                render_options(mesh.render_options);
+                let previous_render_state = client.read::<u8>(0x11aa7cec);
+                let previous_alpha_blend = client.read::<u32>(0x11b7fe20) & 0x0100_0000;
+                let previous_uv_state = client.read::<u32>(0x11b804a0) & 0x4000;
+                let previous_uv_matrix = client.read::<[f32; 16]>(0x1e87f010);
+                if !material_entries.is_empty() {
+                    // DAT flags select blend factors; enabling alpha blending
+                    // is a separate engine parameter (97 -> D3DRS 27).
+                    parameter(0x0100_0000, 97);
+                }
+                // Same per-local-slot order as 10BBE150. The native helper
+                // applies DAT blend/depth flags and updates engine caches.
+                for local in 0..mesh.material_count as usize {
+                    for effect in mesh_effects.clone().filter(|effect| effect.entry == local) {
+                        parameter(usize::from(effect.render_state), 96);
+                        effect_options(u32::from(effect.render_flags));
+                    }
+                }
+                if let Some([u, v]) = uv_offset {
+                    let matrix = [
+                        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, u, v, 0.0, 1.0,
+                    ];
+                    // 10018D30 transposes parameter 25 into shader constants
+                    // c5..c8 only when first-state bit 0x4000 is enabled.
+                    parameter(matrix.as_ptr() as usize, 25);
+                    parameter(0x4000, 98);
+                }
+                let drawn = draw_model(client.address(0x10007f50), mesh.handle as u32);
+                drop(material_scope);
+                if uv_offset.is_some() {
+                    parameter(previous_uv_matrix.as_ptr() as usize, 25);
+                    parameter(previous_uv_state as usize, 98);
+                }
+                if !material_entries.is_empty() {
+                    parameter(previous_alpha_blend as usize, 97);
+                }
+                parameter(usize::from(previous_render_state), 96);
+                // 1000C390 copies all 140 material bytes into engine slots.
+                // Restore those slots as well as blend/depth state after drawing.
                 for local in 0..mesh.material_count as usize {
                     parameter(
                         resource.materials + mesh.materials[local] as usize * 140,
                         58 + local as u32,
                     );
                 }
-                render_options(mesh.render_options);
-                let drawn = draw_model(client.address(0x10007f50), mesh.handle as u32);
                 // Also restore when the native handle failed to draw. This
                 // updates both the device and the engine's cached state.
                 reset_render_options();
                 if drawn == 0 {
+                    if transformed {
+                        skeleton.update(client, frame, world, &[])?;
+                    }
                     return Err(format!("网格 {index} 已失去原生绘制句柄"));
                 }
             }
+        }
+        if transformed {
+            unsafe { skeleton.update(client, frame, world, &[]) }?;
         }
         Ok(())
     }
@@ -976,6 +1184,114 @@ unsafe extern "C" fn draw_model(_target: usize, _handle: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rigid_material_consumer_sees_current_alpha_and_originals_are_restored() {
+        let mut model = vec![0xa5a5_a5a5u32; (96 + 280) / 4];
+        model[1] = 2;
+        model[3] = (model.len() * 4) as u32;
+        model[20] = 96;
+        model[(96 + 16) / 4] = 1.0f32.to_bits();
+        let original = model.clone();
+        let address = model.as_mut_ptr() as usize;
+        let mut materials = [[0u8; 140]; 2];
+        for alpha in [1.0f32, 0.5, 0.0] {
+            for (channel, value) in [0.2f32, 0.4, 0.8, alpha].into_iter().enumerate() {
+                materials[0][4 + channel * 4..8 + channel * 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+            let scope =
+                unsafe { EffectMaterialScope::apply(address, &materials, &[0, 0], false) }.unwrap();
+            assert_eq!(
+                model[1] & 0x80,
+                0x80,
+                "must not replay cached material commands"
+            );
+            // 10017D10 selects model + header[20] + local * 140 when flag 2 is set.
+            assert_eq!(
+                unsafe { super::super::get::<f32>(address + 96 + 16) },
+                alpha
+            );
+            assert_eq!(unsafe { super::super::get::<f32>(address + 96 + 4) }, 0.2);
+            assert_eq!(&model[(96 + 140) / 4..], &original[(96 + 140) / 4..]);
+            drop(scope);
+            assert_eq!(model, original);
+        }
+        assert!(
+            unsafe { EffectMaterialScope::apply(address, &materials, &[0, 2], false) }.is_err()
+        );
+        assert_eq!(model, original);
+    }
+
+    #[test]
+    fn baked_material_scope_restores_on_draw_error_and_checks_allocation_bounds() {
+        let mut model = vec![0u32; (96 + 140) / 4];
+        model[1] = 2;
+        model[3] = (model.len() * 4) as u32;
+        model[20] = 96;
+        let original = model.clone();
+        let address = model.as_mut_ptr() as usize;
+        let result: Result<(), String> = (|| {
+            let _scope =
+                unsafe { EffectMaterialScope::apply(address, &[[0xff; 140]], &[0], false) }?;
+            Err("draw failed".into())
+        })();
+        assert!(result.is_err());
+        assert_eq!(model, original);
+        model[20] = 100;
+        assert!(
+            unsafe { EffectMaterialScope::apply(address, &[[0xff; 140]], &[0], false) }.is_err()
+        );
+        model[1] = 0;
+        let before = model.clone();
+        drop(unsafe { EffectMaterialScope::apply(address, &[[0xff; 140]], &[0], false) }.unwrap());
+        assert_eq!(model, before);
+    }
+
+    #[test]
+    fn live_draw_flag_is_scoped_for_baked_and_parameter_materials() {
+        for flags in [0u32, 2, 0x80, 0x82] {
+            let mut model = vec![0u32; (96 + 140) / 4];
+            model[1] = flags;
+            model[3] = (model.len() * 4) as u32;
+            model[20] = 96;
+            let scope = unsafe {
+                EffectMaterialScope::apply(model.as_mut_ptr() as usize, &[[0; 140]], &[0], false)
+            }
+            .unwrap();
+            assert_ne!(model[1] & 0x80, 0);
+            model[1] |= 0x1000; // an unrelated renderer-owned flag
+            drop(scope);
+            assert_eq!(model[1], flags | 0x1000);
+        }
+    }
+
+    #[test]
+    fn uv_enable_reaches_cached_model_state_and_restores_only_its_bit() {
+        for flags in [0u32, 4] {
+            for state in [0x102u32, 0x4102] {
+                let mut model = [0u32; 24];
+                model[1] = flags;
+                model[2] = state;
+                let result: Result<(), String> = (|| {
+                    let _scope = unsafe {
+                        EffectMaterialScope::apply(
+                            model.as_mut_ptr() as usize,
+                            &[[0; 140]],
+                            &[0],
+                            true,
+                        )
+                    }?;
+                    assert_eq!(model[2], state | if flags & 4 != 0 { 0x4000 } else { 0 });
+                    model[2] |= 0x8000;
+                    Err("draw failed".into())
+                })();
+                assert!(result.is_err());
+                assert_eq!(model[1], flags);
+                assert_eq!(model[2], state | 0x8000);
+            }
+        }
+    }
 
     fn asset_with_meshes(vertex_counts: &[usize]) -> NativeAsset {
         let document = Arc::new(crate::inspect::inspect("mesh fixture", Arc::from([])));

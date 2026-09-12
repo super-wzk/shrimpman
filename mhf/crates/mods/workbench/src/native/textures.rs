@@ -341,7 +341,10 @@ impl NativeTextures {
     }
 }
 
-fn baked_material_offset(header: &[u32; 24], count: usize) -> Result<Option<usize>, String> {
+pub(super) fn baked_material_offset(
+    header: &[u32; 24],
+    count: usize,
+) -> Result<Option<usize>, String> {
     if header[1] & 2 == 0 {
         return Ok(None);
     }

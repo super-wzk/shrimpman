@@ -5,6 +5,7 @@
 //! Keep their transform arithmetic, but size traversal/storage to this resource.
 
 use super::{Client, animation, get, put};
+use crate::preview::effects::NodeTransform;
 use std::{cmp::Reverse, collections::BinaryHeap, mem::transmute, sync::Arc};
 
 const NODE_SIZE: usize = 448;
@@ -165,6 +166,14 @@ impl Skeleton {
             .map(|index| self.ids[index].1)
     }
 
+    pub(super) fn worlds(&self) -> &[Matrix] {
+        &self.worlds
+    }
+
+    pub(super) fn skin_matrices(&self) -> &[Matrix] {
+        &self.skin
+    }
+
     /// # Safety
     /// Render phase only, while the allocation supplied to `prepare` and the
     /// supported client DLL remain live, with no concurrent pose/load/release.
@@ -173,6 +182,7 @@ impl Skeleton {
         client: Client,
         frame: f32,
         world: &Matrix,
+        transforms: &[NodeTransform],
     ) -> Result<&[Matrix], String> {
         if !frame.is_finite() {
             return Err("预览动画帧坐标无效".into());
@@ -190,8 +200,15 @@ impl Skeleton {
                 let node = base + index * NODE_SIZE;
                 unsafe {
                     animation::sample(client, node, frame);
+                    // Modify the sampled copy, never the original local matrix.
+                    let mut local: Matrix = get(node + NODE_LOCAL);
+                    if let Some(transform) =
+                        transforms.iter().find(|transform| transform.node == index)
+                    {
+                        transform.apply(&mut local);
+                    }
                     Pose {
-                        local: get(node + NODE_LOCAL),
+                        local,
                         inverse_bind: get(node + NODE_INVERSE_BIND),
                         scale: get(node + NODE_SCALE),
                     }
@@ -557,6 +574,43 @@ mod tests {
         assert_eq!(skeleton.worlds[0][10], 1.5625);
         assert_eq!(skeleton.worlds[2][12..15], [11.5, 23.0, 17.0]);
         assert_eq!(skeleton.worlds[4][12..15], [15.5, 13.0, 17.0]);
+    }
+
+    #[test]
+    fn effect_pose_copy_deforms_skin_and_restores_without_accumulating() {
+        let mut skeleton = fixture(&[0], &[Links::default()]);
+        let original = translated_pose(10.0);
+        let effect = NodeTransform {
+            mesh: 1,
+            node: 0,
+            translation: [0.0, 5.0, 0.0],
+            rotation: [0.0, 0.0, 90.0],
+            scale: [2.0, 1.0, 0.0],
+        };
+        skeleton
+            .update_matrices(&IDENTITY, |_| original, multiply)
+            .unwrap();
+        let base = skeleton.skin.clone();
+        for _ in 0..2 {
+            skeleton
+                .update_matrices(
+                    &IDENTITY,
+                    |_| {
+                        let mut pose = original;
+                        effect.apply(&mut pose.local);
+                        pose
+                    },
+                    multiply,
+                )
+                .unwrap();
+            assert!((skeleton.skin[0][1] - 2.0).abs() < 0.00001);
+            assert_eq!(skeleton.worlds[0][13], original.local[13] + 5.0);
+            assert_eq!(skeleton.worlds[0][10], 0.0);
+        }
+        skeleton
+            .update_matrices(&IDENTITY, |_| original, multiply)
+            .unwrap();
+        assert_eq!(skeleton.skin, base);
     }
 
     #[test]

@@ -8,7 +8,10 @@ mod textures;
 mod viewport;
 mod window;
 
-use crate::preview::{AssetBundle, Bone, Camera, Command, Control, LoadedModel, Snapshot};
+use crate::preview::effects::{Binding, Effects};
+use crate::preview::{
+    AssetBundle, Bone, Camera, Command, Control, LoadedModel, PlaybackTrack, Snapshot,
+};
 use mhf_hooks::{HookGuard, HookSlot, ModuleReference};
 use std::{
     ffi::c_void,
@@ -74,11 +77,29 @@ struct Model {
     error: Option<Arc<str>>,
     motion: Option<animation::NativeMotion>,
     frame: f32,
+    motion_origin: f32,
     playing: bool,
+    playback_speed: f32,
     bones: Arc<Vec<Bone>>,
+    effects: Effects,
 }
 
 impl Model {
+    fn motion_frame(&self) -> f32 {
+        self.motion.as_ref().map_or(0.0, |motion| {
+            crate::preview::looping_motion_frame(self.frame - self.motion_origin, motion.frames())
+        })
+    }
+
+    fn seek_motion(&mut self, frame: f32) -> Result<(), String> {
+        let motion = self.motion.as_ref().ok_or("请先加载模型动画")?;
+        if !frame.is_finite() || frame < 0.0 || frame > motion.frames() {
+            return Err("动画轨道步数超出范围".into());
+        }
+        self.motion_origin = self.frame - frame;
+        Ok(())
+    }
+
     unsafe fn unload_motion(&mut self, client: Client) -> Result<(), String> {
         if let Some(motion) = &mut self.motion {
             unsafe {
@@ -86,7 +107,7 @@ impl Model {
             }
         }
         self.motion = None;
-        self.frame = 0.0;
+        self.motion_origin = self.frame;
         Ok(())
     }
     unsafe fn release(&mut self, client: Client) -> Result<(), String> {
@@ -100,6 +121,7 @@ impl Model {
         }
         self.asset = None;
         self.bones = Arc::new(Vec::new());
+        self.effects = Effects::default();
         Ok(())
     }
 }
@@ -323,8 +345,11 @@ unsafe fn add_model(client: Client, runtime: &mut Runtime, bundle: AssetBundle) 
         error,
         motion: None,
         frame: 0.0,
+        motion_origin: 0.0,
         playing: true,
+        playback_speed: 1.0,
         bones: Arc::new(Vec::new()),
+        effects: Effects::default(),
     });
     id
 }
@@ -352,9 +377,12 @@ fn refresh_snapshot(runtime: &mut Runtime) {
         .iter()
         .find(|model| Some(model.id) == runtime.active_model)
     {
-        runtime.snapshot.frame = model.frame;
-        runtime.snapshot.frames = model.motion.as_ref().map_or(0.0, |motion| motion.frames());
+        runtime.snapshot.motion_frames =
+            model.motion.as_ref().map_or(0.0, |motion| motion.frames());
+        runtime.snapshot.motion_frame = model.motion_frame();
+        runtime.snapshot.effects = model.effects.snapshot.clone();
         runtime.snapshot.playing = model.playing;
+        runtime.snapshot.playback_speed = model.playback_speed;
         runtime.snapshot.motion = model.motion.as_ref().map(|motion| motion.name().into());
         runtime.snapshot.bone_bindings = model
             .asset
@@ -366,12 +394,14 @@ fn refresh_snapshot(runtime: &mut Runtime) {
             Arc::new(Vec::new())
         };
     } else {
-        runtime.snapshot.frame = 0.0;
-        runtime.snapshot.frames = 0.0;
         runtime.snapshot.motion = None;
         runtime.snapshot.playing = false;
+        runtime.snapshot.playback_speed = 1.0;
         runtime.snapshot.bones = Arc::new(Vec::new());
         runtime.snapshot.bone_bindings = Arc::default();
+        runtime.snapshot.effects = Arc::default();
+        runtime.snapshot.motion_frames = 0.0;
+        runtime.snapshot.motion_frame = 0.0;
     }
 }
 
@@ -443,6 +473,98 @@ unsafe fn command(
                 let id = add_model(client, runtime, bundle);
                 focus_model(runtime, id)?;
                 Ok("已选择模型，加载结果见预览列表".into())
+            }
+            Command::TriggerEffect(source) => {
+                let binding = Binding::read(source.clone())?;
+                let model = active_model(runtime)?;
+                let target = model
+                    .asset
+                    .as_ref()
+                    .ok_or("当前模型未加载成功")?
+                    .effect_target(client)?;
+                let index = if let Some(index) = model
+                    .effects
+                    .bindings
+                    .iter()
+                    .position(|binding| binding.source.same_source(&source))
+                {
+                    index
+                } else {
+                    model.effects.bindings.push(binding);
+                    model.effects.bindings.len() - 1
+                };
+                model.effects.target = target;
+                let binding = &model.effects.bindings[index];
+                let id = binding.id;
+                let slots: Vec<_> = binding.entries.iter().map(|entry| entry.slot).collect();
+                for slot in slots {
+                    model.effects.trigger(id, slot, model.frame)?;
+                }
+                model.playing = true;
+                model.effects.snapshot = Arc::new(model.effects.sample(model.frame).bindings);
+                runtime.last_frame = None;
+                Ok("已手动触发所选特效；原生条件仅保留为参数".into())
+            }
+            Command::TriggerEffectDefinition {
+                model: id,
+                binding,
+                slot,
+            } => {
+                let model = runtime
+                    .models
+                    .iter_mut()
+                    .find(|model| model.id == id)
+                    .ok_or("模型已移除")?;
+                model.effects.trigger(binding, slot, model.frame)?;
+                model.playing = true;
+                model.effects.snapshot = Arc::new(model.effects.sample(model.frame).bindings);
+                runtime.last_frame = None;
+                Ok("已手动触发特效，模型动画保持当前位置".into())
+            }
+            Command::StopEffectDefinition {
+                model: id,
+                binding,
+                slot,
+            } => {
+                let model = runtime
+                    .models
+                    .iter_mut()
+                    .find(|model| model.id == id)
+                    .ok_or("模型已移除")?;
+                model.effects.stop(binding, slot)?;
+                model.effects.snapshot = Arc::new(model.effects.sample(model.frame).bindings);
+                Ok("已停止所选特效".into())
+            }
+            Command::RemoveEffectDefinition {
+                model: id,
+                binding,
+                slot,
+            } => {
+                let model = runtime
+                    .models
+                    .iter_mut()
+                    .find(|model| model.id == id)
+                    .ok_or("模型已移除")?;
+                let index = model
+                    .effects
+                    .bindings
+                    .iter()
+                    .position(|value| value.id == binding)
+                    .ok_or("特效来源已移除")?;
+                let entries = &mut model.effects.bindings[index].entries;
+                let entry = entries
+                    .iter()
+                    .position(|entry| entry.slot == slot)
+                    .ok_or("特效定义已移除")?;
+                entries.remove(entry);
+                if entries.is_empty() {
+                    model.effects.bindings.remove(index);
+                }
+                if model.effects.bindings.is_empty() {
+                    model.effects = Effects::default();
+                }
+                model.effects.snapshot = Arc::new(model.effects.sample(model.frame).bindings);
+                Ok("已移除所选特效定义".into())
             }
             Command::ClearAssets => {
                 clear_models(client, runtime)?;
@@ -542,7 +664,7 @@ unsafe fn command(
                     previous.release(client)?;
                 }
                 model.motion = Some(motion);
-                model.frame = 0.0;
+                model.motion_origin = model.frame;
                 model.playing = true;
                 runtime.last_frame = None;
                 Ok("已为当前模型绑定所选动画".into())
@@ -555,21 +677,48 @@ unsafe fn command(
                 active_model(runtime)?.playing = playing;
                 runtime.last_frame = None;
                 Ok(if playing {
-                    "当前模型动画播放中"
+                    "当前模型各轨道播放中"
                 } else {
-                    "当前模型动画已暂停"
+                    "当前模型各轨道已暂停"
                 }
                 .into())
             }
-            Command::Seek(frame) => {
+            Command::PlaybackSpeed(speed) => {
+                if !speed.is_finite() || !(0.1..=4.0).contains(&speed) {
+                    return Err("预览速度超出范围".into());
+                }
+                active_model(runtime)?.playback_speed = speed;
+                runtime.last_frame = None;
+                Ok(format!("动画与特效速度：{speed}×"))
+            }
+            Command::Seek { track, frame } => {
                 let model = active_model(runtime)?;
-                let frames = model.motion.as_ref().map_or(0.0, |motion| motion.frames());
-                if !frame.is_finite() || frame < 0.0 || frame > frames {
-                    return Err("动画帧超出范围".into());
+                match track {
+                    PlaybackTrack::Motion => model.seek_motion(frame)?,
+                    PlaybackTrack::Effect { binding, slot } => {
+                        model.effects.seek(binding, slot, model.frame, frame)?
+                    }
                 }
                 model.playing = false;
-                model.frame = frame;
-                Ok(format!("帧 {frame:.2}"))
+                model.effects.snapshot = Arc::new(model.effects.sample(model.frame).bindings);
+                Ok(format!("已定位所选轨道到第 {frame:.2} 步"))
+            }
+            Command::Step { track, delta } => {
+                let model = active_model(runtime)?;
+                match track {
+                    PlaybackTrack::Motion => {
+                        let frames = model.motion.as_ref().ok_or("请先加载模型动画")?.frames();
+                        model.seek_motion(
+                            (model.motion_frame() + f32::from(delta)).clamp(0.0, frames),
+                        )?;
+                    }
+                    PlaybackTrack::Effect { binding, slot } => {
+                        model.effects.step(binding, slot, model.frame, delta)?
+                    }
+                }
+                model.playing = false;
+                model.effects.snapshot = Arc::new(model.effects.sample(model.frame).bindings);
+                Ok("已逐步调整所选轨道".into())
             }
             Command::Camera {
                 distance,
@@ -778,11 +927,9 @@ unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), Strin
         .replace(now)
         .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
     for model in &mut runtime.models {
-        if model.playing
-            && let Some(motion) = &model.motion
-            && motion.frames() > 0.0
-        {
-            model.frame = (model.frame + elapsed.min(0.1) * 30.0).rem_euclid(motion.frames());
+        if model.playing && (model.motion.is_some() || !model.effects.bindings.is_empty()) {
+            // Each track owns its origin. The clock only supplies the shared rate.
+            model.frame = crate::preview::advance_frame(model.frame, elapsed, model.playback_speed);
         }
     }
     let snapshot = &runtime.snapshot;
@@ -825,15 +972,19 @@ unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), Strin
         );
         if runtime.snapshot.scene_visible
             && let Some(scene) = &mut runtime.scene
-            && let Err(error) = scene.draw(state.client, &WORLD, 0.0)
+            && let Err(error) = scene.draw(state.client, &WORLD, 0.0, None)
         {
             runtime.snapshot.message = error.into();
         }
         for model in &mut runtime.models {
+            let motion_frame = model.motion_frame();
+            let mut effects = model.effects.sample(model.frame);
             if model.visible
                 && let Some(asset) = &mut model.asset
             {
-                if let Err(error) = asset.draw(state.client, &WORLD, model.frame) {
+                if let Err(error) =
+                    asset.draw(state.client, &WORLD, motion_frame, Some(&mut effects))
+                {
                     if model.error.as_deref() != Some(error.as_str()) {
                         eprintln!("workbench: model {} draw failed: {error}", model.id);
                     }
@@ -850,6 +1001,7 @@ unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), Strin
                     model.bones = Arc::new(bones);
                 }
             }
+            model.effects.snapshot = Arc::new(effects.bindings);
         }
     }
     unsafe { guides::draw(device, camera, options) }

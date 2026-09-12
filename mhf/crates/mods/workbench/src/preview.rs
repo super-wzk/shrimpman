@@ -6,7 +6,23 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+pub(crate) mod effects;
+
 pub(crate) const DEFAULT_BACKGROUND_COLOR: [u8; 3] = [16, 19, 22];
+
+pub(crate) fn advance_frame(frame: f32, elapsed: f32, speed: f32) -> f32 {
+    frame + elapsed.clamp(0.0, 0.1) * 30.0 * speed
+}
+
+pub(crate) fn looping_motion_frame(frame: f32, frames: f32) -> f32 {
+    if frames <= 0.0 {
+        0.0
+    } else if frame > frames {
+        frame.rem_euclid(frames)
+    } else {
+        frame
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct PreviewOptions {
@@ -44,6 +60,15 @@ impl ResourceRef {
         format!(
             "{} · {}",
             self.document.nodes[self.document.root].name, self.document.nodes[self.node].name
+        )
+    }
+
+    pub fn short_name(&self) -> String {
+        let root = &self.document.nodes[self.document.root].name;
+        format!(
+            "{} · {}",
+            root.rsplit(['/', '\\']).next().unwrap_or(root),
+            self.document.nodes[self.node].name
         )
     }
 
@@ -591,9 +616,8 @@ pub(crate) struct LoadedModel {
 #[derive(Clone)]
 pub(crate) struct Snapshot {
     pub ready: bool,
-    pub frame: f32,
-    pub frames: f32,
     pub playing: bool,
+    pub playback_speed: f32,
     pub bones: Arc<Vec<Bone>>,
     /// Optional source node per target node, scoped to the active model.
     pub bone_bindings: Arc<Vec<Option<usize>>>,
@@ -609,15 +633,17 @@ pub(crate) struct Snapshot {
     pub scene: Option<Arc<str>>,
     pub scene_visible: bool,
     pub motion: Option<Arc<str>>,
+    pub motion_frames: f32,
+    pub motion_frame: f32,
+    pub effects: Arc<Vec<effects::BindingSnapshot>>,
 }
 
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
             ready: false,
-            frame: 0.0,
-            frames: 0.0,
             playing: true,
+            playback_speed: 1.0,
             bones: Arc::new(Vec::new()),
             bone_bindings: Arc::default(),
             camera: None,
@@ -631,13 +657,38 @@ impl Default for Snapshot {
             scene: None,
             scene_visible: false,
             motion: None,
+            motion_frames: 0.0,
+            motion_frame: 0.0,
+            effects: Arc::default(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlaybackTrack {
+    Motion,
+    Effect { binding: u64, slot: usize },
 }
 
 pub(crate) enum Command {
     LoadAssets(Vec<AssetBundle>),
     AddAsset(AssetBundle),
+    TriggerEffect(ResourceRef),
+    TriggerEffectDefinition {
+        model: u64,
+        binding: u64,
+        slot: usize,
+    },
+    StopEffectDefinition {
+        model: u64,
+        binding: u64,
+        slot: usize,
+    },
+    RemoveEffectDefinition {
+        model: u64,
+        binding: u64,
+        slot: usize,
+    },
     RemoveAsset(u64),
     ClearAssets,
     SelectModel(u64),
@@ -668,7 +719,15 @@ pub(crate) enum Command {
     LoadMotion(ResourceRef),
     UnloadMotion,
     Playing(bool),
-    Seek(f32),
+    PlaybackSpeed(f32),
+    Seek {
+        track: PlaybackTrack,
+        frame: f32,
+    },
+    Step {
+        track: PlaybackTrack,
+        delta: i8,
+    },
     Camera {
         distance: f32,
         pitch: f32,
@@ -766,12 +825,15 @@ impl Control {
         // Coalesce consecutive slider updates without moving a seek across an
         // resource switch, whose ordering changes its meaning.
         if let Some(last) = shared.commands.last_mut()
-            && matches!(
-                (&*last, &command),
-                (Command::Seek(_), Command::Seek(_))
-                    | (Command::Camera { .. }, Command::Camera { .. })
-                    | (Command::LoadAssets(_), Command::LoadAssets(_))
-            )
+            && match (&*last, &command) {
+                (Command::Seek { track: first, .. }, Command::Seek { track: second, .. }) => {
+                    first == second
+                }
+                (Command::PlaybackSpeed(_), Command::PlaybackSpeed(_))
+                | (Command::Camera { .. }, Command::Camera { .. })
+                | (Command::LoadAssets(_), Command::LoadAssets(_)) => true,
+                _ => false,
+            }
         {
             *last = command;
             return Ok(());
@@ -1193,19 +1255,58 @@ mod tests {
     }
 
     #[test]
-    fn slider_coalescing_preserves_animation_switch_order() {
+    fn slider_coalescing_preserves_track_targets_and_animation_switch_order() {
         let control = Control::default();
         for frame in 0..100 {
-            control.send(Command::Seek(frame as f32)).unwrap();
+            control
+                .send(Command::Seek {
+                    track: PlaybackTrack::Motion,
+                    frame: frame as f32,
+                })
+                .unwrap();
         }
+        let effect = PlaybackTrack::Effect {
+            binding: 3,
+            slot: 1,
+        };
+        control
+            .send(Command::Seek {
+                track: effect,
+                frame: 4.0,
+            })
+            .unwrap();
+        control
+            .send(Command::Seek {
+                track: effect,
+                frame: 5.0,
+            })
+            .unwrap();
         control.send(Command::UnloadMotion).unwrap();
-        control.send(Command::Seek(7.0)).unwrap();
+        control
+            .send(Command::Seek {
+                track: PlaybackTrack::Motion,
+                frame: 7.0,
+            })
+            .unwrap();
         assert!(matches!(
             control.commands().as_slice(),
             [
-                Command::Seek(99.0),
+                Command::Seek {
+                    track: PlaybackTrack::Motion,
+                    frame: 99.0
+                },
+                Command::Seek {
+                    track: PlaybackTrack::Effect {
+                        binding: 3,
+                        slot: 1
+                    },
+                    frame: 5.0
+                },
                 Command::UnloadMotion,
-                Command::Seek(7.0)
+                Command::Seek {
+                    track: PlaybackTrack::Motion,
+                    frame: 7.0
+                }
             ]
         ));
     }
