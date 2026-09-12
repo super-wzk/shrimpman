@@ -2,6 +2,8 @@
 //! once per batch, and only completed revisions replace the preview document.
 
 use super::Workbench;
+
+mod file_picker;
 use crate::{
     edit::{self, NodeKey},
     field::{Binding, Field, FieldType},
@@ -131,6 +133,7 @@ pub(super) struct Editing {
     raw_offset: usize,
     raw_length: usize,
     replacement: String,
+    file_picker: Option<std::thread::JoinHandle<Result<Option<PathBuf>, String>>>,
     error: String,
 }
 
@@ -153,6 +156,7 @@ impl Editing {
             raw_offset: 0,
             raw_length: 16,
             replacement: String::new(),
+            file_picker: None,
             error: String::new(),
         }
     }
@@ -683,6 +687,21 @@ impl Workbench {
     }
 
     pub(super) fn replacement_editor(&mut self, ui: &mut egui::Ui, document: &Arc<Document>) {
+        if self
+            .editing
+            .file_picker
+            .as_ref()
+            .is_some_and(|picker| picker.is_finished())
+        {
+            match self.editing.file_picker.take().unwrap().join() {
+                Ok(Ok(Some(path))) => {
+                    self.editing.replacement = path.to_string_lossy().into_owned()
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => self.editing.error = error,
+                Err(_) => self.editing.error = "文件选择器线程异常退出".into(),
+            }
+        }
         ui.collapsing("从文件替换完整资源", |ui| {
             ui.small("PNG、DDS、音频、模型和动画等可用编辑后的文件替换，所属容器会一起重建。");
             let response = ui.add(
@@ -690,6 +709,21 @@ impl Workbench {
                     .hint_text("编辑后的资源文件路径")
                     .desired_width(ui.available_width()),
             );
+            if ui
+                .add_enabled(
+                    self.editing.file_picker.is_none(),
+                    egui::Button::new("浏览…"),
+                )
+                .clicked()
+            {
+                match std::thread::Builder::new()
+                    .name("resource-file-picker".into())
+                    .spawn(file_picker::open)
+                {
+                    Ok(picker) => self.editing.file_picker = Some(picker),
+                    Err(error) => self.editing.error = format!("无法打开文件选择器：{error}"),
+                }
+            }
             let ready = !self.editing.busy
                 && !self.editing.replacement.is_empty()
                 && self

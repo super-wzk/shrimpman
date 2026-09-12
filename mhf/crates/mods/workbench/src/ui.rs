@@ -28,7 +28,7 @@ mod popup_scroll_tests;
 mod resource_scope_tests;
 use editing::Editing;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum InspectorTab {
     Loaded,
     Resource,
@@ -506,7 +506,7 @@ impl Workbench {
             margin.bottom = margin.bottom.max(gutter);
         }
         egui::ScrollArea::both()
-            .id_salt("workbench-inspector-content")
+            .id_salt(("workbench-inspector-content", self.tab))
             .max_width(ui.available_width())
             .content_margin(margin)
             .auto_shrink([false, false])
