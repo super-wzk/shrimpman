@@ -1,22 +1,20 @@
 # Native text behavior
 
 The supported unpacked image uses preferred base `10000000`. Addresses here
-are IDA virtual addresses; hook definitions store RVAs. The following counts
-are direct code references in that image, not estimates of runtime coverage.
+are virtual addresses at that base; hook definitions store RVAs.
 
-| Behavior | Entry | Direct references | Adapter |
-| --- | --- | ---: | --- |
-| Markup display columns | `10B72180` | 873 | `layout::measure` |
-| Markup pixel width | `10B72680` | 7 | `layout::measure` |
-| Center within an available width | `115A1630` | 27 | shared centering dispatch |
-| Maximum line columns | `10B723B0` | 1 | `layout::measure` |
-| Variable-string width | `10886110` | 4 | shared variable expansion |
-| CRT `_strlen` | `115BB570` | 32 | unchanged byte-count contract |
+| Behavior | Entry | Adapter |
+| --- | --- | --- |
+| Markup display columns | `10B72180` | `layout::measure` |
+| Markup pixel width | `10B72680` | `layout::measure` |
+| Center within an available width | `115A1630` | shared centering dispatch |
+| Maximum line columns | `10B723B0` | `layout::measure` |
+| Variable-string width | `10886110` | shared variable expansion |
+| CRT `_strlen` | `115BB570` | unchanged byte-count contract |
 
-All identified `_strlen` references are in the linked CRT (at or above
-`115AB000`); no direct caller in the lower game-code range was found. Replacing
-it with a character count would alter CRT allocation/copy/formatting semantics
-and would not intercept the game's compiler-inlined loops.
+CRT `_strlen` retains its byte-count contract for allocation, copying and
+formatting. Display adapters handle character measurement at the relevant
+consumers, including compiler-inlined loops that do not call `_strlen`.
 
 For example, title-menu code at `1083CA72..1083CA7D` increments a byte pointer
 until NUL. `1083CA85` subtracts the start pointer and `1083CA8F` multiplies by

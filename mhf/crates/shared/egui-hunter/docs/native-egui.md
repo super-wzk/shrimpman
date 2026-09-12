@@ -69,7 +69,7 @@ Modal 的输入隔离只作用于 egui。需要独占游戏输入的界面应由
 ### 为什么没有采用 0.35 的输入区域快照
 
 `Context::interactive_rects_last_pass()` 可提供裁剪、变换后的交互矩形，适合部分穿透宿主。
-但在当前 0.36.1，实测 `Area::interactable(false)` 内的按钮仍出现在结果里，原生指针命中
+但在 egui 0.36.1 中，`Area::interactable(false)` 内的按钮仍出现在结果里，原生指针命中
 却跳过该 Area；返回值只有 Rect，没有所属 LayerId，无法可靠区分上下层重叠的矩形。
 
 因此保留现有 Area 输入快照和「按下到释放保持同一接收方」的宿主策略，避免通知使游戏

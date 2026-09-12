@@ -17,11 +17,10 @@ IDs are resolved using `group = id / 100`, `slot = id % 100`.
 
 The group count is demonstrably not a format-wide constant: `1089F700` invokes
 the loader with 10, 2 and 6 groups for different resources; `108FD350` supplies 6.
-The two audited resources below have three directory-shaped file records, the
-last of which is empty. This does not establish that their native callers consume
-three groups. A resource browser must distinguish observed file records from a
-caller-supplied group count, rather than treating every MOT as having three or six
-groups.
+A trailing empty directory-shaped record does not establish that the native
+caller consumes another group. A resource browser must distinguish observed file
+records from the caller-supplied group count, rather than treating every MOT as
+having three or six groups.
 
 Both ordinary and HD monster packages use member 2 for motions. `108FBA70` first
 tries `emmodel-hd` through `108E2850`, falls back to `emmodel` through `108E27D0`,
@@ -103,29 +102,35 @@ inside the resource. `parse_with_budget` accepts an explicit aggregate slot cap
 for heavily aliased directories; holes and aliases still retain their positions
 and the source bytes remain unchanged.
 
-### Local sample audit
+### Verification
 
-The decoded local `npc41.mot` has three observed records and one populated motion.
-Its first motion starts at offset 804, with 18 tracks, 153 channels and 2,271 keys. The MOT
-member of `em019` starts its first motion at offset 824 and has 21 populated
-motions, 504 tracks, 1,586 channels and 11,973 keys. Both samples use encoding 12.
-All encoded keys were decoded and serialized byte-identically; replacing a key
-with itself preserved the entire motion, including unknown tails.
+Synthetic tests cover all six key storage layouts, malformed boundaries, aliases,
+empty slots and bit-preserving patches. Round-trip checks compare each encoded
+key with its original bytes; replacing a key with itself must preserve the
+complete motion, including unknown tails.
 
-The ordinary and HD `em171` motion members decode to identical 2,456-byte
-directories: six records each declare 100 slots at offsets 56, 456, 856, 1256,
-1656 and 2056, followed by an empty record at offset 2456. All 600 slots contain
-`0xffffffff`. The 82-byte stored members therefore represent valid empty motion
-tables, not missing or malformed motions.
+A complete directory whose slots all contain `0xffffffff` is a valid empty motion
+resource. Member 2 of `emmodel/em171.pac` and `emmodel-hd/em171-hd.pac` provides
+such a case: all declared slots mark motions absent, and an empty trailing
+directory record remains present. Compressed size alone cannot distinguish an
+empty directory from a malformed resource.
 
-| Decoded sample | Bytes | SHA-256 |
-|---|---:|---|
-| npc41 | 21044 | `434a27d40bb6dbe6a6bfac348d45ec55a3bf9ebaaa29f6f2730cbddfc3b71056` |
-| em019 MOT member | 122108 | `cf38ffbd5e7506159adf4a545876f241e3669561e40589c4372e12f3d4ddb75c` |
+The opt-in `motion_native_samples` tests use `MHF_MOTION_SAMPLE_DIR` for decoded
+samples: the key round-trip test reads `npc41-decoded.mot` and `em019-chunk-2.bin`,
+while the empty-directory test reads `em171-decoded.mot` and
+`em171-hd-decoded.mot`. These tests also assert the expected fixture structures.
+A separate test uses `MHF_RESOURCE_GAME_ROOT` to read standalone clips from
+`dat/mytra.bin`. Run from the `mhf` workspace and select the test matching the
+provided inputs, with `<host-target>` replaced by the host triple from `rustc -vV`:
 
-The opt-in `motion_native_samples` integration test reads these locally decoded
-files through `MHF_MOTION_SAMPLE_DIR`; synthetic tests cover all six storage
-layouts, malformed boundaries, aliases, empty slots and bit-preserving patches.
+```sh
+MHF_MOTION_SAMPLE_DIR="<decoded-motion-directory>" \
+cargo test -p mhf-resource --target "<host-target>" --test motion_native_samples \
+  decoded_client_motion_samples_keep_every_track_and_encoded_key -- --ignored
+```
+
+These tests validate file structure and encoded values. Native animation binding,
+interpolation and in-game playback require separate verification.
 
 ## Equipment effects are four distinct tables
 

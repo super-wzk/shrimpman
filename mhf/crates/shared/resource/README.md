@@ -34,7 +34,7 @@ MOT 的原生消费组数由客户端调用方传入，不能从扩展名统一�
 `ObservedMotionDirectory` 只描述经完整边界和动画验证的文件记录区域，包含尾部空记录，
 不把记录数冒充为游戏实际消费组数。
 
-详细布局、原生读取函数、真实样本覆盖和未确认项见
+详细布局、原生读取函数与未确认项见
 [`docs/model-formats.md`](docs/model-formats.md)、
 [`docs/motion-effects.md`](docs/motion-effects.md) 与
 [`docs/dat-format.md`](docs/dat-format.md)、

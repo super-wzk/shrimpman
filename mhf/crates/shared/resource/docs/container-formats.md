@@ -35,7 +35,7 @@ let model = Fmod::parse(&decoded)?;
   `ReFrontier/Services/UnpackingService.cs`。
 - 当前仓库 `mhf/crates/mods/quest/src/provider/binary.rs` 的 JKR3 解码与
   上述 LZ 指令一致；共享实现另外处理 Huffman 层、输出预算和截断错误。
-- 只读验证游戏目录 `/Users/wzk/Games/mhfzz`。仓库不包含游戏资源本体。
+- 只读资源测试使用 `MHF_RESOURCE_GAME_ROOT` 指定游戏目录。仓库不包含游戏资源本体。
 - 独立比较使用 [MHFrontier-Blender-Addon 的解码器](https://github.com/Houmgaor/MHFrontier-Blender-Addon/blob/main/mhfrontier/stage/jkr_decompress.py)。
   其文件顶部说明的编码序号与实际枚举不一致，本实现依照实际枚举和文件。
 
@@ -44,7 +44,7 @@ let model = Fmod::parse(&decoded)?;
 | 偏移 | Rust 值 | 已知含义 |
 |---|---|---|
 | 0x00 | `[u8; 4]` | `JKR\x1a` |
-| 0x04 | `u16` | 版本，样本为 `0x0108` |
+| 0x04 | `u16` | 版本；已验证的版本值为 `0x0108` |
 | 0x06 | `u16` | 编码编号，未知编号仍可读头但不能解码 |
 | 0x08 | `u32` | 编码数据相对整个 JKR 文件的偏移 |
 | 0x0c | `u32` | 输出字节数 |
@@ -72,9 +72,8 @@ ECD 16 字节头：签名 `ecd\x1a`、`u16` key index、原样保留的 `unknown
 
 EXF 16 字节头：签名 `exf\x1a`、`u16` key index、`unknown_06[2]`、
 `unknown_08[4]`、`u32` seed。支持五组参数，解密从偏移 16 到文件末尾。
-参考实现不将 `unknown_08` 作为长度字段，本实现也不这样推断。真实音频样本
-解码产生 Ogg 数据；样本 seed 数值与输出 CRC 相等，但尚未将此推广为全部
-EXF 的校验规则。
+参考实现不将 `unknown_08` 作为长度字段，本实现也不这样推断。EXF 可包装 Ogg
+音频；`seed` 用于解密，不作为通用输出 CRC 校验字段。
 
 `open_layers` 保留 original source 与每一层的 decoded bytes。原样导出应使用
 `source` 或 `layer_source`。解密/解压后的字节并不等于原压缩文件，也不声称可以
@@ -99,29 +98,22 @@ EXF 的校验规则。
 间隙和尾部数据，不按“所有 size 之和必须等于文件长度”错误排除合法资源。
 这些读取器不跟随操作系统路径，不执行归档项，不写回。
 
-## 当前实样验证
+## 验证与识别边界
 
-以下输出 CRC 与独立 Python 解码结果相同（ECD 项另通过头中的 CRC）：
+`tests/container_decode.rs` 覆盖 JKR 编码编号、LZ 指令、重叠回溯、Huffman 位流、
+截断、循环引用、预算限制和未知编码。ECD 使用独立实现生成的已知答案覆盖各组密钥，
+并检查损坏数据触发 CRC 错误；EXF 测试保留原始头和源字节。
 
-| 文件/容器项 | 类型 | 输出长度 | 输出 CRC32 |
-|---|---|---:|---|
-| `dat/my_gallery/s264_w006.bin` | JKR0 | 53,058 | `992ef74c` |
-| `dat/ryoudan/rquest.bin` | JKR3 | 5,786 | `93606541` |
-| `dat/motion/npc41.mot` | JKR4 | 21,044 | `15e676e5` |
-| `dat/parts/m00/m_editpl.bin/0` | JKR4 → FMOD | 4,824,388 | `df14a893` |
-| 同容器 `/1` | JKR → FSKL | 5,656 | `f514356b` |
-| 同容器 `/2` | 141 项 TXB | 1,687,601 | `f09b509c` |
-| `dat/stage-hd/st063-hd.pac` | ECD → 4 项普通目录 | 790,453 | `d3d03ba6` |
-| `dat/sound/mus/s_m68_02.mus` | EXF → Ogg | 910,627 | `94afcefc` |
+目录测试检查空槽、别名、间隙、尾部、MHA 共享名称，以及 Stage 目录的独立布局
+和摆放表识别条件。场景资源 ID 与共享成员引用的验证见 [stage-formats.md](stage-formats.md)。
 
-另确认 `dat/wd000snd.abn` 是 14 项 MHA，`dat/sound/grdn_fes.snd` 是 3 项 MOMO。
-当前磁盘顶层扫描找到 JKR0、3、4，尚未找到 JKR2 实样；编号 2 以手工构造的
-Huffman 已知答案验证。Stage 目录已按 `113E8DA0` 修正，并验证 225 个原始实样；
-完整布局、资源 ID 和共享成员引用见 [stage-formats.md](stage-formats.md)。
+可选资源测试覆盖 JKR0/3/4、ECD、EXF、模型成员、TXB、MHA 和 MOMO。
+测试按资源相对路径读取原文件，并以指定参考资源的输出 CRC 检查解码回归；
+这些校验值不用于解析器的类型识别。JKR2 的覆盖使用构造的 Huffman 已知答案，
+不等同于游戏资源兼容性验证。
 
-`mh2pc.dat` 当前只有 16 字节（`a9dfbe9533136d5d9e90484d8308632a`）。没有证据
-证明它在此安装中是虚拟文件目录，因此不为它编造条目结构；工作台从实际 `dat/`
-文件树和已验证的容器目录建立资源树。也不将任意资源里的魔数扫描结果充当目录。
+工作台从 `dat/` 文件树和已验证的容器目录建立资源树，不将 `mh2pc.dat` 解释为
+虚拟文件目录，也不将任意资源里的魔数扫描结果充当目录。
 
 运行普通测试：
 

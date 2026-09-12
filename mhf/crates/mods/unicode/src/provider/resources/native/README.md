@@ -12,13 +12,13 @@ reader; it defines structure, not translated text.
   venue. `1155C740` dispatches by room type 210/282/286; other state branches
   consume the first two fields. This is a block of named fields, not an
   inferred open-ended string table. The following debug-name directory is excluded.
-- `native:literal:<decimal source RVA>`: 109 scattered constants whose actual
+- `native:literal:<decimal source RVA>`: compiled constants whose actual
   instruction operands or data aliases are recorded in `bindings.rs`.
   Bindings contain only the source RVA and consumer pointer RVAs. Text is read
   directly from the loaded image; no source-byte copy or opcode fingerprint is
   stored. This does not discover text by scanning the image or guessing encodings.
 
-All 120 records are in the Translation domain's `locales/ja-JP.jsonl`. Other locales can use the
+These records are in the Translation domain's `locales/ja-JP.jsonl`. Other locales can use the
 same keys and the existing `translation` and missing-translation options.
 With no Translation configuration, the known CP932 source ingress is still
 converted to UTF-8. The native image keeps its original bytes; only the
@@ -44,9 +44,9 @@ native addresses and are handled by the common strcat source-range adapter.
 | `1199F260` / header vector at `11A45268` | No code consumer of this duplicate static XML template was established. The active writer at `108D75E0` uses PAC `table_793:0`; its UTF-8 declaration is fixed at that exact resource ingress. |
 | `11997F6C`, `119A6D50`, word loads from `119A02C4`, `119B2DB8` | Fixed-size constructors and digit indexing are replaced in `native/embedded.rs`. The `10B2B2A5` pointer consumer of `119A02C4` is included in the bindings. |
 
-The following 33 semantic strings have typed data-pointer references but no
-established executable reader in the current IDB. They are archived as
-unreferenced data, excluded from the bindings, and are not counted as migrated:
+The following labels have typed data-pointer references but no confirmed
+executable display consumer. They remain excluded from the bindings until
+that consumer is identified:
 
 - Monster states: `1198156C`, `11981574`.
 - Rock-paper-scissors: `119961DC`, `119961E4`, `119961EC`.

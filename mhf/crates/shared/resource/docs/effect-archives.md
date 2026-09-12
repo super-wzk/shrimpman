@@ -13,7 +13,7 @@ descriptor in inner member 0:
 
 | Offset in member 0 | Storage | Native use |
 |---|---|---|
-| 0 | u16 | Retained, meaning unconfirmed; all audited samples contain 1 |
+| 0 | u16 | Retained, meaning unconfirmed; parsing does not require a fixed value |
 | 2 | u16 | Descriptor count; must equal inner archive count minus 1 |
 | 4 | `(u16 kind, u16 resource_id)` repeated count times | One descriptor per subsequent member |
 
@@ -46,8 +46,9 @@ without assigning a meaning.
 | 18 | Unconfirmed | Address retained by loader; remaining bytes kept raw |
 
 The optional motion lookup and event records have the same layouts as kind 2.
-All 2,130 kind 1 members in the initial ordinary/HD package audit have version 4,
-zero counts at offsets 14/16/18, and no bytes after the six fixed tables.
+Zero counts omit those tables. The parser uses the declared counts rather than
+assuming version 4, empty optional tables, or exhaustion after the six fixed
+tables. The final unconfirmed table and any remaining bytes are retained raw.
 
 `113D3FC0` matches emission selector +80, checks trigger frame +78, and emits
 `i16 +88` instances. The definition ID at +76 matches the u16 at +4 in the
@@ -94,20 +95,30 @@ ordering and handles absent slots explicitly. It does not imitate the native
 `-1` index's read before the event table. Indices remain inspectable even when
 invalid; accesses report an error.
 
-Signed ranges matter: em145 has -25112..1128 with 26,240 slots, and em142 has
-63,537 slots. Large tables mostly contain `0xffffffff`; no slots are collapsed.
-The eight zero bytes in em150 are a valid empty event resource.
+Ranges are signed: a negative start is valid and must not be converted to an
+unsigned motion ID. Large lookup tables can contain many `0xffffffff` slots;
+those slots retain their original indices. An eight-byte zero header is a valid
+empty event resource.
 
-## Sample verification
+## Verification
 
-Initial full scan: 502 packages with nonempty member 5, containing 2,130 banks
-and 482 motion-event members. The regular and HD em001 packages both contain
-bank IDs 149 and 153 (8,768 and 5,020 bytes). em004 contains bank ID 152;
-ordinary/HD sizes differ (11,648 and 13,588 bytes), so HD payloads cannot be
-assumed identical to ordinary payloads.
+Ordinary and HD packages use the same format, but equal resource IDs do not imply
+identical payloads. For example, bank 152 in `emmodel/em004.pac` and
+`emmodel-hd/em004-hd.pac` has different contents and lengths. Consumers and tools
+must use the bytes belonging to the selected package.
 
 Synthetic tests cover descriptor mismatches, array truncation, aliases, unknown
 kinds, empty resources, signed motion ranges, sentinel and invalid indices, and
-byte-identical record serialization. The optional client audit uses
-`MHF_CLIENT_DATA_DIR` and the decoded motion-event audit uses
-`MHF_EFFECT_SAMPLE_DIR`; neither requires committed proprietary fixtures.
+byte-identical record serialization. Optional integration tests accept a client
+`dat` directory through `MHF_CLIENT_DATA_DIR` and decoded motion-event samples
+through `MHF_EFFECT_SAMPLE_DIR`. No proprietary fixtures are committed.
+
+```sh
+MHF_CLIENT_DATA_DIR="<client-dat-directory>" \
+cargo test -p mhf-resource --target "<host-target>" \
+  --test effect_archive_native_samples -- --ignored
+```
+
+Run from the `mhf` workspace with `<host-target>` replaced by the host triple
+reported by `rustc -vV`. Parsing and byte-preserving tests do not establish
+rendering, effect lifetime, or successful in-game use of an edited resource.

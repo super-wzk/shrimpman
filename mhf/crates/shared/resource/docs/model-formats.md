@@ -16,7 +16,9 @@ not a serialization operation.
 
 ## Evidence
 
-Read-only analysis of the locally loaded `mhfo-hd.dll` in IDA established:
+The following native consumers define the supported ZZ HD file representation.
+Addresses are preferred-image virtual addresses in `mhfo-hd.dll`; they are not
+resource offsets or a guarantee that another client build uses the same addresses:
 
 | Function | Evidence used |
 | --- | --- |
@@ -108,30 +110,20 @@ triangle-strip index bounds. Structural parsing deliberately permits
 degenerate strips, unknown variants, and invalid semantic references so the
 workbench can inspect them without silently repairing the source.
 
-The rendering block has a 72-byte payload in all 92 occurrences found in the
-selected `em077_b.pac` and `em077_b-hd.pac` samples (46 per file). Both files
-contain five occurrences in model entry `0/0` and 41 in entry `3/0`. Their first
-word is `0x00010000`; it remains part of the raw word array. Extra payload bytes
-are retained in `trailing`, and record counts other than 1 remain unknown.
+The supported rendering block contains 18 original u32 words in a 72-byte
+payload. Its version word remains part of that array rather than being removed
+or normalized. Extra payload bytes are retained in `trailing`, and record counts
+other than 1 remain unknown.
 
 The `0xE0000` block's grouped-word structure is verified from actual file bytes.
-The inspected native OBJECT paths `10002AF0` and `10003790` do not consume this
-block, so `WordGroupsBlock` claims only a structural layout. It does not identify
+The native OBJECT consumers `10002AF0` and `10003790` do not consume this block, so `WordGroupsBlock` claims only a structural layout. It does not identify
 the words as bone, face, or material indices, or interpret `0xFFFFFFFF` as a
 sentinel. Each group retains its count-word file offset and every original u32;
 the block count supplies the number of groups, and trailing bytes are retained.
 
-In the selected ordinary monster packages, `em001.pac` has two blocks with group
-sizes `[32]` and `[22]`; `em002.pac` has four with `[20]`, `[28, 33]`, `[28, 20]`,
-and `[33]`; `em007.pac` has four with `[22, 10, 22, 17, 21]`, `[21]`, `[12]`, and
-`[17, 10, 22, 22, 12]`. All ten blocks are exactly consumed by this layout and
-their 424 words are `0xFFFFFFFF`. `em001_b.pac` has no such block.
-
-The follow-up audit covered all 28 files reported with unknown FMOD blocks in
-the local 581-monster-package scan. All 67 blocks decoded as `WordGroupsBlock`,
-containing 183 groups and 13,518 original words, all `0xFFFFFFFF`. Every block
-was exactly consumed with no trailing bytes, and no unknown components remained
-in those files' FMOD resources. This confirms structural coverage only.
+A block may contain multiple groups with different word counts. Even when all
+words are `0xFFFFFFFF` and the counted groups exhaust the block, that does not
+establish a sentinel meaning or make the records removable padding.
 
 ## FSKL structure
 
@@ -166,26 +158,24 @@ native value alongside the original DWORD.
 while still visiting siblings. `10009140` similarly limits curve sampling by
 tag, and `100085C0`/`10008670` select and blend tagged groups between poses.
 This establishes an animation-group tag, not a bone ID, MOT directory index,
-IK-chain ID, or a universal body-part category. In both local em001 packages,
-tags 0, 1, 2, and 3 cover nodes 0–28, 29–39, 40–44, and 45–47 respectively;
-populated directory records 0, 2, and 4 contain 29-, 11-, and 5-track clips.
+IK-chain ID, or a universal body-part category. A motion can contain tracks for
+only one tagged node group; it need not animate every node in the skeleton.
+For example, `emmodel/em001.pac` and `emmodel-hd/em001-hd.pac` use separate tags
+for node groups covered by different motion-directory records. The tag must be
+resolved through native binding, not used directly as a record index.
 
-The business meaning of `unknown_40` remains unconfirmed. A read-only audit of
-47 local monster, NPC, weapon, and stage files found 64 paired FMOD/FSKL sets.
-In 37 sets all FMOD objects have weights and every `unknown_40` is `0xFFFFFFFF`.
-The other 27 sets have no object weights, an extra root with `0xFFFFFFFF`, and
-one node per object with values 0 through `object_count - 1`. For example,
-em001's second model has 17 objects and 18 nodes. This supports an object-index
-hypothesis but does not establish a native consumer or sentinel behavior.
-The audited loading, animation, and matrix-upload paths do not resolve that
-meaning, so the field retains its unknown name; `-1` is displayed as a signed
-value without labeling it as a missing mesh.
+The business meaning of `unknown_40` remains unconfirmed. Some unweighted
+model/skeleton pairs use one node per object, with values from 0 through
+`object_count - 1` and an extra root containing `0xFFFFFFFF`; weighted pairs
+can instead use `0xFFFFFFFF` throughout. These patterns do not establish a
+native object-index consumer or sentinel behavior. The field retains its
+unknown name, and `-1` is displayed as a signed value without labeling it as
+a missing mesh.
 
-The second skeleton (`3/1`) in both `em150.pac` and `em150-hd.pac` has root
-indices `[0, 212]`. Node 212 at `0xDE10` has kind `0x40000003`, count 1, and a
-256-byte payload. Its ID is 212, all three links are -1, and its stored scale,
-rotation, and translation occupy the same offsets as other nodes. This variant
-is decoded as the common node representation while retaining its original kind;
+Kind `0x40000003` shares the stored links and 256-byte transform payload of
+the other supported node variants. It can appear as an additional root, as in
+member `3/1` of `emmodel/em150.pac` and `emmodel-hd/em150-hd.pac`. It is decoded
+through the common node representation while retaining its original kind;
 no light, camera, or animation role is inferred from the variant number.
 
 Nodes are never sorted by `node_id`. Unknown nodes keep their ordinal slot.
@@ -210,18 +200,13 @@ External game samples are optional, supplied through environment variables;
 no game data is committed:
 
 ```sh
-MHF_RESOURCE_FMOD_SAMPLE=/path/to/unwrapped.fmod \
-MHF_RESOURCE_FSKL_SAMPLE=/path/to/unwrapped.fskl \
-cargo test -p mhf-resource --target aarch64-apple-darwin external_
+MHF_RESOURCE_FMOD_SAMPLE="<unwrapped-fmod>" \
+MHF_RESOURCE_FSKL_SAMPLE="<unwrapped-fskl>" \
+cargo test -p mhf-resource --target "<host-target>" external_
 ```
 
-Verified on 2026-09-11 against unwrapped local `m_editpl` resources:
-
-| Sample | Bytes | Observed structure | SHA-256 |
-| --- | ---: | --- | --- |
-| FMOD | 4,824,388 | 77 objects, 64,316 positions, 176 material and 176 texture records | `ad4ba793c072ac2a9def2877152ceea20d5959dfe36305380ba325911306d630` |
-| FSKL | 5,656 | 21 bones and a root-index table | `d79b5c5ff11ef2b75d96dd0268f1cc9b11de31dd2b62400d913ceaa759c8d835` |
-
-Both parse and pass the respective geometry/hierarchy validation. These are
-file-format tests, not proof of in-game preview, shader parity, physics, or
-arbitrary edited assets being accepted by the client.
+Run from the `mhf` workspace, replacing the sample placeholders with decoded
+resource files and `<host-target>` with the host triple reported by `rustc -vV`.
+The external tests check parsing and geometry/hierarchy validation. They do not
+establish in-game preview, shader parity, physics, or acceptance of arbitrary
+edited assets by the client.

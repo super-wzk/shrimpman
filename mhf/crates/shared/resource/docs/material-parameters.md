@@ -1,7 +1,9 @@
 # Grouped material parameters
 
 These bytes are a separate monster-package resource consumed by `108FCD70` in
-the local `mhfo-hd.dll`. They are not an FMOD section and have no magic signature.
+the supported ZZ HD `mhfo-hd.dll`. Addresses identify native consumers at the
+preferred image base; they are not offsets into a resource. The resource is not
+an FMOD section and has no magic signature.
 
 ## Caller contract
 
@@ -18,9 +20,8 @@ Matching records are copied to existing 140-byte runtime material structures.
 These association checks do not change how the file itself is parsed.
 
 The additional-monster path `108FC420` consumes outer members 0, 1, and 2 only;
-it does not call `108FCD70`. The latter function has one caller in this database.
-Member 5 is separate: `108FBE88..108FBE99` dispatches it to `113D5A90`, which
-decompresses an indexed archive. Its first member holds u16 type/ID pairs;
+it does not call `108FCD70`. Member 5 is separate: `108FBE88..108FBE99` dispatches
+it to `113D5A90`, which decompresses an indexed archive. Its first member holds u16 type/ID pairs;
 types 1 and 2 dispatch subsequent members to `113D5620` and `113D5380` with
 their payload, byte length, and ID. It is not the grouped-material format.
 
@@ -65,21 +66,34 @@ conversion. `parameter_words` therefore has six elements for legacy records
 and seven for extended records. `as_bytes()` returns the unchanged source;
 file tails, header unknown bytes, and all unknown record bytes remain intact.
 
-## Verified local samples
+## Size and alignment
 
-| Outer resource | Entry 6 offset in decoded PAC | Bytes | Groups | Records |
-| --- | --- | ---: | ---: | ---: |
-| `emmodel-hd/em019-hd.pac` | 0xBD996 | 833 | 1 | 8 |
-| `emmodel-hd/em077_b-hd.pac` | 0x55DE79 | 4277 | 10 | 41 |
+For G groups and R total records, the consumed extent is:
 
-Both samples begin with marker 0x20. In em019-hd the next 16 bytes are
-`01 CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC`, followed by the group header
-`08 CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC`. Records start at 0x21 and
-consume exactly `1 + 16 + 16 + 8 * 100 = 833` bytes. em077_b-hd consumes exactly
-`1 + 16 + 10 * 16 + 41 * 100 = 4277` bytes. Its group record counts are
-`[1, 4, 1, 9, 11, 2, 7, 2, 3, 1]`.
+```text
+legacy:   16 + G * 16 + R * 96
+extended:  1 + 16 + G * 16 + R * 100
+```
+
+With a nonempty first group, extended records begin at resource-relative `0x21`.
+For example, one group of eight records occupies `1 + 16 + 16 + 8 * 100 = 833`
+bytes. Headers and records follow one another directly; inserting padding to
+align integer or float fields to four bytes would change this layout. Unknown
+header bytes, including runs of `0xCC`, are preserved without treating them as
+optional padding.
+
+## Verification
 
 Tests cover both native record widths, arbitrary marker bytes in the native
 extended range, empty groups, raw float bits, unknown header/record bytes,
 trailing bytes, all declared-header/record truncations, and invalid counts.
-`MHF_RESOURCE_MATERIAL_SAMPLE` enables an additional local decoded-member test.
+An optional test accepts a decoded member through `MHF_RESOURCE_MATERIAL_SAMPLE`:
+
+```sh
+MHF_RESOURCE_MATERIAL_SAMPLE="<decoded-material-member>" \
+cargo test -p mhf-resource --target "<host-target>" external_material_sample
+```
+
+Run from the `mhf` workspace with `<host-target>` replaced by the host triple
+reported by `rustc -vV`. Structural validation does not establish shader semantics
+or compatibility with the material counts of an arbitrary model.
