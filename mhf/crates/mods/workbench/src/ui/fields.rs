@@ -8,7 +8,13 @@ use std::borrow::Cow;
 mod binary_editor;
 
 /// The parent owns one fixed row; expanded editors live in independent Areas.
-pub(super) fn input(ui: &mut Ui, binding: &Binding, original: &[u8], text: &mut String) -> bool {
+pub(super) fn input(
+    ui: &mut Ui,
+    binding: &Binding,
+    original: &[u8],
+    text: &mut String,
+    focused: &mut Option<egui::Id>,
+) -> bool {
     let height = ui
         .spacing()
         .interact_size
@@ -17,18 +23,22 @@ pub(super) fn input(ui: &mut Ui, binding: &Binding, original: &[u8], text: &mut 
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width().max(1.0), height), Sense::hover());
     let mut row = bounded(ui, rect, "value");
+    *focused = None;
     match binding.format {
-        FieldType::Scalar(scalar) => scalar_input(&mut row, scalar, text),
+        FieldType::Scalar(scalar) => scalar_input(&mut row, scalar, text, focused),
         FieldType::Array(scalar) => array_input(
             &mut row,
             rect,
             scalar,
             binding.range.len() / scalar.size(),
             text,
+            focused,
         ),
-        FieldType::Flags(scalar) => flags_input(&mut row, rect, binding, scalar, original, text),
-        FieldType::Color { alpha } => color_input(&mut row, rect, binding, alpha, original, text),
-        FieldType::Text { .. } => text_input(&mut row, rect, binding, text),
+        FieldType::Flags(scalar) => flags_input(&mut row, binding, scalar, original, text, focused),
+        FieldType::Color { alpha } => {
+            color_input(&mut row, binding, alpha, original, text, focused)
+        }
+        FieldType::Text { .. } => text_input(&mut row, rect, binding, text, focused),
         FieldType::Bytes => {
             let (mut editor, button) = trailing_button(&mut row, rect, "编辑");
             summary(&mut editor, text.chars().take(80).collect());
@@ -108,6 +118,7 @@ fn array_input(
     scalar: ScalarType,
     count: usize,
     text: &mut String,
+    focused: &mut Option<egui::Id>,
 ) -> bool {
     if count != 0 && count <= 4 && (rect.width() - 4.0 * (count - 1) as f32) / count as f32 >= 48.0
     {
@@ -123,7 +134,12 @@ fn array_input(
                     rect.min + vec2((width + 4.0) * index as f32, 0.0),
                     vec2(width, rect.height()),
                 );
-                changed |= scalar_input(&mut bounded(ui, cell, index), scalar, value.to_mut());
+                changed |= scalar_input(
+                    &mut bounded(ui, cell, index),
+                    scalar,
+                    value.to_mut(),
+                    focused,
+                );
             }
             if changed {
                 *text = values.join(", ");
@@ -133,7 +149,7 @@ fn array_input(
     }
     let (mut editor, button) = trailing_button(ui, rect, "展开");
     let mut changed = if count <= 4 {
-        single_line(&mut editor, text).changed()
+        single_line(&mut editor, text, focused).changed()
     } else {
         let first = text.split(',').take(3).collect::<Vec<_>>().join(", ");
         summary(&mut editor, format!("{count} 项 · {first}"));
@@ -168,6 +184,7 @@ fn array_input(
                         &mut bounded(ui, value_rect, (index, "value")),
                         scalar,
                         values[index].to_mut(),
+                        focused,
                     );
                 }
             });
@@ -181,14 +198,14 @@ fn array_input(
 
 fn flags_input(
     ui: &mut Ui,
-    rect: Rect,
     binding: &Binding,
     scalar: ScalarType,
     original: &[u8],
     text: &mut String,
+    focused: &mut Option<egui::Id>,
 ) -> bool {
-    let (mut editor, button) = trailing_button(ui, rect, "位");
-    let mut changed = single_line(&mut editor, text).changed();
+    let (mut editor, button) = trailing_button(ui, ui.max_rect(), "位");
+    let mut changed = single_line(&mut editor, text, focused).changed();
     changed |= popup(ui, &button, "位标志", |ui, max_height| {
         let Ok(bytes) = binding.encode(original, text) else {
             ui.weak("请输入有效的位标志值");
@@ -246,18 +263,19 @@ fn flags_input(
 
 fn color_input(
     ui: &mut Ui,
-    rect: Rect,
     binding: &Binding,
     alpha: bool,
     original: &[u8],
     text: &mut String,
+    focused: &mut Option<egui::Id>,
 ) -> bool {
+    let rect = ui.max_rect();
     let size = if alpha { 4 } else { 3 };
     let bytes = binding
         .encode(original, text)
         .unwrap_or_else(|_| original.to_vec());
     if bytes.len() != size {
-        return single_line(ui, text).changed();
+        return single_line(ui, text, focused).changed();
     }
     let mut rgba = [255; 4];
     rgba[..size].copy_from_slice(&bytes);
@@ -281,15 +299,21 @@ fn color_input(
         egui::pos2((swatch.right() + 4.0).min(rect.right()), rect.top()),
         rect.max,
     );
-    changed |= single_line(&mut bounded(ui, editor_rect, "channels"), text).changed();
+    changed |= single_line(&mut bounded(ui, editor_rect, "channels"), text, focused).changed();
     changed
 }
 
-fn text_input(ui: &mut Ui, rect: Rect, binding: &Binding, text: &mut String) -> bool {
+fn text_input(
+    ui: &mut Ui,
+    rect: Rect,
+    binding: &Binding,
+    text: &mut String,
+    focused: &mut Option<egui::Id>,
+) -> bool {
     let compact = !text.contains(['\n', '\r']) && binding.range.len() <= 96;
     let (mut editor, button) = trailing_button(ui, rect, "编辑");
     let mut changed = if compact {
-        single_line(&mut editor, text).changed()
+        single_line(&mut editor, text, focused).changed()
     } else {
         summary(
             &mut editor,
@@ -302,12 +326,22 @@ fn text_input(ui: &mut Ui, rect: Rect, binding: &Binding, text: &mut String) -> 
             .max_height(max_height)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                ui.add(
+                let id = ui.make_persistent_id("text-content");
+                let submit = ui.memory(|memory| memory.has_focus(id))
+                    && ui.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
+                    });
+                let response = ui.add(
                     egui::TextEdit::multiline(text)
+                        .id(id)
                         .desired_rows(6)
                         .desired_width(ui.available_width()),
-                )
-                .changed()
+                );
+                if submit {
+                    response.surrender_focus();
+                }
+                track_focus(&response, focused);
+                response.changed()
             })
             .inner
     });
@@ -321,7 +355,12 @@ fn summary(ui: &mut Ui, value: String) {
     );
 }
 
-fn scalar_input(ui: &mut egui::Ui, scalar: ScalarType, text: &mut String) -> bool {
+fn scalar_input(
+    ui: &mut egui::Ui,
+    scalar: ScalarType,
+    text: &mut String,
+    focused: &mut Option<egui::Id>,
+) -> bool {
     macro_rules! drag {
         ($ty:ty, $range:expr) => {{
             if let Ok(mut value) = text.parse::<$ty>() {
@@ -332,12 +371,13 @@ fn scalar_input(ui: &mut egui::Ui, scalar: ScalarType, text: &mut String) -> boo
                         .speed(1.0)
                         .update_while_editing(true),
                 );
+                track_focus(&response, focused);
                 if response.changed() {
                     *text = value.to_string();
                 }
                 response.changed()
             } else {
-                single_line(ui, text).changed()
+                single_line(ui, text, focused).changed()
             }
         }};
     }
@@ -345,11 +385,11 @@ fn scalar_input(ui: &mut egui::Ui, scalar: ScalarType, text: &mut String) -> boo
         ScalarType::U8 => drag!(u8, u8::MIN..=u8::MAX),
         ScalarType::U16 => drag!(u16, u16::MIN..=u16::MAX),
         ScalarType::U32 => drag!(u32, u32::MIN..=u32::MAX),
-        ScalarType::U64 => single_line(ui, text).changed(),
+        ScalarType::U64 => single_line(ui, text, focused).changed(),
         ScalarType::I8 => drag!(i8, i8::MIN..=i8::MAX),
         ScalarType::I16 => drag!(i16, i16::MIN..=i16::MAX),
         ScalarType::I32 => drag!(i32, i32::MIN..=i32::MAX),
-        ScalarType::I64 => single_line(ui, text).changed(),
+        ScalarType::I64 => single_line(ui, text, focused).changed(),
         ScalarType::F32 | ScalarType::F64 => {
             if let Ok(mut value) = text.parse::<f64>()
                 && value.is_finite()
@@ -360,22 +400,31 @@ fn scalar_input(ui: &mut egui::Ui, scalar: ScalarType, text: &mut String) -> boo
                         .speed(0.01)
                         .update_while_editing(true),
                 );
+                track_focus(&response, focused);
                 if response.changed() {
                     *text = value.to_string();
                 }
                 response.changed()
             } else {
-                single_line(ui, text).changed()
+                single_line(ui, text, focused).changed()
             }
         }
     }
 }
 
-fn single_line(ui: &mut Ui, text: &mut String) -> Response {
-    ui.add_sized(
+fn single_line(ui: &mut Ui, text: &mut String, focused: &mut Option<egui::Id>) -> Response {
+    let response = ui.add_sized(
         ui.available_size(),
         single_line_editor(text).desired_width(ui.available_width()),
-    )
+    );
+    track_focus(&response, focused);
+    response
+}
+
+fn track_focus(response: &Response, focused: &mut Option<egui::Id>) {
+    if response.has_focus() {
+        *focused = Some(response.id);
+    }
 }
 
 /// Match DragValue's centered row contents, including focus and invalid drafts.

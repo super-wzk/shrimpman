@@ -42,6 +42,8 @@ struct Input {
     text: String,
     revision: u64,
     pending: bool,
+    // Keep keyboard drafts pending even after the debounce expires.
+    focused: Option<egui::Id>,
     error: String,
     conflicted: bool,
 }
@@ -55,6 +57,7 @@ impl Input {
             binding,
             revision: 0,
             pending: false,
+            focused: None,
             error: String::new(),
             conflicted: false,
         })
@@ -249,11 +252,15 @@ impl Workbench {
         let mut patches = Vec::new();
         let mut submitted = Vec::new();
         if let Some(inputs) = self.editing.inputs.get_mut(&path) {
-            for (index, input) in inputs
-                .iter_mut()
-                .enumerate()
-                .filter(|(_, input)| input.pending && input.error.is_empty())
-            {
+            for (index, input) in inputs.iter_mut().enumerate().filter(|(_, input)| {
+                input.pending
+                    && input.error.is_empty()
+                    && (self.editing.pack_after_edits
+                        || self.editing.next_path.is_some()
+                        || !input
+                            .focused
+                            .is_some_and(|id| context.memory(|memory| memory.has_focus(id))))
+            }) {
                 match input.resolve(&document).and_then(|binding| {
                     input.binding = binding;
                     input.binding.write(&document.buffers, &input.text)
@@ -552,7 +559,13 @@ impl Workbench {
             editor.set_clip_rect(editor_rect.intersect(ui.clip_rect()));
             let changed = editor
                 .add_enabled_ui(!input.conflicted, |ui| {
-                    super::fields::input(ui, &input.binding, &input.original, &mut input.text)
+                    super::fields::input(
+                        ui,
+                        &input.binding,
+                        &input.original,
+                        &mut input.text,
+                        &mut input.focused,
+                    )
                 })
                 .inner;
             if changed {
@@ -668,7 +681,13 @@ impl Workbench {
             let changed = ui
                 .push_id(("raw-editor", &self.path, &input.target), |ui| {
                     ui.add_enabled_ui(!input.conflicted, |ui| {
-                        super::fields::input(ui, &input.binding, &input.original, &mut input.text)
+                        super::fields::input(
+                            ui,
+                            &input.binding,
+                            &input.original,
+                            &mut input.text,
+                            &mut input.focused,
+                        )
                     })
                     .inner
                 })

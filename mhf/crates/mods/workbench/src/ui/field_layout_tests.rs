@@ -8,6 +8,7 @@ struct Case {
     binding: Binding,
     original: Vec<u8>,
     text: String,
+    focused: Option<egui::Id>,
 }
 
 impl Case {
@@ -24,6 +25,7 @@ impl Case {
             binding,
             original,
             text,
+            focused: None,
         }
     }
 }
@@ -221,7 +223,13 @@ impl Harness {
 
     fn input(&mut self, case: &mut Case, events: Vec<Event>) -> Frame {
         self.frame(events, |ui| {
-            fields::input(ui, &case.binding, &case.original, &mut case.text)
+            fields::input(
+                ui,
+                &case.binding,
+                &case.original,
+                &mut case.text,
+                &mut case.focused,
+            )
         })
     }
 }
@@ -350,7 +358,13 @@ fn binary_frame(
         *background_clicked |= child
             .add_sized(background.size(), egui::Button::new("background button"))
             .clicked();
-        fields::input(ui, &case.binding, &case.original, &mut case.text)
+        fields::input(
+            ui,
+            &case.binding,
+            &case.original,
+            &mut case.text,
+            &mut case.focused,
+        )
     })
 }
 
@@ -1503,4 +1517,63 @@ fn dock_actions_remain_fully_clickable_beside_scrollbars_after_resize_and_dpi_ch
         harness.frame(vec![]);
         harness.frame(vec![]);
     }
+}
+
+#[test]
+fn keyboard_fields_keep_focus_until_enter() {
+    for scalar in [ScalarType::U32, ScalarType::U64] {
+        let mut case = Case::new("number", FieldType::Scalar(scalar), vec![0; scalar.size()]);
+        let mut harness = Harness::new(260.0, 30.0);
+        let idle = harness.input(&mut case, vec![]);
+        let point = idle.text_center("0");
+        harness.input(&mut case, pointer(point, true));
+        harness.input(&mut case, pointer(point, false));
+        harness.input(&mut case, vec![]);
+        assert!(case.focused.is_some());
+        harness.input(&mut case, replace_text("12"));
+        assert_eq!(case.text, "12");
+        assert!(case.focused.is_some());
+        harness.input(
+            &mut case,
+            vec![Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(case.focused.is_none());
+    }
+}
+
+#[test]
+fn multiline_ctrl_enter_submits_without_inserting_a_newline() {
+    let mut case = Case::new(
+        "text",
+        FieldType::Text {
+            encoding: TextEncoding::Utf8,
+            terminated: false,
+        },
+        b"hello\nworld".to_vec(),
+    );
+    let mut harness = Harness::new(260.0, 30.0);
+    let (_, opened) = open_popup(&mut harness, &mut case, "编辑");
+    let point = opened.text_center("hello\nworld");
+    harness.input(&mut case, pointer(point, true));
+    harness.input(&mut case, pointer(point, false));
+    assert!(case.focused.is_some());
+    let text = case.text.clone();
+    harness.input(
+        &mut case,
+        vec![Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL,
+        }],
+    );
+    assert_eq!(case.text, text);
+    assert!(case.focused.is_none());
 }

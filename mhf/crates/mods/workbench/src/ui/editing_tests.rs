@@ -322,3 +322,68 @@ fn editing_again_does_not_clear_a_conflict_and_overwrite_other_field_changes() {
         assert_eq!(input.text, "01 02 03 05");
     });
 }
+
+#[test]
+fn focused_draft_waits_for_commit() {
+    with_workbench(|workbench, _| {
+        let context = egui::Context::default();
+        let id = egui::Id::new("draft");
+        context.memory_mut(|memory| memory.request_focus(id));
+        let path = workbench.path.clone().unwrap();
+        let mut draft = input(workbench.document.as_ref().unwrap());
+        draft.text = "12".into();
+        draft.change();
+        draft.focused = Some(id);
+        workbench.editing.inputs.insert(path.clone(), vec![draft]);
+        workbench.flush_edits(&context);
+        assert!(!workbench.editing.busy);
+        assert!(workbench.editing.inputs[&path][0].pending);
+        assert!(workbench.editing.submitted.is_empty());
+        context.memory_mut(|memory| memory.surrender_focus(id));
+        workbench.flush_edits(&context);
+        assert!(workbench.editing.busy);
+        assert_eq!(workbench.editing.submitted.len(), 1);
+    });
+}
+
+#[test]
+fn packing_includes_a_focused_draft() {
+    with_workbench(|workbench, directory| {
+        let context = egui::Context::default();
+        let id = egui::Id::new("draft");
+        context.memory_mut(|memory| memory.request_focus(id));
+        let path = workbench.path.clone().unwrap();
+        let mut draft = input(workbench.document.as_ref().unwrap());
+        draft.text = "12".into();
+        draft.change();
+        draft.focused = Some(id);
+        workbench.editing.inputs.insert(path, vec![draft]);
+        workbench.editing.pack_after_edits = true;
+        workbench.flush_edits(&context);
+        Arc::get_mut(&mut workbench.worker).unwrap().stop();
+        assert_eq!(
+            fs::read(directory.join("redirect/value.bin")).unwrap(),
+            [12]
+        );
+    });
+}
+
+#[test]
+fn switching_documents_submits_a_focused_draft() {
+    with_workbench(|workbench, directory| {
+        let context = egui::Context::default();
+        let id = egui::Id::new("draft");
+        context.memory_mut(|memory| memory.request_focus(id));
+        let path = workbench.path.clone().unwrap();
+        let mut draft = input(workbench.document.as_ref().unwrap());
+        draft.text = "12".into();
+        draft.change();
+        draft.focused = Some(id);
+        workbench.editing.inputs.insert(path.clone(), vec![draft]);
+        workbench.open_document(directory.join("other.bin"));
+        workbench.flush_edits(&context);
+        assert!(workbench.editing.busy);
+        assert_eq!(workbench.path.as_ref(), Some(&path));
+        assert_eq!(workbench.editing.submitted.len(), 1);
+    });
+}
