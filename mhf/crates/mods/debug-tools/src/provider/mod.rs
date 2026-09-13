@@ -1,5 +1,6 @@
 //! Optional in-process tools for an offline session. Mutations run on the game thread.
 
+mod action_definition;
 mod input;
 mod module;
 mod monsters;
@@ -39,6 +40,7 @@ impl Action {
 }
 
 enum DebugCommand {
+    InspectAction(Action),
     Equip {
         kind: u8,
         id: u16,
@@ -148,7 +150,6 @@ pub(crate) struct DebugSnapshot {
     animation: u16,
     frame: f32,
     position: [f32; 3],
-    message: Arc<str>,
     catalog: Arc<Catalog>,
     monster: Option<u8>,
     monster_variant: u8,
@@ -157,6 +158,7 @@ pub(crate) struct DebugSnapshot {
     camera_distance: f32,
     camera_pitch: f32,
     combat: CombatSnapshot,
+    action_definition: Option<Arc<action_definition::ActionDefinition>>,
 }
 
 #[derive(Default)]

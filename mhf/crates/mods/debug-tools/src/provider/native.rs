@@ -48,9 +48,9 @@ pub(crate) struct State {
 
 #[derive(Default)]
 struct Runtime {
+    action_definition: Option<Arc<super::action_definition::ActionDefinition>>,
     catalog: Arc<Catalog>,
     catalog_ready: bool,
-    message: Arc<str>,
     moveset: Option<u8>,
     transmogs: Transmogs,
     pending_action: Option<Action>,
@@ -265,6 +265,7 @@ unsafe extern "C" fn initialize_players() -> i32 {
 
 unsafe fn restart(state: &State, runtime: &mut Runtime) -> Result<(), String> {
     unsafe {
+        runtime.action_definition = None;
         monster::release(state, runtime);
         *state.combat.lock().unwrap_or_else(PoisonError::into_inner) = Default::default();
         if let Some(control) = &mut runtime.monster {
@@ -328,12 +329,11 @@ unsafe fn initialize_catalog(state: &State, runtime: &mut Runtime) {
     if !runtime.catalog_ready {
         runtime.catalog = Arc::new(unsafe { catalog(state) });
         runtime.catalog_ready = true;
-        runtime.message = "本地临时猎人，正在加载任务".into();
     }
 }
 
 unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
-    // Avoid constructing and discarding the default catalog/message Arcs each frame.
+    // Avoid constructing and discarding the default catalog Arc each frame.
     let mut snapshot = DebugSnapshot {
         quest_id: state.quest_id,
         ready: false,
@@ -352,7 +352,6 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
         animation: 0,
         frame: 0.0,
         position: [0.0; 3],
-        message: runtime.message.clone(),
         catalog: runtime.catalog.clone(),
         monster: None,
         monster_variant: 0,
@@ -361,6 +360,7 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
         camera_distance: f32::from_bits(state.camera_distance.load(Ordering::Relaxed)),
         camera_pitch: f32::from_bits(state.camera_pitch.load(Ordering::Relaxed)),
         combat: Default::default(),
+        action_definition: runtime.action_definition.clone(),
     };
     if let Some(control) = &runtime.monster {
         snapshot.monster = Some(control.species);
@@ -447,41 +447,70 @@ unsafe extern "C" fn dispatch() -> i32 {
             initialize_catalog(state, &mut runtime);
             for command in state.control.commands() {
                 let current = snapshot(state, &runtime);
-                let result = match command {
+                let _: Result<(), String> = match command {
+                    DebugCommand::InspectAction(action) if current.ready => {
+                        let base = state.read::<usize>(0x1e77dcc4);
+                        let size = state.read::<u32>(0x1edb9b5c) as usize;
+                        let definition = if base == 0
+                            || !(1560..=64 * 1024 * 1024).contains(&size)
+                            || base.checked_add(size).is_none()
+                        {
+                            Err("当前 DAT 资源尚未加载或长度无效".into())
+                        } else {
+                            super::action_definition::read(
+                                std::slice::from_raw_parts(base as *const u8, size),
+                                base as u32,
+                                action,
+                            )
+                        };
+                        runtime.action_definition =
+                            Some(Arc::new(super::action_definition::ActionDefinition {
+                                action,
+                                motion_style: equipment::hunter(state.model()).and_then(|player| {
+                                    let style = if state.read::<u8>(0x1ed52953) != 0 {
+                                        state.read::<u32>(0x1ee08ce4)
+                                    } else {
+                                        u32::from(get::<u8>(player + 3394))
+                                    };
+                                    (style <= 3).then_some(style as u8)
+                                }),
+                                data: definition,
+                            }));
+                        Ok(())
+                    }
                     DebugCommand::Exit => {
                         monster::release(state, &mut runtime);
                         state.write(0x1e866cb8, 1_i32);
-                        Ok("结束调试".into())
+                        Ok(())
                     }
                     DebugCommand::CameraDistance(distance) if distance.is_finite() => {
                         state
                             .camera_distance
                             .store(distance.clamp(300.0, 5000.0).to_bits(), Ordering::Relaxed);
-                        Ok("已调整变身镜头距离".into())
+                        Ok(())
                     }
                     DebugCommand::CameraPitch(degrees) if degrees.is_finite() => {
                         state
                             .camera_pitch
                             .store(degrees.clamp(-60.0, 80.0).to_bits(), Ordering::Relaxed);
-                        Ok("已调整变身镜头垂直角度".into())
+                        Ok(())
                     }
                     DebugCommand::Restart if current.ready || current.scene == 5 => {
                         runtime.pending_action = None;
-                        restart(state, &mut runtime).map(|()| "正在重开任务".into())
+                        restart(state, &mut runtime)
                     }
                     DebugCommand::FollowEquipment if current.ready || current.scene == 5 => {
                         runtime.moveset = None;
                         runtime.pending_action = None;
-                        restart(state, &mut runtime).map(|()| "正在恢复当前装备的招式".into())
+                        restart(state, &mut runtime)
                     }
                     DebugCommand::Equip { kind, id } if current.ready => {
-                        if let Some(item) = runtime
+                        if runtime
                             .catalog
                             .equipment
                             .iter()
-                            .find(|item| (item.kind, item.id) == (kind, id))
+                            .any(|item| (item.kind, item.id) == (kind, id))
                         {
-                            let name = item.name.clone();
                             equipment::equip(
                                 state.model(),
                                 runtime.moveset,
@@ -491,7 +520,6 @@ unsafe extern "C" fn dispatch() -> i32 {
                             )
                             .map(|()| {
                                 runtime.pending_action = None;
-                                format!("已热替换为 {name}")
                             })
                         } else {
                             Err("装备编号无效".into())
@@ -505,11 +533,7 @@ unsafe extern "C" fn dispatch() -> i32 {
                             equipment::change_transmog(state.model(), &next)?;
                             runtime.transmogs = next;
                             runtime.pending_action = None;
-                            Ok(if id.is_some() {
-                                "已应用防具幻化".into()
-                            } else {
-                                "已恢复此部位的装备外观".into()
-                            })
+                            Ok(())
                         }),
                     DebugCommand::Appearance(change) if current.ready => {
                         equipment::change_appearance(
@@ -521,7 +545,6 @@ unsafe extern "C" fn dispatch() -> i32 {
                         )
                         .map(|()| {
                             runtime.pending_action = None;
-                            "已热替换猎人外观与装备模型".into()
                         })
                     }
                     DebugCommand::Action(action) if current.ready && runtime.monster.is_none() => {
@@ -536,15 +559,10 @@ unsafe extern "C" fn dispatch() -> i32 {
                             runtime.moveset = Some(action.weapon);
                             runtime.pending_action = Some(action);
                             runtime.ready_frames = 0;
-                            restart(state, &mut runtime).map(|()| {
-                                format!(
-                                    "保留装备，正在载入{}招式资源",
-                                    super::NATIVE_WEAPON_NAMES[action.weapon as usize]
-                                )
-                            })
+                            restart(state, &mut runtime)
                         } else {
                             trigger_action(state, action);
-                            Ok(format!("已触发 {}", action.label()))
+                            Ok(())
                         }
                     }
                     DebugCommand::Transform { species, variant } if current.ready => {
@@ -568,9 +586,8 @@ unsafe extern "C" fn dispatch() -> i32 {
                             .is_some_and(|monster| monster.actions.contains(&action))
                         {
                             monster::transform(state, &mut runtime, species, variant, &current).map(
-                                |message| {
+                                |()| {
                                     runtime.monster.as_mut().unwrap().pending_action = Some(action);
-                                    format!("{message}，随后执行{}", action.label())
                                 },
                             )
                         } else {
@@ -591,7 +608,6 @@ unsafe extern "C" fn dispatch() -> i32 {
                             .reset_quest()
                             .map_err(|error| error.to_string())
                             .and_then(|()| restart(state, &mut runtime))
-                            .map(|()| "正在恢复猎人与原始任务".into())
                     }
                     DebugCommand::MonsterAction(action) if current.controlling_monster => {
                         monster::trigger(state, &runtime, action)
@@ -601,7 +617,6 @@ unsafe extern "C" fn dispatch() -> i32 {
                     }
                     _ => Err("等待猎人进入任务后再操作".into()),
                 };
-                runtime.message = result.unwrap_or_else(|error| error).into();
             }
             monster::before_frame(state, &mut runtime);
         }
@@ -618,12 +633,6 @@ unsafe extern "C" fn dispatch() -> i32 {
                     if runtime.ready_frames >= 2 {
                         trigger_action(state, action);
                         runtime.pending_action = None;
-                        runtime.message = format!(
-                            "装备保持不变，已触发{}的{}",
-                            super::NATIVE_WEAPON_NAMES[action.weapon as usize],
-                            action.label()
-                        )
-                        .into();
                     }
                 } else {
                     runtime.ready_frames = 0;

@@ -80,7 +80,7 @@ pub(super) unsafe fn transform(
     species: u8,
     variant: u8,
     current: &DebugSnapshot,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let selected = runtime
         .catalog
         .monsters
@@ -88,7 +88,6 @@ pub(super) unsafe fn transform(
         .find(|monster| monster.id == species)
         .ok_or("客户端没有此怪物种类")?;
     let variant = selected.variant(variant).ok_or("此怪物不支持所选变种")?;
-    let name = selected.name;
     let actions = selected.actions.clone();
     unsafe {
         let source = actor(state, runtime)
@@ -129,7 +128,7 @@ pub(super) unsafe fn transform(
         runtime.pending_action = None;
         restart(state, runtime)?;
     }
-    Ok(format!("正在载入{name} · {}，重载后自动变身", variant.name))
+    Ok(())
 }
 
 pub(super) unsafe fn active_scene(state: &State) -> bool {
@@ -185,7 +184,6 @@ unsafe fn area_transition(state: &State, runtime: &mut Runtime) -> bool {
         let control = runtime.monster.as_mut().unwrap();
         control.waiting = true;
         control.resume_at_arrival = true;
-        runtime.message = format!("正在前往区域 {area}，载入后继续操控怪物").into();
         true
     }
 }
@@ -198,7 +196,6 @@ pub(super) unsafe fn before_frame(state: &State, runtime: &mut Runtime) {
         let Some(target) = actor(state, runtime) else {
             if state.controlled_monster.load(Ordering::Relaxed) != 0 {
                 release(state, runtime);
-                runtime.message = "怪物已卸载，已停止操控；可重新变身或恢复猎人".into();
             }
             return;
         };
@@ -339,7 +336,6 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
                         && variant_active(u32::from(control.species), control.variant.id) == 0
                     {
                         control.waiting = false;
-                        runtime.message = "当前任务阶段未启用所选变种，请恢复猎人并更换任务".into();
                         return;
                     }
                     let create: unsafe extern "C" fn(usize, usize, u8) -> usize =
@@ -395,19 +391,10 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
                 }
                 put(target + 164, u32::from(yaw));
                 state.controlled_monster.store(target, Ordering::Relaxed);
-                runtime.message = format!(
-                    "已变身为{} · {} · 点击游戏区域即可操控",
-                    super::super::monsters::NAMES[control.species as usize],
-                    control.variant.name
-                )
-                .into();
             } else {
                 control.wait_frames = control.wait_frames.saturating_add(1);
                 if control.wait_frames >= 180 {
                     control.waiting = false;
-                    runtime.message =
-                        "所选怪物未完成初始化；可能需要对应专用地图，可恢复猎人或选择其他种类"
-                            .into();
                 }
             }
         }
@@ -432,9 +419,7 @@ pub(super) unsafe fn after_frame(state: &State, runtime: &mut Runtime) {
             }
         });
         if let Some(action) = pending {
-            runtime.message = trigger(state, runtime, action)
-                .unwrap_or_else(|error| error)
-                .into();
+            let _ = trigger(state, runtime, action);
         }
     }
 }
@@ -488,7 +473,7 @@ pub(super) unsafe fn trigger(
     state: &State,
     runtime: &Runtime,
     action: MonsterAction,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let target = unsafe { actor(state, runtime) }.ok_or("怪物尚未完成初始化")?;
     if !runtime.monster.as_ref().unwrap().actions.contains(&action) {
         return Err("尚未收录此怪物招式；可通过原生选招记录动作".into());
@@ -513,17 +498,17 @@ pub(super) unsafe fn trigger(
             clobber_abi("C"),
         );
     }
-    Ok(format!("已触发{}", action.label()))
+    Ok(())
 }
 
-pub(super) unsafe fn next_action(state: &State, runtime: &Runtime) -> Result<String, String> {
+pub(super) unsafe fn next_action(state: &State, runtime: &Runtime) -> Result<(), String> {
     let target = unsafe { actor(state, runtime) }.ok_or("怪物尚未完成初始化")?;
     if unsafe { get::<usize>(target + 2544) == 0 || get::<usize>(target + 2548) == 0 } {
         return Err("当前形态没有可用的原生选招脚本".into());
     }
     let select: unsafe extern "thiscall" fn(usize) -> i8 = unsafe { transmute(state.monster_ai) };
     unsafe { select(target) };
-    Ok("已执行一次原生选招；实际动作会加入下方列表".into())
+    Ok(())
 }
 
 pub(super) unsafe extern "thiscall" fn select_action(target: usize) -> i8 {

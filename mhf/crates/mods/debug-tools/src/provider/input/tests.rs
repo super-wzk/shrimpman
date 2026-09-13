@@ -303,7 +303,7 @@ fn closing_the_debug_window_releases_gameplay_input_and_keeps_controller_setting
 }
 
 #[test]
-fn missing_frames_expire_movement_and_command_errors_are_delivered_once() {
+fn missing_frames_expire_movement_and_full_command_queues_remain_bounded() {
     let context = new_context();
     let control = control();
     let mut input = InputController::default();
@@ -320,12 +320,7 @@ fn missing_frames_expire_movement_and_command_errors_are_delivered_once() {
     frame(&context, keys(&[Key::R], Modifiers::NONE), |context| {
         input.update(context, &control, &snapshot(), false);
     });
-    assert_eq!(
-        input.take_command_error().as_deref(),
-        Some("等待上一个调试操作完成")
-    );
-    assert!(input.take_command_error().is_none());
-    control.commands();
+    assert_eq!(control.commands().len(), 16);
     frame(
         &new_context(),
         keys(&[Key::R], Modifiers::NONE),
@@ -333,5 +328,8 @@ fn missing_frames_expire_movement_and_command_errors_are_delivered_once() {
             input.update(context, &control, &snapshot(), false);
         },
     );
-    assert_eq!(input.take_command_error().as_deref(), Some(""));
+    assert!(matches!(
+        control.commands().as_slice(),
+        [DebugCommand::NextMonsterAction]
+    ));
 }

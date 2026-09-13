@@ -8,7 +8,6 @@ pub(crate) struct InputController {
     variant: u8,
     pub(super) speed: f32,
     pub(super) shortcuts: [Option<MonsterAction>; 4],
-    command_error: Option<String>,
 }
 
 impl Default for InputController {
@@ -18,7 +17,6 @@ impl Default for InputController {
             variant: 0,
             speed: 300.0,
             shortcuts: [None; 4],
-            command_error: None,
         }
     }
 }
@@ -47,10 +45,6 @@ impl InputController {
         }
     }
 
-    pub(super) fn take_command_error(&mut self) -> Option<String> {
-        self.command_error.take()
-    }
-
     /// Run after the window has updated settings and keyboard capture, including
     /// frames where that window is closed. Publishing neutral movement on focus
     /// loss complements the control channel's 200 ms expiry when frames stop.
@@ -64,7 +58,7 @@ impl InputController {
         let capture = window_capture || context.egui_wants_keyboard_input();
         let sample = context.input(|input| self.sample(input, snapshot, capture));
         for command in sample.commands {
-            self.command_error = Some(control.send(command).err().unwrap_or_default());
+            let _ = control.send(command);
         }
         control.set_monster_input(sample.movement);
     }

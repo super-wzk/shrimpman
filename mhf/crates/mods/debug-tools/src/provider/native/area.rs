@@ -104,7 +104,7 @@ pub(super) unsafe fn areas(state: &State) -> Vec<u16> {
     }
 }
 
-pub(super) unsafe fn change(state: &State, destination: u16) -> Result<String, String> {
+pub(super) unsafe fn change(state: &State, destination: u16) -> Result<(), String> {
     unsafe {
         let areas = areas(state);
         if !areas.contains(&destination) {
@@ -126,7 +126,7 @@ pub(super) unsafe fn change(state: &State, destination: u16) -> Result<String, S
                         .all(|offset| get::<f32>(record + offset).is_finite())
                 {
                     call_eax(state, 0x10b4b9f0, record);
-                    return Ok(format!("正在前往区域 {destination}"));
+                    return Ok(());
                 }
             }
         }
@@ -148,7 +148,7 @@ pub(super) unsafe fn change(state: &State, destination: u16) -> Result<String, S
             put(address + 36 + index * 4, coordinate);
         }
         call_eax(state, 0x10b4b9f0, address);
-        Ok(format!("正在前往区域 {destination} 的原生出生点"))
+        Ok(())
     }
 }
 

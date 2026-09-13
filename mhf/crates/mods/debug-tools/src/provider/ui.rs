@@ -4,10 +4,13 @@ use super::{
 };
 use egui::{Context, Key, Modifiers};
 use egui_hunter::{
-    Button, ButtonKind, Field, FormLayout, Icon, LabelPlacement, NavigationState, NoticeKind,
-    SelectField, Tab, Tabs, Tokens, notice,
+    Button, ButtonKind, Field, FormLayout, Icon, LabelPlacement, NavigationState, SelectField, Tab,
+    Tabs, Tokens,
 };
 use std::{borrow::Cow, sync::Arc};
+
+mod action_definition;
+mod hud;
 
 pub(crate) struct DebugWindow {
     control: Arc<DebugControl>,
@@ -20,11 +23,10 @@ pub(crate) struct DebugWindow {
     transmog_filter: String,
     action_filter: String,
     action_weapon: Option<u8>,
-    error: String,
     monster_filter: String,
     focused: bool,
     monster_action_filter: String,
-    selected_area: Option<u16>,
+    definition_action: Option<Action>,
 }
 
 impl DebugWindow {
@@ -40,15 +42,14 @@ impl DebugWindow {
             transmog_filter: String::new(),
             action_filter: String::new(),
             action_weapon: None,
-            error: String::new(),
             monster_filter: String::new(),
             focused: true,
             monster_action_filter: String::new(),
-            selected_area: None,
+            definition_action: None,
         }
     }
-    fn send(&mut self, command: DebugCommand) {
-        self.error = self.control.send(command).err().unwrap_or_default();
+    fn send(&self, command: DebugCommand) {
+        let _ = self.control.send(command);
     }
     pub(crate) fn show(
         &mut self,
@@ -56,9 +57,6 @@ impl DebugWindow {
         snapshot: &DebugSnapshot,
         input: &mut InputController,
     ) -> bool {
-        if let Some(error) = input.take_command_error() {
-            self.error = error;
-        }
         if context.input_mut(|input| {
             let pressed = input.events.iter().any(|event| {
                 matches!(event,
@@ -71,6 +69,7 @@ impl DebugWindow {
             self.open = !self.open;
             self.focused = self.open;
         }
+        hud::show(context, snapshot);
         let mut open = self.open;
         let viewport = context.content_rect();
         let max_width = (viewport.width() - 32.0).max(80.0);
@@ -94,6 +93,7 @@ impl DebugWindow {
             .show(context, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
                 self.summary(ui, snapshot);
+                self.session_controls(ui, snapshot);
                 self.area_controls(ui, snapshot);
                 let tabs = [
                     Tab::new(egui::Id::new("appearance"), "外观"),
@@ -122,12 +122,6 @@ impl DebugWindow {
                             .auto_shrink([false, false])
                             .max_height(body_height)
                             .show(ui, |ui| {
-                                if !snapshot.message.is_empty() {
-                                    ui.add(egui::Label::new(snapshot.message.as_ref()).wrap());
-                                }
-                                if !self.error.is_empty() {
-                                    notice(ui, NoticeKind::Danger, &self.error);
-                                }
                                 let list_height = (body_height - 128.0).clamp(120.0, 360.0);
                                 match self.page {
                                     0 => self.appearance(ui, snapshot),
@@ -138,12 +132,26 @@ impl DebugWindow {
                                 }
                                 ui.add_space(4.0);
                                 self.details(ui, snapshot, input);
-                                self.session_controls(ui, snapshot);
                             });
                     },
                 );
             });
         self.open = open;
+        let definition_rect = if self.open {
+            self.definition_action.and_then(|action| {
+                let mut open = true;
+                let position = window.as_ref().map_or(viewport.min, |window| {
+                    window.response.rect.right_top() + egui::vec2(8.0, 0.0)
+                });
+                let rect = action_definition::show(context, snapshot, action, &mut open, position);
+                if !open {
+                    self.definition_action = None;
+                }
+                rect
+            })
+        } else {
+            None
+        };
         if !self.open {
             self.focused = false;
         } else if let Some(window) = window {
@@ -156,6 +164,7 @@ impl DebugWindow {
             });
             if let Some(position) = pressed {
                 self.focused = window.response.rect.contains(position)
+                    || definition_rect.is_some_and(|rect| rect.contains(position))
                     || context
                         .layer_id_at(position)
                         .is_some_and(|layer| layer.order == egui::Order::Foreground);
@@ -177,7 +186,6 @@ impl DebugWindow {
             ui.spacing_mut().interact_size.y = 24.0;
             ui.horizontal_wrapped(|ui| {
                 ui.strong(format!("任务 {}", snapshot.quest_id));
-                ui.weak(format!("区域 {}", snapshot.area));
                 let tokens = Tokens::get(ui);
                 egui::Frame::new()
                     .fill(if snapshot.ready {
@@ -212,47 +220,6 @@ impl DebugWindow {
         snapshot: &DebugSnapshot,
         input: &mut InputController,
     ) {
-        disclosure(ui, "运行信息", |ui| {
-            ui.label(format!(
-                "装备：{} · 招式：{}",
-                NATIVE_WEAPON_NAMES
-                    .get(snapshot.equipped_weapon as usize)
-                    .unwrap_or(&"未知武器"),
-                NATIVE_WEAPON_NAMES
-                    .get(snapshot.weapon as usize)
-                    .unwrap_or(&"未知武器")
-            ));
-            if let Some(species) = snapshot.monster {
-                let variant = snapshot
-                    .catalog
-                    .monsters
-                    .iter()
-                    .find(|monster| monster.id == species)
-                    .and_then(|monster| monster.variant(snapshot.monster_variant));
-                ui.strong(format!(
-                    "变身：{} · {}{}",
-                    super::monsters::NAMES[species as usize],
-                    variant.map_or("未知变种", |variant| variant.name),
-                    if snapshot.controlling_monster {
-                        ""
-                    } else {
-                        "（等待初始化）"
-                    }
-                ));
-            }
-            ui.label(format!(
-                "状态 {}:{} / {} · 动画 {} · 帧 {:.1}",
-                snapshot.action_group,
-                snapshot.action_id,
-                snapshot.action_stage,
-                snapshot.animation,
-                snapshot.frame
-            ));
-            ui.small(format!(
-                "位置  X {:.1}  Y {:.1}  Z {:.1}",
-                snapshot.position[0], snapshot.position[1], snapshot.position[2]
-            ));
-        });
         if snapshot.controlling_monster {
             disclosure(ui, "交战详情", |ui| {
                 ui.label(format!(
@@ -326,8 +293,6 @@ impl DebugWindow {
     }
 
     fn session_controls(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
-        ui.add_space(4.0);
-        ui.separator();
         ui.horizontal_wrapped(|ui| {
             let restart = ui.add_enabled(
                 snapshot.ready || snapshot.scene == 5,
@@ -351,82 +316,32 @@ impl DebugWindow {
     }
 
     fn area_controls(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
-        if snapshot.ready
-            && self
-                .selected_area
-                .is_none_or(|area| !snapshot.areas.contains(&area))
-        {
-            self.selected_area = snapshot
-                .areas
-                .iter()
-                .copied()
-                .find(|area| *area != snapshot.area)
-                .or_else(|| snapshot.areas.first().copied());
-        }
-        let action_width = ui
-            .painter()
-            .layout_no_wrap(
-                "换区".to_owned(),
-                egui::TextStyle::Button.resolve(ui.style()),
-                ui.visuals().text_color(),
-            )
-            .size()
-            .x
-            + ui.spacing().button_padding.x * 2.0;
-        ui.add_enabled_ui(snapshot.ready, |ui| {
-            let id = egui::Id::new("debug-area");
-            FormLayout::new(id.with("form"))
-                .label_placement(LabelPlacement::Left)
-                .show(ui, &[Field::new(id).label("区域")], |ui, _| {
-                    ui.horizontal_wrapped(|ui| {
-                        let label = |area| match (snapshot.map, area) {
-                            (44, 245) => "营地 · 245".to_owned(),
-                            (44, 246) => "树海顶部 · 246".to_owned(),
-                            (97, 460) => "营地 · 460".to_owned(),
-                            (97, 461) => "古迹 · 461".to_owned(),
-                            _ => format!("区域 {area}"),
-                        };
-                        let mut field = SelectField::new(
-                            id,
-                            self.selected_area
-                                .map(label)
-                                .unwrap_or_else(|| "目标区域".into()),
-                        );
-                        field.native = field
-                            .native
-                            .width(
-                                (ui.available_width() - action_width - ui.spacing().item_spacing.x)
-                                    .floor()
-                                    .max(80.0),
-                            )
-                            .height(menu_height(ui));
-                        let selection = field.show_ui(ui, |ui| {
-                            for area in &snapshot.areas {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.selected_area,
-                                        Some(*area),
-                                        label(*area),
-                                    )
-                                    .clicked()
-                                {
-                                    ui.close();
-                                }
-                            }
-                        });
-                        if ui
-                            .add_enabled(
-                                self.selected_area.is_some_and(|area| area != snapshot.area),
-                                Button::new("换区"),
-                            )
-                            .clicked()
-                        {
-                            self.send(DebugCommand::ChangeArea(self.selected_area.unwrap()));
+        let label = |area| match (snapshot.map, area) {
+            (44, 245) => "营地 · 245".to_owned(),
+            (44, 246) => "树海顶部 · 246".to_owned(),
+            (97, 460) => "营地 · 460".to_owned(),
+            (97, 461) => "古迹 · 461".to_owned(),
+            _ => format!("区域 {area}"),
+        };
+        ui.add_enabled_ui(snapshot.ready && !snapshot.areas.is_empty(), |ui| {
+            let mut field = SelectField::new(egui::Id::new("debug-area"), label(snapshot.area));
+            field.native = field
+                .native
+                .width(ui.available_width())
+                .height(menu_height(ui));
+            field.show_ui(ui, |ui| {
+                for &area in &snapshot.areas {
+                    if ui
+                        .selectable_label(area == snapshot.area, label(area))
+                        .clicked()
+                    {
+                        if area != snapshot.area {
+                            self.send(DebugCommand::ChangeArea(area));
                         }
-                        selection.response
-                    })
-                    .inner
-                });
+                        ui.close();
+                    }
+                }
+            });
         });
     }
 
@@ -442,6 +357,7 @@ impl DebugWindow {
         ui.add_enabled_ui(snapshot.ready, |ui| {
             FormLayout::new(egui::Id::new("debug-appearance-form"))
                 .label_placement(LabelPlacement::Left)
+                .label_width(64.0)
                 .show(ui, &fields, |ui, index| {
                     let (mut selected, count) = match index {
                         0 => (u8::from(appearance.female), 2),
@@ -499,54 +415,49 @@ impl DebugWindow {
     fn equipment(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, list_height: f32) {
         filter_field(ui, "筛选装备", &mut self.filter, "装备名称或编号");
         let id = egui::Id::new("debug-slot");
-        FormLayout::new(id.with("form"))
-            .label_placement(LabelPlacement::Left)
-            .show(ui, &[Field::new(id).label("部位")], |ui, _| {
-                ui.horizontal_wrapped(|ui| {
-                    let mut field = SelectField::new(id, slot_name(self.slot));
-                    field.native = field.native.height(menu_height(ui)).width(80.0);
-                    let slot = field.show_ui(ui, |ui| {
-                        for kind in [6, 2, 3, 4, 5, 0] {
-                            if ui
-                                .selectable_value(&mut self.slot, kind, slot_name(kind))
-                                .clicked()
-                            {
-                                ui.close();
-                            }
+        ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                let mut field = SelectField::new(id, slot_name(self.slot));
+                field.native = field.native.height(menu_height(ui)).width(80.0);
+                let slot = field.show_ui(ui, |ui| {
+                    for kind in [6, 2, 3, 4, 5, 0] {
+                        if ui
+                            .selectable_value(&mut self.slot, kind, slot_name(kind))
+                            .clicked()
+                        {
+                            ui.close();
                         }
-                    });
-                    if self.slot == 6 {
-                        ui.label(egui::RichText::new("武器").small().weak());
-                        weapon_selector(ui, "debug-weapon", &mut self.weapon);
                     }
-                    slot.response
-                })
-                .inner
-            });
+                });
+                if self.slot == 6 {
+                    weapon_selector(ui, "debug-weapon", &mut self.weapon);
+                }
+                slot.response
+            })
+            .inner
+        });
         self.equipment_list(ui, snapshot, list_height, false);
     }
 
     fn transmog(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, list_height: f32) {
         filter_field(ui, "筛选幻化", &mut self.transmog_filter, "防具名称或编号");
         let id = egui::Id::new("debug-transmog-slot");
-        FormLayout::new(id.with("form"))
-            .label_placement(LabelPlacement::Left)
-            .show(ui, &[Field::new(id).label("部位")], |ui, _| {
-                let mut field = SelectField::new(id, slot_name(self.transmog_slot));
-                field.native = field.native.height(menu_height(ui)).width(80.0);
-                field
-                    .show_ui(ui, |ui| {
-                        for kind in [2, 3, 4, 5, 0] {
-                            if ui
-                                .selectable_value(&mut self.transmog_slot, kind, slot_name(kind))
-                                .clicked()
-                            {
-                                ui.close();
-                            }
+        ui.vertical(|ui| {
+            let mut field = SelectField::new(id, slot_name(self.transmog_slot));
+            field.native = field.native.height(menu_height(ui)).width(80.0);
+            field
+                .show_ui(ui, |ui| {
+                    for kind in [2, 3, 4, 5, 0] {
+                        if ui
+                            .selectable_value(&mut self.transmog_slot, kind, slot_name(kind))
+                            .clicked()
+                        {
+                            ui.close();
                         }
-                    })
-                    .response
-            });
+                    }
+                })
+                .response
+        });
         let current = snapshot.transmogs.selected(self.transmog_slot);
         ui.horizontal_wrapped(|ui| {
             let label = match current {
@@ -714,34 +625,38 @@ impl DebugWindow {
         }
         filter_field(ui, "筛选招式", &mut self.action_filter, "招式编号");
         let mut source = self.action_weapon.unwrap_or(snapshot.weapon).min(13);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("来源").small().weak());
-            if weapon_selector(ui, "debug-action-source", &mut source) {
-                self.action_weapon = Some(source);
-            }
-            if ui
-                .add_enabled(
-                    snapshot.ready,
-                    Button::new("回到待机").kind(ButtonKind::Quiet),
-                )
-                .clicked()
-            {
-                self.send(DebugCommand::Action(Action {
-                    group: 0,
-                    id: 0,
-                    weapon: snapshot.weapon,
-                }));
-            }
-            if ui
-                .add_enabled(
-                    snapshot.ready,
-                    Button::new("跟随装备").kind(ButtonKind::Quiet),
-                )
-                .clicked()
-            {
-                self.action_weapon = None;
-                self.send(DebugCommand::FollowEquipment);
-            }
+        ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                let selection = weapon_selector(ui, "debug-action-source", &mut source);
+                if selection.changed() {
+                    self.action_weapon = Some(source);
+                }
+                if ui
+                    .add_enabled(
+                        snapshot.ready,
+                        Button::new("回到待机").kind(ButtonKind::Quiet),
+                    )
+                    .clicked()
+                {
+                    self.send(DebugCommand::Action(Action {
+                        group: 0,
+                        id: 0,
+                        weapon: snapshot.weapon,
+                    }));
+                }
+                if ui
+                    .add_enabled(
+                        snapshot.ready,
+                        Button::new("跟随装备").kind(ButtonKind::Quiet),
+                    )
+                    .clicked()
+                {
+                    self.action_weapon = None;
+                    self.send(DebugCommand::FollowEquipment);
+                }
+                selection
+            })
+            .inner
         });
         let filter = self.action_filter.trim();
         let actions = snapshot
@@ -788,6 +703,17 @@ impl DebugWindow {
                         && (action.group, action.id) == (snapshot.action_group, snapshot.action_id);
                     ui.push_id((action.weapon, action.group, action.id), |ui| {
                         result_row(ui, row_height, current, |ui| {
+                            let definition = ui.add_enabled(
+                                snapshot.ready,
+                                Button::new("定义").kind(ButtonKind::Quiet),
+                            );
+                            if definition.gained_focus() {
+                                focused_row = Some(definition.rect);
+                            }
+                            if definition.clicked() {
+                                self.definition_action = Some(action);
+                                self.send(DebugCommand::InspectAction(action));
+                            }
                             let trigger = ui.add_enabled(snapshot.ready, Button::new("触发"));
                             if trigger.gained_focus() {
                                 focused_row = Some(trigger.rect);
@@ -827,107 +753,102 @@ impl DebugWindow {
         filter_field(ui, "筛选怪物", &mut self.monster_filter, "怪物中文名或编号");
         let mut species = input.species();
         let ids = ["debug-monster-species", "debug-monster-variant"].map(egui::Id::new);
-        let fields = [
-            Field::new(ids[0]).label("目标"),
-            Field::new(ids[1]).label("变种"),
-        ];
-        FormLayout::new(ids[0].with("form"))
-            .label_placement(LabelPlacement::Left)
-            .show(ui, &fields, |ui, index| {
-                if index == 0 {
-                    let filter = self.monster_filter.trim();
-                    let mut field =
-                        SelectField::new(ids[0], super::monsters::NAMES[species as usize]);
-                    field.native = field.native.width(180.0).height(menu_height(ui));
-                    let monster = field.show_ui(ui, |ui| {
-                        for monster in &snapshot.catalog.monsters {
-                            if !filter.is_empty()
-                                && !monster.name.contains(filter)
-                                && !monster.id.to_string().contains(filter)
-                            {
-                                continue;
-                            }
-                            if ui
-                                .selectable_value(&mut species, monster.id, monster.name)
-                                .clicked()
-                            {
-                                ui.close();
-                            }
+        ui.vertical(|ui| {
+            let width = ui.available_width();
+            let gap = ui.spacing().item_spacing.x;
+            let species_width = ((width - gap) * 0.4).clamp(100.0, 180.0);
+            let variant_width = (width - gap - species_width).clamp(150.0, 250.0);
+            ui.horizontal_wrapped(|ui| {
+                let filter = self.monster_filter.trim();
+                let mut field = SelectField::new(ids[0], super::monsters::NAMES[species as usize]);
+                field.native = field.native.width(species_width).height(menu_height(ui));
+                field.show_ui(ui, |ui| {
+                    for monster in &snapshot.catalog.monsters {
+                        if !filter.is_empty()
+                            && !monster.name.contains(filter)
+                            && !monster.id.to_string().contains(filter)
+                        {
+                            continue;
                         }
-                    });
-                    input.select_species(species);
-                    return monster.response;
-                }
-                ui.horizontal_wrapped(|ui| {
-                    let mut variant = input.variant();
-                    let monster = snapshot
-                        .catalog
-                        .monsters
-                        .iter()
-                        .find(|monster| monster.id == species);
-                    let label = |variant: super::monsters::Variant| {
-                        format!(
-                            "{} · 变种{} · 模型{species:03}{}",
-                            variant.name, variant.id, variant.model_suffix,
-                        )
-                    };
-                    let selected = monster.and_then(|monster| monster.variant(variant));
-                    let response = ui
-                        .add_enabled_ui(
-                            monster.is_some_and(|monster| !monster.variants.is_empty()),
-                            |ui| {
-                                let mut field = SelectField::new(
-                                    ids[1],
-                                    selected.map_or_else(|| "无可用变种".into(), label),
-                                );
-                                field.native = field.native.width(250.0).height(menu_height(ui));
-                                field
-                                    .show_ui(ui, |ui| {
-                                        if let Some(monster) = monster {
-                                            for &choice in &monster.variants {
-                                                if ui
-                                                    .selectable_value(
-                                                        &mut variant,
-                                                        choice.id,
-                                                        label(choice),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    ui.close();
-                                                }
+                        if ui
+                            .selectable_value(&mut species, monster.id, monster.name)
+                            .clicked()
+                        {
+                            ui.close();
+                        }
+                    }
+                });
+                input.select_species(species);
+                let mut variant = input.variant();
+                let monster = snapshot
+                    .catalog
+                    .monsters
+                    .iter()
+                    .find(|monster| monster.id == species);
+                let label = |variant: super::monsters::Variant| {
+                    format!(
+                        "{} · 变种{} · 模型{species:03}{}",
+                        variant.name, variant.id, variant.model_suffix,
+                    )
+                };
+                let selected = monster.and_then(|monster| monster.variant(variant));
+                let response = ui
+                    .add_enabled_ui(
+                        monster.is_some_and(|monster| !monster.variants.is_empty()),
+                        |ui| {
+                            let mut field = SelectField::new(
+                                ids[1],
+                                selected.map_or_else(|| "无可用变种".into(), label),
+                            );
+                            field.native =
+                                field.native.width(variant_width).height(menu_height(ui));
+                            field
+                                .show_ui(ui, |ui| {
+                                    if let Some(monster) = monster {
+                                        for &choice in &monster.variants {
+                                            if ui
+                                                .selectable_value(
+                                                    &mut variant,
+                                                    choice.id,
+                                                    label(choice),
+                                                )
+                                                .clicked()
+                                            {
+                                                ui.close();
                                             }
                                         }
-                                    })
-                                    .response
-                            },
-                        )
-                        .inner;
-                    input.select_variant(variant);
-                    if ui
-                        .add_enabled(
-                            snapshot.ready
-                                && monster
-                                    .and_then(|monster| monster.variant(variant))
-                                    .is_some(),
-                            Button::new("变身并操控").kind(ButtonKind::Primary),
-                        )
-                        .clicked()
-                    {
-                        self.send(DebugCommand::Transform { species, variant });
-                    }
-                    if ui
-                        .add_enabled(
-                            snapshot.monster.is_some() && (snapshot.ready || snapshot.scene == 5),
-                            Button::new("恢复猎人").kind(ButtonKind::Quiet),
-                        )
-                        .clicked()
-                    {
-                        self.send(DebugCommand::RestoreHunter);
-                    }
-                    response
-                })
-                .inner
-            });
+                                    }
+                                })
+                                .response
+                        },
+                    )
+                    .inner;
+                input.select_variant(variant);
+                if ui
+                    .add_enabled(
+                        snapshot.ready
+                            && monster
+                                .and_then(|monster| monster.variant(variant))
+                                .is_some(),
+                        Button::new("变身并操控"),
+                    )
+                    .clicked()
+                {
+                    self.send(DebugCommand::Transform { species, variant });
+                }
+                if ui
+                    .add_enabled(
+                        snapshot.monster.is_some() && (snapshot.ready || snapshot.scene == 5),
+                        Button::new("恢复猎人").kind(ButtonKind::Quiet),
+                    )
+                    .clicked()
+                {
+                    self.send(DebugCommand::RestoreHunter);
+                }
+                response
+            })
+            .inner
+        });
         ui.weak("变种仍受当前任务设定影响；任务内同种怪物共用所选变种。");
         let variant = input.variant();
         filter_field(
@@ -1100,17 +1021,12 @@ impl DebugWindow {
     }
 }
 
-fn filter_field(ui: &mut egui::Ui, label: &str, value: &mut String, placeholder: &str) {
-    let id = ui.make_persistent_id(label);
-    ui.horizontal(|ui| {
-        let label = ui.label(egui::RichText::new(label).small().weak());
-        ui.add(
-            egui_hunter::TextField::new(id, value)
-                .hint(placeholder)
-                .icon(Icon::Search),
-        )
-        .labelled_by(label.id);
-    });
+fn filter_field(ui: &mut egui::Ui, id: &str, value: &mut String, placeholder: &str) {
+    ui.add(
+        egui_hunter::TextField::new(ui.make_persistent_id(id), value)
+            .hint(placeholder)
+            .icon(Icon::Search),
+    );
 }
 
 fn disclosure(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
@@ -1179,23 +1095,26 @@ fn result_row(
         .response
 }
 
-fn weapon_selector(ui: &mut egui::Ui, id: &str, weapon: &mut u8) -> bool {
+fn weapon_selector(ui: &mut egui::Ui, id: &str, weapon: &mut u8) -> egui::Response {
     let selected = *weapon;
     let mut changed = false;
-    let selector = egui::ComboBox::from_id_salt(id)
-        .width(138.0)
-        .height(menu_height(ui))
-        .selected_text(weapon_label(ui, selected))
-        .show_ui(ui, |ui| {
-            for index in 0..NATIVE_WEAPON_NAMES.len() {
-                let row = ui.selectable_value(weapon, index as u8, weapon_label(ui, index as u8));
-                paint_weapon_label_icon(ui, &row, index as u8);
-                changed |= row.changed();
+    let mut field = SelectField::new(egui::Id::new(id), weapon_label(ui, selected));
+    field.native = field.native.width(138.0).height(menu_height(ui));
+    let mut selector = field.show_ui(ui, |ui| {
+        for index in 0..NATIVE_WEAPON_NAMES.len() {
+            let row = ui.selectable_value(weapon, index as u8, weapon_label(ui, index as u8));
+            paint_weapon_label_icon(ui, &row, index as u8);
+            changed |= row.changed();
+            if row.clicked() {
+                ui.close();
             }
-        });
+        }
+    });
     paint_weapon_label_icon(ui, &selector.response, selected);
-    egui_hunter::scroll_on_focus(&selector.response);
-    changed
+    if changed {
+        selector.response.mark_changed();
+    }
+    selector.response
 }
 
 fn weapon_label(ui: &egui::Ui, weapon: u8) -> egui::text::LayoutJob {

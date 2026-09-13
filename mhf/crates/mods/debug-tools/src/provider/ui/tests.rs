@@ -403,6 +403,179 @@ fn filtered_hunter_actions_trigger_the_matching_catalog_action() {
     ));
 }
 
+#[test]
+fn inspecting_a_filtered_move_only_requests_its_definition() {
+    let mut ui = DebugUi::new(populated_snapshot(4));
+    ui.window.page = 3;
+    ui.window.action_filter = "2".into();
+    ui.click("定义");
+    assert!(matches!(
+        ui.window.control.commands().as_slice(),
+        [DebugCommand::InspectAction(Action {
+            weapon: 0,
+            group: 1,
+            id: 2
+        })]
+    ));
+}
+
+#[test]
+fn runtime_hud_stays_at_bottom_left_without_capturing_input() {
+    let context = context();
+    let mut window = DebugWindow::new(DebugControl::new());
+    window.open = false;
+    let mut input = InputController::default();
+    let mut snapshot = populated_snapshot(1);
+    let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+    let mut frame = |snapshot: &DebugSnapshot, events| {
+        let output = context.run_ui(
+            RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                assert!(!window.show(ui.ctx(), snapshot, &mut input));
+            },
+        );
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.job.text.clone(),
+                    Rect::from_min_size(text.pos, text.galley.size()),
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        texts
+    };
+    for _ in 0..3 {
+        frame(&snapshot, vec![]);
+    }
+    let texts = frame(&snapshot, vec![]);
+    let equipment = texts
+        .iter()
+        .find(|(text, _)| text.starts_with("装备："))
+        .unwrap()
+        .1;
+    let position = texts
+        .iter()
+        .find(|(text, _)| text.starts_with("位置 "))
+        .unwrap()
+        .1;
+    assert!(equipment.left() < 30.0 && equipment.top() > 400.0);
+    assert!(screen.contains_rect(position) && position.bottom() > 550.0);
+    let pointer = equipment.center();
+    frame(
+        &snapshot,
+        vec![
+            Event::PointerMoved(pointer),
+            Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    assert!(!context.egui_wants_pointer_input());
+    snapshot.ready = false;
+    assert!(
+        !frame(&snapshot, vec![])
+            .iter()
+            .any(|(text, _)| text.starts_with("装备："))
+    );
+}
+
+#[test]
+fn definition_window_keeps_move_rows_in_place_and_captures_its_clicks() {
+    use crate::provider::action_definition::{ActionDefinition, ActionStep, Definition};
+    let context = context();
+    let mut window = DebugWindow::new(DebugControl::new());
+    window.page = 3;
+    let mut input = InputController::default();
+    let mut snapshot = populated_snapshot(8);
+    let action = Action {
+        weapon: 0,
+        group: 1,
+        id: 2,
+    };
+    let mut frame = |window: &mut DebugWindow, snapshot: &DebugSnapshot, events| {
+        let output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 900.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                window.show(ui.ctx(), snapshot, &mut input);
+            },
+        );
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some((text.galley.job.text.clone(), text.pos)),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        texts
+    };
+    for _ in 0..4 {
+        frame(&mut window, &snapshot, vec![]);
+    }
+    let rows = |texts: Vec<(String, egui::Pos2)>| {
+        texts
+            .into_iter()
+            .filter(|(text, _)| text.starts_with("武器招式 "))
+            .collect::<Vec<_>>()
+    };
+    let before = rows(frame(&mut window, &snapshot, vec![]));
+    assert!(!before.is_empty());
+    snapshot.action_definition = Some(Arc::new(ActionDefinition {
+        action,
+        motion_style: Some(0),
+        data: Ok(Definition {
+            steps: (0..20).map(|_| ActionStep([3, 1405, 0, 4, 0, 1])).collect(),
+            events: vec![],
+        }),
+    }));
+    window.definition_action = Some(action);
+    for _ in 0..4 {
+        frame(&mut window, &snapshot, vec![]);
+    }
+    let texts = frame(&mut window, &snapshot, vec![]);
+    let position = texts
+        .iter()
+        .find(|(text, _)| text.starts_with("步骤 0 ·"))
+        .expect("definition is visible in its own window")
+        .1
+        + vec2(5.0, 5.0);
+    assert_eq!(before, rows(texts));
+    frame(
+        &mut window,
+        &snapshot,
+        vec![
+            Event::PointerMoved(position),
+            Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    assert!(window.focused);
+    window.open = false;
+    let texts = frame(&mut window, &snapshot, vec![]);
+    assert!(!texts.iter().any(|(text, _)| text.starts_with("步骤 0 ·")));
+    assert!(!window.focused);
+}
+
 fn monster_ui() -> DebugUi {
     let mut ui = DebugUi::new(DebugSnapshot {
         ready: true,
@@ -587,16 +760,16 @@ fn filtered_runtime_monster_actions_trigger_and_bind_the_matching_action() {
 }
 
 #[test]
-fn each_page_reveals_and_activates_the_footer_in_a_short_window() {
-    verify_footer_accessibility(false);
+fn each_page_keeps_session_controls_above_tabs_in_a_short_window() {
+    verify_session_controls_accessibility(false);
 }
 
 #[test]
-fn tab_navigation_reaches_and_activates_the_footer_on_every_page() {
-    verify_footer_accessibility(true);
+fn tab_navigation_reaches_and_activates_session_controls_on_every_page() {
+    verify_session_controls_accessibility(true);
 }
 
-fn verify_footer_accessibility(navigate_with_tabs: bool) {
+fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
     for height in [380.0, 900.0] {
         for page in 0..5 {
             let context = context();
@@ -609,7 +782,7 @@ fn verify_footer_accessibility(navigate_with_tabs: bool) {
             let snapshot = populated_snapshot(if navigate_with_tabs { 8 } else { 2000 });
             let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(480.0, height));
             let mut time = 0.0;
-            let mut frame = |events: Vec<Event>, focus_footer: bool| {
+            let mut frame = |events: Vec<Event>, focus_session_controls: bool| {
                 let output = context.run_ui(
                     RawInput {
                         screen_rect: Some(screen),
@@ -619,7 +792,7 @@ fn verify_footer_accessibility(navigate_with_tabs: bool) {
                         ..Default::default()
                     },
                     |ui| {
-                        if focus_footer {
+                        if focus_session_controls {
                             // Focus requests belong inside the egui pass so
                             // gained_focus can observe the transition.
                             ui.memory_mut(|memory| memory.request_focus(Id::new("debug-exit")));
@@ -641,8 +814,13 @@ fn verify_footer_accessibility(navigate_with_tabs: bool) {
             let tab = context
                 .read_response(Id::new("debug-pages").with(("header", Id::new("equipment"))))
                 .unwrap();
+            let controls = context.read_response(Id::new("debug-exit")).unwrap();
             assert!(
-                tab.rect.top() < 160.0,
+                controls.rect.bottom() < tab.rect.top(),
+                "session controls must stay above tabs: {controls:?}, {tab:?}"
+            );
+            assert!(
+                tab.rect.top() < 210.0,
                 "compact header is too tall: {tab:?}"
             );
             if height == 900.0 && matches!(page, 1 | 2) {
@@ -698,7 +876,7 @@ fn verify_footer_accessibility(navigate_with_tabs: bool) {
             assert!(
                 exit.interact_rect.height() >= exit.rect.height() - 1.0
                     && exit.interact_rect.width() >= exit.rect.width() - 1.0,
-                "footer is clipped on page {page}, height {height}: {exit:?}"
+                "session controls are clipped on page {page}, height {height}: {exit:?}"
             );
             frame(
                 vec![Event::Key {
