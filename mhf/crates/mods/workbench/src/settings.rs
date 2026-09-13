@@ -1,4 +1,4 @@
-use crate::preview::{DEFAULT_BACKGROUND_COLOR, PreviewOptions};
+use crate::preview::{DEFAULT_BACKGROUND_COLOR, PreviewOptions, lighting::LightingPreset};
 use mhf_config::Config;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -16,6 +16,7 @@ pub(crate) struct Settings {
 pub(crate) struct ViewSettings {
     #[serde(deserialize_with = "deserialize_rgb")]
     pub background_color: [u8; 3],
+    pub lighting_preset: LightingPreset,
     pub compact: bool,
     pub show_resources: bool,
     pub show_encoding_layers: bool,
@@ -39,6 +40,7 @@ impl Default for ViewSettings {
     fn default() -> Self {
         Self {
             background_color: DEFAULT_BACKGROUND_COLOR,
+            lighting_preset: LightingPreset::default(),
             compact: true,
             show_resources: true,
             show_encoding_layers: false,
@@ -56,6 +58,7 @@ impl ViewSettings {
     pub fn preview_options(&self) -> PreviewOptions {
         PreviewOptions {
             background_color: self.background_color,
+            lighting_preset: self.lighting_preset,
             show_grid: self.show_grid,
             show_axes: self.show_axes,
         }
@@ -99,6 +102,7 @@ mod tests {
         .unwrap();
         let view = ViewSettings {
             background_color: [230, 210, 190],
+            lighting_preset: LightingPreset::Warm,
             compact: false,
             show_resources: false,
             show_grid: false,

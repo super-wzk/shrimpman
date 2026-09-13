@@ -9,6 +9,7 @@ use std::{
 
 pub(crate) mod effects;
 mod equipment;
+pub(crate) mod lighting;
 mod resource_counts;
 pub(crate) use resource_counts::loadable_resource_counts;
 #[cfg(test)]
@@ -33,6 +34,7 @@ pub(crate) fn looping_motion_frame(frame: f32, frames: f32) -> f32 {
 #[derive(Clone, Copy)]
 pub(crate) struct PreviewOptions {
     pub background_color: [u8; 3],
+    pub lighting_preset: lighting::LightingPreset,
     pub show_grid: bool,
     pub show_axes: bool,
 }
@@ -41,6 +43,7 @@ impl Default for PreviewOptions {
     fn default() -> Self {
         Self {
             background_color: DEFAULT_BACKGROUND_COLOR,
+            lighting_preset: lighting::LightingPreset::default(),
             show_grid: true,
             show_axes: true,
         }

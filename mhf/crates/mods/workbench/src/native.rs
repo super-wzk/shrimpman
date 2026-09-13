@@ -1585,13 +1585,14 @@ struct Light {
 const _: () = assert!(std::mem::size_of::<Light>() == 104);
 
 impl Light {
-    fn directional(intensity: f32) -> Self {
+    fn directional(light: crate::preview::lighting::DirectionalLight) -> Self {
+        let [r, g, b] = light.color;
         Self {
             unknown_00: 0,
-            diffuse: [intensity, intensity, intensity, 1.0],
+            diffuse: [r, g, b, 1.0],
             specular: [0.0; 4],
             ambient: [0.0; 4],
-            direction: [-0.4, -0.7, -0.6],
+            direction: light.direction,
             position: [0.0; 3],
             attenuation: [1.0, 0.0, 0.0],
             range: 0.0,
@@ -1714,11 +1715,12 @@ unsafe fn render_frame(state: &State, runtime: &mut Runtime) -> Result<(), Strin
         // Same view/projection slots used by native 10BAEE10 and 1000D870.
         parameter(view.as_ptr() as usize, 22);
         parameter(projection.as_ptr() as usize, 23);
-        // Supply neutral inspection light without loading map lighting data.
-        parameter(0xff80_8080, 14);
-        for (slot, intensity) in [(90, 0.8), (91, 0.0), (92, 0.0)] {
-            let light = Light::directional(intensity);
-            parameter(&light as *const Light as usize, slot);
+        let lighting = options.lighting_preset.lighting();
+        let [r, g, b] = lighting.ambient;
+        parameter(u32::from_be_bytes([255, r, g, b]) as usize, 14);
+        for (slot, light) in lighting.lights.into_iter().enumerate() {
+            let light = Light::directional(light);
+            parameter(&light as *const Light as usize, 90 + slot as u32);
         }
         // Projection matrix updates do not initialize the native batch culler.
         // Match 10BAF300: XMM1 = far, stack = fov and near. The viewport scope

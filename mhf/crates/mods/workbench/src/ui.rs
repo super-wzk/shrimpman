@@ -1,4 +1,4 @@
-use crate::preview::effects;
+use crate::preview::{effects, lighting::LightingPreset};
 use crate::{
     catalog::Catalog,
     inspect::{Document, Kind},
@@ -358,6 +358,16 @@ impl Workbench {
                                     self.view.background_color = DEFAULT_BACKGROUND_COLOR;
                                 }
                             });
+                        ui.menu_button("预览光照", |ui| {
+                            for preset in LightingPreset::ALL {
+                                ui.selectable_value(
+                                    &mut self.view.lighting_preset,
+                                    preset,
+                                    preset.label(),
+                                )
+                                .on_hover_text(preset.description());
+                            }
+                        });
                         ui.separator();
                         ui.checkbox(&mut self.view.show_resources, "资源目录");
                         if ui
@@ -1949,12 +1959,13 @@ fn tree(
                 let context = ui.ctx().clone();
                 let parent_id = ui.id();
                 let is_leaf = |child: usize| {
+                    let row_id = parent_id.with(("resource-row", child));
                     let child = visible_node(document, child, show_encoding_layers);
                     let node = &document.nodes[child];
                     (node.children.is_empty() && !node.deferred)
                         || egui::collapsing_header::CollapsingState::load(
                             &context,
-                            parent_id.with(("resource-node", child)),
+                            row_id.with(("resource-node", child)),
                         )
                         .is_none_or(|state| state.openness(&context) == 0.0)
                 };
@@ -1970,15 +1981,22 @@ fn tree(
                 let mut render = |ui: &mut egui::Ui, rows: std::ops::Range<usize>| {
                     for offset in rows {
                         let child = source.child_at(start + offset).unwrap();
-                        let _ = tree(
-                            ui,
-                            &child,
-                            resource_counts,
-                            show_encoding_layers,
-                            selected,
-                            selection,
-                            load_resource,
-                            details,
+                        // Neither clipping nor splitting runs around expanded
+                        // siblings may change a row's widget or collapse IDs.
+                        ui.scope_builder(
+                            egui::UiBuilder::new().id(parent_id.with(("resource-row", child.node))),
+                            |ui| {
+                                tree(
+                                    ui,
+                                    &child,
+                                    resource_counts,
+                                    show_encoding_layers,
+                                    selected,
+                                    selection,
+                                    load_resource,
+                                    details,
+                                );
+                            },
                         );
                     }
                 };
@@ -2030,10 +2048,8 @@ fn visible_leaf_rows(
         rect.max,
     );
     ui.allocate_space(rect.size());
-    // Keep collapsing-state IDs identical when a row moves between a fixed
-    // run and expanded recursive layout.
-    let mut rows = ui.new_child(egui::UiBuilder::new().id(ui.id()).max_rect(visible));
-    rows.skip_ahead_auto_ids(first);
+    // The renderer assigns row IDs independently of this transient run UI.
+    let mut rows = ui.new_child(egui::UiBuilder::new().max_rect(visible));
     render(&mut rows, first..end);
 }
 
@@ -2154,7 +2170,7 @@ mod tests {
     #[test]
     fn large_leaf_runs_only_render_the_viewport_and_keep_full_height() {
         let context = egui::Context::default();
-        for offset in [0.0, 120_000.0, 239_500.0] {
+        for row in [0, 5_000, 9_990] {
             context
                 .run_ui(
                     egui::RawInput {
@@ -2165,8 +2181,9 @@ mod tests {
                         ..Default::default()
                     },
                     |ui| {
+                        let stride = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
                         egui::ScrollArea::vertical()
-                            .vertical_scroll_offset(offset)
+                            .vertical_scroll_offset(row as f32 * stride)
                             .show(ui, |ui| {
                                 let top = ui.next_widget_position().y;
                                 let stride =
@@ -3252,6 +3269,82 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
             },
         ]
+    }
+
+    #[test]
+    fn expanded_resource_sibling_keeps_other_rows_clickable() {
+        let mut workbench = preview_fixture();
+        let mut document = (*multiple_models()).clone();
+        for (name, children) in [
+            ("directory-0", vec![1, 2]),
+            ("directory-1", vec![5, 6]),
+            ("directory-2", vec![9]),
+        ] {
+            let mut branch = document.nodes[0].clone();
+            branch.name = name.into();
+            branch.kind = Kind::Block;
+            branch.children = children;
+            document.nodes.push(branch);
+        }
+        document.nodes[0].children = vec![12, 13, 14];
+        let document = Arc::new(document);
+        workbench.loaded_document(document.clone());
+        let context = egui::Context::default();
+        context.global_style_mut(|style| style.animation_time = 0.0);
+        let draw = |workbench: &mut Workbench, time, events| {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(500.0, 500.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    tree(
+                        ui,
+                        &ResourceRef::new(document.clone(), document.root),
+                        &workbench.resource_counts,
+                        false,
+                        &mut workbench.node,
+                        &mut workbench.selection,
+                        &mut None,
+                        &mut None,
+                    );
+                },
+            );
+            let positions = ["directory-0", "directory-1", "directory-2"].map(|name| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text().starts_with(name) => {
+                            Some(text.pos + text.galley.rect.center().to_vec2())
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            });
+            output.drop_without_applying_deltas();
+            positions
+        };
+        draw(&mut workbench, 0.0, vec![]);
+        let positions = draw(&mut workbench, 0.1, vec![]);
+        draw(&mut workbench, 0.2, pointer(positions[1], true));
+        draw(&mut workbench, 0.3, pointer(positions[1], false));
+        assert_eq!(workbench.node, 13);
+        let positions = draw(&mut workbench, 0.4, vec![]);
+        draw(&mut workbench, 0.5, pointer(positions[0], true));
+        draw(&mut workbench, 0.6, pointer(positions[0], false));
+        assert_eq!(workbench.node, 12);
+        let expanded = draw(&mut workbench, 0.7, vec![]);
+        assert!(expanded[1].y > positions[1].y);
+        assert!((expanded[2].y - expanded[1].y - (positions[2].y - positions[1].y)).abs() < 1.0);
+        draw(&mut workbench, 0.8, pointer(expanded[2], true));
+        draw(&mut workbench, 0.9, pointer(expanded[2], false));
+        assert_eq!(workbench.node, 14);
     }
 
     #[test]
