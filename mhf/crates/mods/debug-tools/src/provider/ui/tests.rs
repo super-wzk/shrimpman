@@ -359,6 +359,20 @@ fn transmog_reserves_zero_for_restore_and_disables_changes_when_not_ready() {
 }
 
 #[test]
+fn equipped_items_can_reload_and_loading_state_disables_the_action() {
+    let mut ui = DebugUi::new(populated_snapshot(4));
+    ui.window.page = 1;
+    ui.click_id(Id::new("debug-equipment-list").with((6_u8, 0_u16)));
+    assert!(matches!(
+        ui.window.control.commands().as_slice(),
+        [DebugCommand::Equip { kind: 6, id: 0 }]
+    ));
+    ui.snapshot.ready = false;
+    ui.click_id(Id::new("debug-equipment-list").with((6_u8, 0_u16)));
+    assert!(ui.window.control.commands().is_empty());
+}
+
+#[test]
 fn equipment_and_transmog_preserve_independent_filters_and_slots() {
     let mut ui = transmog_ui();
     ui.window.slot = 3;

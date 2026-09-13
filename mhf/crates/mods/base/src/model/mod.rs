@@ -3,6 +3,9 @@
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod native;
 
+#[cfg(any(test, all(windows, target_arch = "x86")))]
+mod archive_index;
+
 // Native DAT class IDs (melee record +3, ranged record +4) and player +3.
 // These differ from the server's character::WeaponType discriminants.
 pub const NATIVE_WEAPON_NAMES: [&str; 14] = [

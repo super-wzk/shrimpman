@@ -20,6 +20,9 @@ root = 'D:\mhf-overrides'
 相对路径不能带盘符或根前缀；`C:overrides`、`\overrides` 需要改成完整绝对路径或普通相对路径。
 根目录不需要再套一层 `dat`；允许根目录暂不存在，也允许替换文件对应的原文件不存在。
 每次打开都会重新检查文件，已打开的句柄与游戏自身缓存不会自动刷新。
+Debug 的“重开任务”和直接换装／“重新加载”会主动刷新 ABN 目录索引，再走原生资源重载流程，
+因此替换包内成员大小变化后不再沿用旧偏移／长度。怪物 PAC 使用完整重开任务触发重读；
+具体范围见 [Debug Tools 热重载说明](../debug-tools/README.md#替换文件与热重载)。
 
 Mod 在 prepare 阶段安装 `CreateFileA`／`CreateFileW` Hook，覆盖游戏 DLL 初始化时的读取，
 在 detach 阶段禁用并排空回调。仅重定向 `OPEN_EXISTING` 的只读文件打开，保留共享模式与其他打开参数；

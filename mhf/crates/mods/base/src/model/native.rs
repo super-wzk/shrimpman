@@ -4,6 +4,8 @@
 //! remain loaded. Model mutations must run on the game's task thread, after its
 //! local hunter is initialized and before native update/render resumes.
 
+mod archives;
+
 use super::{
     Appearance, AppearanceChange, AppearanceOptions, Equipment, EquipmentCatalog, Face, Transmogs,
 };
@@ -72,6 +74,22 @@ pub unsafe fn hunter(client: Client) -> Option<usize> {
 /// RVA byte prefixes shared by consumers before installing hooks.
 pub const SIGNATURES: &[(usize, &[u8])] = &[
     (
+        0x0158c7a0,
+        &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x14, 0x53, 0x56, 0x57],
+    ),
+    (
+        0x0158c300,
+        &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08, 0x85, 0xf6],
+    ),
+    (
+        0x015ab67e,
+        &[0x8b, 0xff, 0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08],
+    ),
+    (
+        0x015ab644,
+        &[0x8b, 0xff, 0x55, 0x8b, 0xec, 0x83, 0x7d, 0x08, 0x00],
+    ),
+    (
         0x00ba7160,
         &[0x0f, 0xb7, 0xd0, 0x03, 0xd2, 0xf6, 0x84, 0xd1],
     ),
@@ -129,6 +147,15 @@ pub const SIGNATURES: &[(usize, &[u8])] = &[
         &[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x56, 0x57],
     ),
 ];
+
+/// Refresh directory offsets and lengths before starting a resource reload.
+///
+/// # Safety
+/// Run on the task thread of a retained, validated client. An active native I/O
+/// queue is rejected before any directory or actor state is changed.
+pub unsafe fn refresh_resource_indices(client: Client) -> Result<(), String> {
+    unsafe { archives::refresh(client) }
+}
 
 unsafe fn text(pointer: usize) -> Option<String> {
     if pointer == 0 {
@@ -304,6 +331,7 @@ pub unsafe fn change_appearance(
         if next == current {
             return Ok(());
         }
+        refresh_resource_indices(client)?;
         reset_action(client, player);
         // 10B9F080 copies these fields, resolving the face directory index into
         // player+946 and the hairstyle into player+910. Keep the save in sync
@@ -311,7 +339,7 @@ pub unsafe fn change_appearance(
         put(save + 1, u8::from(next.female));
         put(save + 2, next.face);
         put(save + 3, next.hair);
-        refresh(client, moveset, transmogs, player, save, true);
+        refresh(client, moveset, transmogs, player, save);
     }
     Ok(())
 }
@@ -329,6 +357,7 @@ pub unsafe fn equip(
 ) -> Result<(), String> {
     unsafe {
         let (player, save) = local_hunter(client)?;
+        refresh_resource_indices(client)?;
         let add: unsafe extern "C" fn(usize, u8, u16, u16) -> i16 =
             transmute(client.address(0x10ba6b10));
         let capacity: unsafe extern "C" fn(usize) -> i16 = transmute(client.address(0x10ba9ad0));
@@ -359,7 +388,7 @@ pub unsafe fn equip(
             return Err("无法装备所选装备".into());
         }
 
-        refresh(client, moveset, transmogs, player, save, false);
+        refresh(client, moveset, transmogs, player, save);
     }
     Ok(())
 }
@@ -430,6 +459,7 @@ pub unsafe fn change_transmog(client: Client, transmogs: &Transmogs) -> Result<(
         {
             return Ok(());
         }
+        refresh_resource_indices(client)?;
         reset_action(client, player);
         for kind in [0, 2, 3, 4, 5] {
             if get::<u16>(player + 4012 + 2 * kind) != transmogs.armor[kind] {
@@ -475,7 +505,6 @@ unsafe fn refresh(
     transmogs: &Transmogs,
     player: usize,
     save: usize,
-    reload_appearance: bool,
 ) {
     unsafe {
         // 10B9F080 also rebuilds the save's equipped records. 10B9FE90 would
@@ -506,15 +535,7 @@ unsafe fn refresh(
         let weapon = moveset.unwrap_or_else(|| get(player + 3));
         put(player + 3, weapon);
 
-        if reload_appearance {
-            // 108FA150 compares only numeric model IDs, although 108FB1F0 loads
-            // gender-specific files and face-dependent skin variants. Invalidate
-            // all six body/face/head IDs even when their numbers are unchanged.
-            // Retain resource handles/counts for 108FB7C0 to release them safely.
-            for part in 0..6 {
-                put(player + 3156 + 2 * part, -1_i16);
-            }
-        }
+        invalidate_model_ids(player);
 
         // Diff the new equipment against the loaded model IDs, then synchronously
         // release/load just those models. Do not call 106A7FB0: it also frees
@@ -537,6 +558,15 @@ unsafe fn refresh(
         );
         reset_action(client, player);
     }
+}
+
+unsafe fn invalidate_model_ids(player: usize) {
+    // 108FA150 / 108F9960 compare IDs rather than file revisions. Preserve
+    // handles and reference counts for the native release path below.
+    for part in 0..6 {
+        unsafe { put(player + 3156 + 2 * part, -1_i16) };
+    }
+    unsafe { put(player + 3170, -1_i16) };
 }
 
 /// Release weapon (EDI) and armor (ECX), then load models (ESI, stack=0).
@@ -619,6 +649,16 @@ unsafe extern "C" fn bind_animations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forcing_reload_invalidates_all_model_ids_but_preserves_owned_allocations() {
+        let mut player = [0xa5u8; 4176];
+        let mut expected = player;
+        expected[3156..3168].fill(0xff);
+        expected[3170..3172].fill(0xff);
+        unsafe { invalidate_model_ids(player.as_mut_ptr() as usize) };
+        assert_eq!(player, expected);
+    }
 
     #[test]
     fn transmogs_only_change_native_armor_overrides_and_can_restore_equipment() {

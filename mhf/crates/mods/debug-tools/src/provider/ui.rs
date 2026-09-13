@@ -537,11 +537,6 @@ impl DebugWindow {
             empty_results(ui, "没有匹配的装备", filter);
             return;
         }
-        let (selected_label, button_label) = if transmog {
-            ("已幻化", "幻化")
-        } else {
-            ("已装备", "换装")
-        };
         let row_height = result_row_height(ui);
         let previous_offset = list_offset(ui, list_id);
         let mut focused_row = None;
@@ -564,16 +559,23 @@ impl DebugWindow {
                     };
                     ui.push_id((item.kind, item.id), |ui| {
                         result_row(ui, row_height, equipped, |ui| {
-                            if equipped {
+                            if equipped && transmog {
                                 ui.label(
-                                    egui::RichText::new(selected_label)
+                                    egui::RichText::new("已幻化")
                                         .small()
                                         .color(Tokens::get(ui).primary),
                                 );
                             } else {
+                                let label = if transmog {
+                                    "幻化"
+                                } else if equipped {
+                                    "重新加载"
+                                } else {
+                                    "换装"
+                                };
                                 let equip = ui.add_enabled(
                                     snapshot.ready,
-                                    Button::new(button_label)
+                                    Button::new(label)
                                         .id(egui::Id::new(list_id).with((item.kind, item.id))),
                                 );
                                 if equip.gained_focus() {

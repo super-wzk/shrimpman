@@ -265,6 +265,7 @@ unsafe extern "C" fn initialize_players() -> i32 {
 
 unsafe fn restart(state: &State, runtime: &mut Runtime) -> Result<(), String> {
     unsafe {
+        equipment::refresh_resource_indices(state.model())?;
         runtime.action_definition = None;
         monster::release(state, runtime);
         *state.combat.lock().unwrap_or_else(PoisonError::into_inner) = Default::default();
@@ -595,7 +596,8 @@ unsafe extern "C" fn dispatch() -> i32 {
                         }
                     }
                     DebugCommand::ChangeArea(destination) if current.ready => {
-                        area::change(state, destination)
+                        equipment::refresh_resource_indices(state.model())
+                            .and_then(|()| area::change(state, destination))
                     }
                     DebugCommand::RestoreHunter
                         if runtime.monster.is_some() && (current.ready || current.scene == 5) =>
