@@ -512,16 +512,19 @@ unsafe extern "C" fn dispatch() -> i32 {
                             .iter()
                             .any(|item| (item.kind, item.id) == (kind, id))
                         {
-                            equipment::equip(
-                                state.model(),
-                                runtime.moveset,
-                                &runtime.transmogs,
-                                kind,
-                                id,
-                            )
-                            .map(|()| {
-                                runtime.pending_action = None;
-                            })
+                            // Weapon reloads must bind effects with the equipped
+                            // weapon class: 10BBA300 matches both class and model.
+                            // Armor changes retain an explicitly selected moveset.
+                            let moveset = if matches!(kind, 6 | 7) {
+                                None
+                            } else {
+                                runtime.moveset
+                            };
+                            equipment::equip(state.model(), moveset, &runtime.transmogs, kind, id)
+                                .map(|()| {
+                                    runtime.moveset = moveset;
+                                    runtime.pending_action = None;
+                                })
                         } else {
                             Err("装备编号无效".into())
                         }
