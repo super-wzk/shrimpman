@@ -40,6 +40,7 @@ fn tree(document: &Document, index: usize, depth: usize, shown: &mut HashSet<usi
                 | Kind::Momo
                 | Kind::Mha
                 | Kind::Dat
+                | Kind::Sdt
                 | Kind::Stage
                 | Kind::StageObjectPackage
                 | Kind::StageResourceReference

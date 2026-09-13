@@ -21,6 +21,7 @@ pub mod jkr;
 pub mod material;
 pub mod motion;
 pub mod png;
+pub mod sdt;
 pub mod stage;
 pub mod txb;
 

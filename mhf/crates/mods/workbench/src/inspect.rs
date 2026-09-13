@@ -20,6 +20,7 @@ mod legacy_stage;
 mod mha;
 #[cfg(test)]
 mod motion_tests;
+mod sdt;
 mod stage;
 mod stage_camera;
 mod stage_objects;
@@ -56,6 +57,19 @@ pub enum Kind {
     Inf,
     InfCategory(usize),
     InfQuest,
+    Sdt,
+    SdtEntry(usize),
+    SdtAttackTable,
+    SdtAttack,
+    SdtAuxiliaryTable,
+    SdtAuxiliary,
+    SdtCollisionGroups,
+    SdtCollisionGroup(usize),
+    SdtCollisionList(usize),
+    SdtCollision,
+    SdtExtraTable,
+    SdtExtra,
+    SdtUnclaimed,
     Stage,
     StageLighting,
     LegacyStageLighting,
@@ -116,6 +130,19 @@ impl Kind {
             Self::Inf => "INF 任务资料",
             Self::InfCategory(_) => "INF 任务分类",
             Self::InfQuest => "INF 任务记录前缀",
+            Self::Sdt => "SDT 战斗参数",
+            Self::SdtEntry(_) => "SDT 类别目录项",
+            Self::SdtAttackTable => "SDT 攻击参数表",
+            Self::SdtAttack => "SDT 攻击参数",
+            Self::SdtAuxiliaryTable => "SDT 辅助参数表",
+            Self::SdtAuxiliary => "SDT 辅助参数",
+            Self::SdtCollisionGroups => "SDT 判定组目录",
+            Self::SdtCollisionGroup(_) => "SDT 判定组",
+            Self::SdtCollisionList(_) => "SDT 判定记录表",
+            Self::SdtCollision => "SDT 判定记录",
+            Self::SdtExtraTable => "SDT 附加参数表",
+            Self::SdtExtra => "SDT 附加参数",
+            Self::SdtUnclaimed => "SDT 未归属数据区",
             Self::Stage => "场景专用目录",
             Self::StageLighting => "场景光照与后处理",
             Self::LegacyStageLighting => "旧版场景环境参数",
@@ -273,6 +300,17 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
         Kind::InfCategory(index) => builder.inf_category_records(node, index)?,
         Kind::InfQuest => builder.inf_quest_fields(node)?,
+        Kind::SdtEntry(index) => builder.sdt_entry_tables(node, index)?,
+        Kind::SdtAttackTable | Kind::SdtAuxiliaryTable | Kind::SdtExtraTable => {
+            builder.sdt_table_records(node)?;
+        }
+        Kind::SdtAttack | Kind::SdtAuxiliary | Kind::SdtExtra | Kind::SdtCollision => {
+            builder.sdt_record_fields(node)?;
+        }
+        Kind::SdtCollisionGroups => builder.sdt_hitbox_groups(node)?,
+        Kind::SdtCollisionGroup(index) => builder.sdt_hitbox_lists(node, index)?,
+        Kind::SdtCollisionList(slot) => builder.sdt_hitbox_records(node, slot)?,
+        Kind::SdtUnclaimed => builder.sdt_unclaimed(node)?,
         Kind::Motion => {
             let motion = Motion::parse(bytes).map_err(|error| error.to_string())?;
             builder.motion_tracks(node, &motion, range.start);
@@ -365,6 +403,7 @@ struct Hint {
     legacy_render_tables: bool,
     object_tables: bool,
     object_words: bool,
+    sdt: bool,
 }
 
 impl Hint {
@@ -384,6 +423,7 @@ impl Hint {
             fmod: extension == "fmod",
             fskl: extension == "fskl",
             motion: extension == "mot",
+            sdt: file.file_name().and_then(|name| name.to_str()) == Some("mhfsdt.bin"),
             ..Self::default()
         }
     }
@@ -829,6 +869,13 @@ impl Builder {
             self.inspect_inf(node, bytes, base);
             return;
         }
+        // SDT has no magic. The filename supplies a trusted parsing context;
+        // anonymous members are probed after the other resource formats.
+        if hint.sdt {
+            self.document.nodes[node].kind = Kind::Sdt;
+            self.inspect_sdt(node, bytes, base);
+            return;
+        }
         if bytes.starts_with(b"mha\x01") {
             self.inspect_mha(node, bytes, base);
             return;
@@ -1268,6 +1315,13 @@ impl Builder {
             }
         } else if bytes.starts_with(b"OggS") {
             self.document.nodes[node].kind = Kind::Ogg;
+        }
+        if self.document.nodes[node].kind == Kind::Unknown
+            && mhf_resource::sdt::Sdt::probe(bytes).is_ok()
+        {
+            self.document.nodes[node].kind = Kind::Sdt;
+            self.inspect_sdt(node, bytes, base);
+            return;
         }
         if self.document.nodes[node].kind == Kind::Unknown
             && let Some((kind, error)) = hinted_error

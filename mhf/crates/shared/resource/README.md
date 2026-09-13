@@ -15,6 +15,7 @@
 | `container` | offset/size、MOMO、MHA 命名目录及资源 ID 索引、场景专用目录与嵌套封装 |
 | `dat` | DAT v89 根结构、装备／物品／生产记录、特效绑定与定义表，以及按布局解析的文本记录 |
 | `inf` | INF v6 任务分类、任务指针槽、原生 ID 查找及任务文本 |
+| `sdt` | SDT 攻击／辅助参数、八槽判定组、球体／胶囊与条件指令、武器修正和类别专用状态／运动参数 |
 | `fmod` | 对象、顶点、法线、UV、颜色、权重、骨骼映射、三角带、材质、贴图引用、18字渲染参数块 |
 | `fskl` | 原始节点序号、层级索引、根节点目录、变换、动画分组标签与未知尾部 |
 | `motion` | 显式组数的 MOT 目录、经完整验证的文件目录记录、动作、轨道、通道及六种关键帧编码 |
@@ -40,6 +41,7 @@ MOT 的原生消费组数由客户端调用方传入，不能从扩展名统一�
 [`docs/motion-effects.md`](docs/motion-effects.md) 与
 [`docs/dat-format.md`](docs/dat-format.md)、
 [`docs/inf-format.md`](docs/inf-format.md)、
+[`docs/attack-parameters.md`](docs/attack-parameters.md)、
 [`docs/container-formats.md`](docs/container-formats.md)、
 [`docs/material-parameters.md`](docs/material-parameters.md) 与
 [`docs/effect-archives.md`](docs/effect-archives.md) 与
