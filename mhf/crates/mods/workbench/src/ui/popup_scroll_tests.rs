@@ -309,7 +309,7 @@ fn dismiss_without_scrolling(editor: Editor) {
         assert!(!egui::Popup::is_any_open(&harness.context));
         assert!(
             harness.workbench.hex_selection.is_none(),
-            "dismissal must not request a hex reveal"
+            "dismissal must not select bytes"
         );
     }
 }
@@ -325,22 +325,17 @@ fn closing_color_picker_preserves_the_outer_inspector_scroll_offset() {
 }
 
 #[test]
-fn clicking_a_field_name_without_a_popup_still_reveals_its_hex_bytes() {
+fn clicking_a_field_name_without_a_popup_selects_its_bytes_where_the_panel_stands() {
     let mut harness = Harness::new(Editor::Flags, "normal-name-click");
     let before = harness.settle();
     harness.click(before.text(&format!("scroll-field-{}", TARGET + 1)));
     let after = harness.settle();
     assert!(harness.workbench.hex_selection.is_some());
-    assert!(
-        after.offset.y > before.offset.y + 500.0,
-        "the positive control must exercise the real scroll_to_me path: {:?} -> {:?}",
-        before.offset,
-        after.offset
-    );
+    after.unchanged(&before, "deliberate field-name click");
 }
 
 #[test]
-fn a_keyboard_focused_field_name_still_reveals_its_hex_bytes() {
+fn a_keyboard_focused_field_name_selects_its_bytes_without_moving_the_panel() {
     let mut harness = Harness::new(Editor::Flags, "keyboard-name-click");
     let before = harness.settle();
     let position = before.text(&format!("scroll-field-{}", TARGET + 1));
@@ -367,10 +362,13 @@ fn a_keyboard_focused_field_name_still_reveals_its_hex_bytes() {
         modifiers: egui::Modifiers::NONE,
     }]);
     assert!(harness.workbench.hex_selection.is_some());
+    harness
+        .settle()
+        .unchanged(&before, "keyboard field-name activation");
 }
 
 #[test]
-fn leaving_an_inline_editor_does_not_also_reveal_hex_at_the_bottom() {
+fn leaving_an_inline_editor_does_not_also_select_bytes() {
     for editor in [Editor::Flags, Editor::Scalar] {
         let mut harness = Harness::new(editor, "inline-focus");
         let before = harness.settle();
@@ -394,7 +392,7 @@ fn leaving_an_inline_editor_does_not_also_reveal_hex_at_the_bottom() {
         harness.click(label);
         assert!(
             harness.workbench.hex_selection.is_some(),
-            "a subsequent deliberate label click still reveals bytes"
+            "a subsequent deliberate label click still selects bytes"
         );
     }
 }

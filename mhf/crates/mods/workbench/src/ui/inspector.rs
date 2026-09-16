@@ -29,8 +29,7 @@ impl Workbench {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
         self.inspector_fields(ui, document, node);
-        let hex_id = ui.make_persistent_id("resource-hex");
-        let hex = egui::CollapsingHeader::new("十六进制")
+        egui::CollapsingHeader::new("十六进制")
             .id_salt("resource-hex")
             .show(ui, |ui| {
                 if ui
@@ -118,18 +117,11 @@ impl Workbench {
                 }
                 self.byte_editor(ui, document, node);
             });
-        if ui
-            .ctx()
-            .data_mut(|data| data.remove_temp::<bool>(hex_id.with("reveal")))
-            .unwrap_or(false)
-        {
-            hex.header_response.scroll_to_me(Some(egui::Align::Min));
-        }
     }
 
     pub(super) fn inspector_fields(&mut self, ui: &mut egui::Ui, document: &Document, node: &Node) {
         // A click outside an editor dismisses it. It must not also activate
-        // the field underneath and issue a scroll to the raw-byte inspector.
+        // the field underneath and select its raw bytes.
         let editor_open = egui::Popup::is_any_open(ui.ctx()) || ui.ctx().text_edit_focused();
         let dismiss_id = ui.id().with("dismiss-field-editor");
         let (pressed, released) = ui.input(|input| {
@@ -225,7 +217,7 @@ impl Workbench {
                         .sense(egui::Sense::click()),
                 )
                 .on_hover_text(format!(
-                    "{}\nb{} · 0x{:08X} · {} 字节\n单击定位字节",
+                    "{}\nb{} · 0x{:08X} · {} 字节\n单击在下方十六进制区域选中这些字节",
                     field.name,
                     field.binding.buffer,
                     field.binding.range.start,
@@ -234,6 +226,9 @@ impl Workbench {
                 .clicked()
                 && !dismissing_editor
             {
+                // Selecting bytes must not move the panel: the hex section is
+                // the last part of the inspector, so revealing it would jump
+                // the field list out from under the pointer.
                 self.hex_buffer = true;
                 self.hex_start = field.binding.range.start / 16 * 16;
                 self.hex_selection = Some(field.binding.range.clone());
@@ -245,8 +240,6 @@ impl Workbench {
                 );
                 state.set_open(true);
                 state.store(ui.ctx());
-                ui.ctx()
-                    .data_mut(|data| data.insert_temp(id.with("reveal"), true));
             }
         }
         ui.spacing_mut().item_spacing.y = old_spacing;
