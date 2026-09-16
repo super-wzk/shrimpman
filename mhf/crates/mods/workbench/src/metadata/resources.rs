@@ -206,6 +206,7 @@ mod tests {
             fields: Vec::new(),
             metadata: Metadata::default(),
             children: children.into(),
+            action: None,
             deferred: false,
             error: None,
         }

@@ -1,14 +1,28 @@
 use super::*;
-use crate::field::Binding;
+use crate::field::{Binding, ScalarType};
 use mhf_resource::{
     container::{MhaArchive, SimpleArchive, open_layers},
     crypto::{Ecd, Exf},
     dat,
+    fmod::Fmod,
     jkr::Jkr,
 };
 
 fn word(bytes: &mut [u8], at: usize, value: u32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn fmod_block(kind: u32, count: u32, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for word in [
+        kind,
+        count,
+        (payload.len() + mhf_resource::fmod::HEADER_SIZE) as u32,
+    ] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.extend_from_slice(payload);
+    bytes
 }
 
 fn jkr(encoding: u16, size: usize, payload: &[u8]) -> Vec<u8> {
@@ -443,6 +457,90 @@ fn raw_wrapper_trailers_and_reference_identity_are_preserved() {
     assert_eq!(encoded.header.encoding, 1);
     assert_eq!(&updated.buffers[0][23..], b"tail");
     assert_eq!(&**encoded.decode(3).unwrap(), b"aXc");
+}
+
+#[test]
+fn uv_transform_switch_edit_reaches_the_parsed_rendering_record() {
+    use mhf_resource::fmod::{FILE, MAIN, OBJECT, RENDERING, RENDERING_VERSION, UV_TRANSFORM_WORD};
+
+    let mut parameters = [0; mhf_resource::fmod::RENDERING_WORDS];
+    parameters[0] = RENDERING_VERSION;
+    let payload: Vec<_> = parameters
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    let source = fmod_block(
+        FILE,
+        1,
+        &fmod_block(
+            MAIN,
+            1,
+            &fmod_block(OBJECT, 1, &fmod_block(RENDERING, 1, &payload)),
+        ),
+    );
+    let document = inspect::inspect("model.bin", source.into());
+    let switch = document
+        .nodes
+        .iter()
+        .flat_map(|node| &node.fields)
+        .find(|field| field.name == "UV 变换")
+        .unwrap();
+    // `word_1C` is the switch row itself, and it stays a plain u32.
+    assert_eq!(switch.value, "0");
+    assert_eq!(switch.binding.format, FieldType::Scalar(ScalarType::U32));
+    assert!(switch.writable);
+    assert!(
+        document
+            .nodes
+            .iter()
+            .flat_map(|node| &node.fields)
+            .all(|field| field.name != "word_1C")
+    );
+    let patch = switch.write(&document.buffers, "1").unwrap().unwrap();
+    assert_eq!(patch.before, [0; 4]);
+    assert_eq!(patch.after, [1, 0, 0, 0]);
+    let updated = apply_many(&document, &[patch]).unwrap();
+    let root = updated.payload(updated.root).unwrap();
+    let model = Fmod::parse(updated.bytes(root).unwrap()).unwrap();
+    let rendering = model.rendering_block(0).unwrap().unwrap();
+    assert_eq!(rendering.words[UV_TRANSFORM_WORD], 1);
+}
+
+#[test]
+fn rendering_parameter_initialization_repacks_nested_model_members() {
+    use mhf_resource::fmod::{FILE, MAIN, OBJECT, RENDERING};
+
+    let object = fmod_block(OBJECT, 0, &[]);
+    let fmod = fmod_block(FILE, 1, &fmod_block(MAIN, 1, &object));
+    let directory = archive(&[&jkr(0, fmod.len(), &fmod), b"unchanged"], false);
+    let named = mha(&directory);
+    let source = ecd(&named);
+    let document = inspect::inspect("nested-model.bin", source.into());
+    let item = document
+        .nodes
+        .iter()
+        .position(|node| node.kind == Kind::MissingBlock)
+        .unwrap();
+    let updated = super::fmod::initialize_rendering_block(&document, item).unwrap();
+    let decoded = open_layers(&updated.buffers[0], usize::MAX, 10).unwrap();
+    let named = MhaArchive::parse(&decoded, 10).unwrap();
+    let directory =
+        SimpleArchive::parse(named.entries[0].entry.payload(&decoded).unwrap(), 2).unwrap();
+    let compressed = directory.entries[0]
+        .payload(named.entries[0].entry.payload(&decoded).unwrap())
+        .unwrap();
+    let model = open_layers(compressed, usize::MAX, 4).unwrap();
+    let model = Fmod::parse(model.payload()).unwrap();
+    let rendering = model.rendering_block(0).unwrap().unwrap();
+    assert_eq!(rendering.block.header.kind, RENDERING);
+    assert_eq!(rendering.words[0], mhf_resource::fmod::RENDERING_VERSION);
+    assert!(rendering.words[1..].iter().all(|&word| word == 0));
+    assert_eq!(
+        directory.entries[1]
+            .payload(named.entries[0].entry.payload(&decoded).unwrap())
+            .unwrap(),
+        b"unchanged"
+    );
 }
 
 fn byte_patch(document: &Document, buffer: usize, range: Range<usize>, after: &[u8]) -> Patch {

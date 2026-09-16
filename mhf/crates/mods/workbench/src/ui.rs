@@ -518,8 +518,12 @@ impl Workbench {
                         self.resource_actions(ui, &document);
                         if let Some(node) = document.nodes.get(self.node) {
                             self.inspector(ui, &document, node);
+                            // A placeholder item replaces no existing bytes, so
+                            // a whole-resource file has nothing to overwrite.
+                            if node.kind != Kind::MissingBlock {
+                                self.replacement_editor(ui);
+                            }
                         }
-                        self.replacement_editor(ui, &document);
                     } else {
                         ui.weak("单击资源查看字段与原始字节，点击右侧按钮加载。");
                     }
@@ -2987,6 +2991,7 @@ mod tests {
             buffer: 0,
             range: 0..16,
             children,
+            action: None,
             deferred: false,
             error: None,
             fields: Vec::new(),
@@ -4244,7 +4249,7 @@ mod tests {
             root: 0, buffers: vec![Arc::from([0_u8; 16])],
             nodes: vec![Node {
                 name: "Z:\\game\\dat\\model\\long-resource-file-name.bin".into(),
-                kind: Kind::Unknown, buffer: 0, range: 0..16, children: vec![], deferred: false, error: None,
+                kind: Kind::Unknown, buffer: 0, range: 0..16, children: vec![], action: None, deferred: false, error: None,
                 metadata: Default::default(),
                 fields: vec![Field {writable: false, binding: crate::field::Binding { buffer: 0, range: 0..16, format: crate::field::FieldType::ReadOnly, endian: mhf_resource::binary::Endian::Little }, name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3)}],
             }],

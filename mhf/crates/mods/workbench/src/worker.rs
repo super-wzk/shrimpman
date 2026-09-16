@@ -1,6 +1,7 @@
 //! Disk reads, decompression and exports stay off the game's render thread.
 
 use crate::{
+    action::NodeAction,
     catalog::Catalog,
     edit,
     field::Patch,
@@ -54,6 +55,7 @@ struct Edit {
 enum EditOperation {
     Fields(Vec<Patch>),
     Replace { node: usize, path: PathBuf },
+    NodeAction { node: usize, action: NodeAction },
 }
 
 struct Pack {
@@ -306,6 +308,9 @@ impl Worker {
                             }
                             EditOperation::Replace { node, path } => read_bytes(&path)
                                 .and_then(|bytes| edit::replace(&edit.document, node, &bytes)),
+                            EditOperation::NodeAction { node, action } => {
+                                edit::apply_node_action(&edit.document, node, action)
+                            }
                         }
                         .map(Arc::new);
                         state
@@ -421,6 +426,27 @@ impl Worker {
             request,
             document,
             operation: EditOperation::Replace { node, path },
+        });
+        self.shared.wake.notify_one();
+    }
+
+    pub fn node_action(
+        &self,
+        request: u64,
+        document: Arc<Document>,
+        node: usize,
+        action: NodeAction,
+    ) {
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pending.expand = None;
+        pending.edit = Some(Edit {
+            request,
+            document,
+            operation: EditOperation::NodeAction { node, action },
         });
         self.shared.wake.notify_one();
     }
@@ -638,6 +664,7 @@ mod tests {
             fields: Vec::new(),
             metadata: Default::default(),
             children: Vec::new(),
+            action: None,
             deferred: false,
             error: None,
         };

@@ -35,6 +35,11 @@ resource offsets or a guarantee that another client build uses the same addresse
 | `10009DD0` | Compact node `+10` is sign-extended from i16 into runtime node `+368`; compact node `+2` becomes the WORD motion tag at runtime node `+198` |
 | `10008D30`, `10008CC0`, `10009140`, `10008670` | Runtime node `+198` selects nodes for motion lookup/binding, curve sampling, and pose blending |
 
+`0xF0000` 的已知原生消费前缀固定为 72 字节，即 18 个小端 u32；FMOD 块头因此为
+`count = 1`、`size = 84`。原生函数只复制这 18 个 word，解析器仍保留其后可能的尾随字节。
+工作台初始化时只写版本字 `0x00010000`，其余 word 保持为零；`word_7` 是本客户端
+UV 纹理变换开关，值 `1` 启用，工作台将 `word_1C` 按数字直接编辑。
+
 The public format research was cross-checked at
 [`Houmgaor/MHFrontier-Blender-Addon` revision `29b23a1269e323b7e5ec6b79cd3cf71743800784`](https://github.com/Houmgaor/MHFrontier-Blender-Addon/tree/29b23a1269e323b7e5ec6b79cd3cf71743800784),
 especially `mhfrontier/fmod/fblock.py`, `common/standard_structures.py`, and

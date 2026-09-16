@@ -3,6 +3,7 @@
 
 use std::{fmt, ops::Range, path::Path, sync::Arc};
 
+use crate::action::NodeAction;
 use crate::metadata::{self, Metadata};
 
 pub use crate::field::Field;
@@ -101,6 +102,8 @@ pub enum Kind {
     Material,
     Texture,
     Bone,
+    /// A model object's rendering-parameter item before `0xF0000` exists.
+    MissingBlock,
     Png,
     Dds,
     Ogg,
@@ -174,6 +177,7 @@ impl Kind {
             Self::Material => "材质",
             Self::Texture => "贴图引用",
             Self::Bone => "骨架节点",
+            Self::MissingBlock => "缺失数据块",
             Self::Png => "PNG 图像",
             Self::Dds => "DDS 图像",
             Self::Ogg => "Ogg 音频",
@@ -199,6 +203,9 @@ pub struct Node {
     /// reference instead points to its original target member, which may have
     /// an earlier index or appear elsewhere in this acyclic resource graph.
     pub children: Vec<usize>,
+    /// Operation this node offers. A node whose block does not exist yet
+    /// carries the operation that creates it; `edit` owns how it works.
+    pub action: Option<NodeAction>,
     /// A validated resource's field details can be expanded on request.
     pub deferred: bool,
     /// Invalid data and allocation failures stay visible.
@@ -247,6 +254,7 @@ pub fn inspect(name: &str, source: Arc<[u8]>) -> Document {
                 fields: Vec::new(),
                 metadata: Metadata::default(),
                 children: Vec::new(),
+                action: None,
                 deferred: false,
                 error: None,
             }],
@@ -666,6 +674,7 @@ impl Builder {
             fields: Vec::new(),
             metadata: Metadata::default(),
             children: Vec::new(),
+            action: None,
             deferred: false,
             error: None,
         });
@@ -1429,6 +1438,11 @@ impl Builder {
                                 for component in &object.components {
                                     self.component(child, component, base);
                                 }
+                                if !object.components.iter().any(|component| {
+                                    component.block().header.kind == fmod::RENDERING
+                                }) {
+                                    self.missing_rendering_block(child, object, base);
+                                }
                             }
                             ObjectEntry::Unknown(block) => {
                                 self.block_child(
@@ -1588,6 +1602,19 @@ impl Builder {
         }
     }
 
+    /// Every model object exposes its rendering parameters as one child item.
+    /// Without `0xF0000` the item is a placeholder: its empty range marks where
+    /// the block would be inserted, and its action creates that block.
+    fn missing_rendering_block(&mut self, parent: usize, object: &fmod::Object<'_>, base: usize) {
+        let at = base + object.trailing_offset();
+        let buffer = self.document.nodes[parent].buffer;
+        let Some(node) = self.child(parent, "渲染参数", Kind::MissingBlock, buffer, at..at)
+        else {
+            return;
+        };
+        self.document.nodes[node].action = Some(NodeAction::InitializeRenderingBlock);
+    }
+
     fn component(&mut self, parent: usize, component: &Component<'_>, base: usize) {
         let name = match component {
             Component::Faces(_) => "面",
@@ -1720,6 +1747,12 @@ impl Builder {
             }
             Component::Rendering(value) => {
                 for (index, word) in value.words.iter().enumerate() {
+                    if index == fmod::UV_TRANSFORM_WORD {
+                        // The native consumer names this word; the stored value
+                        // stays a plain number because only `1` is evidenced.
+                        self.field(node, "UV 变换", word, at + index * 4, 4);
+                        continue;
+                    }
                     self.field(
                         node,
                         format!("word_{:02X}", index * 4),
@@ -2558,6 +2591,69 @@ mod tests {
         let document = inspect("broken.bin", Arc::from(&b"JKR\x1a\0"[..]));
         assert_eq!(document.nodes[0].kind, Kind::Jkr);
         assert!(document.nodes[0].error.is_some());
+    }
+
+    #[test]
+    fn every_model_object_exposes_one_rendering_parameter_item() {
+        use mhf_resource::fmod::{
+            FILE, MAIN, OBJECT, RENDERING, RENDERING_VERSION, RENDERING_WORDS, WORD_GROUPS,
+        };
+
+        let block = |kind: u32, children: &[Vec<u8>]| {
+            let payload: Vec<_> = children.concat();
+            let mut bytes = words(&[kind, children.len() as u32, (12 + payload.len()) as u32]);
+            bytes.extend_from_slice(&payload);
+            bytes
+        };
+        let mut parameters = [0; RENDERING_WORDS];
+        parameters[0] = RENDERING_VERSION;
+        let rendering = block(
+            RENDERING,
+            &[parameters
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect()],
+        );
+        let with = block(OBJECT, &[rendering, words(&[WORD_GROUPS, 0, 12])]);
+        let without = block(OBJECT, &[]);
+        let source = block(FILE, &[block(MAIN, &[with, without])]);
+        let document = inspect("model.bin", source.into());
+        let objects: Vec<_> = document
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind == Kind::Object)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(objects.len(), 2);
+        for &object in &objects {
+            let items: Vec<_> = document.nodes[object]
+                .children
+                .iter()
+                .copied()
+                .filter(|&child| document.nodes[child].name == "渲染参数")
+                .collect();
+            assert_eq!(items.len(), 1, "object {object}");
+        }
+        let item = |object: usize| {
+            *document.nodes[object]
+                .children
+                .iter()
+                .find(|&&child| document.nodes[child].name == "渲染参数")
+                .unwrap()
+        };
+        let existing = item(objects[0]);
+        assert_eq!(document.nodes[existing].kind, Kind::Block);
+        assert!(!document.nodes[existing].fields.is_empty());
+        assert!(document.nodes[existing].action.is_none());
+        let missing = item(objects[1]);
+        assert_eq!(document.nodes[missing].kind, Kind::MissingBlock);
+        assert!(document.nodes[missing].range.is_empty());
+        assert_eq!(
+            document.nodes[missing].action,
+            Some(NodeAction::InitializeRenderingBlock)
+        );
+        all_ranges_are_in_owned_buffers(&document);
     }
 
     #[test]

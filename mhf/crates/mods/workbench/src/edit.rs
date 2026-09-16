@@ -4,8 +4,11 @@
 
 use std::ops::Range;
 
-use crate::field::{FieldType, Patch};
-use crate::inspect::{self, Document, Kind};
+use crate::{
+    action::NodeAction,
+    field::{FieldType, Patch},
+    inspect::{self, Document, Kind},
+};
 
 #[cfg(test)]
 mod alignment_native_tests;
@@ -15,6 +18,7 @@ mod batch;
 #[cfg(test)]
 mod filename_tests;
 mod filenames;
+mod fmod;
 #[cfg(test)]
 mod inf_tests;
 mod repack;
@@ -105,6 +109,18 @@ pub fn apply_many(document: &Document, patches: &[Patch]) -> Result<Document, St
     batch::rebuild(document, changes)
 }
 
+/// Perform one operation a validated node recorded. The rebuilt document goes
+/// through the same layer repacking as every other byte edit.
+pub fn apply_node_action(
+    document: &Document,
+    node: usize,
+    action: NodeAction,
+) -> Result<Document, String> {
+    match action {
+        NodeAction::InitializeRenderingBlock => fmod::initialize_rendering_block(document, node),
+    }
+}
+
 /// Validate encoded envelopes and MHA ID ranges before writing. Intermediate
 /// edits remain inspectable, and raw byte export remains a verbatim view.
 #[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
@@ -168,6 +184,8 @@ pub fn replace(document: &Document, node: usize, replacement: &[u8]) -> Result<D
     )
 }
 
+/// Direct physical owners as `(parent, ordinal)`. Validated stage references
+/// never reparent their targets, so ownership stays a tree.
 fn parents(document: &Document) -> Vec<Option<(usize, usize)>> {
     let mut parents = vec![None; document.nodes.len()];
     for (index, node) in document.nodes.iter().enumerate() {

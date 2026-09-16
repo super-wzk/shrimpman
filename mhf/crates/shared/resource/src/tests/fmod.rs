@@ -289,6 +289,44 @@ fn rendering_words_preserve_unknown_bits_and_trailing_bytes() {
 }
 
 #[test]
+fn rendering_block_initialization_appends_one_fixed_child() {
+    let object = block(OBJECT, 0, &[0xab, 0xcd]);
+    let source = block(FILE, 1, &block(MAIN, 1, &object));
+    let parsed = Fmod::parse(&source).unwrap();
+    let mut words = [0; RENDERING_WORDS];
+    words[0] = RENDERING_VERSION;
+    let changed = parsed.with_rendering_block(0, words).unwrap();
+    assert_eq!(changed.len(), source.len() + RENDERING_SIZE);
+    let reparsed = Fmod::parse(&changed).unwrap();
+    let object = reparsed.objects().next().unwrap();
+    assert_eq!(object.block.header.count, 1);
+    assert_eq!(
+        object.block.header.size as usize,
+        HEADER_SIZE + RENDERING_SIZE + 2
+    );
+    assert_eq!(object.trailing, [0xab, 0xcd]);
+    let rendering = reparsed.rendering_block(0).unwrap().unwrap();
+    assert_eq!(rendering.block.header.kind, RENDERING);
+    assert_eq!(rendering.block.header.count, 1);
+    assert_eq!(rendering.block.header.size, RENDERING_SIZE as u32);
+    assert_eq!(rendering.words, words);
+    assert_eq!(rendering.words[UV_TRANSFORM_WORD], 0);
+
+    words[UV_TRANSFORM_WORD] = 1;
+    let enabled = Fmod::parse(&source)
+        .unwrap()
+        .with_rendering_block(0, words)
+        .unwrap();
+    let enabled = Fmod::parse(&enabled).unwrap();
+    let enabled = enabled.rendering_block(0).unwrap().unwrap();
+    assert_eq!(enabled.block.header.kind, RENDERING);
+    assert_eq!(enabled.words[UV_TRANSFORM_WORD], 1);
+    assert!(reparsed.with_rendering_block(0, words).is_err());
+    words[0] = 0;
+    assert!(parsed.with_rendering_block(0, words).is_err());
+}
+
+#[test]
 fn rendering_truncation_is_checked_and_other_record_counts_stay_unknown() {
     let rendering = block(RENDERING, 1, &[0; 71]);
     let source = block(FILE, 1, &block(MAIN, 1, &block(OBJECT, 1, &rendering)));

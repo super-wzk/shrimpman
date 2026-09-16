@@ -30,6 +30,12 @@ pub const WORD_GROUPS: u32 = 0x000e_0000;
 pub const RENDERING: u32 = 0x000f_0000;
 pub const BONE_MAP: u32 = 0x0010_0000;
 pub const ATTRIBUTE_12: u32 = 0x0012_0000;
+pub const RENDERING_WORDS: usize = 18;
+pub const RENDERING_SIZE: usize = HEADER_SIZE + RENDERING_WORDS * 4;
+pub const RENDERING_VERSION: u32 = 0x0001_0000;
+/// Word 7, i.e. `word_1C`. Native `108F82B0` maps it through the client's
+/// UV-transform table, whose only enabled value is 1.
+pub const UV_TRANSFORM_WORD: usize = 7;
 
 /// All three words are encoded little-endian; size includes the header.
 /// `kind` remains numeric because its meaning depends on the parent block.
@@ -294,7 +300,7 @@ impl<'a> WordGroupsBlock<'a> {
 #[derive(Clone, Debug)]
 pub struct RenderingBlock<'a> {
     pub block: Block<'a>,
-    pub words: [u32; 18],
+    pub words: [u32; RENDERING_WORDS],
     pub trailing: &'a [u8],
 }
 
@@ -302,7 +308,7 @@ impl<'a> RenderingBlock<'a> {
     fn parse(block: Block<'a>) -> Result<Self> {
         let bytes = block
             .payload()
-            .get(..72)
+            .get(..RENDERING_WORDS * 4)
             .ok_or_else(|| block.error(HEADER_SIZE, "truncated rendering record"))?;
         let words = std::array::from_fn(|i| word(&bytes[i * 4..i * 4 + 4]));
         Ok(Self {
@@ -525,6 +531,12 @@ pub struct Object<'a> {
 }
 
 impl<'a> Object<'a> {
+    /// Offset where this object's trailing bytes begin, i.e. the end of its
+    /// last child block. A new child is appended here.
+    pub fn trailing_offset(&self) -> usize {
+        self.block.offset() + HEADER_SIZE + self.block.payload().len() - self.trailing.len()
+    }
+
     fn parse(block: Block<'a>) -> Result<Self> {
         let children = block.children()?;
         let components = children
@@ -926,6 +938,97 @@ impl<'a> Fmod<'a> {
             })
     }
 
+    /// The `0xF0000` component of one MAIN entry, if the object has one. The
+    /// ordinal counts unknown entries, as in `10002680`.
+    pub fn rendering_block(&self, object: usize) -> Result<Option<&RenderingBlock<'a>>> {
+        let main = self.main_section()?;
+        let Some(ObjectEntry::Object(object)) = main.entries.get(object) else {
+            return Err(main
+                .block
+                .error(0, "object ordinal does not select an OBJECT block"));
+        };
+        Ok(object.components.iter().find_map(|component| {
+            if let Component::Rendering(value) = component {
+                Some(value)
+            } else {
+                None
+            }
+        }))
+    }
+
+    /// Append one fixed-size `0xF0000` child to an OBJECT block. Existing
+    /// object trailing bytes stay after the inserted child, and ancestor sizes
+    /// are adjusted without serializing any other decoded field.
+    pub fn with_rendering_block(
+        &self,
+        object: usize,
+        words: [u32; RENDERING_WORDS],
+    ) -> Result<Vec<u8>> {
+        if words[0] & 0xffff_0000 != RENDERING_VERSION {
+            return Err(self
+                .root
+                .error(0, "unsupported rendering parameter version"));
+        }
+        let main = self.main_section()?;
+        let Some(ObjectEntry::Object(value)) = main.entries.get(object) else {
+            return Err(main
+                .block
+                .error(0, "object ordinal does not select an OBJECT block"));
+        };
+        if value
+            .components
+            .iter()
+            .any(|component| component.block().header.kind == RENDERING)
+        {
+            return Err(value
+                .block
+                .error(0, "object already has rendering parameters"));
+        }
+        let insertion = value.trailing_offset();
+        let mut rendering = [0; RENDERING_SIZE];
+        rendering[..4].copy_from_slice(&RENDERING.to_le_bytes());
+        rendering[4..8].copy_from_slice(&1u32.to_le_bytes());
+        rendering[8..12].copy_from_slice(&(RENDERING_SIZE as u32).to_le_bytes());
+        for (index, word) in words.into_iter().enumerate() {
+            let at = HEADER_SIZE + index * 4;
+            rendering[at..at + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(self.source.len() + RENDERING_SIZE)
+            .map_err(|_| {
+                self.root
+                    .error(0, "cannot allocate rendering parameter output")
+            })?;
+        output.extend_from_slice(&self.source[..insertion]);
+        output.extend_from_slice(&rendering);
+        output.extend_from_slice(&self.source[insertion..]);
+        add_u32(&mut output, value.block.offset() + 4, 1)?;
+        add_u32(&mut output, value.block.offset() + 8, RENDERING_SIZE as u32)?;
+        add_u32(&mut output, main.block.offset() + 8, RENDERING_SIZE as u32)?;
+        add_u32(&mut output, self.root.offset() + 8, RENDERING_SIZE as u32)?;
+        let reparsed = Fmod::parse(&output)?;
+        if reparsed.rendering_block(object)?.is_none() {
+            return Err(self
+                .root
+                .error(0, "inserted rendering parameter was not readable"));
+        }
+        Ok(output)
+    }
+
+    fn main_section(&self) -> Result<&Meshes<'a>> {
+        self.sections
+            .iter()
+            .find_map(|section| {
+                if let Section::Meshes(value) = section {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| self.root.error(0, "FMOD has no MAIN block"))
+    }
+
     /// Return a copy with exactly one position changed. The object number is its
     /// ordinal in the first MAIN block, including unknown entries, as in 10002680.
     /// This deliberately does not serialize decoded structures or rebuild blocks.
@@ -935,17 +1038,7 @@ impl<'a> Fmod<'a> {
         vertex: usize,
         value: [f32; 3],
     ) -> Result<Vec<u8>> {
-        let main = self
-            .sections
-            .iter()
-            .find_map(|s| {
-                if let Section::Meshes(m) = s {
-                    Some(m)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| self.root.error(0, "FMOD has no MAIN block"))?;
+        let main = self.main_section()?;
         let Some(ObjectEntry::Object(object)) = main.entries.get(object) else {
             return Err(main
                 .block
@@ -965,6 +1058,19 @@ impl<'a> Fmod<'a> {
         }
         Ok(output)
     }
+}
+
+fn add_u32(bytes: &mut [u8], at: usize, value: u32) -> Result<()> {
+    let current = word(
+        bytes
+            .get(at..at + 4)
+            .ok_or_else(|| Error::new(at, "block size field is out of range"))?,
+    );
+    let updated = current
+        .checked_add(value)
+        .ok_or_else(|| Error::new(at, "block size overflow"))?;
+    bytes[at..at + 4].copy_from_slice(&updated.to_le_bytes());
+    Ok(())
 }
 
 pub(crate) fn word(bytes: &[u8]) -> u32 {

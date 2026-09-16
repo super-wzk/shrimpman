@@ -13,6 +13,7 @@ fn fixture(extra_nodes: usize) -> Arc<Document> {
         fields: Vec::new(),
         metadata: Default::default(),
         children,
+        action: None,
         deferred: false,
         error: None,
     };

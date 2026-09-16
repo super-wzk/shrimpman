@@ -187,6 +187,7 @@ mod tests {
             fields: Vec::new(),
             metadata: Default::default(),
             children,
+            action: None,
             deferred: false,
             error: None,
         }

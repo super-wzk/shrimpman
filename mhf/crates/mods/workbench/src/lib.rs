@@ -1,5 +1,6 @@
 //! Resource inspection and native previews, independently selectable from Debug.
 
+pub mod action;
 pub mod catalog;
 pub mod edit;
 pub mod field;

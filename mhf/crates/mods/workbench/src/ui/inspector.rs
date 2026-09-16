@@ -1,16 +1,17 @@
 //! Bounded inspector rows. Widget contents never size the docked panel.
 
 use super::Workbench;
-use crate::inspect::{Document, Node};
+use crate::inspect::{Document, Kind, Node};
 use egui::{Color32, RichText};
 
 impl Workbench {
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui, document: &Document, node: &Node) {
         self.edit_toolbar(ui);
         ui.add(egui::Label::new(RichText::new(&node.name).strong()).truncate());
+        let missing = node.kind == Kind::MissingBlock;
         ui.horizontal_wrapped(|ui| {
             ui.weak(node.kind.label());
-            if ui.button("导出当前字节").clicked() {
+            if !missing && ui.button("导出当前字节").clicked() {
                 self.error = self
                     .worker
                     .export(document, self.node)
@@ -27,6 +28,19 @@ impl Workbench {
         ui.add(egui::Label::new(RichText::new(&location).monospace()).truncate());
         if let Some(error) = &node.error {
             ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        if let Some(action) = node.action
+            && ui
+                .add_enabled(self.can_edit(), egui::Button::new(action.label()))
+                .on_hover_text(action.description())
+                .clicked()
+        {
+            self.apply_node_action(self.node, action);
+        }
+        // The item only states where a block would go, so there is nothing to
+        // decode, view or edit until the action above creates it.
+        if missing {
+            return;
         }
         self.inspector_fields(ui, document, node);
         egui::CollapsingHeader::new("十六进制")

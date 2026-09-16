@@ -5,6 +5,7 @@ use super::Workbench;
 
 mod file_picker;
 use crate::{
+    action::NodeAction,
     edit::{self, NodeKey},
     field::{Binding, Field, FieldType},
     inspect::{Document, Kind, Node},
@@ -198,6 +199,39 @@ impl Editing {
 }
 
 impl Workbench {
+    /// Run one operation recorded on a validated node. It shares the revision
+    /// and busy protocol of field edits, so `finish_edit` releases the request.
+    pub(super) fn apply_node_action(&mut self, node: usize, action: NodeAction) {
+        let Some((request, revision)) = self.begin_edit() else {
+            return;
+        };
+        self.worker.node_action(request, revision, node, action);
+    }
+
+    /// Whether an edit can start now. Pending field drafts own their bytes
+    /// until they are submitted or withdrawn.
+    pub(super) fn can_edit(&self) -> bool {
+        !self.editing.busy
+            && self
+                .path
+                .as_ref()
+                .is_none_or(|path| !self.editing.pending(path))
+    }
+
+    /// Reserve one worker edit as `(request, revision)`. The worker owns the
+    /// exact revision that was reserved, so drafts of other fields stay valid.
+    fn begin_edit(&mut self) -> Option<(u64, Arc<Document>)> {
+        if !self.can_edit() {
+            return None;
+        }
+        let document = self.document.clone()?;
+        self.request = self.request.wrapping_add(1);
+        self.expanding = None;
+        self.editing.busy = true;
+        self.editing.error.clear();
+        Some((self.request, document))
+    }
+
     pub(crate) fn set_redirect_paths(&mut self, source_root: PathBuf, output: PathBuf) {
         self.editing.source_root = source_root;
         self.editing.output = output;
@@ -757,7 +791,7 @@ impl Workbench {
         }
     }
 
-    pub(super) fn replacement_editor(&mut self, ui: &mut egui::Ui, document: &Arc<Document>) {
+    pub(super) fn replacement_editor(&mut self, ui: &mut egui::Ui) {
         if self
             .editing
             .file_picker
@@ -795,31 +829,22 @@ impl Workbench {
                     Err(error) => self.editing.error = format!("无法打开文件选择器：{error}"),
                 }
             }
-            let ready = !self.editing.busy
-                && !self.editing.replacement.is_empty()
-                && self
-                    .path
-                    .as_ref()
-                    .is_none_or(|path| !self.editing.pending(path));
+            let ready = !self.editing.replacement.is_empty() && self.can_edit();
             let enter =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if ui
+            let confirmed = ui
                 .add_enabled(ready, egui::Button::new("替换并预览"))
                 .clicked()
-                || ready && enter
-            {
-                self.request = self.request.wrapping_add(1);
-                self.expanding = None;
-                self.editing.busy = true;
-                self.editing.error.clear();
+                || ready && enter;
+            if confirmed && let Some((request, revision)) = self.begin_edit() {
                 let node = if self.view.show_encoding_layers {
                     self.node
                 } else {
-                    document.payload(self.node).unwrap_or(self.node)
+                    revision.payload(self.node).unwrap_or(self.node)
                 };
                 self.worker.replace(
-                    self.request,
-                    document.clone(),
+                    request,
+                    revision,
                     node,
                     PathBuf::from(&self.editing.replacement),
                 );
