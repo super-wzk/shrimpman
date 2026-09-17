@@ -848,6 +848,7 @@ fn inspector_document(long: bool) -> crate::inspect::Document {
         } else {
             "ok".into()
         },
+        note: None,
         binding: Binding {
             buffer: 0,
             range: 0..1,
@@ -862,6 +863,7 @@ fn inspector_document(long: bool) -> crate::inspect::Document {
         fields.push(Field {
             name: format!("field-{}", index + 1),
             value: case.text,
+            note: None,
             binding: Binding {
                 range: start..bytes.len(),
                 ..case.binding
@@ -1246,6 +1248,7 @@ impl DockHarness {
             .map(|index| Field {
                 name: format!("字段 {index:02}"),
                 value: "0".into(),
+                note: None,
                 writable: true,
                 binding: Binding {
                     buffer: 0,

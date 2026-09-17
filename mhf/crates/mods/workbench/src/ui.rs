@@ -3892,6 +3892,7 @@ mod tests {
             },
             name: "unknown_00000010".repeat(4),
             value: "Long resource field content ".repeat(20),
+            note: None,
         });
         workbench.refresh_document(Arc::new(document));
         workbench.tab = InspectorTab::Resource;
@@ -4251,7 +4252,7 @@ mod tests {
                 name: "Z:\\game\\dat\\model\\long-resource-file-name.bin".into(),
                 kind: Kind::Unknown, buffer: 0, range: 0..16, children: vec![], action: None, deferred: false, error: None,
                 metadata: Default::default(),
-                fields: vec![Field {writable: false, binding: crate::field::Binding { buffer: 0, range: 0..16, format: crate::field::FieldType::ReadOnly, endian: mhf_resource::binary::Endian::Little }, name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3)}],
+                fields: vec![Field {writable: false, binding: crate::field::Binding { buffer: 0, range: 0..16, format: crate::field::FieldType::ReadOnly, endian: mhf_resource::binary::Endian::Little }, note: None, name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3)}],
             }],
         }));
         let context = egui::Context::default();

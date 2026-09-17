@@ -67,6 +67,9 @@ pub struct Patch {
 pub struct Field {
     pub name: String,
     pub value: String,
+    /// Value legend for this field, shown with the name's hover text. Only
+    /// confirmed interpretations belong here; raw offsets stay in `name`.
+    pub note: Option<&'static str>,
     pub binding: Binding,
     pub writable: bool,
 }
@@ -80,6 +83,7 @@ impl Field {
         Self {
             name: name.into(),
             value: format!("{:?}", source.value),
+            note: None,
             writable: !source.range.is_empty(),
             binding: Binding {
                 buffer,
@@ -650,6 +654,7 @@ mod tests {
         let field = Field {
             name: "引用字段".into(),
             value: "formatted description is not storage".into(),
+            note: None,
             writable: true,
             binding: Binding {
                 buffer: 1,

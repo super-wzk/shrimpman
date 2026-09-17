@@ -222,6 +222,7 @@ impl Workbench {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             name_ui.set_clip_rect(name_rect.intersect(ui.clip_rect()));
+            let hint = field.note.map_or(String::new(), |note| format!("\n{note}"));
             if name_ui
                 .add_sized(
                     name_rect.size(),
@@ -231,7 +232,7 @@ impl Workbench {
                         .sense(egui::Sense::click()),
                 )
                 .on_hover_text(format!(
-                    "{}\nb{} · 0x{:08X} · {} 字节\n单击在下方十六进制区域选中这些字节",
+                    "{}{hint}\nb{} · 0x{:08X} · {} 字节\n单击在下方十六进制区域选中这些字节",
                     field.name,
                     field.binding.buffer,
                     field.binding.range.start,

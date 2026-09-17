@@ -67,6 +67,7 @@ fn document(editor: Editor) -> Document {
         fields.push(Field {
             name: format!("scroll-field-{index}"),
             value: binding.decode(&bytes[binding.range.clone()]).unwrap(),
+            note: None,
             binding,
             writable: true,
         });

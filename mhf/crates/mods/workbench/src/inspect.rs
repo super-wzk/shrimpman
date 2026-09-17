@@ -191,6 +191,49 @@ impl fmt::Display for Kind {
     }
 }
 
+/// Legend shared by the source and destination blend words.
+const BLEND_FACTORS: &str = "0 ZERO · 1 ONE · 2 SRCALPHA · 3 INVSRCALPHA · 4 DESTALPHA · 5 INVDESTALPHA · 6 SRCCOLOR · 7 INVSRCCOLOR · 8 DESTCOLOR · 9 INVDESTCOLOR";
+
+/// The `0xF0000` words this client reads: word index, inspector name, and the
+/// value legend shown in the hover text. Words it never reads keep an offset
+/// name instead; `docs/model-formats.md` holds the native evidence.
+const RENDERING_PARAMETERS: [(usize, &str, &str); 14] = [
+    (fmod::VERSION_WORD, "版本", "0x00010000"),
+    (fmod::COLOR_SOURCE_WORD, "颜色来源", "0 顶点色 · 1 材质色"),
+    (fmod::SPECULAR_WORD, "高光", "0、1 关 · 2、3 开"),
+    (
+        fmod::CULL_WORD,
+        "剔除模式",
+        "0 不剔除 · 1 剔除顺时针 · 2 剔除逆时针 · 3 不变",
+    ),
+    (
+        fmod::LIGHTING_WORD,
+        "光照模式",
+        "0 关 · 1 单光源 · 2、3 三光源",
+    ),
+    (
+        fmod::UV_MATRIX_WORD,
+        "UV 矩阵来源",
+        "0 原始 UV · 1 特效 UV 变换",
+    ),
+    (fmod::FOG_WORD, "雾", "0 开 · 1、2 关"),
+    (fmod::TINT_WORD, "染色", "0 跟随运行时染色 · 1 固定白"),
+    (
+        fmod::SCHEME_WORD,
+        "渲染方案",
+        "5、6 固定管线 · 其余着色器变体",
+    ),
+    (fmod::SRC_BLEND_WORD, "源混合", BLEND_FACTORS),
+    (fmod::DEST_BLEND_WORD, "目标混合", BLEND_FACTORS),
+    (
+        fmod::BLEND_OP_WORD,
+        "混合运算",
+        "0 ADD · 1 SUBTRACT · 2 REVSUBTRACT",
+    ),
+    (fmod::FILTER_WORD, "纹理过滤", "0 线性 · 1 点采样"),
+    (fmod::ADDRESS_WORD, "UV 寻址", "0 重复 · 1 钳制 · 2 镜像"),
+];
+
 #[derive(Clone, Debug)]
 pub struct Node {
     pub name: String,
@@ -548,6 +591,7 @@ impl Builder {
         }
     }
 
+    /// Add one field without a value legend.
     fn field(
         &mut self,
         node: usize,
@@ -556,11 +600,25 @@ impl Builder {
         offset: usize,
         size: usize,
     ) {
+        self.field_with_note(node, name, value, offset, size, None);
+    }
+
+    /// Add one field. `note` is the value legend shown in the hover text.
+    fn field_with_note(
+        &mut self,
+        node: usize,
+        name: impl Into<String>,
+        value: impl IntoFieldValue,
+        offset: usize,
+        size: usize,
+        note: Option<&'static str>,
+    ) {
         let value = value.into_field_value(size);
         let current = &mut self.document.nodes[node];
         current.fields.push(Field {
             name: name.into(),
             value: value.display,
+            note,
             writable: size != 0 && value.edit != FieldType::ReadOnly,
             binding: Binding {
                 buffer: current.buffer,
@@ -1747,18 +1805,30 @@ impl Builder {
             }
             Component::Rendering(value) => {
                 for (index, word) in value.words.iter().enumerate() {
-                    if index == fmod::UV_TRANSFORM_WORD {
-                        // The native consumer names this word; the stored value
-                        // stays a plain number because only `1` is evidenced.
-                        self.field(node, "UV 变换", word, at + index * 4, 4);
-                        continue;
-                    }
-                    self.field(
+                    let parameter = RENDERING_PARAMETERS.iter().find(|(at, ..)| *at == index);
+                    // Named words stay plain numbers; the legend lives in the
+                    // hover text. The version word is displayed as the bit
+                    // pattern it is, just like the unnamed offsets.
+                    let (name, note, display) = match parameter {
+                        Some((_, name, note)) if index != fmod::VERSION_WORD => {
+                            (name.to_string(), Some(*note), word.to_string())
+                        }
+                        Some((_, name, note)) => {
+                            (name.to_string(), Some(*note), format!("{word:#010X}"))
+                        }
+                        None => (
+                            format!("word_{:02X}", index * 4),
+                            None,
+                            format!("{word:#010X}"),
+                        ),
+                    };
+                    self.field_with_note(
                         node,
-                        format!("word_{:02X}", index * 4),
-                        formatted(word, format!("{word:#010X}")),
+                        name,
+                        formatted(word, display),
                         at + index * 4,
                         4,
+                        note,
                     );
                 }
                 if !value.trailing.is_empty() {

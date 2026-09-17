@@ -29,6 +29,7 @@ resource offsets or a guarantee that another client build uses the same addresse
 | `10003190`, `10003790` | `0x120000` supplies four floats per vertex; shader meaning remains unconfirmed |
 | `100024F0` | `0x100000` is a u32 bone map on disk, converted to WORDs at runtime |
 | `10002560` | `0xF0000` has a versioned 18-word structure; `RenderingBlock::words` preserves all 18 u32 values without guessing individual render-state meanings |
+| `108F82B0`, `1000B3C0`, `1000BEC0`, `10018D30` | `108F82B0` is the only consumer of the `0xF0000` words: each word is looked up in a table (`118863FC`, `11886430`, `11886450`, `1188640C`, `11886448`, `11886404`, `11886440`) and written into the model state word or the 140-byte mesh record's `+136` render options. `1000B3C0`/`1000BEC0` turn the state bits into D3D9 render/sampler states, `10018D30` uses state bit 0x4000 to pick the UV matrix. Word meanings and values are listed below |
 | `10002740`, `100028F0` | Material table kind 9 and texture table kind 10 contain individually headed records and advance using each record's size |
 | `100027B0` | Material payload `0x00/0x10/0x20` each contain four floats; `0x30` is read as float and converted to integer; `0x34` is texture count; texture table indices begin at `0x100`; image ID is texture payload word 0 |
 | `100021C0`, `10002220`, `100022A0` | FSKL metadata supplies root node ordinals; node enumeration skips blocks whose kind's low byte is zero; child/sibling links use node ordinals; record `0x10/0x20/0x30` contain four floats each; `0x40/0x44` supply the low WORDs at compact node `+10/+2` |
@@ -37,8 +38,35 @@ resource offsets or a guarantee that another client build uses the same addresse
 
 `0xF0000` 的已知原生消费前缀固定为 72 字节，即 18 个小端 u32；FMOD 块头因此为
 `count = 1`、`size = 84`。原生函数只复制这 18 个 word，解析器仍保留其后可能的尾随字节。
-工作台初始化时只写版本字 `0x00010000`，其余 word 保持为零；`word_7` 是本客户端
-UV 纹理变换开关，值 `1` 启用，工作台将 `word_1C` 按数字直接编辑。
+`108F82B0` 是该记录唯一的消费者：它把 word 查表后写进模型状态字与 140 字节网格记录的
+`+136` 渲染选项，绘制时再由 `1000B3C0`、`1000BEC0`、`10013440` 等函数落到 D3D9 状态。
+下列名称只覆盖这条已验证的链路；未列出的 word 该客户端不读取：
+
+| word | 名称 | 取值与原生消费 |
+| --- | --- | --- |
+| `+00` | 版本 | `10002560` 要求高 16 位为 `0x0001`；原版数据只有 `0x00010000` |
+| `+04` | 颜色来源 | 0 顶点色 / 1 材质色；`118863FC` → 状态位 0-1 → `D3DRS_COLORVERTEX`(141) |
+| `+08` | 高光 | 2、3 打开，其余关闭；`11886430` → 状态位 2-4 → `D3DRS_SPECULARENABLE`(29) |
+| `+0C` | 剔除模式 | 0 不剔除 / 1 剔除顺时针 / 2 剔除逆时针 / 3 不改变；`11886450` → 状态位 5-6 → `D3DRS_CULLMODE`(22) |
+| `+10` | `word_10` | 只写入渲染选项位 15；`1000C7D0` 的状态槽 12 在 `1000C390` 跳转表里属于默认分支 |
+| `+14` | 光照模式 | 0 关闭 / 1 单光源 / 2、3 三光源；`1188640C` → 状态位 8-11 → `1000B280` 的 `D3DRS_LIGHTING`(137) 与 `LightEnable` |
+| `+18` | `word_18` | `108F82B0` 不读取 |
+| `+1C` | UV 矩阵来源 | 0 原始 UV（`10018D30` 上传单位阵）/ 非 0 特效 UV 变换（上传运行时矩阵 `0x1E87F010`，着色器常量 c5–c8）；`11886448` → 状态位 14。该矩阵只由 UV 特效写入，没有特效时全为零，此时改为 `1` 会把 UV 压成 0 并显示为黑面 |
+| `+20` | 雾 | 0 开 / 1、2 关；`11886404` → 状态位 15 → `D3DRS_FOGENABLE`(28) |
+| `+24` | 染色 | 0 跟随运行时染色 / 1 固定白；`11886440` → 状态位 17：置位时 `108F82B0` 先把共享槽重置为白色（参数 103 = `0xFFFFFFFF`），`100173C0` 再把槽写进顶点着色器常量 c2；位清零时不写槽，直接把 (1,1,1,1) 写进 c2。槽由运行时颜色路径改写（特效／武器、角色装备、怪物颜色，以及通用参数 103），`10017D10` 在覆盖开启时用它乘材质色 |
+| `+28` | 渲染方案 | 5、6 进入 `10013440` 的固定管线分支，其余值选择着色器变体表；原版数据只有 0、1、2 |
+| `+2C` | 源混合 | 0-9 依次为 `ZERO`、`ONE`、`SRCALPHA`、`INVSRCALPHA`、`DESTALPHA`、`INVDESTALPHA`、`SRCCOLOR`、`INVSRCCOLOR`、`DESTCOLOR`、`INVDESTCOLOR`；渲染选项位 2-5 → `1000BEC0` 的 `D3DRS_SRCBLEND`(19) |
+| `+30` | 目标混合 | 取值同上；渲染选项位 6-9 → `D3DRS_DESTBLEND`(20)。全零时源和目标都是 `ZERO`，网格显示为黑面 |
+| `+34` | 混合运算 | 0 `ADD` / 1 `SUBTRACT` / 2 `REVSUBTRACT`（查表时 3 等同 1）；渲染选项位 10-11 → `D3DRS_BLENDOP`(171) |
+| `+38` | `word_38` | `108F82B0` 不读取 |
+| `+3C` | `word_3C` | `108F82B0` 不读取 |
+| `+40` | 纹理过滤 | 0 线性 / 1 点采样；渲染选项位 12 → 采样器 0 的 `D3DSAMP_MINFILTER`、`D3DSAMP_MAGFILTER` |
+| `+44` | UV 寻址 | 0 重复 / 1 钳制 / 2 镜像；渲染选项位 13-14 → 采样器 0 的 `D3DSAMP_ADDRESSU`、`ADDRESSV` |
+
+工作台初始化时只写版本字 `0x00010000`，其余 word 保持为零；上表的字段按数字直接编辑，
+悬停字段名可查看取值表。
+扫描 `dat` 全目录（26849 个模型、47037 个 `0xF0000` 块）时，各字只出现表中列出的取值：
+`+38`、`+3C`、`+40` 全为 `0`，`+10` 只出现 0-2，`+2C` 只出现 0-3，`+30` 只出现 0-3、6、7。
 
 The public format research was cross-checked at
 [`Houmgaor/MHFrontier-Blender-Addon` revision `29b23a1269e323b7e5ec6b79cd3cf71743800784`](https://github.com/Houmgaor/MHFrontier-Blender-Addon/tree/29b23a1269e323b7e5ec6b79cd3cf71743800784),

@@ -460,8 +460,8 @@ fn raw_wrapper_trailers_and_reference_identity_are_preserved() {
 }
 
 #[test]
-fn uv_transform_switch_edit_reaches_the_parsed_rendering_record() {
-    use mhf_resource::fmod::{FILE, MAIN, OBJECT, RENDERING, RENDERING_VERSION, UV_TRANSFORM_WORD};
+fn uv_matrix_switch_edit_reaches_the_parsed_rendering_record() {
+    use mhf_resource::fmod::{FILE, MAIN, OBJECT, RENDERING, RENDERING_VERSION, UV_MATRIX_WORD};
 
     let mut parameters = [0; mhf_resource::fmod::RENDERING_WORDS];
     parameters[0] = RENDERING_VERSION;
@@ -483,9 +483,9 @@ fn uv_transform_switch_edit_reaches_the_parsed_rendering_record() {
         .nodes
         .iter()
         .flat_map(|node| &node.fields)
-        .find(|field| field.name == "UV 变换")
+        .find(|field| field.name == "UV 矩阵来源")
         .unwrap();
-    // `word_1C` is the switch row itself, and it stays a plain u32.
+    // `word_1C` is the matrix-source row itself, and it stays a plain u32.
     assert_eq!(switch.value, "0");
     assert_eq!(switch.binding.format, FieldType::Scalar(ScalarType::U32));
     assert!(switch.writable);
@@ -503,7 +503,7 @@ fn uv_transform_switch_edit_reaches_the_parsed_rendering_record() {
     let root = updated.payload(updated.root).unwrap();
     let model = Fmod::parse(updated.bytes(root).unwrap()).unwrap();
     let rendering = model.rendering_block(0).unwrap().unwrap();
-    assert_eq!(rendering.words[UV_TRANSFORM_WORD], 1);
+    assert_eq!(rendering.words[UV_MATRIX_WORD], 1);
 }
 
 #[test]

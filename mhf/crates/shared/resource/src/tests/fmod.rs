@@ -310,9 +310,9 @@ fn rendering_block_initialization_appends_one_fixed_child() {
     assert_eq!(rendering.block.header.count, 1);
     assert_eq!(rendering.block.header.size, RENDERING_SIZE as u32);
     assert_eq!(rendering.words, words);
-    assert_eq!(rendering.words[UV_TRANSFORM_WORD], 0);
+    assert_eq!(rendering.words[UV_MATRIX_WORD], 0);
 
-    words[UV_TRANSFORM_WORD] = 1;
+    words[UV_MATRIX_WORD] = 1;
     let enabled = Fmod::parse(&source)
         .unwrap()
         .with_rendering_block(0, words)
@@ -320,7 +320,7 @@ fn rendering_block_initialization_appends_one_fixed_child() {
     let enabled = Fmod::parse(&enabled).unwrap();
     let enabled = enabled.rendering_block(0).unwrap().unwrap();
     assert_eq!(enabled.block.header.kind, RENDERING);
-    assert_eq!(enabled.words[UV_TRANSFORM_WORD], 1);
+    assert_eq!(enabled.words[UV_MATRIX_WORD], 1);
     assert!(reparsed.with_rendering_block(0, words).is_err());
     words[0] = 0;
     assert!(parsed.with_rendering_block(0, words).is_err());

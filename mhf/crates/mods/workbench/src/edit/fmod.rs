@@ -101,7 +101,7 @@ mod tests {
         let rendering = file.rendering_block(0).unwrap().unwrap();
         assert_eq!(rendering.words[0], RENDERING_VERSION);
         assert!(rendering.words[1..].iter().all(|&word| word == 0));
-        assert_eq!(rendering.words[mhf_resource::fmod::UV_TRANSFORM_WORD], 0);
+        assert_eq!(rendering.words[mhf_resource::fmod::UV_MATRIX_WORD], 0);
         // The created block replaces the item, so nothing offers the action and
         // the stale index can no longer insert a second child.
         assert!(updated.nodes.iter().all(|node| node.action.is_none()));

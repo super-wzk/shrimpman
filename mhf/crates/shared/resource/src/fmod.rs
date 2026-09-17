@@ -32,10 +32,43 @@ pub const BONE_MAP: u32 = 0x0010_0000;
 pub const ATTRIBUTE_12: u32 = 0x0012_0000;
 pub const RENDERING_WORDS: usize = 18;
 pub const RENDERING_SIZE: usize = HEADER_SIZE + RENDERING_WORDS * 4;
+/// Word 0 is the record version; a record whose high 16 bits differ from
+/// `RENDERING_VERSION` is rejected as an unsupported version.
+pub const VERSION_WORD: usize = 0;
+/// The only version word present in the original data.
 pub const RENDERING_VERSION: u32 = 0x0001_0000;
-/// Word 7, i.e. `word_1C`. Native `108F82B0` maps it through the client's
-/// UV-transform table, whose only enabled value is 1.
-pub const UV_TRANSFORM_WORD: usize = 7;
+/// Word 1: 0 vertex colour, 1 material colour.
+pub const COLOR_SOURCE_WORD: usize = 1;
+/// Word 2: 0 and 1 off, 2 and 3 on.
+pub const SPECULAR_WORD: usize = 2;
+/// Word 3: 0 none, 1 clockwise, 2 counter-clockwise, 3 unchanged.
+pub const CULL_WORD: usize = 3;
+/// Word 5: 0 off, 1 one light, 2 and 3 three lights.
+pub const LIGHTING_WORD: usize = 5;
+/// Word 7: 0 original UVs, 1 UV transform from effects. With no such effect
+/// running the runtime matrix stays all zeros, which flattens the UVs and
+/// renders the mesh black. The observed files store 0 or 1.
+pub const UV_MATRIX_WORD: usize = 7;
+/// Word 8: 0 on, 1 and 2 off (fog is on by default).
+pub const FOG_WORD: usize = 8;
+/// Word 9: 0 follows the shared runtime tint, reset to white on load and
+/// rewritten by the colour paths (effects, character, monster); 1 pins the
+/// shader constant to white.
+pub const TINT_WORD: usize = 9;
+/// Word 10: 5 and 6 fixed-function texture stages, other values shader
+/// variants.
+pub const SCHEME_WORD: usize = 10;
+/// Word 11: 0 ZERO, 1 ONE, 2 SRCALPHA, 3 INVSRCALPHA, 4 DESTALPHA,
+/// 5 INVDESTALPHA, 6 SRCCOLOR, 7 INVSRCCOLOR, 8 DESTCOLOR, 9 INVDESTCOLOR.
+pub const SRC_BLEND_WORD: usize = 11;
+/// Word 12: the same values as `SRC_BLEND_WORD`.
+pub const DEST_BLEND_WORD: usize = 12;
+/// Word 13: 0 ADD, 1 SUBTRACT, 2 REVSUBTRACT.
+pub const BLEND_OP_WORD: usize = 13;
+/// Word 16: 0 linear, 1 point.
+pub const FILTER_WORD: usize = 16;
+/// Word 17: 0 wrap, 1 clamp, 2 mirror.
+pub const ADDRESS_WORD: usize = 17;
 
 /// All three words are encoded little-endian; size includes the header.
 /// `kind` remains numeric because its meaning depends on the parent block.
@@ -295,8 +328,9 @@ impl<'a> WordGroupsBlock<'a> {
     }
 }
 
-/// The 18 original words read by native 10002560. Their individual meanings
-/// remain unresolved; retain all bits instead of assigning render-state names.
+/// The 18 original words read by native 10002560. `108F82B0` is their only
+/// consumer; the indices above name the words it reads, and the rest keep
+/// their bits without an assigned meaning.
 #[derive(Clone, Debug)]
 pub struct RenderingBlock<'a> {
     pub block: Block<'a>,
