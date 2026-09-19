@@ -74,7 +74,7 @@ def native_bytes(data, spans, rva, size):
 
 
 def patches():
-    source = (Path(__file__).parents[1] / "src" / "patches.rs").read_text()
+    source = (Path(__file__).parents[1] / "src" / "species" / "patches.rs").read_text()
     pattern = (r"Patch\s*\{\s*rva:\s*(0x[\da-fA-F_]+),\s*"
                r"original:\s*&\[([^]]*)\],\s*replacement:\s*&\[([^]]*)\]")
     result = {}

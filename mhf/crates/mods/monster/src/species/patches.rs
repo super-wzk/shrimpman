@@ -1,6 +1,8 @@
-//! Eight verified upper-bound checks: 177 becomes 255, admitting 177..=254.
-//! Keep the original unsigned branches and their ID-255 fallback behavior.
-//! Table extents, resource loaders and other species checks are not changed.
+//! The eight species-limit instructions read from the verified build.
+//!
+//! Each entry keeps the bytes it replaces, so `prepare` can prove the image is
+//! still the build this table came from and `restore` can put the instruction
+//! back exactly.
 
 pub(crate) struct Patch {
     pub rva: usize,

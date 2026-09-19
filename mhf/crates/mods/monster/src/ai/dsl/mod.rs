@@ -1,0 +1,679 @@
+//! Author-facing monster-AI DSL: parser and compiler.
+//!
+//! The pipeline is `text -> Document -> Program`:
+//!
+//! * [`parse`] reads a document into a `Document`: header, declaration blocks,
+//!   entries, and statements. It checks everything structural (ranges, duplicate
+//!   indices, reserved names) and leaves every name that depends on the whole
+//!   file unresolved.
+//! * `Document::compile` resolves names, encodes statements, and assembles the
+//!   pointer-free [`Program`](crate::ai::Program) the native selector consumes. A
+//!   `base native;` document is a declaration: it writes only the indices it
+//!   names, and the binding merges it onto the live native block it is about to
+//!   replace.
+//!
+//! `docs/dsl-spec.md` owns the language. This module implements it and refuses
+//! the parts the spec still leaves open — `repeat` emission, `resume()`,
+//! contents/route blocks, `self.` conditions — instead of guessing bytes.
+//!
+//! The submodules follow that pipeline: `lexer.rs` holds the tokens,
+//! `parser.rs` the AST and the structural checks, and `compile.rs` name
+//! resolution, encoding, and graph assembly.
+
+mod compile;
+mod lexer;
+pub(crate) mod parser;
+
+pub use parser::parse;
+
+// A `.mhai` file is loaded through `parse` and `compile` alone; the game build
+// never names the AST or the compiler's result type, so re-exporting them there
+// would only be an unused import.  They are still part of the API the crate
+// offers everywhere else.
+#[cfg(not(all(feature = "provider", windows, target_arch = "x86")))]
+pub use self::{compile::Compiled, parser::Document};
+
+use crate::ai::control::EVENT_SLOTS;
+
+/// Text version accepted by [`parse`]. The header exists so a future change can
+/// fail loudly instead of being read as the current grammar.
+pub const VERSION: u32 = 1;
+
+/// Number of native event slots an `events` block can address (spec §9).
+pub const EVENT_SLOT_COUNT: usize = EVENT_SLOTS.len();
+
+// The suite drives the whole module: text -> `Document` -> `Program`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::control::EVENT_SLOTS;
+    use crate::ai::dsl::parser::StateDecl;
+    use crate::ai::{Base, Node, Program, Table};
+
+    /// The worked example from `docs/dsl-spec.md` §10.
+    const SPEC_EXAMPLE: &str = "\
+mhf_ai 1;
+species 6;
+
+actions {
+    slash = [3:6];
+    bash  = [4:1];
+}
+
+events {
+    roar = 0 {
+        slash(0);
+        kehai_end();
+    }
+
+    hit = 2 {
+        bash(1);
+    }
+}
+
+states {
+    idle {
+        slash(0);
+        transition combat;
+    }
+
+    combat {
+        bash(1);
+        transition idle;
+    }
+}
+";
+
+    fn script_at(program: &Program, index: usize) -> &[u8] {
+        match &program.nodes[index] {
+            Node::Script(bytes) => bytes,
+            other => panic!("node {index} is not a script: {other:?}"),
+        }
+    }
+
+    /// Node index of the first script node holding exactly `bytes`.
+    fn script_node(program: &Program, bytes: &[u8]) -> usize {
+        program
+            .nodes
+            .iter()
+            .position(|node| matches!(node, Node::Script(script) if script.as_slice() == bytes))
+            .unwrap_or_else(|| panic!("no script node holds {bytes:02x?}"))
+    }
+
+    fn root_table(program: &Program) -> &Table {
+        match &program.nodes[program.root] {
+            Node::Table(table) => table,
+            other => panic!("root is not a table: {other:?}"),
+        }
+    }
+
+    fn main_table(program: &Program) -> &Table {
+        let main = root_table(program)
+            .get(0)
+            .expect("root[0] is the state table");
+        match &program.nodes[main] {
+            Node::Table(table) => table,
+            other => panic!("main is not a table: {other:?}"),
+        }
+    }
+
+    /// `root[slot] -> cell -> cell[0]`, the shape the event selector dereferences.
+    fn event_script(program: &Program, slot: usize) -> Option<&[u8]> {
+        let cell = root_table(program).get(slot)?;
+        let Node::Table(cell) = &program.nodes[cell] else {
+            panic!("descriptor slot {slot} is not a pointer cell");
+        };
+        cell.get(0).map(|node| script_at(program, node))
+    }
+
+    /// Parse a document and compile it, returning the error text of whichever
+    /// stage refuses the source.
+    fn failure(source: &str) -> String {
+        let document = match parse(source) {
+            Ok(document) => document,
+            Err(error) => return error.to_string(),
+        };
+        match document.compile() {
+            Ok(compiled) => panic!("source was accepted: {compiled:?}"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    #[test]
+    fn spec_example_compiles_to_the_documented_graph() {
+        let document = parse(SPEC_EXAMPLE).unwrap();
+        assert_eq!(document.version, VERSION);
+        assert_eq!(document.species, 6);
+        assert_eq!(document.base, Base::Empty);
+        assert_eq!(
+            document
+                .actions
+                .iter()
+                .map(|decl| (decl.name.as_str(), decl.group, decl.id))
+                .collect::<Vec<_>>(),
+            [("slash", 3, 6), ("bash", 4, 1)]
+        );
+        assert_eq!(
+            document
+                .events
+                .iter()
+                .map(|decl| (decl.name.as_deref(), decl.slot))
+                .collect::<Vec<_>>(),
+            [(Some("roar"), 0), (Some("hit"), 2)]
+        );
+        assert_eq!(
+            document
+                .states
+                .iter()
+                .map(|decl| (decl.name.as_str(), decl.index))
+                .collect::<Vec<_>>(),
+            [("idle", 0), ("combat", 1)]
+        );
+
+        let compiled = document.compile().unwrap();
+        let program = &compiled.program;
+        assert_eq!(program.species, 6);
+        assert_eq!(program.root, 0);
+
+        let root = root_table(program);
+        // Only the state table and the two declared event slots are written;
+        // how far the descriptor reaches is the materialiser's business.
+        assert_eq!(
+            root.iter().map(|(index, _)| index).collect::<Vec<_>>(),
+            [0, EVENT_SLOTS[2].root_index, EVENT_SLOTS[0].root_index]
+        );
+        let main = main_table(program);
+        assert!(main.declares(0) && main.declares(1) && !main.declares(2));
+        assert_eq!(
+            script_at(program, main.get(0).unwrap()),
+            [0x05, 0x03, 0x06, 0x00, 0x07, 0x01]
+        );
+        assert_eq!(
+            script_at(program, main.get(1).unwrap()),
+            [0x05, 0x04, 0x01, 0x01, 0x07, 0x00]
+        );
+
+        // The slot number, not the alias, decides the descriptor position.
+        assert_eq!(
+            event_script(program, EVENT_SLOTS[0].root_index),
+            Some([0x05, 0x03, 0x06, 0x00, 0xff, 0xfd].as_slice())
+        );
+        assert_eq!(
+            event_script(program, EVENT_SLOTS[2].root_index),
+            Some([0x05, 0x04, 0x01, 0x01].as_slice())
+        );
+        for slot in EVENT_SLOTS
+            .iter()
+            .skip(1)
+            .take(1)
+            .chain(EVENT_SLOTS.iter().skip(3))
+        {
+            assert_eq!(event_script(program, slot.root_index), None);
+        }
+
+        // `kehai_end()` ends lane 0x10 and cannot be checked against a runtime
+        // lane mask, so it is reported instead of accepted or refused.
+        assert_eq!(compiled.warnings.len(), 1);
+        let warning = compiled.warnings[0].to_string();
+        assert!(warning.starts_with("12:9: "), "{warning}");
+        assert!(warning.contains("kehai_end() ends lane 0x10"), "{warning}");
+        assert!(warning.contains("lane 0x40"), "{warning}");
+    }
+
+    #[test]
+    fn state_indices_follow_declaration_order_and_anchors() {
+        let document = parse(
+            "\
+mhf_ai 1;
+species 6;
+states {
+    idle { nop(); }
+    combat = 3 { nop(); }
+    flee { nop(); }
+}
+",
+        )
+        .unwrap();
+        assert_eq!(
+            document
+                .states
+                .iter()
+                .map(|decl| (decl.name.as_str(), decl.index))
+                .collect::<Vec<_>>(),
+            [("idle", 0), ("combat", 3), ("flee", 4)]
+        );
+
+        let compiled = document.compile().unwrap();
+        let main = main_table(&compiled.program);
+        assert!(main.get(0).is_some());
+        assert!(!main.declares(1));
+        assert!(!main.declares(2));
+        assert!(main.get(3).is_some());
+        assert!(main.get(4).is_some());
+        assert!(!main.declares(5));
+    }
+
+    #[test]
+    fn literals_and_escapes_reach_the_byte_stream() {
+        let document = parse(
+            "\
+mhf_ai 1;
+species 6;
+
+// hexadecimal coordinates and comments are accepted
+actions {
+    slash = [0x03:0x06]; // slash
+}
+
+events {
+    roar = 0 {
+        action[4:1](0x02);
+        native(0x11, 0x92);
+    }
+}
+
+states {
+    idle {
+        slash(3);
+        wait(0x10);
+        nop();
+        stop();
+        clear_target();
+        restart;
+    }
+}
+",
+        )
+        .unwrap();
+        assert_eq!(document.actions[0].group, 3);
+        assert_eq!(document.actions[0].id, 6);
+
+        let compiled = document.compile().unwrap();
+        let program = &compiled.program;
+        assert_eq!(
+            script_at(program, main_table(program).get(0).unwrap()),
+            [
+                0x05, 0x03, 0x06, 0x03, // slash(3)
+                0x48, 0x10, // wait(0x10)
+                0x92, // nop()
+                0x68, // stop()
+                0x1e, // clear_target()
+                0x04, // restart
+            ]
+        );
+        assert_eq!(
+            event_script(program, EVENT_SLOTS[0].root_index),
+            Some([0x05, 0x04, 0x01, 0x02, 0x11, 0x92].as_slice())
+        );
+
+        assert_eq!(compiled.warnings.len(), 1);
+        assert!(
+            compiled.warnings[0]
+                .to_string()
+                .contains("0x11 is dispatched by the interpreter but has no name")
+        );
+    }
+
+    #[test]
+    fn native_escape_reports_the_opcode_class() {
+        let document = parse(
+            "\
+mhf_ai 1;
+species 6;
+states {
+    idle {
+        native(0x11);
+        native(0x00);
+    }
+}
+",
+        )
+        .unwrap();
+        let compiled = document.compile().unwrap();
+        assert_eq!(
+            script_at(
+                &compiled.program,
+                main_table(&compiled.program).get(0).unwrap()
+            ),
+            [0x11, 0x00]
+        );
+        assert_eq!(compiled.warnings.len(), 2);
+        assert!(compiled.warnings[0].to_string().contains("has no name"));
+        assert!(
+            compiled.warnings[1]
+                .to_string()
+                .contains("reaches the interpreter's switch default")
+        );
+    }
+
+    #[test]
+    fn a_native_base_declaration_writes_only_the_indices_it_names() {
+        let document = parse(
+            "\
+mhf_ai 1;
+species 6;
+base native;
+
+events {
+    roar = 0 {
+        nop();
+    }
+
+    3;
+}
+
+states {
+    combat = 1 {
+        stop();
+    }
+    extra = 3 {
+        restart;
+    }
+    roam = 5;
+}
+",
+        )
+        .unwrap();
+        let compiled = document.compile().unwrap();
+        let program = &compiled.program;
+        assert!(compiled.warnings.is_empty());
+
+        // The declaration records what an undeclared index means instead of
+        // writing a marker for every one of them.
+        assert_eq!(program.base, Base::Native);
+        assert_eq!(program.validate_lossless(), Ok(()));
+
+        // The state table names three indices and has no opinion about the
+        // other 253 the interpreter can address.
+        let main = main_table(program);
+        assert_eq!(
+            main.iter().map(|(index, _)| index).collect::<Vec<_>>(),
+            [1, 3, 5]
+        );
+        assert!(!main.declares(0));
+        assert_eq!(main.get(1), Some(script_node(program, &[0x68])));
+        assert_eq!(main.get(3), Some(script_node(program, &[0x04])));
+        assert!(main.declares(5) && main.get(5).is_none());
+
+        // A declared event body is one entry in a pointer cell; a bare entry
+        // clears the slot; everything else stays with the live block.
+        let root = root_table(program);
+        assert_eq!(root.get(0), Some(1));
+        assert_eq!(
+            event_script(program, EVENT_SLOTS[0].root_index),
+            Some([0x92].as_slice())
+        );
+        assert!(root.declares(EVENT_SLOTS[3].root_index));
+        assert!(root.get(EVENT_SLOTS[3].root_index).is_none());
+        assert!(!root.declares(EVENT_SLOTS[1].root_index));
+        assert!(!root.declares(1));
+    }
+
+    #[test]
+    fn empty_base_refuses_a_graph_the_interpreter_cannot_enter() {
+        let no_states = parse("mhf_ai 1;\nspecies 6;\n").unwrap();
+        assert!(
+            no_states
+                .compile()
+                .unwrap_err()
+                .to_string()
+                .contains("needs a states block")
+        );
+
+        let cleared_entry = parse(
+            "\
+mhf_ai 1;
+species 6;
+states {
+    idle;
+}
+",
+        )
+        .unwrap();
+        assert!(
+            cleared_entry
+                .compile()
+                .unwrap_err()
+                .to_string()
+                .contains("state index 0 needs a script")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_documents() {
+        let cases: &[(&str, &str)] = &[
+            ("species 6;\n", "expected 'mhf_ai', found 'species'"),
+            (
+                "mhf_ai 2;\nspecies 6;\n",
+                "unsupported monster-AI DSL version 2",
+            ),
+            (
+                "mhf_ai 1;\nspecies 300;\n",
+                "species must be a number from 0 to 255",
+            ),
+            ("mhf_ai 1;\nspecies 6;\nbase lua;\n", "unknown base 'lua'"),
+            ("mhf_ai 1;\nspecies 6;\nfoo { }\n", "unknown block 'foo'"),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } }\nstates { idle { nop(); } }\n",
+                "duplicate 'states' block",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nactions { kehai_end = [3:6]; }\n",
+                "collides with a reserved name",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nactions { transition = [3:6]; }\n",
+                "collides with a reserved name",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nactions { self = [1:1]; }\n",
+                "collides with a reserved name",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nactions { slash = [3:6]; slash = [4:1]; }\nstates { idle { nop(); } }\n",
+                "action 'slash' is declared twice",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } other = 0 { nop(); } }\n",
+                "state index 0 is declared twice",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } idle = 2 { nop(); } }\n",
+                "state 'idle' is declared twice",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { nop(); } 0 { nop(); } }\n",
+                "event slot 0 is declared twice",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nevents { 7 { nop(); } }\n",
+                "event slot must be a number from 0 to 6",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 256 { nop(); } }\n",
+                "state index must be a number from 0 to 255",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 255 { nop(); } next { nop(); } }\n",
+                "outside 0..=255",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { nop() } }\n",
+                "expected ';', found '}'",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { 7; } }\n",
+                "expected a statement",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } }\n@\n",
+                "unexpected character '@'",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { slash(0); } }\n",
+                "unknown name 'slash'",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nactions { slash = [3:6]; }\nstates { idle { slash(0, 1); } }\n",
+                "exactly 1 argument(s)",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(1); } }\n",
+                "'nop' takes exactly 0 argument(s)",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { wait(); } }\n",
+                "'wait' takes exactly 1 argument(s)",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { resume(); } }\n",
+                "resume() returns to a cursor",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { reset(); } }\n",
+                "emitted by the interpreter itself",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { unko_end(); } }\n",
+                "emitted by the interpreter itself",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { transition(combat); } combat { nop(); } }\n",
+                "transition is a keyword, not a call",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { restart(); } }\n",
+                "restart is a keyword, not a call",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { repeat(3) { nop(); } } }\n",
+                "repeat takes a literal count, not a call",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { repeat 3 { nop(); } } }\n",
+                "repeat is parsed but not emitted yet",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { transition combat; } }\n",
+                "transition target 'combat' is not declared",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { transition idle; } }\nstates { idle { nop(); } }\n",
+                "transition is only valid inside a states block",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { restart; } }\nstates { idle { nop(); } }\n",
+                "restart is only valid inside a states block",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { native(); } }\n",
+                "native() needs at least one byte",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { native(0x05); } }\n",
+                "truncated opcode 0x05",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { self.distance_to_reference(); } }\n",
+                "'self' is not implemented",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nstates { idle { if self.hate[1] { nop(); } } }\n",
+                "'if' is not implemented",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { nop(); } }\n",
+                "an empty base needs a states block",
+            ),
+            (
+                "mhf_ai 1;\nspecies 6;\nbase native;\nstates { idle; }\n",
+                "clearing state index 0 would leave the state table unenterable",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let reported = failure(source);
+            assert!(
+                reported.contains(expected),
+                "expected {expected:?}, got {reported:?} for source:\n{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_carry_the_source_position() {
+        let document = parse(
+            "\
+mhf_ai 1;
+species 6;
+states {
+    idle {
+        nop();
+        slash(0);
+    }
+}
+",
+        )
+        .unwrap();
+        let error = document.compile().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "6:9: unknown name 'slash': not a reserved command and not declared in the actions block (spec §6)"
+        );
+    }
+
+    /// The example in `README.md` has to keep compiling.
+    #[test]
+    fn readme_example_compiles() {
+        let document = parse(
+            "\
+mhf_ai 1;
+species 6;
+base native;
+
+actions {
+    slash = [3:6];
+    bash  = [4:1];
+}
+
+events {
+    roar = 0 { slash(0); kehai_end(); }
+}
+
+states {
+    idle   { slash(0); transition combat; }
+    combat { bash(1);  transition idle; }
+}
+",
+        )
+        .unwrap();
+        let compiled = document.compile().unwrap();
+        assert_eq!(
+            script_at(
+                &compiled.program,
+                main_table(&compiled.program).get(0).unwrap()
+            ),
+            [0x05, 0x03, 0x06, 0x00, 0x07, 0x01]
+        );
+        assert_eq!(compiled.warnings.len(), 1);
+    }
+
+    #[test]
+    fn compile_checks_a_hand_built_document_again() {
+        let mut document = parse("mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } }\n").unwrap();
+        document.states.push(StateDecl {
+            index: 0,
+            name: "idle".to_owned(),
+            body: None,
+            line: 1,
+            column: 1,
+        });
+        assert!(
+            document
+                .compile()
+                .unwrap_err()
+                .to_string()
+                .contains("state index 0 is declared twice")
+        );
+    }
+}

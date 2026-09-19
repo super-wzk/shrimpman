@@ -33,7 +33,7 @@ Cargo 会合并 features；API 与 provider 可以同时启用，provider 在 AP
 | 资源浏览与原生模型工作台 | [`mhf-workbench`](crates/mods/workbench/README.md) |
 | DAT 文件读取重定向 | [`mhf-dat-redirect`](crates/mods/dat-redirect/README.md) |
 | 几何扩展 | [`mhf-geometry`](crates/mods/geometry/README.md) |
-| 怪物种类上限补丁 | [`mhf-monster`](crates/mods/monster/README.md) |
+| 怪物种类上限补丁与怪物 AI 脚本 | [`mhf-monster`](crates/mods/monster/README.md) |
 
 [`BuiltinCatalog`](crates/apps/launcher-catalog/README.md) 提供启动应用与管理器共用的内置清单。
 应用的 [`builtins.rs`](crates/apps/launcher/src/builtins.rs) 组装 Factory；通用游戏宿主只接收已解析的 Mod。
