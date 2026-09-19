@@ -178,7 +178,33 @@ pub fn materialize(
         blocks.link(descriptor, slot.root_index, block);
     }
 
-    for (index, _) in root.iter() {
+    for (index, node) in root.iter() {
+        if index == 1 || (15..DESCRIPTOR_WORDS).contains(&index) {
+            let node = node.ok_or_else(|| Error::new("cannot clear a subscript table"))?;
+            let Node::Table(declaration) = &program.nodes[node] else {
+                return Err(Error::new("subscript binding must reference a table"));
+            };
+            let native = blocks.words()[descriptor][index];
+            let mut words = if native == 0 {
+                vec![0; 256]
+            } else {
+                read_exact(memory, native, 256, "subscript table")?
+            };
+            let entries = layer(
+                program,
+                declaration,
+                &mut words,
+                "subscript index",
+                "subscript table",
+            )?;
+            let block = blocks.push(words, Vec::new());
+            for (slot, node) in entries {
+                let target = script(&mut blocks, &mut scripts, program, node)?;
+                blocks.link(block, slot, target);
+            }
+            blocks.link(descriptor, index, block);
+            continue;
+        }
         let known =
             index == MAIN_ROOT_INDEX || EVENT_SLOTS.iter().any(|slot| slot.root_index == index);
         if !known {
@@ -391,6 +417,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn overlays_subscript_slots_without_changing_inherited_entries() {
+        let mut memory = Memory::live();
+        let address = 0x0100_6000;
+        memory.0.get_mut(&DESCRIPTOR).unwrap()[1] = address;
+        memory.0.insert(address, vec![NATIVE_SCRIPTS[1]; 256]);
+        memory.0.insert(0x0100_5000, vec![NATIVE_SCRIPTS[2]; 256]);
+        let program = crate::ai::dsl::parse("mhf_ai 1; species 6; base native; fn main() { outer(); } @slot(table = 1, index = 200) fn outer() { inner(); } @slot(table = 15, index = 7) fn inner() { nop(); }")
+            .unwrap().compile().unwrap().program;
+        let mut arena = TestArena::default();
+        materialize(&program, DESCRIPTOR, &memory, &mut arena).unwrap();
+        for (root_slot, changed, original) in
+            [(1, 200, NATIVE_SCRIPTS[1]), (15, 7, NATIVE_SCRIPTS[2])]
+        {
+            let table_address = arena.block(0)[root_slot];
+            let table = &arena
+                .blocks
+                .iter()
+                .find(|(address, _)| *address == table_address)
+                .unwrap()
+                .1;
+            assert_eq!(table.len(), 256);
+            for (index, &value) in table.iter().enumerate() {
+                if index == changed {
+                    assert_ne!(value, original);
+                } else {
+                    assert_eq!(value, original);
+                }
+            }
+        }
+        let before = arena.blocks.len();
+        memory.0.remove(&address);
+        assert!(materialize(&program, DESCRIPTOR, &memory, &mut arena).is_err());
+        assert_eq!(arena.blocks.len(), before);
+    }
+
     /// Handing out one fixed address per allocation, so a test can name them.
     #[derive(Default)]
     struct TestArena {
@@ -536,7 +598,7 @@ mod tests {
         let memory = Memory::live();
         let mut arena = TestArena::default();
         let compiled = crate::ai::dsl::parse(
-            "mhf_ai 1; species 6; base native; events { bait_detected -> handler; } fn handler() { nop(); }"
+            "mhf_ai 1; species 6; base native; events { bait_detected => handler; } fn handler() { nop(); }"
         ).unwrap().compile().unwrap();
         materialize(&compiled.program, DESCRIPTOR, &memory, &mut arena).unwrap();
         assert_eq!(arena.block(0)[ROUTE_ROOT_INDEX], ROUTE_TABLE);

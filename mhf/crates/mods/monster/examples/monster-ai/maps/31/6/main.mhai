@@ -9,17 +9,16 @@ import "#common/reactions.mhai" as reactions;
 import "special.mhai" as special;
 
 states {
-    idle -> idle_loop;
-    fight = 4 -> fight_loop;
-    recover -> recover_loop;
+    fight = 4 => fight_loop;
+    recover => recover_loop;
 }
 
 events {
-    dung_reaction -> reactions.handle_first;
-    invalid_ground -> special.handle_second;
+    dung_reaction => reactions.handle_first;
+    invalid_ground => special.handle_second;
 }
 
-fn idle_loop() {
+fn main() {
     movement.prepare();
     wait(15);
     transition fight;
@@ -33,5 +32,5 @@ fn fight_loop() {
 
 fn recover_loop() {
     movement.recover();
-    transition idle;
+    restart;
 }

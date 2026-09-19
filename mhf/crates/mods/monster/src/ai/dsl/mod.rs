@@ -7,11 +7,14 @@
 //! See docs/dsl-spec.md for syntax, automatic endings and current limitations.
 
 mod compile;
+pub(crate) mod condition;
 mod lexer;
 pub(crate) mod parser;
 mod project;
 #[cfg(test)]
 mod project_tests;
+pub(crate) mod slot;
+pub(crate) mod target;
 
 pub use parser::parse;
 pub use project::{Project, SourceFile};
@@ -62,7 +65,7 @@ events {
 }
 
 states {
-    idle {
+    idle = 0 {
         slash(0);
         transition combat;
     }
@@ -212,7 +215,7 @@ states {
 mhf_ai 1;
 species 6;
 states {
-    idle { nop(); }
+    idle = 0 { nop(); }
     combat = 3 { nop(); }
     flee { nop(); }
 }
@@ -258,7 +261,7 @@ events {
 }
 
 states {
-    idle {
+    idle = 0 {
         slash(3);
         wait(0x10);
         nop();
@@ -306,7 +309,7 @@ states {
 mhf_ai 1;
 species 6;
 states {
-    idle {
+    idle = 0 {
         native(0x11);
         native(0x00);
     }
@@ -439,7 +442,7 @@ states {
             ("mhf_ai 1;\nspecies 6;\nbase lua;\n", "unknown base 'lua'"),
             ("mhf_ai 1;\nspecies 6;\nfoo { }\n", "unknown block 'foo'"),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } }\nstates { idle { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { nop(); } }\nstates { idle = 0 { nop(); } }\n",
                 "duplicate 'states' block",
             ),
             (
@@ -455,15 +458,15 @@ states {
                 "collides with a reserved name",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nactions { slash = [3:6]; slash = [4:1]; }\nstates { idle { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nactions { slash = [3:6]; slash = [4:1]; }\nstates { idle = 0 { nop(); } }\n",
                 "action 'slash' is declared twice",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } other = 0 { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { nop(); } other = 0 { nop(); } }\n",
                 "state index 0 is declared twice",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } idle = 2 { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { nop(); } idle = 2 { nop(); } }\n",
                 "state 'idle' is declared twice",
             ),
             (
@@ -483,95 +486,91 @@ states {
                 "outside 0..=255",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { nop() } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { nop() } }\n",
                 "expected ';', found '}'",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { 7; } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { 7; } }\n",
                 "expected a statement",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } }\n@\n",
-                "unexpected character '@'",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { nop(); } }\n@\n",
+                "expected 'slot'",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { slash(0); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { slash(0); } }\n",
                 "unknown name 'slash'",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nactions { slash = [3:6]; }\nstates { idle { slash(0, 1); } }\n",
+                "mhf_ai 1;\nspecies 6;\nactions { slash = [3:6]; }\nstates { idle = 0 { slash(0, 1); } }\n",
                 "exactly 1 argument(s)",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { nop(1); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { nop(1); } }\n",
                 "'nop' takes exactly 0 argument(s)",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { wait(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { wait(); } }\n",
                 "'wait' takes exactly 1 argument(s)",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { resume(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { resume(); } }\n",
                 "resume() returns to a cursor",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { reset(); } }\n",
-                "emitted by the interpreter itself",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { reset(); } }\n",
+                "reset is a keyword, not a call",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { reset(); } }\n",
-                "emitted by the interpreter itself",
-            ),
-            (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { transition(combat); } combat { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { transition(combat); } combat { nop(); } }\n",
                 "transition is a keyword, not a call",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { restart(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { restart(); } }\n",
                 "restart is a keyword, not a call",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { repeat(3) { nop(); } } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { repeat(3) { nop(); } } }\n",
                 "repeat takes a literal count, not a call",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { repeat 3 { nop(); } } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { repeat 3 { nop(); } } }\n",
                 "repeat is parsed but not emitted yet",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { transition combat; } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { transition combat; } }\n",
                 "transition target 'combat' is not declared",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { transition idle; } }\nstates { idle { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { transition idle; } }\nstates { idle = 0 { nop(); } }\n",
                 "transition is only valid inside a states block",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { restart; } }\nstates { idle { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { restart; } }\nstates { idle = 0 { nop(); } }\n",
                 "restart is only valid inside a states block",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { native(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { native(); } }\n",
                 "native() needs at least one byte",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { native(0x05); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { native(0x05); } }\n",
                 "truncated opcode 0x05",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { self.distance_to_reference(); } }\n",
-                "'self' is not implemented",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { self.distance_to_reference(); } }\n",
+                "unknown self method 'distance_to_reference'",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { if self.hate[1] { nop(); } } }\n",
-                "'if' is not implemented",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { if self.hate[1] { nop(); } } }\n",
+                "unknown condition self.hate",
             ),
             (
                 "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { nop(); } }\n",
                 "an empty base needs a states block",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nbase native;\nstates { idle; }\n",
+                "mhf_ai 1;\nspecies 6;\nbase native;\nstates { idle = 0; }\n",
                 "clearing state index 0 would leave the state table unenterable",
             ),
         ];
@@ -592,7 +591,7 @@ states {
 mhf_ai 1;
 species 6;
 states {
-    idle {
+    idle = 0 {
         nop();
         slash(0);
     }
@@ -626,7 +625,7 @@ events {
 }
 
 states {
-    idle   { slash(0); transition combat; }
+    idle = 0 { slash(0); transition combat; }
     combat { bash(1);  transition idle; }
 }
 ",
@@ -645,7 +644,8 @@ states {
 
     #[test]
     fn compile_checks_a_hand_built_document_again() {
-        let mut document = parse("mhf_ai 1;\nspecies 6;\nstates { idle { nop(); } }\n").unwrap();
+        let mut document =
+            parse("mhf_ai 1;\nspecies 6;\nstates { idle = 0 { nop(); } }\n").unwrap();
         document.states.push(StateDecl {
             index: 0,
             name: "idle".to_owned(),

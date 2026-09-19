@@ -209,7 +209,7 @@ fn inspect_document(
             document.source,
         )),
         message: if document.warnings.is_empty() {
-            "已反编译可达状态和事件入口；其余表沿用原生。".into()
+            "已反编译可达状态、事件和子脚本；未导出项沿用原生。".into()
         } else {
             format!("部分脚本沿用原生：\n{}", document.warnings.join("\n"))
         },

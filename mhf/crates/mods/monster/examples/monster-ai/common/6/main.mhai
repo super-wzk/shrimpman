@@ -6,21 +6,20 @@ import "combat.mhai" as combat;
 import "reactions.mhai" as reactions;
 
 states {
-    idle -> idle_loop;
-    fight -> fight_loop;
+    fight => fight_loop;
 }
 
 events {
-    dung_reaction -> reactions.handle_first;
-    invalid_ground -> reactions.handle_second;
+    dung_reaction => reactions.handle_first;
+    invalid_ground => reactions.handle_second;
 }
 
-fn idle_loop() {
+fn main() {
     wait(30);
     transition fight;
 }
 
 fn fight_loop() {
     combat.attack();
-    transition idle;
+    restart;
 }

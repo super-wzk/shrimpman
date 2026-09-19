@@ -34,7 +34,7 @@ attach、回滚和 detach 的顺序。功能各自的代码不放在源码根目
 互斥，低 lane 可能先更新若干保存游标。`0x05` 是动作请求，`0x07` 切换主表条目；
 137 个已命名 opcode 和其余字节的默认终止行为记在 opcode 目录里。作者使用固定
 事件名及状态别名／索引；事件槽位、mask 和收尾指令由编译器映射；规范里尚未定论的
-部分（`repeat`、`resume()`、`self.`／`if`、框架内部命令 `reset`）
+部分（`repeat`、`resume()`、`self.`／`if`）
 编译器直接拒绝，`native(...)` 是显式逃生口并报告它代表的字节。
 
 ## 种类上限补丁
@@ -78,11 +78,14 @@ crate 还在记录初始化 `0x00860360` 上安装 Hook（安装前校验共享�
 AI Hook 与上限补丁共用生命周期：attach 先写补丁再装 Hook，Hook 安装失败时
 回滚补丁；detach 反序卸载。
 
-入口通过 `states { idle -> idle_loop; }` 和 `events { player_detected -> reactions.handle; }`
-绑定函数；省略索引时顺序分配，`= N` 指定下一起点。函数写作 `fn idle_loop()`，
-使用 `combat.attack();` 调用，自然结束自动返回；事件按槽生成原生收尾。
-主状态仍需显式切换或终止。`import "#common/combat.mhai" as combat;` 只访问
-当前物种默认目录；普通路径相对于当前文件。函数在编译期展开，不覆盖原生子脚本表。
+`fn main()` 固定定义状态 0；其他状态通过 `states { fight = 3 => fight_loop; }`
+绑定函数，省略索引时从 1 顺序分配。事件使用固定名称，如
+`events { player_detected => reactions.handle; }`。辅助函数用 `combat.attack();` 调用。
+`restart;` 重入 main，主状态自然结束自动补 FF 00，事件自动补对应收尾。
+`import "#common/combat.mhai" as combat;` 只访问
+当前物种默认目录；普通路径相对于当前文件。普通函数在编译期展开；
+`@slot(table = 1, index = 3)` 可将函数绑定到原生子脚本表项。
+反编译跟随 `81/82` 并默认输出单文件，调用与返回保留原生固定层级语义，无需清单文件。
 完整可编译示例位于 [examples/monster-ai](examples/monster-ai/)。
 
 ## 验证

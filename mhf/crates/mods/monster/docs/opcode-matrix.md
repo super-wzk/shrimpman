@@ -68,7 +68,7 @@
 | opcode | 名称 | 操作数 | 语义 | 域 | 信度 |
 | --- | --- | --- | --- | --- | --- |
 | `0x01` | mask-gated marker scan | 选择子 | 用 actor 的 lane 掩码对照配置的 lane 数量做门控，不通过则扫到下一个 `0x01` 标记；选择子 1/2 是识别标记的续行形式 | named | confirmed |
-| `0x02` | lane-selection marker scan | 选择子 | 选择子 0 由 `+2687`（仇恨标志）门控，通过时清掉选中 lane 的字节并扫到 `0x02` 标记 | named | confirmed |
+| `0x02` | tracked-player check | 选择子 | 0：`+2687` 非零执行正文；为零清当前目标 `+2612=FF` 并跳至 else/end；1：else；2：end | named | confirmed |
 | `0x03` | target-id marker scan | 选择子 | 选择子 0 比较当前与待定的 16 位目标 id，目标不被接受时重置动作选择字段，再扫到 `0x03` 标记 | named | confirmed |
 | `0x04` | reset-main-cursor | 无 | 把 `+2576`（主表下标）清 0，再装入 `main[0][0]`；不清 lane 掩码/delay/触发锁存 | named | confirmed |
 | `0x05` | dispatch-action | 组、动作 id、参数（3 字节） | 读三字节动作元组，必要时调用动作分派器，并按续行标志保存续行游标 | named | confirmed |
@@ -119,11 +119,11 @@
 | `0x32` | selection-byte equality gate | 选择子 + `u8` | 选择子 0 比较 `+2088` 与载荷字节，不等则走嵌套 `0x32` 体 | named | confirmed |
 | `0x33` | selection-byte list gate | 选择子 + 计数 + 表 | 选择子 0 拿 `+2088` 与载荷列表比较，直到命中前走嵌套 `0x33` 体 | named | confirmed |
 | `0x34` | actor-kind-pair gate | 选择子 + 2 字节 | 选择子 0 比较 actor 的 `+20`/`+21` 字节与两个载荷字节，任一不同则走嵌套 `0x34` 体 | named | confirmed |
-| `0x35` | zero-flag gate | 选择子 | 选择子 0 仅在 `+2726` 为 0 时继续，否则走嵌套 `0x35` 体 | named | confirmed |
+| `0x35` | rage-active condition | 选择子 | 0：`+2726` 怒态标志非零时执行正文，否则跳至 else/end；1：else；2：end | named | confirmed |
 | `0x36` | distance threshold gate | 选择子 + `u8` | 选择子 0 算 actor 位置（`+172`/`+180`）与保存参考点（`+2852`/`+2860`）的距离，超阈值则走嵌套 `0x36` 体 | named | operation_confirmed |
 | `0x37` | global-flag gate | 选择子 | 选择子 0 仅在全局对象标志 `+44` 不含位 `0x200000` 时继续，否则走嵌套 `0x37` 体 | named | confirmed |
 | `0x38` | species-variant table gate | 选择子 | 选择子 0 按物种 id `+2040` 与变体 `+2008` 读表项，表项非零则抑制嵌套 `0x38` 体 | generic | operation_confirmed |
-| `0x39` | zero-counter gate | 选择子 | 选择子 0 仅在 `+2914` 为 0 时继续，否则走嵌套 `0x39` 体 | named | confirmed |
+| `0x39` | flash-active condition | 选择子 | 0：`+2914` 闪光计时器非零时执行正文，否则跳至 else/end；1：else；2：end | named | confirmed |
 | `0x3A` | nonzero-selection gate | 选择子 | 选择子 0 仅在 `+3186` 非零时继续，否则走嵌套 `0x3A` 体 | named | confirmed |
 | `0x3B` | null-pointer gate | 选择子 | 选择子 0 仅在 `+3172`（关联 actor 指针）为空时继续，否则走嵌套 `0x3B` 体 | named | operation_confirmed |
 | `0x3C` | other-actor gate | 选择子 | 选择子 0 只在 `+3172` 指向的 actor 其 `+2680` 等于 1 且物种 id 相同时抑制嵌套体 | named | operation_confirmed |
@@ -188,8 +188,8 @@
 | `0x7e` | candidate_lane_selection | 选择子 | 清 `+2582` 与 `+2612`；先按玩家域 lane 搜索 `sub_10864D90`，未命中再切到 em 域：在 `dword_1ED7AD2C`（3824 步长，最多 40 条）里挑"非自身、活动、`+3187`≠0、`+2040` 与自身相同、且在半径/高度内"的记录，把该记录自己的下标 `+12` 写进 `+2612`/`+2584`，命令 kind 置 13 | generic | operation_confirmed |
 | `0x7f` | bit_40_clear_gate | 选择子 | 选择子 0 仅在 `0x1086A920` 返回 0 时清 `+1042`（实体状态字）的位 `0x40`，然后扫嵌套 `0x7f` 块 | named | confirmed |
 | `0x80` | bounded_nested_delta_scan | 选择子 + 计数 | 选择子 0 读计数，扫嵌套 `0x80` 记录，把每条第 3 字节的带符号增量按 `+1096` 与 31 偏移累加 | named | confirmed |
-| `0x81` | load_main_cursor_level | `u8` + 载荷 | 按索引字节装入 `root[1][index]` 游标，把子脚本下标存 `+2577`，stage `+2580` 为 0 时把续行游标记到 `+2552`，再置 stage=1 | named | confirmed |
-| `0x82` | load_subcursor_level | 2×`u8` + 载荷 | 由两级索引装入二级游标，把下标存 `+2578`，stage `+2580` 为 1 时把续行游标记到 `+2556`，再置 stage=2 | named | confirmed |
+| `0x81` | call_primary_subscript | `u8` | 调用 `root[1][index]`；从 stage 0 调用时保存 `0x81` 后续行游标到 `+2552`，同层调用则是尾跳转；置 stage=1 | named | confirmed |
+| `0x82` | call_secondary_subscript | 2×`u8` | 调用 `root[15 + group][index]`；从 stage 1 调用时保存 `0x82` 后续行游标到 `+2556`，同层调用则是尾跳转；置 stage=2 | named | confirmed |
 | `0x83` | lane_value_ordered_skip | 选择子 + 计数 | 选择子 0 把计数列表与选中 lane 值比较（`+3231` 为 13 时改用距离推导值），把值写 `+1112`，并把跳过计数存 `+2586` | generic | operation_confirmed |
 | `0x84` | increment_runtime_1096 | 无 | 与 `0x7b` 共用内联递增路径：递增 `+1096`（脚本 RNG 计数） | named | confirmed |
 | `0x85` | set_runtime_flag_40 | 无 | 置 `+1042`（实体状态字）位 `0x40` 并调用 `0x113AAAC0` | named | operation_confirmed |

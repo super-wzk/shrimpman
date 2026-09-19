@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use super::parser::{Callee, Document, Statement, StatementKind, check_document};
+use super::slot::NativeSlot;
 use crate::ai::control::EVENT_SLOTS;
 use crate::ai::{Base, Diagnostic, Error, Node, Program, Result, Table, bytecode};
 
@@ -30,9 +31,6 @@ enum Command {
     /// block in this language owns a cursor yet, so writing it is an error until
     /// contents/sub-contents/route blocks exist (spec §11.2).
     Resume,
-    /// Interpreter-owned: reserved so nothing else can take the name, and
-    /// rejected when an author writes it (spec §6).
-    Framework { opcode: &'static [u8] },
 }
 
 fn reserved_command(name: &str) -> Option<Command> {
@@ -61,9 +59,6 @@ fn reserved_command(name: &str) -> Option<Command> {
         "route_move_end" => Command::Fixed {
             opcode: &[0xff, 0xfe],
             args: 0,
-        },
-        "reset" => Command::Framework {
-            opcode: &[0xff, 0x00],
         },
         _ => return None,
     };
@@ -108,19 +103,46 @@ enum Scope {
 }
 
 struct Compiler<'a> {
+    auto_finish: bool,
     names: Names<'a>,
     warnings: Vec<Diagnostic>,
     functions: &'a [super::parser::Function],
     stack: Vec<String>,
+    native_functions: &'a HashMap<String, NativeSlot>,
+    native_scope: Option<NativeSlot>,
 }
 
 impl Compiler<'_> {
+    fn encode_branch(
+        &mut self,
+        statement: &Statement,
+        name: &str,
+        body: &[Statement],
+        scope: Scope,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        let start = out.len();
+        self.encode_body(body, scope, out)?;
+        if !closed(&out[start..])? {
+            return Err(statement.error(format!(
+                "{name} branch contains an unclosed native conditional"
+            )));
+        }
+        Ok(())
+    }
+
     fn encode_body(&mut self, body: &[Statement], scope: Scope, out: &mut Vec<u8>) -> Result<bool> {
         for statement in body {
             if out.len() > super::super::decompile::MAX_SCRIPT_BYTES {
                 return Err(statement.error("expanded function exceeds 64 KiB"));
             }
             if matches!(statement.kind, StatementKind::Return) {
+                if let Some(slot) = self.native_scope
+                    && self.stack.len() == 1
+                {
+                    out.extend_from_slice(&[0xff, slot.ending()]);
+                    return Ok(true);
+                }
                 if !closed(out)? {
                     return Err(
                         statement.error("return inside a native conditional is not supported")
@@ -134,7 +156,22 @@ impl Compiler<'_> {
             } = &statement.kind
                 && let Some(function) = self.functions.iter().find(|f| f.name == *name)
             {
+                if name == "main" {
+                    return Err(statement.error("main is an entry point, not a callable helper"));
+                }
                 self.require_args(statement, args, 0, name)?;
+                if let Some(slot) = self.native_functions.get(name) {
+                    let call = slot.call();
+                    out.extend_from_slice(&call);
+                    if self
+                        .native_scope
+                        .is_some_and(|current| current.is_same_level_call(&call))
+                        && closed(out)?
+                    {
+                        return Ok(true);
+                    }
+                    continue;
+                }
                 if self.stack.contains(name) || self.stack.len() >= 64 {
                     return Err(statement.error(format!(
                         "recursive or excessively deep function call: {name}"
@@ -151,10 +188,13 @@ impl Compiler<'_> {
                 continue;
             }
             self.encode_statement(statement, scope, out)?;
-            if !self.functions.is_empty()
+            if self.auto_finish
                 && matches!(
                     statement.kind,
-                    StatementKind::Transition { .. } | StatementKind::Restart
+                    StatementKind::Transition { .. }
+                        | StatementKind::Restart
+                        | StatementKind::Reset
+                        | StatementKind::ResetForgetTarget
                 )
                 && closed(out)?
             {
@@ -171,6 +211,102 @@ impl Compiler<'_> {
         out: &mut Vec<u8>,
     ) -> Result<()> {
         match &statement.kind {
+            StatementKind::EntryBody(body) => {
+                self.encode_body(body, scope, out)?;
+            }
+            StatementKind::Random(branches) => {
+                let total: u64 = branches.iter().map(|(weight, _)| u64::from(*weight)).sum();
+                if total == 0 {
+                    return Err(statement.error("random requires at least one positive weight"));
+                }
+                let mut weights: Vec<u8> = branches
+                    .iter()
+                    .map(|(weight, _)| (u64::from(*weight) * 32 / total) as u8)
+                    .collect();
+                let mut order: Vec<usize> = (0..branches.len()).collect();
+                order.sort_by_key(|&index| {
+                    std::cmp::Reverse(u64::from(branches[index].0) * 32 % total)
+                });
+                let remaining = 32
+                    - weights
+                        .iter()
+                        .map(|&weight| usize::from(weight))
+                        .sum::<usize>();
+                for &index in order.iter().take(remaining) {
+                    weights[index] += 1;
+                }
+                if branches
+                    .iter()
+                    .zip(&weights)
+                    .any(|((original, _), normalized)| *original > 0 && *normalized == 0)
+                {
+                    return Err(statement.error(
+                        "random weight normalizes to zero; increase it or reduce the other weights",
+                    ));
+                }
+                if branches
+                    .iter()
+                    .any(|(weight, _)| u64::from(*weight) * 32 % total != 0)
+                {
+                    self.warnings.push(Diagnostic::at(
+                        statement.line,
+                        statement.column,
+                        format!("random weights rounded to {weights:?} out of 32"),
+                    ));
+                }
+                out.extend_from_slice(&[0x80, 0, branches.len() as u8]);
+                for (index, ((_, body), weight)) in branches.iter().zip(weights).enumerate() {
+                    out.extend_from_slice(&[0x80, index as u8 + 1, weight]);
+                    self.encode_branch(statement, "random", body, scope, out)?;
+                }
+                out.extend_from_slice(&[0x80, 0xff]);
+            }
+            StatementKind::TargetDistanceGroups(branches) => {
+                if !(2..=5).contains(&branches.len()) {
+                    return Err(statement.error("distance match requires 1..4 groups and else"));
+                }
+                out.extend_from_slice(&[0x83, 0, branches.len() as u8 - 1]);
+                for (index, body) in branches.iter().enumerate() {
+                    out.extend_from_slice(&[0x83, index as u8 + 1]);
+                    self.encode_branch(statement, "distance", body, scope, out)?;
+                }
+                out.extend_from_slice(&[0x83, 0xff]);
+            }
+            StatementKind::SelectTargetEntity(strategy) => out.push(strategy.opcode()),
+            StatementKind::SelectPlayerSlot(slot) => out.extend_from_slice(&[0x06, 1, 0, *slot]),
+            StatementKind::SelectWaypoint(index) => out.extend_from_slice(&[0x06, 2, 1, *index]),
+            StatementKind::SelectRelativePoint(direction) => {
+                out.extend_from_slice(&[0x06, 6, *direction as u8, 0]);
+            }
+            StatementKind::BindAwarenessTarget => out.push(0x11),
+            StatementKind::BindCurrentTarget => out.push(0x13),
+            StatementKind::SetMode(mode) => out.extend_from_slice(&[0x40, *mode as u8]),
+            StatementKind::UpdateTargetPosition => out.push(0x4d),
+            StatementKind::IncrementRandomValue => out.push(0x84),
+            StatementKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let encoding = condition.encoding();
+                if let super::condition::Condition::TargetAngleIn { min, max } = condition {
+                    let actual_min = super::condition::Degrees::from_native(min.native()).value();
+                    let actual_max = super::condition::Degrees::from_native(max.native()).value();
+                    if min.value() != actual_min || max.value() != actual_max {
+                        self.warnings.push(Diagnostic::at(statement.line, statement.column, format!(
+                            "target_angle_in({}, {}) quantized/clamped to [{actual_min}, {actual_max}] degrees; native maximum is 358.59375",
+                            min.value(), max.value()
+                        )));
+                    }
+                }
+                out.extend_from_slice(&encoding.begin);
+                self.encode_branch(statement, "if", then_body, scope, out)?;
+                if let Some(body) = else_body {
+                    out.extend_from_slice(encoding.otherwise);
+                    self.encode_branch(statement, "else", body, scope, out)?;
+                }
+                out.extend_from_slice(encoding.end);
+            }
             StatementKind::Return => unreachable!("handled by encode_body"),
             StatementKind::Call { callee, args } => match callee {
                 Callee::Action { group, id } => {
@@ -193,11 +329,6 @@ impl Compiler<'_> {
                                     "resume() returns to a cursor owned by a contents, sub-contents, or route table; no block in this document owns one (spec §11.2)",
                                 ));
                             }
-                            Command::Framework { .. } => {
-                                return Err(statement.error(format!(
-                                    "'{name}' is emitted by the interpreter itself; an author cannot write it (spec §6)"
-                                )));
-                            }
                         }
                     } else if let Some(&(group, id)) = self.names.actions.get(name.as_str()) {
                         self.require_args(statement, args, 1, "an action call")?;
@@ -210,6 +341,11 @@ impl Compiler<'_> {
                 }
             },
             StatementKind::Transition { state } => {
+                if state == "main" {
+                    return Err(
+                        statement.error("use restart; to re-enter main, not transition main;")
+                    );
+                }
                 if scope != Scope::States {
                     return Err(statement.error(
                         "transition is only valid inside a states block: 0x07 rewrites the global main index, so an event lane would jump into the state table and never return to its own cursor (spec §7)",
@@ -227,6 +363,8 @@ impl Compiler<'_> {
                     })?;
                 out.extend_from_slice(&bytecode::encode_main_jump(index));
             }
+            StatementKind::Reset => out.extend_from_slice(&[0xff, 0x00]),
+            StatementKind::ResetForgetTarget => out.extend_from_slice(&[0xff, 0xf7]),
             StatementKind::Restart => {
                 if scope != Scope::States {
                     return Err(statement.error(
@@ -297,13 +435,14 @@ fn check_decodes(bytes: &[u8], line: usize, column: usize, what: &str) -> Result
 
 /// Endings verified in 108675A0 and the corresponding native event scripts.
 /// Functions are expanded at the call site, so a normal return emits no bytes.
-fn finish(bytes: &mut Vec<u8>, event: Option<u8>) -> Result<()> {
+fn finish(bytes: &mut Vec<u8>, ending: u8, slot: Option<NativeSlot>) -> Result<()> {
     let mut structure = bytecode::ScriptStructure::default();
     let mut terminal = false;
     for instruction in bytecode::decode(bytes)? {
         structure.push(&instruction.bytes)?;
         terminal = structure.is_closed()
-            && (bytecode::is_stop(instruction.opcode)
+            && (slot.is_some_and(|slot| slot.is_same_level_call(&instruction.bytes))
+                || bytecode::is_stop(instruction.opcode)
                 || matches!(instruction.opcode, 0x04 | 0x07 | 0x68)
                 || (instruction.opcode == 0xff
                     && matches!(instruction.bytes.get(1), Some(0..=3 | 0xf5..=0xff))));
@@ -314,13 +453,28 @@ fn finish(bytes: &mut Vec<u8>, event: Option<u8>) -> Result<()> {
         ));
     }
     if !terminal {
-        let ending = event.map_or(0x00, |slot| EVENT_SLOTS[usize::from(slot)].ending);
         bytes.extend_from_slice(&[0xff, ending]);
     }
     if bytes.len() > super::super::decompile::MAX_SCRIPT_BYTES {
         return Err(Error::new("expanded function exceeds 64 KiB"));
     }
     Ok(())
+}
+
+fn ensure_root_table(program: &mut Program, root_index: usize) -> usize {
+    let Node::Table(root) = &program.nodes[program.root] else {
+        unreachable!()
+    };
+    if let Some(table) = root.get(root_index) {
+        return table;
+    }
+    let table = program.nodes.len();
+    program.nodes.push(Node::Table(Table::new()));
+    let Node::Table(root) = &mut program.nodes[program.root] else {
+        unreachable!()
+    };
+    root.insert(root_index, table);
+    table
 }
 
 fn closed(bytes: &[u8]) -> Result<bool> {
@@ -351,6 +505,15 @@ impl Document {
                 .filter_map(|d| d.body.as_ref())
                 .chain(self.events.iter().filter_map(|d| d.body.as_ref()))
             {
+                if matches!(
+                    body.as_slice(),
+                    [Statement {
+                        kind: StatementKind::EntryBody(_),
+                        ..
+                    }]
+                ) {
+                    continue;
+                }
                 if let [
                     Statement {
                         kind:
@@ -367,20 +530,24 @@ impl Document {
                     continue;
                 }
                 return Err(Error::new(
-                    "states/events entries must bind a declared function using ->",
+                    "states/events entries require => followed by a declared function or a block",
                 ));
             }
         }
         let mut compiler = Compiler {
+            auto_finish: self.auto_finish,
             names: Names::collect(self),
             warnings: Vec::new(),
             functions: &self.functions,
             stack: Vec::new(),
+            native_functions: &self.native_functions,
+            native_scope: None,
         };
         // Check even unused helpers, so a broken imported file cannot be hidden
         // by the current entry bindings. Context-specific checks still happen
         // again while compiling each entry.
         for function in &self.functions {
+            compiler.native_scope = self.native_functions.get(&function.name).copied();
             compiler.stack.push(function.name.clone());
             compiler
                 .encode_body(&function.body, Scope::States, &mut Vec::new())
@@ -388,12 +555,14 @@ impl Document {
             compiler.stack.pop();
         }
         compiler.warnings.clear();
+        compiler.native_scope = None;
         let states = self.encode_states(&mut compiler)?;
         let events = self.encode_events(&mut compiler)?;
-        let program = match self.base {
+        let mut program = match self.base {
             Base::Empty => assemble_empty(self, states, events)?,
             Base::Native => assemble_native(self, states, events)?,
         };
+        self.encode_native_functions(&mut compiler, &mut program)?;
         program.validate_lossless()?;
         Ok(Compiled {
             program,
@@ -401,8 +570,48 @@ impl Document {
         })
     }
 
+    fn encode_native_functions(
+        &self,
+        compiler: &mut Compiler<'_>,
+        program: &mut Program,
+    ) -> Result<()> {
+        let mut bindings: Vec<_> = self.native_functions.iter().collect();
+        bindings.sort_by_key(|(_, slot)| **slot);
+        for (name, slot) in bindings {
+            let function = self
+                .functions
+                .iter()
+                .find(|f| &f.name == name)
+                .ok_or_else(|| Error::new(format!("@slot function '{name}' is not declared")))?;
+            compiler.native_scope = Some(*slot);
+            compiler.stack.push(name.clone());
+            let mut bytes = Vec::new();
+            compiler.encode_body(&function.body, Scope::States, &mut bytes)?;
+            compiler.stack.pop();
+            finish(&mut bytes, slot.ending(), Some(*slot))?;
+
+            let script = program.nodes.len();
+            program.nodes.push(Node::Script(bytes));
+            let table = ensure_root_table(program, slot.table);
+            let Node::Table(table) = &mut program.nodes[table] else {
+                unreachable!()
+            };
+            table.insert(usize::from(slot.index), script);
+        }
+        Ok(())
+    }
+
     fn encode_states(&self, compiler: &mut Compiler<'_>) -> Result<Vec<(u8, Option<Vec<u8>>)>> {
         let mut encoded = Vec::with_capacity(self.states.len());
+        if let Some(main) = self.functions.iter().find(|f| f.name == "main") {
+            let mut bytes = Vec::new();
+            compiler.stack.push(main.name.clone());
+            compiler.encode_body(&main.body, Scope::States, &mut bytes)?;
+            compiler.stack.pop();
+            finish(&mut bytes, 0x00, None)?;
+            check_decodes(&bytes, main.line, main.column, "main")?;
+            encoded.push((0, Some(bytes)));
+        }
         for decl in &self.states {
             let Some(body) = &decl.body else {
                 encoded.push((decl.index, None));
@@ -411,7 +620,7 @@ impl Document {
             let mut bytes = Vec::new();
             compiler.encode_body(body, Scope::States, &mut bytes)?;
             if self.auto_finish {
-                finish(&mut bytes, None)?;
+                finish(&mut bytes, 0x00, None)?;
             }
             check_decodes(
                 &bytes,
@@ -434,7 +643,7 @@ impl Document {
             let mut bytes = Vec::new();
             compiler.encode_body(body, Scope::Events, &mut bytes)?;
             if self.auto_finish {
-                finish(&mut bytes, Some(decl.slot))?;
+                finish(&mut bytes, EVENT_SLOTS[usize::from(decl.slot)].ending, None)?;
             }
             let what = format!("event '{}'", EVENT_SLOTS[usize::from(decl.slot)].name);
             check_decodes(&bytes, decl.line, decl.column, &what)?;

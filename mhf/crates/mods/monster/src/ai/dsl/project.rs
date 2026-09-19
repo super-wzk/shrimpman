@@ -204,12 +204,21 @@ impl Project {
         entry.actions.clear();
         entry.functions.clear();
         entry.imports.clear();
+        entry.native_functions.clear();
         // Source order makes output deterministic; each canonical module is merged once.
         for file in &self.files {
             if !visited.contains(&file.path) {
                 continue;
             }
             let document = &documents[&file.path];
+            for (name, slot) in &document.native_functions {
+                if entry.native_functions.values().any(|value| value == slot) {
+                    return Err(Error::new("duplicate native slot binding across modules"));
+                }
+                entry
+                    .native_functions
+                    .insert(qualify(&file.path, name), *slot);
+            }
             let mut imports = HashMap::new();
             for import in &document.imports {
                 imports.insert(
@@ -224,7 +233,9 @@ impl Project {
             }
             for function in &document.functions {
                 let mut function = function.clone();
-                function.name = qualify(&file.path, &function.name);
+                if function.name != "main" {
+                    function.name = qualify(&file.path, &function.name);
+                }
                 rewrite(&mut function.body, &file.path, &imports)?;
                 entry.functions.push(function);
             }
@@ -284,6 +295,13 @@ fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) 
                 callee: Callee::Name(name),
                 ..
             } => {
+                if name == "main" || name.ends_with(".main") {
+                    return Err(Error::at(
+                        statement.line,
+                        statement.column,
+                        "main is an entry point, not a callable helper",
+                    ));
+                }
                 if let Some((alias, member)) = name.split_once('.') {
                     let target = imports.get(alias).ok_or_else(|| {
                         Error::at(
@@ -300,7 +318,29 @@ fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) 
                     *name = qualify(path, name);
                 }
             }
-            StatementKind::Repeat { body, .. } => rewrite(body, path, imports)?,
+            StatementKind::Repeat { body, .. } | StatementKind::EntryBody(body) => {
+                rewrite(body, path, imports)?;
+            }
+            StatementKind::Random(branches) => {
+                for (_, body) in branches {
+                    rewrite(body, path, imports)?;
+                }
+            }
+            StatementKind::TargetDistanceGroups(branches) => {
+                for body in branches {
+                    rewrite(body, path, imports)?;
+                }
+            }
+            StatementKind::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                rewrite(then_body, path, imports)?;
+                if let Some(body) = else_body {
+                    rewrite(body, path, imports)?;
+                }
+            }
             _ => {}
         }
     }

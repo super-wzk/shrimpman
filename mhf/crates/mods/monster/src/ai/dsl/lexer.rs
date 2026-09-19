@@ -6,8 +6,9 @@ use crate::ai::{Error, Result};
 pub(super) enum TokenKind {
     Word(String),
     Number(u32),
+    Decimal(String),
     String(String),
-    Arrow,
+    FatArrow,
     LeftBracket,
     RightBracket,
     LeftParen,
@@ -15,10 +16,12 @@ pub(super) enum TokenKind {
     LeftBrace,
     RightBrace,
     Colon,
+    DoubleColon,
     Equals,
     Comma,
     Semicolon,
     Dot,
+    At,
     Eof,
 }
 
@@ -68,6 +71,10 @@ impl<'a> Lexer<'a> {
             };
 
             let kind = match byte {
+                b'@' => {
+                    self.bump();
+                    TokenKind::At
+                }
                 b'"' => {
                     self.bump();
                     let start = self.offset;
@@ -83,10 +90,10 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     TokenKind::String(path)
                 }
-                b'-' if self.peek_next() == Some(b'>') => {
+                b'=' if self.peek_next() == Some(b'>') => {
                     self.bump();
                     self.bump();
-                    TokenKind::Arrow
+                    TokenKind::FatArrow
                 }
                 b'[' => {
                     self.bump();
@@ -114,7 +121,12 @@ impl<'a> Lexer<'a> {
                 }
                 b':' => {
                     self.bump();
-                    TokenKind::Colon
+                    if self.peek() == Some(b':') {
+                        self.bump();
+                        TokenKind::DoubleColon
+                    } else {
+                        TokenKind::Colon
+                    }
                 }
                 b'=' => {
                     self.bump();
@@ -174,6 +186,19 @@ impl<'a> Lexer<'a> {
         } else {
             while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
                 self.bump();
+            }
+            if self.peek() == Some(b'.')
+                && self.peek_next().is_some_and(|byte| byte.is_ascii_digit())
+            {
+                self.bump();
+                while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
+                    self.bump();
+                }
+                return Ok(TokenKind::Decimal(
+                    std::str::from_utf8(&self.source[start..self.offset])
+                        .expect("decimal ASCII")
+                        .to_owned(),
+                ));
             }
         }
 
