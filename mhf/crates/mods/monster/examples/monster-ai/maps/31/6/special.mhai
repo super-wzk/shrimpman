@@ -1,0 +1,11 @@
+import "#common/movement.mhai" as movement;
+
+fn followup() {
+    wait(5);
+    action[3:6](0);
+}
+
+fn handle_second() {
+    movement.recover();
+    wait(10);
+}

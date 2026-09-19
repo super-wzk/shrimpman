@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use super::compile::is_reserved_command;
 use super::lexer::{Lexer, Token, TokenKind};
 use super::{EVENT_SLOT_COUNT, VERSION};
+use crate::ai::control::EVENT_SLOTS;
 use crate::ai::{Base, Error, Result};
 
 /// One parsed document.
@@ -17,6 +18,27 @@ pub struct Document {
     pub actions: Vec<ActionDecl>,
     pub events: Vec<EventDecl>,
     pub states: Vec<StateDecl>,
+    pub map: Option<u32>,
+    pub functions: Vec<Function>,
+    pub imports: Vec<Import>,
+    pub(super) module: bool,
+    pub(super) auto_finish: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Function {
+    pub name: String,
+    pub body: Vec<Statement>,
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Import {
+    pub path: String,
+    pub alias: String,
+    pub line: usize,
+    pub column: usize,
 }
 
 /// `slash = [3:6];` — an alias for one native action coordinate.
@@ -29,13 +51,11 @@ pub struct ActionDecl {
     pub column: usize,
 }
 
-/// `roar = 0 { ... }`, `0 { ... }`, or `roar = 0;`.
+/// A named event binding, inline body, or explicit clear declaration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventDecl {
     /// Native event slot 0..=6 (spec §9).
     pub slot: u8,
-    /// Author-facing alias; `None` when the entry wrote the slot number only.
-    pub name: Option<String>,
     /// `None` clears the slot instead of installing a script.
     pub body: Option<Vec<Statement>>,
     pub line: usize,
@@ -70,16 +90,27 @@ impl Statement {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatementKind {
+    Return,
     /// `name(args);`, or the anonymous `action[group:id](parameter);`.
-    Call { callee: Callee, args: Vec<u8> },
+    Call {
+        callee: Callee,
+        args: Vec<u8>,
+    },
     /// `transition <state>;` — states blocks only.
-    Transition { state: String },
+    Transition {
+        state: String,
+    },
     /// `restart;` — states blocks only.
     Restart,
     /// `repeat <n> { ... }`. Parsed and formatted, not emitted yet (spec §11.9).
-    Repeat { count: u8, body: Vec<Statement> },
+    Repeat {
+        count: u8,
+        body: Vec<Statement>,
+    },
     /// `native(0xff, 0xfd);` — the only bare-value escape.
-    Native { bytes: Vec<u8> },
+    Native {
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,10 +122,14 @@ pub enum Callee {
 /// Parse a complete monster-AI document.
 ///
 /// `//` comments run to the end of the line. Declaration blocks may appear in
-/// any order; the entries inside them are order-sensitive because they carry
-/// the index cursor (spec §4).
+/// any order. State entries carry an index cursor; named events are independent
+/// of declaration order (spec §4).
 pub fn parse(source: &str) -> Result<Document> {
-    Parser::new(source)?.parse()
+    Parser::new(source)?.parse(false)
+}
+
+pub(super) fn parse_module(source: &str) -> Result<Document> {
+    Parser::new(source)?.parse(true)
 }
 
 struct Parser {
@@ -110,34 +145,48 @@ impl Parser {
         })
     }
 
-    fn parse(mut self) -> Result<Document> {
-        self.expect_keyword("mhf_ai")?;
-        let (version, version_token) = self.take_number("format version")?;
-        if version != VERSION {
-            return Err(
-                version_token.error(format!("unsupported monster-AI DSL version {version}"))
-            );
-        }
-        self.expect(&TokenKind::Semicolon, "';'")?;
-
-        self.expect_keyword("species")?;
-        let (species, species_token) = self.take_number("species number")?;
-        let species = byte(species, &species_token, "species")?;
-        self.expect(&TokenKind::Semicolon, "';'")?;
-
-        let base = if self.current_word() == Some("base") {
-            self.advance();
-            let token = self.take_word("base kind")?;
-            let base = match word(&token) {
-                "native" => Base::Native,
-                other => {
-                    return Err(token.error(format!("unknown base '{other}'; expected native")));
-                }
-            };
-            self.expect(&TokenKind::Semicolon, "';'")?;
-            base
+    fn parse(mut self, allow_module: bool) -> Result<Document> {
+        let module = allow_module && self.current_word() != Some("mhf_ai");
+        let (version, species, map, base) = if module {
+            (VERSION, 0, None, Base::Native)
         } else {
-            Base::Empty
+            self.expect_keyword("mhf_ai")?;
+            let (version, version_token) = self.take_number("format version")?;
+            if version != VERSION {
+                return Err(
+                    version_token.error(format!("unsupported monster-AI DSL version {version}"))
+                );
+            }
+            self.expect(&TokenKind::Semicolon, "';'")?;
+
+            self.expect_keyword("species")?;
+            let (species, species_token) = self.take_number("species number")?;
+            let species = byte(species, &species_token, "species")?;
+            self.expect(&TokenKind::Semicolon, "';'")?;
+
+            let map = if self.current_word() == Some("map") {
+                self.advance();
+                let map = Some(self.take_number("map ID")?.0);
+                self.expect(&TokenKind::Semicolon, "';'")?;
+                map
+            } else {
+                None
+            };
+            let base = if self.current_word() == Some("base") {
+                self.advance();
+                let token = self.take_word("base kind")?;
+                let base = match word(&token) {
+                    "native" => Base::Native,
+                    other => {
+                        return Err(token.error(format!("unknown base '{other}'; expected native")));
+                    }
+                };
+                self.expect(&TokenKind::Semicolon, "';'")?;
+                base
+            } else {
+                Base::Empty
+            };
+            (version, species, map, base)
         };
 
         let mut document = Document {
@@ -147,19 +196,57 @@ impl Parser {
             actions: Vec::new(),
             events: Vec::new(),
             states: Vec::new(),
+            map,
+            functions: Vec::new(),
+            imports: Vec::new(),
+            module,
+            auto_finish: false,
         };
         let mut seen: Vec<String> = Vec::new();
         while !matches!(self.current().kind, TokenKind::Eof) {
             let token = self.take_word("an actions, events, or states block")?;
             let name = word(&token).to_owned();
+            if name == "import" {
+                let path = self.advance();
+                let TokenKind::String(value) = &path.kind else {
+                    return Err(path.error("expected a quoted import path"));
+                };
+                self.expect_keyword("as")?;
+                let alias = self.take_word("module alias")?;
+                self.expect(&TokenKind::Semicolon, "';'")?;
+                document.imports.push(Import {
+                    path: value.clone(),
+                    alias: identifier(&alias)?.into(),
+                    line: token.line,
+                    column: token.column,
+                });
+                continue;
+            }
+            if name == "fn" {
+                let name = self.take_word("function name")?;
+                self.expect(&TokenKind::LeftParen, "'('")?;
+                self.expect(&TokenKind::RightParen, "')' (functions have no parameters)")?;
+                self.expect(&TokenKind::LeftBrace, "'{'")?;
+                document.functions.push(Function {
+                    name: identifier(&name)?.into(),
+                    body: self.parse_body()?,
+                    line: name.line,
+                    column: name.column,
+                });
+                document.auto_finish = true;
+                continue;
+            }
+            if module && matches!(name.as_str(), "states" | "events") {
+                return Err(token.error("imported modules cannot declare states or events"));
+            }
             if seen.contains(&name) {
                 return Err(token.error(format!("duplicate '{name}' block")));
             }
             seen.push(name.clone());
             match name.as_str() {
                 "actions" => document.actions = self.parse_actions()?,
-                "events" => document.events = self.parse_events()?,
-                "states" => document.states = self.parse_states()?,
+                "events" => document.events = self.parse_events(&mut document.auto_finish)?,
+                "states" => document.states = self.parse_states(&mut document.auto_finish)?,
                 other => {
                     return Err(token.error(format!(
                         "unknown block '{other}'; expected actions, events, or states"
@@ -198,28 +285,34 @@ impl Parser {
         Ok(entries)
     }
 
-    fn parse_events(&mut self) -> Result<Vec<EventDecl>> {
+    fn parse_events(&mut self, auto_finish: &mut bool) -> Result<Vec<EventDecl>> {
         self.expect(&TokenKind::LeftBrace, "'{'")?;
         let mut entries = Vec::new();
         while !self.consume(&TokenKind::RightBrace) {
-            let token = self.current().clone();
-            let (name, slot) = match &token.kind {
-                TokenKind::Word(_) => {
-                    self.advance();
-                    let name = identifier(&token)?.to_owned();
-                    self.expect(&TokenKind::Equals, "'='")?;
-                    let (slot, slot_token) = self.take_number("event slot")?;
-                    (Some(name), event_slot(slot, &slot_token)?)
-                }
-                TokenKind::Number(_) => {
-                    let (slot, slot_token) = self.take_number("event slot")?;
-                    (None, event_slot(slot, &slot_token)?)
-                }
-                _ => {
-                    return Err(token.error("expected an event name or slot number"));
-                }
-            };
-            let body = if self.consume(&TokenKind::LeftBrace) {
+            let token = self.take_word("built-in event name")?;
+            let name = identifier(&token)?;
+            let slot = EVENT_SLOTS
+                .iter()
+                .position(|event| event.name == name)
+                .ok_or_else(|| {
+                    token.error(format!(
+                        "unknown event '{name}'; expected {}",
+                        EVENT_SLOTS
+                            .iter()
+                            .map(|event| event.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })? as u8;
+            if self.current().kind == TokenKind::Equals {
+                return Err(self
+                    .current()
+                    .error("events use fixed names; aliases and numeric slots are not supported"));
+            }
+            let body = if self.consume(&TokenKind::Arrow) {
+                *auto_finish = true;
+                Some(vec![self.function_reference()?])
+            } else if self.consume(&TokenKind::LeftBrace) {
                 Some(self.parse_body()?)
             } else {
                 self.expect(&TokenKind::Semicolon, "';' or '{'")?;
@@ -227,7 +320,6 @@ impl Parser {
             };
             entries.push(EventDecl {
                 slot,
-                name,
                 body,
                 line: token.line,
                 column: token.column,
@@ -236,7 +328,7 @@ impl Parser {
         Ok(entries)
     }
 
-    fn parse_states(&mut self) -> Result<Vec<StateDecl>> {
+    fn parse_states(&mut self, auto_finish: &mut bool) -> Result<Vec<StateDecl>> {
         self.expect(&TokenKind::LeftBrace, "'{'")?;
         let mut entries = Vec::new();
         let mut cursor: u32 = 0;
@@ -255,7 +347,10 @@ impl Parser {
                 cursor as u8
             };
             cursor = u32::from(index) + 1;
-            let body = if self.consume(&TokenKind::LeftBrace) {
+            let body = if self.consume(&TokenKind::Arrow) {
+                *auto_finish = true;
+                Some(vec![self.function_reference()?])
+            } else if self.consume(&TokenKind::LeftBrace) {
                 Some(self.parse_body()?)
             } else {
                 self.expect(&TokenKind::Semicolon, "';' or '{'")?;
@@ -280,6 +375,31 @@ impl Parser {
         Ok(statements)
     }
 
+    fn qualified_name(&mut self, mut name: String) -> Result<String> {
+        while self.consume(&TokenKind::Dot) {
+            name.push('.');
+            name.push_str(identifier(&self.take_word("qualified name")?)?);
+        }
+        Ok(name)
+    }
+
+    fn function_reference(&mut self) -> Result<Statement> {
+        let token = self.take_word("function reference")?;
+        let name = self.qualified_name(identifier(&token)?.into())?;
+        self.expect(
+            &TokenKind::Semicolon,
+            "';' after function reference (without parentheses)",
+        )?;
+        Ok(Statement {
+            kind: StatementKind::Call {
+                callee: Callee::Name(name),
+                args: Vec::new(),
+            },
+            line: token.line,
+            column: token.column,
+        })
+    }
+
     fn parse_statement(&mut self) -> Result<Statement> {
         let token = self.current().clone();
         let name = match &token.kind {
@@ -298,6 +418,10 @@ impl Parser {
         };
 
         match name.as_str() {
+            "return" => {
+                self.expect(&TokenKind::Semicolon, "';'")?;
+                Ok(position(StatementKind::Return))
+            }
             "transition" => {
                 if self.peek_is(&TokenKind::LeftParen) {
                     return Err(token.error(
@@ -349,6 +473,7 @@ impl Parser {
                 }))
             }
             _ => {
+                let name = self.qualified_name(name)?;
                 let args = self.parse_call_arguments()?;
                 self.expect(&TokenKind::Semicolon, "';'")?;
                 if name == "native" {
@@ -489,20 +614,12 @@ fn byte(value: u32, token: &Token, description: &str) -> Result<u8> {
         .map_err(|_| token.error(format!("{description} must be a number from 0 to 255")))
 }
 
-fn event_slot(value: u32, token: &Token) -> Result<u8> {
-    if value >= EVENT_SLOT_COUNT as u32 {
-        return Err(token.error(format!(
-            "event slot must be a number from 0 to {} (spec §4.2)",
-            EVENT_SLOT_COUNT - 1
-        )));
-    }
-    Ok(value as u8)
-}
-
 fn describe_token(kind: &TokenKind) -> String {
     match kind {
         TokenKind::Word(word) => format!("'{word}'"),
         TokenKind::Number(number) => number.to_string(),
+        TokenKind::String(value) => format!("\"{value}\""),
+        TokenKind::Arrow => "'->'".into(),
         TokenKind::LeftBracket => "'['".to_owned(),
         TokenKind::RightBracket => "']'".to_owned(),
         TokenKind::LeftParen => "'('".to_owned(),
@@ -537,6 +654,11 @@ const KEYWORDS: &[&str] = &[
     "native",
     "self",
     "if",
+    "fn",
+    "import",
+    "as",
+    "map",
+    "return",
 ];
 
 /// Check everything that does not need to look at a block body.
@@ -544,6 +666,36 @@ const KEYWORDS: &[&str] = &[
 /// [`parse`] calls this at the end of a successful read, and compilation calls
 /// it again so a hand-built [`Document`] cannot skip it.
 pub(super) fn check_document(document: &Document) -> Result<()> {
+    let mut symbols = HashMap::new();
+    for (name, line, column) in document
+        .functions
+        .iter()
+        .map(|f| (&f.name, f.line, f.column))
+        .chain(
+            document
+                .imports
+                .iter()
+                .map(|i| (&i.alias, i.line, i.column)),
+        )
+        .chain(document.actions.iter().map(|a| (&a.name, a.line, a.column)))
+    {
+        if KEYWORDS.contains(&name.as_str()) || is_reserved_command(name) {
+            return Err(Error::at(
+                line,
+                column,
+                format!("'{name}' collides with a reserved name"),
+            ));
+        }
+        if symbols.insert(name, ()).is_some() {
+            return Err(Error::at(
+                line,
+                column,
+                format!(
+                    "symbol '{name}' is declared twice (action '{name}' is declared twice if used as an action)"
+                ),
+            ));
+        }
+    }
     if document.version != VERSION {
         return Err(Error::new(format!(
             "unsupported monster-AI DSL version {}; this build reads version {VERSION}",
@@ -611,7 +763,10 @@ pub(super) fn check_document(document: &Document) -> Result<()> {
             return Err(Error::at(
                 decl.line,
                 decl.column,
-                format!("event slot {} is declared twice", decl.slot),
+                format!(
+                    "event '{}' is declared twice",
+                    EVENT_SLOTS[usize::from(decl.slot)].name
+                ),
             ));
         }
         slots.push(decl.slot);

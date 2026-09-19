@@ -203,6 +203,14 @@ typedef struct QuestControlApiVTable {
      *  the replacement may change after this call returns.
      */
     bool (*override_contains)(Erased_t const *, uint32_t, size_t);
+
+    /** \brief
+     *  Replace one primary quest spawn; preserves the replacement on failure.
+     *  # Safety
+     *  Call on the game thread before restarting the quest loader, with no
+     *  concurrent readers of replacement data. Offsets refer to the current quest.
+     */
+    int32_t (*replace_monster)(Erased_t const *, uint32_t, uint8_t, uint8_t);
 } QuestControlApiVTable_t;
 
 /** <No documentation available> */
@@ -238,7 +246,7 @@ typedef VirtualPtr__Erased_ptr_QuestLaunchApiVTable_t QuestLaunchTable;
 
 #define MHF_QUEST_PROVIDER "mhf.base"
 #define MHF_QUEST_INTERFACE "mhf.quest.v1"
-#define MHF_QUEST_CONTROL_INTERFACE "mhf.quest.control.v2"
+#define MHF_QUEST_CONTROL_INTERFACE "mhf.quest.control.v3"
 #define MHF_QUEST_LAUNCH_INTERFACE "mhf.quest.launch.v1"
 /** \brief
  *  Simplified for lighter documentation, but the actual impls

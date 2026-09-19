@@ -1,4 +1,4 @@
-//! Game-side loading of `dat/monster-ai/*.mhai` onto the live descriptor.
+//! Game-side loading of species-scoped `dat/monster-ai` projects.
 //!
 //! The verified client selects a species block in `0x10860360` (record
 //! initialization), keeps it in the actor at `+9F0`, and derives the state
@@ -21,8 +21,6 @@ use mhf_hooks::{HookGuard, HookSlot, ModuleReference};
 use std::{
     collections::HashMap,
     ffi::c_void,
-    fs,
-    io::ErrorKind,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Mutex, PoisonError,
@@ -38,7 +36,7 @@ const INIT: usize = 0x0086_0360;
 const INIT_SIGNATURE: [u8; 8] = [0x8a, 0x56, 0x03, 0xa1, 0x3c, 0xff, 0x7f, 0x1e];
 /// `dword_1E7FFF3C`, the session pointer whose `+0x34` holds the MapID
 /// (`0x10AA5D19` writes it).
-const SESSION: usize = 0x00e7_ff3c;
+const SESSION: usize = 0x0e7f_ff3c;
 const MAP_ID: usize = 0x34;
 /// Above this species the client leaves the shared row table and selects a
 /// per-species block, so a row overlay does not apply (spec §8.2).
@@ -190,39 +188,20 @@ impl State {
         Ok(bound)
     }
 
-    /// Read, parse, compile and bind one cell. `Ok(None)` means neither
-    /// candidate path exists, so the native block stays installed; an existing
-    /// file that cannot be read or bound is `Err`.
+    /// Read, resolve imports, compile and bind one project. Only a missing
+    /// map entry falls back to the same species' common project.
     fn load(&self, map: u32, species: u8, descriptor: u32) -> Result<Option<Bound>, String> {
-        for path in [
-            format!("{ROOT}/{map}/{species}.mhai"),
-            format!("{ROOT}/{species}.mhai"),
-        ] {
-            let source = match fs::read_to_string(&path) {
-                Ok(source) => source,
-                Err(error) if error.kind() == ErrorKind::NotFound => continue,
-                Err(error) => return Err(format!("{path}: {error}")),
-            };
-            return Ok(Some(self.compile(&path, &source, species, descriptor)?));
-        }
-        Ok(None)
+        let Some(project) = crate::ai::dsl::Project::load(std::path::Path::new(ROOT), map, species)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        self.compile(&project, descriptor).map(Some)
     }
 
-    fn compile(
-        &self,
-        path: &str,
-        source: &str,
-        species: u8,
-        descriptor: u32,
-    ) -> Result<Bound, String> {
-        let document = crate::ai::dsl::parse(source).map_err(|error| format!("{path}: {error}"))?;
-        if document.species != species {
-            return Err(format!(
-                "{path}: declares species {} but the file selects species {species}",
-                document.species
-            ));
-        }
-        let compiled = document
+    fn compile(&self, project: &crate::ai::dsl::Project, descriptor: u32) -> Result<Bound, String> {
+        let path = &project.entry;
+        let compiled = project
             .compile()
             .map_err(|error| format!("{path}: {error}"))?;
         if compiled.program.base != Base::Native {
@@ -347,4 +326,18 @@ unsafe fn validate(base: usize) -> Result<(), String> {
         return Err("unsupported or already modified monster AI initializer".to_owned());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_rva_matches_native_initializer_operand() {
+        // INIT starts with `mov dl,[esi+3]; mov eax,[1E7FFF3C]`.
+        // Reading 10E7FF3C instead yields code bytes 04 51 8D 51; treating
+        // those as a session faults at 518D5138 when the map is read.
+        let operand = u32::from_le_bytes(INIT_SIGNATURE[4..8].try_into().unwrap());
+        assert_eq!(0x1000_0000 + SESSION, operand as usize);
+    }
 }

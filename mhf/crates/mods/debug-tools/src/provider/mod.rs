@@ -40,6 +40,11 @@ impl Action {
 }
 
 enum DebugCommand {
+    MonsterAi {
+        request: u64,
+        target: AiTarget,
+        operation: AiOperation,
+    },
     InspectAction(Action),
     Equip {
         kind: u8,
@@ -131,6 +136,53 @@ struct MonsterHealth {
     controlled: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AiTarget {
+    epoch: u64,
+    pool: u32,
+    slot: u16,
+    serial: u32,
+    model: u32,
+    species: u8,
+}
+
+#[derive(Clone)]
+struct MonsterStatus {
+    target: AiTarget,
+    ai_state: u8,
+    action_group: u8,
+    action_id: u8,
+    action_stage: u8,
+    animation: u16,
+    frame: f32,
+    position: [f32; 3],
+}
+
+enum AiOperation {
+    ReplaceSpecies(u8),
+    Inspect,
+    Load,
+    Apply {
+        descriptor: u32,
+        source: mhf_monster::ai::dsl::Project,
+    },
+    Restore {
+        descriptor: u32,
+    },
+}
+
+struct AiReply {
+    request: u64,
+    target: AiTarget,
+    result: Result<AiDocument, String>,
+}
+
+struct AiDocument {
+    descriptor: u32,
+    source: Option<mhf_monster::ai::dsl::Project>,
+    message: String,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct DebugSnapshot {
     quest_id: u16,
@@ -159,6 +211,9 @@ pub(crate) struct DebugSnapshot {
     camera_pitch: f32,
     combat: CombatSnapshot,
     action_definition: Option<Arc<action_definition::ActionDefinition>>,
+    ai_targets: Vec<AiTarget>,
+    monster_statuses: Vec<MonsterStatus>,
+    ai_reply: Option<Arc<AiReply>>,
 }
 
 #[derive(Default)]

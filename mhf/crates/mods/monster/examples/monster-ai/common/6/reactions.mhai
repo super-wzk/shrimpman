@@ -1,0 +1,9 @@
+import "movement.mhai" as movement;
+
+fn handle_first() {
+    movement.recover();
+}
+
+fn handle_second() {
+    wait(5);
+}

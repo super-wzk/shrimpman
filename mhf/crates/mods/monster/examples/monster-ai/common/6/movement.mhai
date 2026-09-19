@@ -1,0 +1,8 @@
+fn prepare() {
+    clear_target();
+}
+
+fn recover() {
+    wait(20);
+    native(0x92);
+}

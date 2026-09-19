@@ -19,9 +19,10 @@ attach、回滚和 detach 的顺序。功能各自的代码不放在源码根目
 | `lib.rs` | 顶层聚合：`MonsterMod` 的补丁／Hook 生命周期与回滚 |
 | `native.rs` | 共享原语：游戏内存的定长读写与已验证构建的 PE 指纹 |
 | `ai/mod.rs` | `Program`／`Node`／`Table`／`Base` 与 `validate_lossless` |
-| `ai/dsl/` | 作者格式：`parse` → `Document::compile` → `Program`，词法／语法／编译三个文件各管一段。游戏读取 `.mhai` 时走的就是这条链 |
+| `ai/dsl/` | 多文件工程：词法、语法、命名空间解析及函数展开；`Project::load` → `Project::compile` → `Program` |
 | `ai/bind.rs` | 把 `base native;` 声明叠到活块上：读窗口、写私有 descriptor／状态表／事件格与脚本 |
 | `ai/bytecode.rs` | 已命名 opcode、选择子宽度与 `is_stop` |
+| `ai/decompile.rs` | 有界读取可追踪状态与事件入口，生成函数式 DSL 并校验字节往返；这是部分提取，未知语义使用 `native(...)` |
 | `ai/control.rs` | 编译器、绑定和覆盖共用的常数：事件槽、主表下标、路由掩码 |
 | `ai/overlay.rs` | `dat/monster-ai` 的 Hook 与加载：签名校验、`(map, species)` 会话缓存、私有块发布 |
 | `species/mod.rs` | 8 处上限的预留、写入、还原与 DLL 引用 |
@@ -31,9 +32,9 @@ attach、回滚和 detach 的顺序。功能各自的代码不放在源码根目
 事件检查顺序是 `0x40/root[14]`、`0x80/root[13]`、`0x20/root[4]`、
 `0x10/root[3]`、`0x08/root[11]`、`0x04/root[10]`、`0x02/root[8]`；高 lane
 互斥，低 lane 可能先更新若干保存游标。`0x05` 是动作请求，`0x07` 切换主表条目；
-137 个已命名 opcode 和其余字节的默认终止行为记在 opcode 目录里。作者写名字与
-槽位号，descriptor、事件 mask 和 `main` 下标属于编译器的知识；规范里尚未定论的
-部分（`repeat`、`resume()`、`self.`／`if`、框架内部命令 `reset`／`unko_end`）
+137 个已命名 opcode 和其余字节的默认终止行为记在 opcode 目录里。作者使用固定
+事件名及状态别名／索引；事件槽位、mask 和收尾指令由编译器映射；规范里尚未定论的
+部分（`repeat`、`resume()`、`self.`／`if`、框架内部命令 `reset`）
 编译器直接拒绝，`native(...)` 是显式逃生口并报告它代表的字节。
 
 ## 种类上限补丁
@@ -64,11 +65,11 @@ prepare_release 仅在全部补丁还原后返还 DLL 引用。
 crate 还在记录初始化 `0x00860360` 上安装 Hook（安装前校验共享的镜像指纹与签名
 `8a 56 03 a1 3c ff 7f 1e`）。该函数是客户端里唯一写 actor `+9F0`（物种块指针）
 和 `+9F4`/`+A5C`（状态游标）的路径；Hook 在它返回后把 `+9F0` 换成
-`dat/monster-ai/<map>/<species>.mhai` 生成的私有块，并按私有状态表和 actor
+`dat/monster-ai/maps/<map>/<species>/main.mhai` 生成的私有块，并按私有状态表和 actor
 `+A10` 重算游标。原生初始化先跑完，覆盖后生效。
 
-每个 `(map, species)` 在首次取用时按两个候选路径读一次文件（规则见
-[DSL 规范](docs/dsl-spec.md) 第 8.3 节），解析、编译，
+每个 `(map, species)` 在首次取用时读取工程，地图入口不存在时回退到
+`dat/monster-ai/common/<species>/main.mhai`（见 [DSL 规范](docs/dsl-spec.md)），解析、编译，
 再在活着的物种块上叠出私有块；没有 `base native;` 的文件被拒绝。文件不存在
 时该格保持原生并记住"没有文件"；文件存在但解析或绑定失败是硬错误，该 actor
 保持原生、每次生成都记录并重试，改好文件后不必重开会话。species 大于 `0x83`
@@ -76,6 +77,13 @@ crate 还在记录初始化 `0x00860360` 上安装 Hook（安装前校验共享�
 
 AI Hook 与上限补丁共用生命周期：attach 先写补丁再装 Hook，Hook 安装失败时
 回滚补丁；detach 反序卸载。
+
+入口通过 `states { idle -> idle_loop; }` 和 `events { player_detected -> reactions.handle; }`
+绑定函数；省略索引时顺序分配，`= N` 指定下一起点。函数写作 `fn idle_loop()`，
+使用 `combat.attack();` 调用，自然结束自动返回；事件按槽生成原生收尾。
+主状态仍需显式切换或终止。`import "#common/combat.mhai" as combat;` 只访问
+当前物种默认目录；普通路径相对于当前文件。函数在编译期展开，不覆盖原生子脚本表。
+完整可编译示例位于 [examples/monster-ai](examples/monster-ai/)。
 
 ## 验证
 
@@ -94,3 +102,14 @@ cargo test --manifest-path mhf/Cargo.toml -p mhf-monster --target aarch64-apple-
 ```sh
 python3 mhf/crates/mods/monster/tools/verify_native.py /path/to/mhfo-hd.dll
 ```
+
+AI 边界回归使用相同依赖，要求上述 SHA-256 对应的 DLL：
+
+```sh
+python3 mhf/crates/mods/monster/tools/verify_ai_scan.py /path/to/mhfo-hd.dll
+```
+
+在 Unicorn 内执行原生 `0x10863750` / `0x10860A10`，验证缺失 `39 02` 的旧版
+41 字节导出会陷入扫描循环，而完整 56 字节脚本返回后续分支。反编译器和绑定层
+共用条件块检查，覆盖全部原生扫描调用者（包括固定宽度指令）；字节宽度校验不能
+替代闭合关系校验。未闭合的 `native(...)` 草稿在分配／发布前被拒绝。

@@ -20,6 +20,7 @@
 | [`apps/launcher-catalog`](../crates/apps/launcher-catalog/README.md) | Launcher 与管理器共用的内建 Mod 元数据和默认项 |
 | [`apps/launcher`](../crates/apps/launcher/README.md) | 唯一启动入口、配置准备、Mod 组合、头文件聚合 |
 | [`shared/egui-hunter`](../crates/shared/egui-hunter/README.md) | 复用的 egui 组件与输入交互 |
+| [`shared/resource`](../crates/shared/resource/README.md) | 游戏资源格式类型（DAT／INF／SDT／FMOD 等）的解析与写回 |
 
 应用的 `src/runtime.rs` 读取配置、解析路径并映射常规游戏设置，构造 `mhf_game::LaunchConfig`。
 应用解析包选择后传给 `mhf_game::run`；`--list-mods`、`--export-modpack` 在应用内完成，不加载游戏或 Mod DLL。
@@ -65,7 +66,7 @@ Font、UI、Quest、Geometry 和 DebugTools 按职责分 crate，但不独立参
 Cargo feature 决定可用实现，配置决定选择。启用 Debug 时，普通启动提供方自动覆盖默认 Login 的 fallback。
 宿主优先检查普通提供方，仅在没有普通提供方时检查 fallback；有效层必须恰好有一个，否则在回调前报错。
 
-Debug 原生状态通过 Base 的 `mhf.quest.control.v2` 访问同一任务会话。一般外部 UI 使用 Debug 的命令队列；高级任务控制仅供满足游戏线程约束的调用方。
+Debug 原生状态通过 Base 的 `mhf.quest.control.v3` 访问同一任务会话。一般外部 UI 使用 Debug 的命令队列；高级任务控制仅供满足游戏线程约束的调用方。
 
 `mhf_quest::MonsterSpawn`／`prepare_monster_spawn` 准备任务替换中的资源种类、出生记录和猎人起始区，具体二进制操作位于 [`quest/binary.rs`](../crates/mods/quest/src/provider/binary.rs)。它们不直接创建或操纵运行中的怪物。实时怪物控制仍位于现有 Debug 实现，没有因此新增 Monster Mod；当前任务接口也不意味着在线任务已开放调用。
 

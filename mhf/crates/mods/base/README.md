@@ -14,7 +14,7 @@ Base 创建 UI 输入状态，不提供游戏原生 IME 适配器，也不持有
 配置服务通过 `mhf.config.v1` 提供能力，自身不依赖任何游戏配置类型。
 
 Font、UI 和 Quest 都由 `mhf.base` 发布，接口名称分别为 `mhf.font.v1`、`mhf.ui.v1`、
-`mhf.quest.v1`、`mhf.quest.control.v2` 和 `mhf.quest.launch.v1`。
+`mhf.quest.v1`、`mhf.quest.control.v3` 和 `mhf.quest.launch.v1`。
 消费者声明对 `mhf.base` 的依赖。应用将同一个注册表传给 Base、内置 Debug 与 Workbench；
 外部 Mod 使用公开 UI 能力，不传递 Rust egui 对象。
 

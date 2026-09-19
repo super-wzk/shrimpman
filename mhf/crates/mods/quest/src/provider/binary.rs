@@ -15,6 +15,80 @@ pub(super) struct MonsterQuest {
 }
 
 impl Quest {
+    /// Replace one primary spawn, retaining every other record and objective.
+    pub(super) fn replace_monster(
+        &self,
+        offset: usize,
+        expected: u8,
+        species: u8,
+    ) -> Result<Vec<u8>, String> {
+        if species == 0 || species >= 177 {
+            return Err("怪物种类无效".into());
+        }
+        let section = u32_at(&self.bytes, 24)? as usize;
+        let first = u32_at(&self.bytes, section + 12)? as usize;
+        if section == 0 || first == 0 || first == u32::MAX as usize {
+            return Err("任务缺少目标怪物出生记录".into());
+        }
+        let mut current = first;
+        loop {
+            let id = u16_at(&self.bytes, current)?;
+            if id == 0 || id == u16::MAX {
+                return Err("所选实例不是当前任务的目标怪物".into());
+            }
+            if current == offset {
+                break;
+            }
+            current += 60;
+        }
+        if u16_at(&self.bytes, offset)? != u16::from(expected)
+            || self.bytes.get(offset..offset + 60).is_none()
+        {
+            return Err("目标怪物记录已变化，请重新选择".into());
+        }
+        let ids = u32_at(&self.bytes, section + 8)? as usize;
+        if ids == 0 || ids > self.bytes.len().saturating_sub(4) {
+            return Err("任务缺少怪物资源列表".into());
+        }
+        let mut resources = Vec::new();
+        for index in 0..6 {
+            let id = u32_at(&self.bytes, ids + index * 4)?;
+            if id == 0 || id == u32::MAX {
+                break;
+            }
+            resources.push(id);
+        }
+        let append = !resources.contains(&u32::from(species));
+        if append && resources.len() == 6 {
+            return Err("任务的 6 个怪物资源槽已满，无法载入新种类".into());
+        }
+        let new_ids = (self.bytes.len() + 3) & !3;
+        if append && new_ids + 28 > CAPACITY {
+            return Err("任务缓冲区没有足够空间容纳新资源列表".into());
+        }
+        let mut bytes = self.bytes.clone();
+        if append {
+            let properties = u32_at(&bytes, 0)? as usize;
+            let variants = [0x91, 0x92, 0xb6, 0xb7, 0xb8];
+            let variant_slots = if u32_at(&bytes, properties + 0x98)? & 0x2000 != 0 {
+                5
+            } else {
+                2
+            };
+            if resources.len() < variant_slots {
+                bytes[properties + variants[resources.len()]] = 0;
+            }
+            resources.push(u32::from(species));
+            bytes.resize(new_ids + 28, 0xff);
+            write_u32(&mut bytes, section + 8, new_ids as u32);
+            for (index, id) in resources.into_iter().enumerate() {
+                write_u32(&mut bytes, new_ids + index * 4, id);
+            }
+        }
+        write_u16(&mut bytes, offset, u16::from(species));
+        Ok(bytes)
+    }
+
     /// Keep original monster spawns while preparing resources and a species variant.
     /// The debugger creates its own actor from a separate record after loading;
     /// it must not replace a quest target or enter the primary-target registry.
@@ -189,14 +263,14 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
 
 fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, String> {
     bytes
-        .get(offset..offset + 2)
+        .get(offset..offset.checked_add(2).ok_or("任务偏移溢出")?)
         .map(|v| u16::from_le_bytes(v.try_into().unwrap()))
         .ok_or_else(|| "任务文件被截断".into())
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, String> {
     bytes
-        .get(offset..offset + 4)
+        .get(offset..offset.checked_add(4).ok_or("任务偏移溢出")?)
         .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
         .ok_or_else(|| "任务文件被截断".into())
 }
@@ -301,6 +375,37 @@ mod tests {
             write_u32(&mut bytes, properties + 0x98, 0x2000);
         }
         Quest::parse(&bytes).unwrap()
+    }
+
+    #[test]
+    fn replacing_one_primary_spawn_preserves_other_spawns_and_objectives() {
+        let mut quest = quest_with_species(&[163], false);
+        write_u32(&mut quest.bytes, 0x240 + 12, 0x400);
+        quest.bytes.resize(0x400 + 122, 0);
+        write_u16(&mut quest.bytes, 0x400, 163);
+        write_u16(&mut quest.bytes, 0x400 + 60, 163);
+        let original = quest.bytes.clone();
+        let changed = quest.replace_monster(0x400, 163, 6).unwrap();
+        assert_eq!(u16_at(&changed, 0x400).unwrap(), 6);
+        assert_eq!(u16_at(&changed, 0x400 + 60).unwrap(), 163);
+        assert_eq!(&changed[0x80..0x80 + 320], &original[0x80..0x80 + 320]);
+        let ids = u32_at(&changed, 0x248).unwrap() as usize;
+        assert_eq!(u32_at(&changed, ids).unwrap(), 163);
+        assert_eq!(u32_at(&changed, ids + 4).unwrap(), 6);
+        assert_eq!(u32_at(&changed, ids + 8).unwrap(), u32::MAX);
+        assert_eq!(quest.bytes, original);
+        let next = Quest::parse(&changed)
+            .unwrap()
+            .replace_monster(0x400 + 60, 163, 6)
+            .unwrap();
+        assert_eq!(next.len(), changed.len());
+        assert_eq!(u16_at(&next, 0x400).unwrap(), 6);
+        assert_eq!(u16_at(&next, 0x400 + 60).unwrap(), 6);
+        for offset in [0, 0x402, 0x400 + 120, usize::MAX] {
+            assert!(quest.replace_monster(offset, 163, 6).is_err());
+        }
+        assert!(quest.replace_monster(0x400, 6, 15).is_err());
+        assert!(quest.replace_monster(0x400, 163, 0).is_err());
     }
 
     #[test]

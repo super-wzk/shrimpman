@@ -203,6 +203,17 @@ impl QuestControlApi for QuestState {
         self.session()
             .is_ok_and(|session| session.override_contains(offset.byte_offset(), length))
     }
+    unsafe fn replace_monster(
+        &self,
+        offset: SpawnOffset,
+        expected: u8,
+        species: u8,
+    ) -> api::Status {
+        call(|| {
+            self.session()?
+                .replace_monster(offset.byte_offset(), expected, species)
+        })
+    }
 }
 
 #[cfg(test)]

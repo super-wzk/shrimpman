@@ -214,6 +214,86 @@ pub fn decode(mut bytes: &[u8]) -> Result<Vec<Instruction>> {
     Ok(instructions)
 }
 
+/// Check the native marker scans before publishing a standalone allocation.
+/// Width-valid bytes can still hang 10860A10: it has no end pointer and does
+/// not advance on a default opcode while looking for a missing closing marker.
+pub fn validate_structure(bytes: &[u8]) -> Result<()> {
+    let mut structure = ScriptStructure::default();
+    for instruction in decode(bytes)? {
+        structure.push(&instruction.bytes).map_err(|error| {
+            Error::new(format!("script offset {:#x}: {error}", instruction.offset))
+        })?;
+    }
+    if let Some(&(opcode, close)) = structure.blocks.last() {
+        return Err(Error::new(format!(
+            "未闭合的 AI 条件块 {opcode:#04x}：缺少 native({opcode:#04x}, {close:#04x});，拒绝安装以避免原生扫描卡死；请重新反编译或补全脚本"
+        )));
+    }
+    Ok(())
+}
+
+/// Shared by bounded extraction and installation validation. These families
+/// come from ALL callers of 10860A10 (including fixed-width instructions).
+#[derive(Default)]
+pub(crate) struct ScriptStructure {
+    blocks: Vec<(u8, u8)>,
+}
+
+impl ScriptStructure {
+    pub(crate) fn is_closed(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    pub(crate) fn push(&mut self, instruction: &[u8]) -> Result<()> {
+        let opcode = instruction[0];
+        let selector = instruction.get(1).copied();
+        // 24 and 62 have execution/skip-width disagreements; FF's unknown
+        // selectors redispatch rather than consuming a two-byte instruction.
+        if matches!(opcode, 0x24 | 0x62)
+            || (opcode == 0xff && !matches!(selector, Some(0..=6 | 0xf5..=0xff)))
+        {
+            return Err(Error::new(format!(
+                "opcode {opcode:#04x} 的执行边界尚未支持，不能独立安装"
+            )));
+        }
+        if is_stop(opcode) && !self.is_closed() {
+            return Err(Error::new(
+                "条件块内的 default 终止字节会使原生标记扫描无法前进",
+            ));
+        }
+        let close = match opcode {
+            0x01 | 0x02 | 0x03 | 0x08 | 0x09 | 0x0b | 0x0e | 0x14 | 0x1b | 0x1f | 0x21 | 0x22
+            | 0x28 | 0x29 | 0x2a | 0x2b | 0x2f | 0x32 | 0x34 | 0x35 | 0x36 | 0x37 | 0x38 | 0x39
+            | 0x3a | 0x3b | 0x3c | 0x3d | 0x42 | 0x44 | 0x45 | 0x46 | 0x47 | 0x4a | 0x51 | 0x54
+            | 0x55 | 0x56 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x63 | 0x64 | 0x66 | 0x67
+            | 0x69 | 0x71 | 0x72 | 0x74 | 0x77 | 0x78 | 0x7c | 0x7f | 0x9a | 0x9b | 0x9c => 2,
+            0x15 | 0x1c | 0x1d | 0x20 | 0x23 | 0x27 | 0x2c | 0x33 | 0x3e | 0x57 | 0x70 | 0x73
+            | 0x75 | 0x76 | 0x79 | 0x7a | 0x7d | 0x94 => 3,
+            0x80 | 0x83 => 0xff,
+            _ => return Ok(()),
+        };
+        let selector = selector.ok_or_else(|| Error::new("ambiguous selector width"))?;
+        let valid = match opcode {
+            0x80 => selector <= 0x1f || selector == 0xff,
+            0x83 => selector <= 5 || selector == 0xff,
+            _ => selector <= close,
+        };
+        if !valid {
+            return Err(Error::new("unconfirmed native selector boundary"));
+        }
+        if selector == 0 {
+            self.blocks.push((opcode, close));
+        } else if self.blocks.last() != Some(&(opcode, close)) {
+            return Err(Error::new(format!(
+                "AI 标记 {opcode:#04x}/{selector:#04x} 没有匹配的条件块"
+            )));
+        } else if selector == close {
+            self.blocks.pop();
+        }
+        Ok(())
+    }
+}
+
 /// Encode the verified action-selection instruction (`0x05`).
 ///
 /// The fourth byte is passed through to the native handler; its semantics are

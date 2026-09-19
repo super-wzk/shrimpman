@@ -6,6 +6,8 @@ use crate::ai::{Error, Result};
 pub(super) enum TokenKind {
     Word(String),
     Number(u32),
+    String(String),
+    Arrow,
     LeftBracket,
     RightBracket,
     LeftParen,
@@ -66,6 +68,26 @@ impl<'a> Lexer<'a> {
             };
 
             let kind = match byte {
+                b'"' => {
+                    self.bump();
+                    let start = self.offset;
+                    while !matches!(self.peek(), None | Some(b'"' | b'\n' | b'\r')) {
+                        self.bump();
+                    }
+                    if self.peek() != Some(b'"') {
+                        return Err(Error::at(line, column, "unterminated import path"));
+                    }
+                    let path = std::str::from_utf8(&self.source[start..self.offset])
+                        .map_err(|_| Error::at(line, column, "invalid UTF-8 path"))?
+                        .to_owned();
+                    self.bump();
+                    TokenKind::String(path)
+                }
+                b'-' if self.peek_next() == Some(b'>') => {
+                    self.bump();
+                    self.bump();
+                    TokenKind::Arrow
+                }
                 b'[' => {
                     self.bump();
                     TokenKind::LeftBracket
@@ -113,7 +135,9 @@ impl<'a> Lexer<'a> {
                 byte if byte.is_ascii_digit() => self.lex_number(line, column)?,
                 byte if is_word_start(byte) => {
                     let start = self.offset;
-                    while self.peek().is_some_and(is_word_byte) {
+                    while self.peek().is_some_and(is_word_byte)
+                        && !(self.peek() == Some(b'-') && self.peek_next() == Some(b'>'))
+                    {
                         self.bump();
                     }
                     let word = std::str::from_utf8(&self.source[start..self.offset])

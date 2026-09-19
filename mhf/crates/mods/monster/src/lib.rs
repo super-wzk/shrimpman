@@ -25,13 +25,8 @@
 
 /// The monster AI feature: the graph, the compiler and the binding.
 ///
-/// The DLL has exactly one way in — `MonsterMod` — so in the game build this
-/// module is private and the compiler reports whatever the game never reaches.
-/// On every other target `MonsterMod` does not exist, so the module is public
-/// and the tests are what keep the tree alive.
-#[cfg(all(feature = "provider", windows, target_arch = "x86"))]
-mod ai;
-#[cfg(not(all(feature = "provider", windows, target_arch = "x86")))]
+/// Also used by the debug provider for actor-local inspection and replacement;
+/// the native hook itself remains private and owned by `MonsterMod`.
 pub mod ai;
 
 #[cfg(all(feature = "provider", windows, not(target_arch = "x86")))]

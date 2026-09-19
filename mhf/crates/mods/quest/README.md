@@ -1,7 +1,7 @@
 # Quest
 
 本 crate 提供任务数据、控制接口和原生组件，由运行 Mod `mhf.base` 持有。
-它不再作为独立包选择。公开接口是 `mhf.quest.v1`、`mhf.quest.control.v2`、`mhf.quest.launch.v1`，
+它不再作为独立包选择。公开接口是 `mhf.quest.v1`、`mhf.quest.control.v3`、`mhf.quest.launch.v1`，
 三者提供方 ID 均为 `mhf.base`。
 
 默认层提供 API 与 Rust 绑定；`provider` 增加 Session、任务解析和原生实现。
@@ -29,6 +29,7 @@ quest = "quests/test.bin"
 Quest 按任务怪物资源槽写入变种，保留其他物种、奖励模式和全局任务标志。
 普通任务前两个资源槽支持变种，原任务启用 Interception 时扩展到前五个；
 强化变种落在其余槽位会报错，普通变种仍可使用原有的六个资源槽。
-控制接口升级为 `mhf.quest.control.v2`，旧接口结构中的填充字节不能作为变种值读取。
+控制接口 `mhf.quest.control.v3` 增加单个任务目标出生记录的种类替换，供调试器重载任务前使用。
+替换基于当前任务副本，失败不发布；旧版控制表不能按新布局读取。
 
 在 `mhf/` 目录可运行 `cargo test -p mhf-quest --features provider` 验证任务解析和预处理。

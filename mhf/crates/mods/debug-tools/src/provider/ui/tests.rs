@@ -111,6 +111,116 @@ struct DebugUi {
     texts: Vec<(String, Rect)>,
 }
 
+#[test]
+fn monster_species_picker_sends_only_the_selected_instance_and_preserves_failed_draft() {
+    use crate::provider::{AiDocument, AiOperation, AiReply, AiTarget};
+    let target = AiTarget {
+        epoch: 1,
+        pool: 0x1000,
+        slot: 7,
+        serial: 42,
+        model: 0x2000,
+        species: 4,
+    };
+    let mut snapshot = populated_snapshot(1);
+    snapshot.ai_targets = vec![target];
+    for id in 1..=15 {
+        Arc::get_mut(&mut snapshot.catalog)
+            .unwrap()
+            .monsters
+            .push(Monster {
+                id,
+                name: crate::provider::monsters::NAMES[usize::from(id)],
+                variants: crate::provider::monsters::variants(id),
+                actions: Arc::new(Vec::new()),
+            });
+    }
+    let mut ui = DebugUi::new(snapshot);
+    ui.window.page = 5;
+    ui.frame(vec![]);
+    let commands = ui.window.control.commands();
+    let [DebugCommand::MonsterAi { request, .. }] = commands.as_slice() else {
+        panic!("missing inspect")
+    };
+    let source = "mhf_ai 1; species 4; base native;";
+    ui.snapshot.ai_reply = Some(Arc::new(AiReply {
+        request: *request,
+        target,
+        result: Ok(AiDocument {
+            descriptor: 0x3000,
+            source: Some(mhf_monster::ai::dsl::Project::single(
+                None,
+                4,
+                source.into(),
+            )),
+            message: "已反编译".into(),
+        }),
+    }));
+    ui.frame(vec![]);
+    ui.click("菌猪 ▾");
+    ui.click("搜索名称或编号");
+    let popup_id = Id::new("replacement-species").with("popup");
+    let full_height = ui.context.read_response(popup_id).unwrap().rect.height();
+    assert!(full_height > 230.0, "{full_height}");
+    ui.frame(vec![Event::Text("94".into())]);
+    for _ in 0..3 {
+        ui.frame(vec![]);
+    }
+    for _ in 0..2 {
+        ui.frame(vec![
+            Event::Key {
+                key: Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Key {
+                key: Key::Backspace,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+    }
+    for _ in 0..3 {
+        ui.frame(vec![]);
+    }
+    let restored_height = ui.context.read_response(popup_id).unwrap().rect.height();
+    assert!(
+        (restored_height - full_height).abs() < 1.0,
+        "before={full_height}, after={restored_height}"
+    );
+    ui.frame(vec![Event::Text("94".into())]);
+    ui.click("测试怪物");
+    ui.click("替换并重载任务");
+    let commands = ui.window.control.commands();
+    let [
+        DebugCommand::MonsterAi {
+            request,
+            target: selected,
+            operation: AiOperation::ReplaceSpecies(94),
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("missing species replacement")
+    };
+    assert_eq!(*selected, target);
+    ui.snapshot.ai_reply = Some(Arc::new(AiReply {
+        request: *request,
+        target,
+        result: Err("资源槽已满".into()),
+    }));
+    ui.frame(vec![]);
+    ui.click("应用热替换");
+    let commands = ui.window.control.commands();
+    assert!(
+        matches!(commands.as_slice(), [DebugCommand::MonsterAi { operation: AiOperation::Apply { source: actual, .. }, .. }]
+        if actual.files[0].source == source)
+    );
+}
+
 impl DebugUi {
     fn new(snapshot: DebugSnapshot) -> Self {
         Self {
@@ -134,6 +244,10 @@ impl DebugUi {
                     1 => self.window.equipment(ui, &self.snapshot, 360.0),
                     2 => self.window.transmog(ui, &self.snapshot, 360.0),
                     3 => self.window.actions(ui, &self.snapshot, 360.0),
+                    5 => self
+                        .window
+                        .ai
+                        .show(ui, &self.snapshot, &self.window.control),
                     4 => self
                         .window
                         .monsters(ui, &self.snapshot, &mut self.input, 360.0),
@@ -785,7 +899,7 @@ fn tab_navigation_reaches_and_activates_session_controls_on_every_page() {
 
 fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
     for height in [380.0, 900.0] {
-        for page in 0..5 {
+        for page in 0..6 {
             let context = context();
             let control = DebugControl::new();
             let mut window = DebugWindow::new(control.clone());
@@ -908,4 +1022,86 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
             ));
         }
     }
+}
+
+#[test]
+fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance() {
+    use crate::provider::{AiDocument, AiOperation, AiReply, AiTarget};
+    let target = AiTarget {
+        epoch: 1,
+        pool: 0x1000,
+        slot: 7,
+        serial: 12,
+        model: 0x2000,
+        species: 6,
+    };
+    let source = "mhf_ai 1; species 6; base native; states { idle { action[3:6](0); restart; } }";
+    let mut ui = DebugUi::new(DebugSnapshot {
+        ready: true,
+        ai_targets: vec![target],
+        ..Default::default()
+    });
+    ui.window.page = 5;
+    ui.frame(vec![]);
+    let commands = ui.window.control.commands();
+    let [
+        DebugCommand::MonsterAi {
+            request,
+            target: selected,
+            operation: AiOperation::Inspect,
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("missing inspection");
+    };
+    assert_eq!(*selected, target);
+    ui.click("应用热替换");
+    assert!(ui.window.control.commands().is_empty());
+    ui.snapshot.ai_reply = Some(Arc::new(AiReply {
+        request: *request,
+        target,
+        result: Ok(AiDocument {
+            descriptor: 0x3000,
+            source: Some(mhf_monster::ai::dsl::Project::single(
+                Some(0),
+                target.species,
+                source.into(),
+            )),
+            message: "已反编译".into(),
+        }),
+    }));
+    ui.frame(vec![]);
+    ui.click("应用热替换");
+    let commands = ui.window.control.commands();
+    let [
+        DebugCommand::MonsterAi {
+            request,
+            operation:
+                AiOperation::Apply {
+                    descriptor,
+                    source: actual,
+                },
+            ..
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("missing apply");
+    };
+    assert_eq!(*descriptor, 0x3000);
+    assert_eq!(actual.files[0].source, source);
+    ui.snapshot.ai_reply = Some(Arc::new(AiReply {
+        request: *request,
+        target,
+        result: Err("测试编译失败".into()),
+    }));
+    ui.frame(vec![]);
+    ui.click("应用热替换");
+    let commands = ui.window.control.commands();
+    assert!(
+        matches!(commands.as_slice(), [DebugCommand::MonsterAi { operation: AiOperation::Apply { source: actual, .. }, .. }] if actual.files[0].source == source)
+    );
+    ui.snapshot.ai_targets[0].serial += 1;
+    ui.frame(vec![]);
+    ui.click("应用热替换");
+    assert!(ui.window.control.commands().is_empty());
 }

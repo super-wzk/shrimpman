@@ -1,30 +1,20 @@
-//! Author-facing monster-AI DSL: parser and compiler.
+//! Monster-AI source projects: parsing, scoped imports, function expansion,
+//! native bytecode emission and pointer-free graph assembly.
 //!
-//! The pipeline is `text -> Document -> Program`:
-//!
-//! * [`parse`] reads a document into a `Document`: header, declaration blocks,
-//!   entries, and statements. It checks everything structural (ranges, duplicate
-//!   indices, reserved names) and leaves every name that depends on the whole
-//!   file unresolved.
-//! * `Document::compile` resolves names, encodes statements, and assembles the
-//!   pointer-free [`Program`](crate::ai::Program) the native selector consumes. A
-//!   `base native;` document is a declaration: it writes only the indices it
-//!   names, and the binding merges it onto the live native block it is about to
-//!   replace.
-//!
-//! `docs/dsl-spec.md` owns the language. This module implements it and refuses
-//! the parts the spec still leaves open — `repeat` emission, `resume()`,
-//! contents/route blocks, `self.` conditions — instead of guessing bytes.
-//!
-//! The submodules follow that pipeline: `lexer.rs` holds the tokens,
-//! `parser.rs` the AST and the structural checks, and `compile.rs` name
-//! resolution, encoding, and graph assembly.
+//! Project::load resolves map/common entry files and preserves editable sources.
+//! Project::compile resolves module names before Document::compile emits entries.
+//! The binder publishes the graph only after all compilation and validation pass.
+//! See docs/dsl-spec.md for syntax, automatic endings and current limitations.
 
 mod compile;
 mod lexer;
 pub(crate) mod parser;
+mod project;
+#[cfg(test)]
+mod project_tests;
 
 pub use parser::parse;
+pub use project::{Project, SourceFile};
 
 // A `.mhai` file is loaded through `parse` and `compile` alone; the game build
 // never names the AST or the compiler's result type, so re-exporting them there
@@ -50,7 +40,7 @@ mod tests {
     use crate::ai::dsl::parser::StateDecl;
     use crate::ai::{Base, Node, Program, Table};
 
-    /// The worked example from `docs/dsl-spec.md` §10.
+    /// Legacy inline syntax remains byte-preserving for existing drafts.
     const SPEC_EXAMPLE: &str = "\
 mhf_ai 1;
 species 6;
@@ -61,12 +51,12 @@ actions {
 }
 
 events {
-    roar = 0 {
+    dung_reaction {
         slash(0);
-        kehai_end();
+        native(0xff, 0xfd);
     }
 
-    hit = 2 {
+    player_detected {
         bash(1);
     }
 }
@@ -140,7 +130,7 @@ states {
     }
 
     #[test]
-    fn spec_example_compiles_to_the_documented_graph() {
+    fn legacy_inline_example_preserves_declared_bytes() {
         let document = parse(SPEC_EXAMPLE).unwrap();
         assert_eq!(document.version, VERSION);
         assert_eq!(document.species, 6);
@@ -157,9 +147,9 @@ states {
             document
                 .events
                 .iter()
-                .map(|decl| (decl.name.as_deref(), decl.slot))
+                .map(|decl| (EVENT_SLOTS[usize::from(decl.slot)].name, decl.slot))
                 .collect::<Vec<_>>(),
-            [(Some("roar"), 0), (Some("hit"), 2)]
+            [("dung_reaction", 0), ("player_detected", 2)]
         );
         assert_eq!(
             document
@@ -193,7 +183,7 @@ states {
             [0x05, 0x04, 0x01, 0x01, 0x07, 0x00]
         );
 
-        // The slot number, not the alias, decides the descriptor position.
+        // Each fixed event name selects its native descriptor position.
         assert_eq!(
             event_script(program, EVENT_SLOTS[0].root_index),
             Some([0x05, 0x03, 0x06, 0x00, 0xff, 0xfd].as_slice())
@@ -211,13 +201,8 @@ states {
             assert_eq!(event_script(program, slot.root_index), None);
         }
 
-        // `kehai_end()` ends lane 0x10 and cannot be checked against a runtime
-        // lane mask, so it is reported instead of accepted or refused.
+        // A deliberate low-level escape remains byte-preserving.
         assert_eq!(compiled.warnings.len(), 1);
-        let warning = compiled.warnings[0].to_string();
-        assert!(warning.starts_with("12:9: "), "{warning}");
-        assert!(warning.contains("kehai_end() ends lane 0x10"), "{warning}");
-        assert!(warning.contains("lane 0x40"), "{warning}");
     }
 
     #[test]
@@ -266,7 +251,7 @@ actions {
 }
 
 events {
-    roar = 0 {
+    dung_reaction {
         action[4:1](0x02);
         native(0x11, 0x92);
     }
@@ -355,11 +340,11 @@ species 6;
 base native;
 
 events {
-    roar = 0 {
+    dung_reaction {
         nop();
     }
 
-    3;
+    awareness;
 }
 
 states {
@@ -458,7 +443,7 @@ states {
                 "duplicate 'states' block",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nactions { kehai_end = [3:6]; }\n",
+                "mhf_ai 1;\nspecies 6;\nactions { wait = [3:6]; }\n",
                 "collides with a reserved name",
             ),
             (
@@ -482,12 +467,12 @@ states {
                 "state 'idle' is declared twice",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { nop(); } 0 { nop(); } }\n",
-                "event slot 0 is declared twice",
+                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { nop(); } dung_reaction { nop(); } }\n",
+                "event 'dung_reaction' is declared twice",
             ),
             (
                 "mhf_ai 1;\nspecies 6;\nevents { 7 { nop(); } }\n",
-                "event slot must be a number from 0 to 6",
+                "expected built-in event name",
             ),
             (
                 "mhf_ai 1;\nspecies 6;\nstates { idle = 256 { nop(); } }\n",
@@ -534,7 +519,7 @@ states {
                 "emitted by the interpreter itself",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle { unko_end(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nstates { idle { reset(); } }\n",
                 "emitted by the interpreter itself",
             ),
             (
@@ -558,11 +543,11 @@ states {
                 "transition target 'combat' is not declared",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { transition idle; } }\nstates { idle { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { transition idle; } }\nstates { idle { nop(); } }\n",
                 "transition is only valid inside a states block",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { restart; } }\nstates { idle { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { restart; } }\nstates { idle { nop(); } }\n",
                 "restart is only valid inside a states block",
             ),
             (
@@ -582,7 +567,7 @@ states {
                 "'if' is not implemented",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nevents { roar = 0 { nop(); } }\n",
+                "mhf_ai 1;\nspecies 6;\nevents { dung_reaction { nop(); } }\n",
                 "an empty base needs a states block",
             ),
             (
@@ -622,9 +607,9 @@ states {
         );
     }
 
-    /// The example in `README.md` has to keep compiling.
+    /// Legacy action aliases remain valid in inline drafts.
     #[test]
-    fn readme_example_compiles() {
+    fn legacy_action_alias_example_compiles() {
         let document = parse(
             "\
 mhf_ai 1;
@@ -637,7 +622,7 @@ actions {
 }
 
 events {
-    roar = 0 { slash(0); kehai_end(); }
+    dung_reaction { slash(0); native(0xff, 0xfd); }
 }
 
 states {

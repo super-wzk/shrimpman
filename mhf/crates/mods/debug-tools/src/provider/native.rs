@@ -1,6 +1,7 @@
 mod area;
 mod combat;
 mod monster;
+mod monster_ai;
 
 use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Transmogs};
 use mhf_base::model::native::{self as equipment, Client};
@@ -48,6 +49,7 @@ pub(crate) struct State {
 
 #[derive(Default)]
 struct Runtime {
+    ai: monster_ai::Editor,
     action_definition: Option<Arc<super::action_definition::ActionDefinition>>,
     catalog: Arc<Catalog>,
     catalog_ready: bool,
@@ -266,6 +268,7 @@ unsafe extern "C" fn initialize_players() -> i32 {
 unsafe fn restart(state: &State, runtime: &mut Runtime) -> Result<(), String> {
     unsafe {
         equipment::refresh_resource_indices(state.model())?;
+        runtime.ai.invalidate();
         runtime.action_definition = None;
         monster::release(state, runtime);
         *state.combat.lock().unwrap_or_else(PoisonError::into_inner) = Default::default();
@@ -362,6 +365,9 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
         camera_pitch: f32::from_bits(state.camera_pitch.load(Ordering::Relaxed)),
         combat: Default::default(),
         action_definition: runtime.action_definition.clone(),
+        ai_targets: Vec::new(),
+        monster_statuses: Vec::new(),
+        ai_reply: runtime.ai.reply.clone(),
     };
     if let Some(control) = &runtime.monster {
         snapshot.monster = Some(control.species);
@@ -390,6 +396,8 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
         if snapshot.ready {
             snapshot.areas = area::areas(state);
             snapshot.combat = combat::snapshot(state);
+            snapshot.ai_targets = monster_ai::targets(state, runtime.ai.epoch);
+            snapshot.monster_statuses = monster_ai::statuses(&snapshot.ai_targets);
         }
         snapshot.weapon = get(player + 3);
         let actor = monster::actor(state, runtime).unwrap_or(player);
@@ -446,9 +454,39 @@ unsafe extern "C" fn dispatch() -> i32 {
         if session_started(state) {
             let mut runtime = state.runtime.lock().unwrap_or_else(PoisonError::into_inner);
             initialize_catalog(state, &mut runtime);
+            runtime.ai.observe(state.read::<u32>(monster::POOL));
             for command in state.control.commands() {
                 let current = snapshot(state, &runtime);
                 let _: Result<(), String> = match command {
+                    DebugCommand::MonsterAi {
+                        request,
+                        target,
+                        operation,
+                    } => {
+                        let result = if current.ready {
+                            match operation {
+                                super::AiOperation::ReplaceSpecies(species) => {
+                                    monster_ai::replace_species(
+                                        state,
+                                        &mut runtime,
+                                        target,
+                                        species,
+                                    )
+                                }
+                                operation => {
+                                    monster_ai::execute(state, &mut runtime.ai, target, operation)
+                                }
+                            }
+                        } else {
+                            Err("当前任务尚未就绪，请重新反编译".into())
+                        };
+                        runtime.ai.reply = Some(Arc::new(super::AiReply {
+                            request,
+                            target,
+                            result,
+                        }));
+                        Ok(())
+                    }
                     DebugCommand::InspectAction(action) if current.ready => {
                         let base = state.read::<usize>(0x1e77dcc4);
                         let size = state.read::<u32>(0x1edb9b5c) as usize;

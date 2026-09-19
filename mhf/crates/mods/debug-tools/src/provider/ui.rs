@@ -11,6 +11,7 @@ use std::{borrow::Cow, sync::Arc};
 
 mod action_definition;
 mod hud;
+mod monster_ai;
 
 pub(crate) struct DebugWindow {
     control: Arc<DebugControl>,
@@ -27,6 +28,7 @@ pub(crate) struct DebugWindow {
     focused: bool,
     monster_action_filter: String,
     definition_action: Option<Action>,
+    ai: monster_ai::Editor,
 }
 
 impl DebugWindow {
@@ -46,6 +48,7 @@ impl DebugWindow {
             focused: true,
             monster_action_filter: String::new(),
             definition_action: None,
+            ai: monster_ai::Editor::default(),
         }
     }
     fn send(&self, command: DebugCommand) {
@@ -101,6 +104,7 @@ impl DebugWindow {
                     Tab::new(egui::Id::new("transmog"), "幻化"),
                     Tab::new(egui::Id::new("actions"), "招式"),
                     Tab::new(egui::Id::new("monsters"), "怪物变身"),
+                    Tab::new(egui::Id::new("monster-ai"), "怪物"),
                 ];
                 let mut navigation = NavigationState::default();
                 navigation.select(tabs[self.page].id);
@@ -128,6 +132,7 @@ impl DebugWindow {
                                     1 => self.equipment(ui, snapshot, list_height),
                                     2 => self.transmog(ui, snapshot, list_height),
                                     3 => self.actions(ui, snapshot, list_height),
+                                    5 => self.ai.show(ui, snapshot, &self.control),
                                     _ => self.monsters(ui, snapshot, input, list_height),
                                 }
                                 ui.add_space(4.0);
@@ -152,6 +157,12 @@ impl DebugWindow {
         } else {
             None
         };
+        let ai_rect = if self.open {
+            self.ai.show_window(context, snapshot, &self.control)
+        } else {
+            None
+        };
+        self.ai.show_hud(context, snapshot);
         if !self.open {
             self.focused = false;
         } else if let Some(window) = window {
@@ -165,6 +176,7 @@ impl DebugWindow {
             if let Some(position) = pressed {
                 self.focused = window.response.rect.contains(position)
                     || definition_rect.is_some_and(|rect| rect.contains(position))
+                    || ai_rect.is_some_and(|rect| rect.contains(position))
                     || context
                         .layer_id_at(position)
                         .is_some_and(|layer| layer.order == egui::Order::Foreground);
@@ -182,10 +194,18 @@ impl DebugWindow {
 
     fn summary(&self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
         ui.scope(|ui| {
-            // This row contains read-only text; it does not need button height.
             ui.spacing_mut().interact_size.y = 24.0;
             ui.horizontal_wrapped(|ui| {
                 ui.strong(format!("任务 {}", snapshot.quest_id));
+                let help = ui.add(Button::new("使用说明"));
+                let mut popup = egui_hunter::Popup::new(&help)
+                    .title("使用说明")
+                    .style(ui.style().clone())
+                    .tokens(Tokens::get(ui));
+                popup.native = popup
+                    .native
+                    .width(360.0_f32.min(ui.ctx().content_rect().width() - 32.0));
+                popup.show(|ui| self.usage_help(ui));
                 let tokens = Tokens::get(ui);
                 egui::Frame::new()
                     .fill(if snapshot.ready {
@@ -249,47 +269,55 @@ impl DebugWindow {
         if self.page == 4 {
             self.monster_controls(ui, snapshot, input);
         }
-        disclosure(
-            ui,
-            if self.page == 4 {
-                "操控说明"
-            } else {
-                "使用说明"
-            },
-            |ui| match self.page {
-                0 => {
-                    ui.label("选择性别、脸型或发型后原地热替换；切换性别会同步全身装备模型。");
-                    ui.label("换装与换区会保留当前外观；头盔可能遮挡发型。");
-                }
-                1 => {
-                    ui.label("选择装备后原地热替换，刷新模型、技能与招式资源。");
-                }
-                2 => {
-                    ui.label("应用幻化会回到待机并替换防具外观，保留装备属性、技能与招式来源。");
-                    ui.label("换装、换区与切换性别会保留幻化选择；恢复原样可清除当前部位的幻化。");
-                    ui.label("头部需要先装备防具；卸下头盔或性别不兼容时，对应幻化暂不显示。");
-                }
-                3 => {
-                    ui.label("调用游戏招式状态机；编号来自当前客户端，未确认的名称保留编号。");
-                    ui.label("跨武器触发保留当前装备，重载任务后使用所选武器的招式资源。");
-                    ui.label("触发后可使用 F7 隐藏窗口观察。");
-                }
-                _ => {
-                    ui.label("从完整种类列表选择；重载当前地图并自动变身，无需场上已有该怪物。");
-                    ui.label("保留原任务目标，额外生成受控怪物；其他怪物会将你作为敌方目标。");
-                    ui.label("直接选择招式并触发；尚未变身时会自动变身后执行。");
-                    ui.label("点击游戏区域即可操控，调试窗口可以保持打开。");
-                    ui.label("W/S 跟随视角前后移动，A/D 左右移动，Q/E 升降，Shift 加速。");
-                    ui.label(
-                        "进入出口的水平范围即可换区；站在跳崖入口上方也会触发，无需继续移动。",
-                    );
-                    ui.label("1–4 触发绑定招式，R 原生选招，Backspace 恢复猎人。");
-                    ui.label(
-                        "巨型怪物、场景机关和特殊形态可能依赖专用地图；未确认的对象保留编号。",
-                    );
-                }
-            },
-        );
+    }
+
+    fn usage_help(&self, ui: &mut egui::Ui) {
+        match self.page {
+            0 => {
+                ui.label("选择性别、脸型或发型后原地热替换；切换性别会同步全身装备模型。");
+                ui.label("换装与换区会保留当前外观；头盔可能遮挡发型。");
+            }
+            1 => {
+                ui.label("选择装备后原地热替换，刷新模型、技能与招式资源。");
+            }
+            2 => {
+                ui.label("应用幻化会回到待机并替换防具外观，保留装备属性、技能与招式来源。");
+                ui.label("换装、换区与切换性别会保留幻化选择；恢复原样可清除当前部位的幻化。");
+                ui.label("头部需要先装备防具；卸下头盔或性别不兼容时，对应幻化暂不显示。");
+            }
+            3 => {
+                ui.label("调用游戏招式状态机；编号来自当前客户端，未确认的名称保留编号。");
+                ui.label("跨武器触发保留当前装备，重载任务后使用所选武器的招式资源。");
+                ui.label("触发后可使用 F7 隐藏窗口观察。");
+            }
+            5 => {
+                ui.label("修改种类：选择新种类后重载任务，更新选中目标的出生记录、模型和 AI；任务进度会重置，目标条件不变。");
+                ui.label(
+                    "仅支持能对应到任务目标出生记录的实例；动态召唤、机关和变身实例暂不支持。",
+                );
+                ui.label("选择任务中已加载的怪物实例后，会自动反编译其当前 AI。");
+                ui.label("悬浮状态：跟随选中实例，显示 AI 主状态、动作、动画帧和位置；隐藏 F7 面板后仍显示，不拦截游戏输入。");
+                ui.label("重新反编译：读取游戏内存，覆盖当前草稿。");
+                ui.label("加载工程：读取磁盘上的地图专用或默认工程，覆盖草稿，不会立即应用。");
+                ui.label("应用热替换：仅修改选中实例，并从状态 0 重新开始。");
+                ui.label("恢复替换前 AI：恢复首次热替换前的 AI。");
+                ui.label("草稿不会自动执行或保存到文件；复制 DSL 仅复制当前文件。");
+                ui.label("独立窗口可调整大小；切换文件或实例会保留各自草稿。");
+                ui.label("反编译仍为部分导出，未导出的表项沿用原生。");
+                ui.label("变身操控对象的自动选招会暂停，可用「原生选招」执行 AI。");
+            }
+            _ => {
+                ui.label("变种仍受当前任务设定影响；任务内同种怪物共用所选变种。");
+                ui.label("从完整种类列表选择；重载当前地图并自动变身，无需场上已有该怪物。");
+                ui.label("保留原任务目标，额外生成受控怪物；其他怪物会将你作为敌方目标。");
+                ui.label("直接选择招式并触发；尚未变身时会自动变身后执行。");
+                ui.label("点击游戏区域即可操控，调试窗口可以保持打开。");
+                ui.label("W/S 跟随视角前后移动，A/D 左右移动，Q/E 升降，Shift 加速。");
+                ui.label("进入出口的水平范围即可换区；站在跳崖入口上方也会触发，无需继续移动。");
+                ui.label("1–4 触发绑定招式，R 原生选招，Backspace 恢复猎人。");
+                ui.label("巨型怪物、场景机关和特殊形态可能依赖专用地图；未确认的对象保留编号。");
+            }
+        }
     }
 
     fn session_controls(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
@@ -408,8 +436,6 @@ impl DebugWindow {
                 });
         });
         ui.add_space(4.0);
-        ui.label("选择后在当前任务内立即替换，切换性别会同步全身装备模型。");
-        ui.weak("头盔可能遮挡发型。");
     }
 
     fn equipment(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, list_height: f32) {
@@ -851,7 +877,6 @@ impl DebugWindow {
             })
             .inner
         });
-        ui.weak("变种仍受当前任务设定影响；任务内同种怪物共用所选变种。");
         let variant = input.variant();
         filter_field(
             ui,

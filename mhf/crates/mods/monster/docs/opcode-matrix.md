@@ -188,7 +188,7 @@
 | `0x7e` | candidate_lane_selection | 选择子 | 清 `+2582` 与 `+2612`；先按玩家域 lane 搜索 `sub_10864D90`，未命中再切到 em 域：在 `dword_1ED7AD2C`（3824 步长，最多 40 条）里挑"非自身、活动、`+3187`≠0、`+2040` 与自身相同、且在半径/高度内"的记录，把该记录自己的下标 `+12` 写进 `+2612`/`+2584`，命令 kind 置 13 | generic | operation_confirmed |
 | `0x7f` | bit_40_clear_gate | 选择子 | 选择子 0 仅在 `0x1086A920` 返回 0 时清 `+1042`（实体状态字）的位 `0x40`，然后扫嵌套 `0x7f` 块 | named | confirmed |
 | `0x80` | bounded_nested_delta_scan | 选择子 + 计数 | 选择子 0 读计数，扫嵌套 `0x80` 记录，把每条第 3 字节的带符号增量按 `+1096` 与 31 偏移累加 | named | confirmed |
-| `0x81` | load_main_cursor_level | `u8` + 载荷 | 按索引字节装入主表游标，把下标存 `+2577`（保存的主下标），stage `+2580` 为 0 时把续行游标记到 `+2552`，再置 stage=1 | named | confirmed |
+| `0x81` | load_main_cursor_level | `u8` + 载荷 | 按索引字节装入 `root[1][index]` 游标，把子脚本下标存 `+2577`，stage `+2580` 为 0 时把续行游标记到 `+2552`，再置 stage=1 | named | confirmed |
 | `0x82` | load_subcursor_level | 2×`u8` + 载荷 | 由两级索引装入二级游标，把下标存 `+2578`，stage `+2580` 为 1 时把续行游标记到 `+2556`，再置 stage=2 | named | confirmed |
 | `0x83` | lane_value_ordered_skip | 选择子 + 计数 | 选择子 0 把计数列表与选中 lane 值比较（`+3231` 为 13 时改用距离推导值），把值写 `+1112`，并把跳过计数存 `+2586` | generic | operation_confirmed |
 | `0x84` | increment_runtime_1096 | 无 | 与 `0x7b` 共用内联递增路径：递增 `+1096`（脚本 RNG 计数） | named | confirmed |
@@ -219,14 +219,14 @@
 | `0xf5` | unko_end | 硬重置到第一条主表项：`+2576`=0、stage=0、游标=main[0][0]、`+3288`=0、`+2659`=2；原生日志 `UNKO_END` |
 | `0xf6` | no_floor_end | 与 `0x00` 相同的重置，用于路由没有地面时；原生日志 `NO_FLOOR_END` |
 | `0xf7` | find_ng_end | 结束目标搜索：重置主选择，再清 `+2612`（cmd_pl_target）所持槽位的仇恨簿记；`+2612` 为 `0xFF` 时按 `NOT_FOUND_PL` 结束 |
-| `0xf8` | clear_lane8 | 清 lane 位 `0x0008`；若 lane 位 `0x0001` 仍在则恢复 `main[8][+2595]`，否则走完整重置 |
+| `0xf8` | clear_lane8 | 清 lane 位 `0x0008`；若 lane 位 `0x0001` 仍在则恢复 `main[2][+2595]`，否则走完整重置 |
 | `0xf9` | clear_lane4 | 清 lane 位 `0x0004`；同上按 `0x0001` 决定恢复还是重置 |
-| `0xfa` | clear_lane2 | 重装主选择，清 lane 位 `0x0002` 并调用 `0x1084FB80`(em, 0)；再按 `0x0001` 决定恢复 `main[8][+2595]` 或重置 |
+| `0xfa` | clear_lane2 | 重装主选择，清 lane 位 `0x0002` 并调用 `0x1084FB80`(em, 0)；再按 `0x0001` 决定恢复 `main[2][+2595]` 或重置 |
 | `0xfb` | area_end | 结束地面区域移动：比较进度计数 `+2844` 与上限 `+2845`，把保存游标 `+2616` 作为下一游标并清等待标志 `+2621`；原生日志 `AREA_END` |
 | `0xfc` | find_end | 结束搜索/目标命令：`+2739`（命令模式标志）为 0 时经 `0x108693E0`(em, 1) 抬触发器锁存并把 `+2680` 拷入 `+2681`；原生日志 `FIND_END Em_Mode_Chg( em, EM_MODE_ATTACK )` |
-| `0xfd` | kehai_end | 结束気配路由：清 lane 位 `0x0010`；lane 位 `0x0001` 仍在时按 `+2595` 的 route act 恢复 `main[8][+2595]`（`route_ptr_set`），否则重装主项并置网络命令状态（`em_cmd_top` + `EM_NET_CMD`） |
-| `0xfe` | route_move_end | 结束路由移动：刷新参考位置，按物种选半径比较距离，未到达则恢复 lane 游标；到达则推进计数 `+2842`，按模式 `+2592` 选下一个航点（0 = 用 `+1096` 在 `+2843` 范围取伪随机，1 = 递增，2 = 取 `main[8][+2593]` 的字节） |
-| `0xff` | loop_count | 路由移动的循环计数：`+2842` 低于上限 `+2841` 时恢复 `main[8][+2594]`；达到上限则清 lane 位 `0x0001`，由 lane 选择器 `0x10860700` 决定下一游标 |
+| `0xfd` | kehai_end | 结束気配路由：清 lane 位 `0x0010`；lane 位 `0x0001` 仍在时按 `+2595` 的 route act 恢复 `main[2][+2595]`（`route_ptr_set`），否则重装主项并置网络命令状态（`em_cmd_top` + `EM_NET_CMD`） |
+| `0xfe` | route_move_end | 结束路由移动：刷新参考位置，按物种选半径比较距离，未到达则恢复 lane 游标；到达则推进计数 `+2842`，按模式 `+2592` 选下一个航点（0 = 用 `+1096` 在 `+2843` 范围取伪随机，1 = 递增，2 = 取 `main[2][+2593]` 的字节） |
+| `0xff` | loop_count | 路由移动的循环计数：`+2842` 低于上限 `+2841` 时恢复 `main[2][+2594]`；达到上限则清 lane 位 `0x0001`，由 lane 选择器 `0x10860700` 决定下一游标 |
 | 其他 | re-dispatch | 未出现在两张 switch 表（`0x108675D4` 覆盖 `0x00..0x06`、`0x10867CDC` 覆盖 `0xf6..0xff`）里的选择子，交回解释器按普通 opcode 执行 |
 
 注意 `0xff` 家族里 `0x04`/`0x05` 共用一条实现，`0x01`/`0x02`/`0x03` 是三级

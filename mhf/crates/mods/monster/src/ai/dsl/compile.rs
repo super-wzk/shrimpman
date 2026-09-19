@@ -54,10 +54,6 @@ fn reserved_command(name: &str) -> Option<Command> {
             args: 1,
         },
         "resume" => Command::Resume,
-        "kehai_end" => Command::Fixed {
-            opcode: &[0xff, 0xfd],
-            args: 0,
-        },
         "area_end" => Command::Fixed {
             opcode: &[0xff, 0xfb],
             args: 0,
@@ -66,23 +62,8 @@ fn reserved_command(name: &str) -> Option<Command> {
             opcode: &[0xff, 0xfe],
             args: 0,
         },
-        "find_end" => Command::Fixed {
-            opcode: &[0xff, 0xfc],
-            args: 0,
-        },
-        "find_ng_end" => Command::Fixed {
-            opcode: &[0xff, 0xf7],
-            args: 0,
-        },
-        "no_floor_end" => Command::Fixed {
-            opcode: &[0xff, 0xf6],
-            args: 0,
-        },
         "reset" => Command::Framework {
             opcode: &[0xff, 0x00],
-        },
-        "unko_end" => Command::Framework {
-            opcode: &[0xff, 0xf5],
         },
         _ => return None,
     };
@@ -123,39 +104,64 @@ impl<'a> Names<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scope {
     States,
-    Events { slot: u8 },
-}
-
-impl Scope {
-    fn lane(self) -> u8 {
-        match self {
-            Scope::States => 0x01,
-            Scope::Events { slot } => EVENT_SLOTS[usize::from(slot)].mask,
-        }
-    }
-
-    fn describe(self) -> String {
-        match self {
-            Scope::States => "the states block (lane 0x01)".to_owned(),
-            Scope::Events { slot } => format!(
-                "events slot {slot} (lane {:#04x})",
-                EVENT_SLOTS[usize::from(slot)].mask
-            ),
-        }
-    }
+    Events,
 }
 
 struct Compiler<'a> {
     names: Names<'a>,
     warnings: Vec<Diagnostic>,
+    functions: &'a [super::parser::Function],
+    stack: Vec<String>,
 }
 
 impl Compiler<'_> {
-    fn encode_body(&mut self, body: &[Statement], scope: Scope, out: &mut Vec<u8>) -> Result<()> {
+    fn encode_body(&mut self, body: &[Statement], scope: Scope, out: &mut Vec<u8>) -> Result<bool> {
         for statement in body {
+            if out.len() > super::super::decompile::MAX_SCRIPT_BYTES {
+                return Err(statement.error("expanded function exceeds 64 KiB"));
+            }
+            if matches!(statement.kind, StatementKind::Return) {
+                if !closed(out)? {
+                    return Err(
+                        statement.error("return inside a native conditional is not supported")
+                    );
+                }
+                return Ok(false);
+            }
+            if let StatementKind::Call {
+                callee: Callee::Name(name),
+                args,
+            } = &statement.kind
+                && let Some(function) = self.functions.iter().find(|f| f.name == *name)
+            {
+                self.require_args(statement, args, 0, name)?;
+                if self.stack.contains(name) || self.stack.len() >= 64 {
+                    return Err(statement.error(format!(
+                        "recursive or excessively deep function call: {name}"
+                    )));
+                }
+                self.stack.push(name.clone());
+                let transferred = self
+                    .encode_body(&function.body, scope, out)
+                    .map_err(|error| Error::new(format!("{}: {error}", function.name)))?;
+                self.stack.pop();
+                if transferred {
+                    return Ok(true);
+                }
+                continue;
+            }
             self.encode_statement(statement, scope, out)?;
+            if !self.functions.is_empty()
+                && matches!(
+                    statement.kind,
+                    StatementKind::Transition { .. } | StatementKind::Restart
+                )
+                && closed(out)?
+            {
+                return Ok(true);
+            }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn encode_statement(
@@ -165,6 +171,7 @@ impl Compiler<'_> {
         out: &mut Vec<u8>,
     ) -> Result<()> {
         match &statement.kind {
+            StatementKind::Return => unreachable!("handled by encode_body"),
             StatementKind::Call { callee, args } => match callee {
                 Callee::Action { group, id } => {
                     self.require_args(statement, args, 1, "an action call")?;
@@ -180,16 +187,6 @@ impl Compiler<'_> {
                                 self.require_args(statement, args, expected, &format!("'{name}'"))?;
                                 out.extend_from_slice(opcode);
                                 out.extend_from_slice(args);
-                                if name == "kehai_end" && scope.lane() != 0x10 {
-                                    self.warnings.push(Diagnostic::at(
-                                        statement.line,
-                                        statement.column,
-                                        format!(
-                                            "kehai_end() ends lane 0x10, but this body runs on {}; whether that lane is active is a runtime property (spec §7)",
-                                            scope.describe()
-                                        ),
-                                    ));
-                                }
                             }
                             Command::Resume => {
                                 return Err(statement.error(
@@ -298,6 +295,42 @@ fn check_decodes(bytes: &[u8], line: usize, column: usize, what: &str) -> Result
     Ok(())
 }
 
+/// Endings verified in 108675A0 and the corresponding native event scripts.
+/// Functions are expanded at the call site, so a normal return emits no bytes.
+fn finish(bytes: &mut Vec<u8>, event: Option<u8>) -> Result<()> {
+    let mut structure = bytecode::ScriptStructure::default();
+    let mut terminal = false;
+    for instruction in bytecode::decode(bytes)? {
+        structure.push(&instruction.bytes)?;
+        terminal = structure.is_closed()
+            && (bytecode::is_stop(instruction.opcode)
+                || matches!(instruction.opcode, 0x04 | 0x07 | 0x68)
+                || (instruction.opcode == 0xff
+                    && matches!(instruction.bytes.get(1), Some(0..=3 | 0xf5..=0xff))));
+    }
+    if !structure.is_closed() {
+        return Err(Error::new(
+            "function ends inside a native conditional block",
+        ));
+    }
+    if !terminal {
+        let ending = event.map_or(0x00, |slot| EVENT_SLOTS[usize::from(slot)].ending);
+        bytes.extend_from_slice(&[0xff, ending]);
+    }
+    if bytes.len() > super::super::decompile::MAX_SCRIPT_BYTES {
+        return Err(Error::new("expanded function exceeds 64 KiB"));
+    }
+    Ok(())
+}
+
+fn closed(bytes: &[u8]) -> Result<bool> {
+    let mut structure = bytecode::ScriptStructure::default();
+    for instruction in bytecode::decode(bytes)? {
+        structure.push(&instruction.bytes)?;
+    }
+    Ok(structure.is_closed())
+}
+
 impl Document {
     /// Compile the document into a pointer-free graph.
     ///
@@ -306,10 +339,55 @@ impl Document {
     /// The binding merges that declaration onto the block it will replace.
     pub fn compile(&self) -> Result<Compiled> {
         check_document(self)?;
+        if self.module || !self.imports.is_empty() {
+            return Err(Error::new(
+                "compile an entry project to resolve imports; a module is not an entry",
+            ));
+        }
+        if self.auto_finish {
+            for body in self
+                .states
+                .iter()
+                .filter_map(|d| d.body.as_ref())
+                .chain(self.events.iter().filter_map(|d| d.body.as_ref()))
+            {
+                if let [
+                    Statement {
+                        kind:
+                            StatementKind::Call {
+                                callee: Callee::Name(name),
+                                args,
+                            },
+                        ..
+                    },
+                ] = body.as_slice()
+                    && args.is_empty()
+                    && self.functions.iter().any(|f| f.name == *name)
+                {
+                    continue;
+                }
+                return Err(Error::new(
+                    "states/events entries must bind a declared function using ->",
+                ));
+            }
+        }
         let mut compiler = Compiler {
             names: Names::collect(self),
             warnings: Vec::new(),
+            functions: &self.functions,
+            stack: Vec::new(),
         };
+        // Check even unused helpers, so a broken imported file cannot be hidden
+        // by the current entry bindings. Context-specific checks still happen
+        // again while compiling each entry.
+        for function in &self.functions {
+            compiler.stack.push(function.name.clone());
+            compiler
+                .encode_body(&function.body, Scope::States, &mut Vec::new())
+                .map_err(|error| Error::new(format!("{}: {error}", function.name)))?;
+            compiler.stack.pop();
+        }
+        compiler.warnings.clear();
         let states = self.encode_states(&mut compiler)?;
         let events = self.encode_events(&mut compiler)?;
         let program = match self.base {
@@ -332,6 +410,9 @@ impl Document {
             };
             let mut bytes = Vec::new();
             compiler.encode_body(body, Scope::States, &mut bytes)?;
+            if self.auto_finish {
+                finish(&mut bytes, None)?;
+            }
             check_decodes(
                 &bytes,
                 decl.line,
@@ -351,11 +432,11 @@ impl Document {
                 continue;
             };
             let mut bytes = Vec::new();
-            compiler.encode_body(body, Scope::Events { slot: decl.slot }, &mut bytes)?;
-            let what = match &decl.name {
-                Some(name) => format!("event '{name}'"),
-                None => format!("event slot {}", decl.slot),
-            };
+            compiler.encode_body(body, Scope::Events, &mut bytes)?;
+            if self.auto_finish {
+                finish(&mut bytes, Some(decl.slot))?;
+            }
+            let what = format!("event '{}'", EVENT_SLOTS[usize::from(decl.slot)].name);
             check_decodes(&bytes, decl.line, decl.column, &what)?;
             encoded.push((decl.slot, Some(bytes)));
         }

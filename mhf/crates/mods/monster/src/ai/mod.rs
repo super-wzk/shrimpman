@@ -16,6 +16,7 @@ use std::fmt;
 pub mod bind;
 pub mod bytecode;
 pub mod control;
+pub mod decompile;
 pub mod dsl;
 #[cfg(all(feature = "provider", windows, target_arch = "x86"))]
 pub(crate) mod overlay;

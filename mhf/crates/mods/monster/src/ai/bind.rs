@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 
-use crate::ai::control::{EVENT_SLOTS, MAIN_ROOT_INDEX, ROUTE_ROOT_INDEX};
+use crate::ai::control::{EVENT_SLOTS, MAIN_ROOT_INDEX};
 use crate::ai::{Base, Error, NATIVE_DESCRIPTOR_SLOTS, Node, Program, Result, Table};
 
 /// Words read from the live descriptor.
@@ -41,13 +41,6 @@ pub const DESCRIPTOR_WORDS: usize = NATIVE_DESCRIPTOR_SLOTS + 256;
 ///
 /// Both readers of descriptor word 0 widen a byte before indexing it.
 pub const STATE_WORDS: usize = 256;
-
-/// Words kept for the `act`-indexed route table behind descriptor word 8.
-///
-/// `route_ptr_set` (`0x108604C0`) widens a byte before indexing that table, so
-/// the slot keeps the whole byte-addressed window even though the selector only
-/// ever runs `cell[0]`.
-pub const ROUTE_WORDS: usize = 256;
 
 /// Read-only access to the memory the binding runs against.
 pub trait NativeMemory {
@@ -104,6 +97,14 @@ pub fn materialize(
         ));
     }
     program.validate_lossless()?;
+    // Validate before allocating or publishing anything. DSL native(...) only
+    // guarantees byte preservation; it does not prove native scans terminate.
+    for (index, node) in program.nodes.iter().enumerate() {
+        if let Node::Script(bytes) = node {
+            super::bytecode::validate_structure(bytes)
+                .map_err(|error| Error::new(format!("script node {index}: {error}")))?;
+        }
+    }
     let Node::Table(root) = &program.nodes[program.root] else {
         unreachable!("validate_lossless checked the root kind")
     };
@@ -152,20 +153,7 @@ pub fn materialize(
         }
         let native = blocks.words()[descriptor][slot.root_index];
         let Some(node) = root.get(slot.root_index) else {
-            if slot.root_index == ROUTE_ROOT_INDEX {
-                // The route table is not only an event cell: `cell[0]` is the
-                // mask-`0x02` script, the rest belongs to `route_ptr_set`. A
-                // bare entry drops the event cursor and nothing else.
-                let mut words = route_words(native, memory)?;
-                words[0] = 0;
-                let block = blocks.push(words, Vec::new());
-                blocks.link(descriptor, slot.root_index, block);
-            } else {
-                // A bare entry removes the native slot: the selector tests the
-                // pointer before it dereferences the cell, so a null slot is an
-                // inactive event.
-                blocks.set(descriptor, slot.root_index, 0);
-            }
+            blocks.set(descriptor, slot.root_index, 0);
             continue;
         };
         let Node::Table(declaration) = &program.nodes[node] else {
@@ -174,18 +162,12 @@ pub fn materialize(
                 slot.mask
             )));
         };
-        // The dispatcher (`0x10860500`) reads `cell[0]` and nothing else, so a
-        // pure event cell needs only the declaration's own extent. The route
-        // slot is the exception: it is also the `act`-indexed table.
-        let mut words = if slot.root_index == ROUTE_ROOT_INDEX {
-            route_words(native, memory)?
+        // Event dispatch reads cell[0]; route_ptr_set uses a separate root[2].
+        let window = declaration.extent().max(1);
+        let mut words = if native == 0 {
+            vec![0; window]
         } else {
-            let window = declaration.extent().max(1);
-            if native == 0 {
-                vec![0; window]
-            } else {
-                read_exact(memory, native, window, "event cell")?
-            }
+            read_exact(memory, native, window, "event cell")?
         };
         let entries = layer(program, declaration, &mut words, "cell index", "event cell")?;
         let block = blocks.push(words, Vec::new());
@@ -293,13 +275,6 @@ fn script(
 /// A descriptor with no route table yet still has to produce a full window: the
 /// declaration may be the first thing that gives that slot a script, and the
 /// client can index it with any act byte afterwards.
-fn route_words(native: u32, memory: &impl NativeMemory) -> Result<Vec<u32>> {
-    if native == 0 {
-        return Ok(vec![0; ROUTE_WORDS]);
-    }
-    read_exact(memory, native, ROUTE_WORDS, "route table")
-}
-
 fn read_exact(
     memory: &impl NativeMemory,
     address: u32,
@@ -362,7 +337,7 @@ impl Blocks {
 
 #[cfg(test)]
 mod tests {
-    use super::{DESCRIPTOR_WORDS, NativeMemory, ROUTE_WORDS, STATE_WORDS, materialize};
+    use super::{DESCRIPTOR_WORDS, NativeMemory, STATE_WORDS, materialize};
     use crate::ai::control::{EVENT_SLOTS, ROUTE_ROOT_INDEX};
     use crate::ai::{Base, Error, Node, Program, Result, Table};
     use std::collections::HashMap;
@@ -393,7 +368,7 @@ mod tests {
             state[..NATIVE_SCRIPTS.len()].copy_from_slice(&NATIVE_SCRIPTS);
             memory.insert(STATE_TABLE, state);
             memory.insert(FIRST_CELL, vec![NATIVE_SCRIPTS[2]]);
-            let mut route = vec![0u32; ROUTE_WORDS];
+            let mut route = vec![0u32; 256];
             route[0] = NATIVE_SCRIPTS[2];
             route[NATIVE_ROUTE_ACT] = NATIVE_SCRIPTS[2];
             memory.insert(ROUTE_TABLE, route);
@@ -557,47 +532,17 @@ mod tests {
     /// The mask-`0x02` slot is also the `act`-indexed route table, so a declared
     /// body replaces `cell[0]` and every other act keeps its native script.
     #[test]
-    fn an_event_body_on_the_route_slot_keeps_the_act_table() {
+    fn event_slot_six_does_not_replace_the_route_table() {
         let memory = Memory::live();
         let mut arena = TestArena::default();
-        let program = Program {
-            species: 6,
-            base: Base::Native,
-            root: 0,
-            nodes: vec![
-                Node::Table(Table::from_entries([(ROUTE_ROOT_INDEX, Some(1))])),
-                Node::Table(Table::from_entries([(0, Some(2))])),
-                Node::Script(vec![0x05, 4, 1, 0]),
-            ],
-        };
-        materialize(&program, DESCRIPTOR, &memory, &mut arena).unwrap();
-
-        assert_eq!(arena.block(0)[ROUTE_ROOT_INDEX], arena.address(1));
-        let route = arena.block(1);
-        assert_eq!(route.len(), ROUTE_WORDS);
-        assert_eq!(route[0], arena.address(2));
-        assert_eq!(route[NATIVE_ROUTE_ACT], NATIVE_SCRIPTS[2]);
-    }
-
-    /// A bare entry on the same slot drops the event cursor only: `route_ptr_set`
-    /// still resolves every act through the inherited table.
-    #[test]
-    fn a_bare_route_entry_clears_only_the_event_cursor() {
-        let memory = Memory::live();
-        let mut arena = TestArena::default();
-        let program = Program {
-            species: 6,
-            base: Base::Native,
-            root: 0,
-            nodes: vec![Node::Table(Table::from_entries([(ROUTE_ROOT_INDEX, None)]))],
-        };
-        materialize(&program, DESCRIPTOR, &memory, &mut arena).unwrap();
-
-        assert_eq!(arena.block(0)[ROUTE_ROOT_INDEX], arena.address(1));
-        let route = arena.block(1);
-        assert_eq!(route.len(), ROUTE_WORDS);
-        assert_eq!(route[0], 0);
-        assert_eq!(route[NATIVE_ROUTE_ACT], NATIVE_SCRIPTS[2]);
+        let compiled = crate::ai::dsl::parse(
+            "mhf_ai 1; species 6; base native; events { bait_detected -> handler; } fn handler() { nop(); }"
+        ).unwrap().compile().unwrap();
+        materialize(&compiled.program, DESCRIPTOR, &memory, &mut arena).unwrap();
+        assert_eq!(arena.block(0)[ROUTE_ROOT_INDEX], ROUTE_TABLE);
+        assert_eq!(arena.block(0)[EVENT_SLOTS[6].root_index], arena.address(1));
+        assert_eq!(arena.block(1).len(), 1);
+        assert_eq!(arena.block(1)[0], arena.address(2));
     }
 
     /// A slot with no known reader window cannot be merged yet, and guessing one
@@ -636,5 +581,17 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("empty base"), "{error}");
+    }
+
+    #[test]
+    fn rejects_old_truncated_dsl_before_allocating_or_publishing() {
+        let compiled = crate::ai::dsl::parse(
+            "mhf_ai 1; species 6; base native; states { idle { native(0x39, 0); native(0xff, 0); } }"
+        ).unwrap().compile().unwrap();
+        let mut arena = TestArena::default();
+        let error =
+            materialize(&compiled.program, DESCRIPTOR, &Memory::live(), &mut arena).unwrap_err();
+        assert!(error.to_string().contains("未闭合"));
+        assert!(arena.blocks.is_empty());
     }
 }

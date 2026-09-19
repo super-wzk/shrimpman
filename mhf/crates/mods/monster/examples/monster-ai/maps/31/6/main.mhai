@@ -1,0 +1,37 @@
+mhf_ai 1;
+species 6;
+map 31;
+base native;
+
+import "#common/combat.mhai" as combat;
+import "#common/movement.mhai" as movement;
+import "#common/reactions.mhai" as reactions;
+import "special.mhai" as special;
+
+states {
+    idle -> idle_loop;
+    fight = 4 -> fight_loop;
+    recover -> recover_loop;
+}
+
+events {
+    dung_reaction -> reactions.handle_first;
+    invalid_ground -> special.handle_second;
+}
+
+fn idle_loop() {
+    movement.prepare();
+    wait(15);
+    transition fight;
+}
+
+fn fight_loop() {
+    combat.quick_attack();
+    special.followup();
+    transition recover;
+}
+
+fn recover_loop() {
+    movement.recover();
+    transition idle;
+}

@@ -94,6 +94,24 @@ impl Session {
             .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
+    pub(crate) fn replace_monster(
+        &self,
+        offset: usize,
+        expected: u8,
+        species: u8,
+    ) -> Result<(), String> {
+        let mut replacement = self
+            .inner
+            .quest_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let quest =
+            binary::Quest::parse(replacement.as_deref().unwrap_or(&self.inner.quest.bytes))?;
+        let bytes = quest.replace_monster(offset, expected, species)?;
+        *replacement = Some(bytes);
+        Ok(())
+    }
+
     pub(crate) fn override_contains(&self, offset: usize, length: usize) -> bool {
         self.inner
             .quest_override

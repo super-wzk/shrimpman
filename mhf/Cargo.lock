@@ -1680,6 +1680,7 @@ dependencies = [
  "mhf-hooks",
  "mhf-mod-host",
  "mhf-mod-sdk",
+ "mhf-monster",
  "mhf-quest",
  "mhf-ui",
  "safer-ffi",

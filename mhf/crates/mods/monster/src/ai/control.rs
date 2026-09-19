@@ -1,4 +1,4 @@
-//! The event-slot mapping the product path names.
+//! Named DSL events and their native dispatch mapping.
 //!
 //! The native selector tests seven event bits in a fixed order and reaches
 //! each one through its own root-table slot.  These constants are what the
@@ -11,10 +11,11 @@ pub const MAIN_ROOT_INDEX: usize = 0;
 ///
 /// A slot's position in [`EVENT_SLOTS`] is the order the native selector tests
 /// the bits when more than one is present.  The mapping is mechanism-level by
-/// design: the client evidence establishes the bit and slot, but does not
-/// establish a user-facing event name such as "flash" or "roar".
+/// design; the name describes the trigger, not the species-specific response.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EventSlot {
+    pub name: &'static str,
+    pub ending: u8,
     pub mask: u8,
     pub root_index: usize,
 }
@@ -25,40 +26,48 @@ pub struct EventSlot {
 /// order the client tests the bits in.
 pub const EVENT_SLOTS: [EventSlot; 7] = [
     EventSlot {
+        name: "dung_reaction",
+        ending: 0xf5,
         mask: 0x40,
         root_index: 14,
     },
     EventSlot {
+        name: "invalid_ground",
+        ending: 0xf6,
         mask: 0x80,
         root_index: 13,
     },
     EventSlot {
+        name: "player_detected",
+        ending: 0xfc,
         mask: 0x20,
         root_index: 4,
     },
     EventSlot {
+        name: "awareness",
+        ending: 0xfd,
         mask: 0x10,
         root_index: 3,
     },
     EventSlot {
+        name: "rage_entered",
+        ending: 0xf8,
         mask: 0x08,
         root_index: 11,
     },
     EventSlot {
+        name: "group_signal",
+        ending: 0xf9,
         mask: 0x04,
         root_index: 10,
     },
     EventSlot {
+        name: "bait_detected",
+        ending: 0xfa,
         mask: 0x02,
         root_index: 8,
     },
 ];
 
-/// The one event slot that shares its table with an `act`-indexed array.
-///
-/// `route_ptr_set` (`0x108604C0`) returns `root[8][act]`, where `act` is the
-/// byte `em->cmd_route_act` (`+2595`): the same table whose `cell[0]` the
-/// selector runs for mask `0x02` also holds one route script per act. A binding
-/// therefore keeps the whole byte-indexed window for this slot instead of the
-/// declaration's own extent.
-pub const ROUTE_ROOT_INDEX: usize = 8;
+/// 108604C0 reads descriptor+8 (word 2), not descriptor word 8.
+pub const ROUTE_ROOT_INDEX: usize = 2;

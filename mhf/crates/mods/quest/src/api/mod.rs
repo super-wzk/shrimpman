@@ -14,7 +14,7 @@ use safer_ffi::{
 
 pub const PROVIDER_ID: &str = "mhf.base";
 pub const INTERFACE_ID: &str = "mhf.quest.v1";
-pub const CONTROL_INTERFACE_ID: &str = "mhf.quest.control.v2";
+pub const CONTROL_INTERFACE_ID: &str = "mhf.quest.control.v3";
 pub const LAUNCH_INTERFACE_ID: &str = "mhf.quest.launch.v1";
 
 #[derive_ReprC(rename = "QuestSnapshot")]
@@ -124,6 +124,13 @@ pub trait QuestControlApi: Send + Sync {
     /// A synchronized range query. It grants no pointer or lasting borrow, and
     /// the replacement may change after this call returns.
     fn override_contains(&self, offset: SpawnOffset, length: usize) -> bool;
+
+    /// Replace one primary quest spawn; preserves the replacement on failure.
+    /// # Safety
+    /// Call on the game thread before restarting the quest loader, with no
+    /// concurrent readers of replacement data. Offsets refer to the current quest.
+    unsafe fn replace_monster(&self, offset: SpawnOffset, expected: u8, species: u8)
+    -> api::Status;
 }
 
 /// Host lookups borrow this generated object through consumer destruction.
@@ -261,6 +268,20 @@ impl<'host> QuestControl<'host> {
     pub fn override_contains(&self, offset: SpawnOffset, length: usize) -> bool {
         self.table.override_contains(offset, length)
     }
+
+    /// # Safety
+    /// See `QuestControlApi::replace_monster`.
+    pub unsafe fn replace_monster(
+        &self,
+        offset: SpawnOffset,
+        expected: u8,
+        species: u8,
+    ) -> Result<()> {
+        status_result(
+            unsafe { self.table.replace_monster(offset, expected, species) },
+            "quest monster replacement",
+        )
+    }
 }
 
 /// Binds a provider inside native state without taking ownership.
@@ -322,7 +343,7 @@ mod tests {
         assert_eq!(offset_of!(MonsterSpawn, yaw), 16);
         assert_eq!(size_of::<SpawnOffset>(), 4);
         assert_eq!(size_of::<QuestTable>(), 3 * size_of::<*const ()>());
-        assert_eq!(size_of::<QuestControlTable>(), 8 * size_of::<*const ()>());
+        assert_eq!(size_of::<QuestControlTable>(), 9 * size_of::<*const ()>());
         assert_eq!(size_of::<QuestLaunchTable>(), 3 * size_of::<*const ()>());
         assert_eq!(
             offset_of!(
