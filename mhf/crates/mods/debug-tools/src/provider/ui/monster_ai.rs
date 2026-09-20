@@ -346,15 +346,7 @@ impl Editor {
                 )
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.add_enabled(
-                        self.pending.is_none(),
-                        egui::TextEdit::multiline(&mut self.draft.source)
-                            .id_salt("ai-source")
-                            .font(egui::TextStyle::Monospace)
-                            .code_editor()
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(if fill_height { 1 } else { 18 }),
-                    );
+                    self.source_editor(ui, if fill_height { 1 } else { 18 });
                 });
         }
         if let Some(error) = self.error.take() {
@@ -366,6 +358,54 @@ impl Editor {
             );
         }
         self.notifications.show_in(ui);
+    }
+
+    fn source_editor(&mut self, ui: &mut egui::Ui, desired_rows: usize) {
+        ui.horizontal_top(|ui| {
+            let font = egui::TextStyle::Monospace.resolve(ui.style());
+            let color = ui.visuals().weak_text_color();
+            let line_count = self.draft.source.bytes().filter(|&b| b == b'\n').count() + 1;
+            let gutter_width = ui
+                .painter()
+                .layout_no_wrap(line_count.to_string(), font.clone(), color)
+                .size()
+                .x;
+            let (gutter, _) =
+                ui.allocate_exact_size(egui::vec2(gutter_width, 0.0), egui::Sense::hover());
+            let output = ui
+                .add_enabled_ui(self.pending.is_none(), |ui| {
+                    egui::TextEdit::multiline(&mut self.draft.source)
+                        .id_salt("ai-source")
+                        .font(egui::TextStyle::Monospace)
+                        .code_editor()
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(desired_rows)
+                        .show(ui)
+                })
+                .inner;
+
+            // Match actual text rows, including margins and font scaling.
+            // Wrapped continuation rows do not introduce a source line number.
+            let clip = ui.clip_rect();
+            let mut line_number = 1;
+            let mut starts_line = true;
+            for row in &output.galley.rows {
+                let rect = row.rect().translate(output.galley_pos.to_vec2());
+                if starts_line && rect.bottom() >= clip.top() && rect.top() <= clip.bottom() {
+                    ui.painter().text(
+                        egui::pos2(gutter.right(), rect.top()),
+                        egui::Align2::RIGHT_TOP,
+                        line_number.to_string(),
+                        font.clone(),
+                        color,
+                    );
+                }
+                starts_line = row.ends_with_newline;
+                if starts_line {
+                    line_number += 1;
+                }
+            }
+        });
     }
 
     fn species_picker(
