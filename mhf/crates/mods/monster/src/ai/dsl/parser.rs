@@ -127,11 +127,6 @@ pub enum StatementKind {
     Reset,
     /// `reset forget_target;` — additionally clear the current target's tracking data.
     ResetForgetTarget,
-    /// `repeat <n> { ... }`. Parsed and formatted, not emitted yet (spec §11.9).
-    Repeat {
-        count: u8,
-        body: Vec<Statement>,
-    },
     /// `native(0xff, 0xfd);` — the only bare-value escape.
     Native {
         bytes: Vec<u8>,
@@ -499,7 +494,7 @@ impl Parser {
             TokenKind::Word(word) => word.clone(),
             _ => {
                 return Err(token.error(
-                    "expected a statement: a native command call, transition, restart, or repeat",
+                    "expected a statement: a command call, transition, restart, or control-flow block",
                 ));
             }
         };
@@ -659,18 +654,6 @@ impl Parser {
                 }
                 self.body_depth -= 1;
                 Ok(position(StatementKind::Random(branches)))
-            }
-            "repeat" => {
-                if self.peek_is(&TokenKind::LeftParen) {
-                    return Err(token.error(
-                        "repeat takes a literal count, not a call: write `repeat <n> { ... }` (spec §5)",
-                    ));
-                }
-                let (count, count_token) = self.take_number("repeat count")?;
-                let count = byte(count, &count_token, "repeat count")?;
-                self.expect(&TokenKind::LeftBrace, "'{' after the repeat count")?;
-                let body = self.parse_body()?;
-                Ok(position(StatementKind::Repeat { count, body }))
             }
             "self" => {
                 self.expect(&TokenKind::Dot, "'.' after self")?;
@@ -939,7 +922,6 @@ const KEYWORDS: &[&str] = &[
     "transition",
     "restart",
     "reset",
-    "repeat",
     "random",
     "match",
     "action",

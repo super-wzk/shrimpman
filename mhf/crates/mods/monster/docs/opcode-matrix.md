@@ -96,7 +96,7 @@
 | `0x1B` | selection-byte equality gate | 选择子 + `u8` | 选择子 0 比较载荷字节与 `+2681`（mind 状态 b），否则扫到 `0x1B` 标记 | named | confirmed |
 | `0x1C` | deterministic-ratio branch | 选择子 + 计数 + 阈值/体 | 选择子 0 用两个原生哈希式函数算确定性比值，与阈值列表比较，再走嵌套 `0x1C` 体 | named | confirmed |
 | `0x1D` | ordered-byte branch | 选择子 + 计数 + 有序表 | 选择子 0 拿 `+2682` 与有序字节列表比较，跳过嵌套 `0x1D` 体直到第一个匹配或更大的项 | named | confirmed |
-| `0x1E` | clear-selection-context | 无 | 清当前选择 id、游标、目标下标及相关上下文字节 | named | operation_confirmed |
+| `0x1E` | clear-behavior-requests | 无 | 清除已接受的行为请求、优先级、五类待处理标志及三类计时请求的已触发标志 | named | operation_confirmed |
 | `0x1F` | flag-not-one gate | 选择子 | 选择子 0 仅在 `+1040` 不等于 1 时继续，否则扫到 `0x1F` 标记 | named | confirmed |
 | `0x20` | relative-angle threshold branch | 选择子 + 阈值/列表 | 选择子 0 取目标位置，算相对 `+164`（朝向）的归一化相对角，与阈值表比较后走嵌套 `0x20` 体 | named | confirmed |
 | `0x21` | counter-threshold gate | 选择子 | 选择子 0 仅在 `+2696` 大于 `+2708` 乘全局系数时继续，否则扫标记 | generic | confirmed |
@@ -261,10 +261,8 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 | 状态字与标志位 | `0x0A`、`0x0C`、`0x0D`、`0x26`、`0x31`、`0x48`、`0x7F`、`0x85`、`0x86` |
 | 空实现（只占位） | `0x92`、`0x93` |
 
-真正能让作者手写的"语义指令"很少：`0x05`（发 action）、`0x07`（切状态表项）、
-`0x24`（重复体）、`0xff` 家族（返回与通道收尾）。其余绝大多数是数据生成器
-输出给解释器的条件门，手写它们没有意义——这也是 [`dsl-spec.md`](dsl-spec.md)
-里只有 `transition`、`resume` 和少数命名命令的原因。
+DSL 支持的动作、状态转移、条件分支和返回语法见 [`dsl-spec.md`](dsl-spec.md)。
+原生指令已识别不代表 DSL 已支持；例如 `0x24` 的执行与扫描边界不一致，仍拒绝安装。
 
 ## 7. 仍然存在的缺口
 

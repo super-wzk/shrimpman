@@ -600,7 +600,7 @@ fn format_recovered_body(
             [0x68] => "stop();".into(),
             [0xff, 0x00] => "reset;".into(),
             [0xff, 0xf7] => "reset forget_target;".into(),
-            [0x1e] => "clear_target();".into(),
+            [0x1e] => "clear_behavior_requests();".into(),
             [0x92] => "nop();".into(),
             [0x48, ticks] => format!("wait({ticks});"),
             [0xff, 0xfb] => "area_end();".into(),

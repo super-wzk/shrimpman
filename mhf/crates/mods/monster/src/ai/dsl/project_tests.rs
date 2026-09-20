@@ -543,6 +543,143 @@ fn condition_branches_resolve_imported_helpers_and_actions() {
 }
 
 #[test]
+fn block_returns_only_skip_the_current_functions_continuation() {
+    for (body, expected) in [
+        (
+            "if self.flashed { return; } wait(1);",
+            "if self.flashed {} else { wait(1); }",
+        ),
+        (
+            "if self.flashed { wait(1); } else { return; } wait(2);",
+            "if self.flashed { wait(1); wait(2); } else {}",
+        ),
+        (
+            "if self.flashed { return; } else { return; } wait(9);",
+            "if self.flashed {} else {}",
+        ),
+        (
+            "if self.flashed { if self.active { return; } wait(1); } wait(2);",
+            "if self.flashed { if self.active {} else { wait(1); wait(2); } } else { wait(2); }",
+        ),
+        (
+            "if self.check_tracked_players() { return; } wait(1);",
+            "if self.check_tracked_players() {} else { wait(1); }",
+        ),
+        (
+            "random { 1 => { return; } 1 => wait(1); } wait(2);",
+            "random { 1 => {} 1 => { wait(1); wait(2); } }",
+        ),
+        (
+            "match self.target_distance_group() { 1 => { return; } else => wait(1); } wait(2);",
+            "match self.target_distance_group() { 1 => {} else => { wait(1); wait(2); } }",
+        ),
+        (
+            "if self.flashed { reset; } else { return; } wait(2);",
+            "if self.flashed { reset; wait(2); } else {}",
+        ),
+    ] {
+        for entry in [
+            "fn main() { helper(); wait(3); }",
+            "fn main() { if self.active { helper(); wait(3); } }",
+            "events { awareness => { helper(); wait(3); } }",
+        ] {
+            let compile = |body| {
+                parse(&format!(
+                    "mhf_ai 1; species 6; base native; {entry} fn helper() {{ {body} }}"
+                ))
+                .unwrap()
+                .compile()
+                .unwrap()
+            };
+            let actual = compile(body);
+            let expected = compile(expected);
+            assert_eq!(actual.program, expected.program, "{entry}: {body}");
+        }
+    }
+}
+
+#[test]
+fn entry_and_native_slot_returns_keep_their_endings() {
+    let compiled = parse(
+        "mhf_ai 1; species 6; base native;
+        fn main() { if self.flashed { return; } wait(1); }
+        states { idle => { if self.flashed { return; } wait(1); } }
+        events { awareness => handler; }
+        fn handler() { if self.flashed { return; } wait(1); }
+        @slot(table = 1, index = 0) fn sub() { if self.flashed { return; } wait(1); }
+        @slot(table = 15, index = 0) fn nested() { if self.flashed { return; } wait(1); }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    for (root, index, ending) in [(0, 0, 0), (0, 1, 0), (3, 0, 0xfd)] {
+        assert_eq!(
+            script(&compiled.program, root, index),
+            [0x39, 0, 0x39, 1, 0x48, 1, 0x39, 2, 0xff, ending]
+        );
+    }
+    for (root, ending) in [(1, 1), (15, 2)] {
+        assert_eq!(
+            script(&compiled.program, root, 0),
+            [0x39, 0, 0xff, ending, 0x39, 2, 0x48, 1, 0xff, ending]
+        );
+    }
+}
+
+#[test]
+fn inline_returns_inside_native_slots_do_not_return_from_the_slot() {
+    let compiled = parse(
+        "mhf_ai 1; species 6; base native;
+        @slot(table = 1, index = 0) fn sub() { if self.active { helper(); wait(3); } }
+        fn helper() { if self.flashed { return; } wait(2); }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x08, 0, 0x39, 0, 0x39, 1, 0x48, 2, 0x39, 2, 0x48, 3, 0x08, 2, 0xff, 1
+        ]
+    );
+}
+
+#[test]
+fn raw_native_conditionals_still_reject_inline_returns() {
+    for body in [
+        "native(0x39, 0); return; native(0x39, 2);",
+        "native(0x39, 0); helper(); native(0x39, 2);",
+        "native(0x39, 0); if self.active { return; } native(0x39, 2);",
+        "if self.active { native(0x39, 0); return; native(0x39, 2); }",
+    ] {
+        let error = parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ {body} }} fn helper() {{ return; }}"
+        ))
+        .unwrap()
+        .compile()
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("return inside a native conditional"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn return_restructuring_respects_the_script_size_limit() {
+    let body = "if self.flashed { if self.active { return; } }".repeat(18);
+    let error = parse(&format!(
+        "mhf_ai 1; species 6; fn main() {{ {body} wait(1); }}"
+    ))
+    .unwrap()
+    .compile()
+    .unwrap_err();
+    assert!(error.to_string().contains("exceeds 64 KiB"), "{error}");
+}
+
+#[test]
 fn invalid_conditions_fail_without_guessing_native_semantics() {
     for body in [
         "if self.unknown {}",
@@ -553,7 +690,6 @@ fn invalid_conditions_fail_without_guessing_native_semantics() {
         "if self.flashed {} else if self.flashed {}",
         "else {}",
         "self.flashed = 1;",
-        "if self.flashed { return; }",
         "if self.flashed { native(0x39, 0); }",
         "if self.flashed { native(0x39, 2); }",
     ] {

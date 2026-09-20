@@ -266,7 +266,7 @@ states {
         wait(0x10);
         nop();
         stop();
-        clear_target();
+        clear_behavior_requests();
         restart;
     }
 }
@@ -285,7 +285,7 @@ states {
                 0x48, 0x10, // wait(0x10)
                 0x92, // nop()
                 0x68, // stop()
-                0x1e, // clear_target()
+                0x1e, // clear_behavior_requests()
                 0x04, // restart
             ]
         );
@@ -514,10 +514,6 @@ states {
                 "'wait' takes exactly 1 argument(s)",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { resume(); } }\n",
-                "resume() returns to a cursor",
-            ),
-            (
                 "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { reset(); } }\n",
                 "reset is a keyword, not a call",
             ),
@@ -528,14 +524,6 @@ states {
             (
                 "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { restart(); } }\n",
                 "restart is a keyword, not a call",
-            ),
-            (
-                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { repeat(3) { nop(); } } }\n",
-                "repeat takes a literal count, not a call",
-            ),
-            (
-                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { repeat 3 { nop(); } } }\n",
-                "repeat is parsed but not emitted yet",
             ),
             (
                 "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { transition combat; } }\n",

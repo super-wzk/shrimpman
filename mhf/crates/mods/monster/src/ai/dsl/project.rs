@@ -318,7 +318,7 @@ fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) 
                     *name = qualify(path, name);
                 }
             }
-            StatementKind::Repeat { body, .. } | StatementKind::EntryBody(body) => {
+            StatementKind::EntryBody(body) => {
                 rewrite(body, path, imports)?;
             }
             StatementKind::Random(branches) => {

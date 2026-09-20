@@ -24,45 +24,23 @@ pub struct Compiled {
 
 /// A name the compiler owns (spec §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Command {
+struct Command {
     /// Author-writable: `opcode` followed by exactly `args` literal bytes.
-    Fixed { opcode: &'static [u8], args: usize },
-    /// `resume()`: `ff` plus a selector owned by the enclosing table family. No
-    /// block in this language owns a cursor yet, so writing it is an error until
-    /// contents/sub-contents/route blocks exist (spec §11.2).
-    Resume,
+    opcode: &'static [u8],
+    args: usize,
 }
 
 fn reserved_command(name: &str) -> Option<Command> {
-    let command = match name {
-        "stop" => Command::Fixed {
-            opcode: &[0x68],
-            args: 0,
-        },
-        "clear_target" => Command::Fixed {
-            opcode: &[0x1e],
-            args: 0,
-        },
-        "nop" => Command::Fixed {
-            opcode: &[0x92],
-            args: 0,
-        },
-        "wait" => Command::Fixed {
-            opcode: &[0x48],
-            args: 1,
-        },
-        "resume" => Command::Resume,
-        "area_end" => Command::Fixed {
-            opcode: &[0xff, 0xfb],
-            args: 0,
-        },
-        "route_move_end" => Command::Fixed {
-            opcode: &[0xff, 0xfe],
-            args: 0,
-        },
+    let (opcode, args): (&[u8], usize) = match name {
+        "stop" => (&[0x68], 0),
+        "clear_behavior_requests" => (&[0x1e], 0),
+        "nop" => (&[0x92], 0),
+        "wait" => (&[0x48], 1),
+        "area_end" => (&[0xff, 0xfb], 0),
+        "route_move_end" => (&[0xff, 0xfe], 0),
         _ => return None,
     };
-    Some(command)
+    Some(Command { opcode, args })
 }
 
 /// Whether `name` belongs to the command vocabulary the compiler owns. The
@@ -110,6 +88,8 @@ struct Compiler<'a> {
     stack: Vec<String>,
     native_functions: &'a HashMap<String, NativeSlot>,
     native_scope: Option<NativeSlot>,
+    raw_boundary: usize,
+    raw_return_blocked: bool,
 }
 
 impl Compiler<'_> {
@@ -118,11 +98,17 @@ impl Compiler<'_> {
         statement: &Statement,
         name: &str,
         body: &[Statement],
+        continuation: &[&Statement],
         scope: Scope,
         out: &mut Vec<u8>,
     ) -> Result<()> {
         let start = out.len();
-        self.encode_body(body, scope, out)?;
+        let previous_boundary = self.raw_boundary;
+        self.raw_boundary = start;
+        let result =
+            self.encode_sequence(body.iter().chain(continuation.iter().copied()), scope, out);
+        self.raw_boundary = previous_boundary;
+        result?;
         if !closed(&out[start..])? {
             return Err(statement.error(format!(
                 "{name} branch contains an unclosed native conditional"
@@ -132,7 +118,16 @@ impl Compiler<'_> {
     }
 
     fn encode_body(&mut self, body: &[Statement], scope: Scope, out: &mut Vec<u8>) -> Result<bool> {
-        for statement in body {
+        self.encode_sequence(body.iter(), scope, out)
+    }
+
+    fn encode_sequence<'s>(
+        &mut self,
+        mut body: impl Iterator<Item = &'s Statement> + Clone,
+        scope: Scope,
+        out: &mut Vec<u8>,
+    ) -> Result<bool> {
+        while let Some(statement) = body.next() {
             if out.len() > super::super::decompile::MAX_SCRIPT_BYTES {
                 return Err(statement.error("expanded function exceeds 64 KiB"));
             }
@@ -143,7 +138,7 @@ impl Compiler<'_> {
                     out.extend_from_slice(&[0xff, slot.ending()]);
                     return Ok(true);
                 }
-                if !closed(out)? {
+                if self.raw_return_blocked || !closed(&out[self.raw_boundary..])? {
                     return Err(
                         statement.error("return inside a native conditional is not supported")
                     );
@@ -187,7 +182,23 @@ impl Compiler<'_> {
                 }
                 continue;
             }
-            self.encode_statement(statement, scope, out)?;
+            // Only lexical returns belong to this function. A helper's return
+            // must not consume its caller's continuation. Native slot returns
+            // already have a real FF instruction and need no restructuring.
+            let move_continuation = contains_return(statement)
+                && !(self.native_scope.is_some() && self.stack.len() == 1);
+            let continuation: Vec<_> = if move_continuation {
+                body.clone().collect()
+            } else {
+                Vec::new()
+            };
+            self.encode_statement(statement, &continuation, scope, out)?;
+            if out.len() > super::super::decompile::MAX_SCRIPT_BYTES {
+                return Err(statement.error("expanded function exceeds 64 KiB"));
+            }
+            if move_continuation {
+                return Ok(false);
+            }
             if self.auto_finish
                 && matches!(
                     statement.kind,
@@ -207,9 +218,19 @@ impl Compiler<'_> {
     fn encode_statement(
         &mut self,
         statement: &Statement,
+        continuation: &[&Statement],
         scope: Scope,
         out: &mut Vec<u8>,
     ) -> Result<()> {
+        let previous_blocked = self.raw_return_blocked;
+        if matches!(
+            statement.kind,
+            StatementKind::If { .. }
+                | StatementKind::Random(_)
+                | StatementKind::TargetDistanceGroups(_)
+        ) {
+            self.raw_return_blocked |= !closed(&out[self.raw_boundary..])?;
+        }
         match &statement.kind {
             StatementKind::EntryBody(body) => {
                 self.encode_body(body, scope, out)?;
@@ -257,7 +278,7 @@ impl Compiler<'_> {
                 out.extend_from_slice(&[0x80, 0, branches.len() as u8]);
                 for (index, ((_, body), weight)) in branches.iter().zip(weights).enumerate() {
                     out.extend_from_slice(&[0x80, index as u8 + 1, weight]);
-                    self.encode_branch(statement, "random", body, scope, out)?;
+                    self.encode_branch(statement, "random", body, continuation, scope, out)?;
                 }
                 out.extend_from_slice(&[0x80, 0xff]);
             }
@@ -268,7 +289,7 @@ impl Compiler<'_> {
                 out.extend_from_slice(&[0x83, 0, branches.len() as u8 - 1]);
                 for (index, body) in branches.iter().enumerate() {
                     out.extend_from_slice(&[0x83, index as u8 + 1]);
-                    self.encode_branch(statement, "distance", body, scope, out)?;
+                    self.encode_branch(statement, "distance", body, continuation, scope, out)?;
                 }
                 out.extend_from_slice(&[0x83, 0xff]);
             }
@@ -300,10 +321,17 @@ impl Compiler<'_> {
                     }
                 }
                 out.extend_from_slice(&encoding.begin);
-                self.encode_branch(statement, "if", then_body, scope, out)?;
-                if let Some(body) = else_body {
+                self.encode_branch(statement, "if", then_body, continuation, scope, out)?;
+                if else_body.is_some() || !continuation.is_empty() {
                     out.extend_from_slice(encoding.otherwise);
-                    self.encode_branch(statement, "else", body, scope, out)?;
+                    self.encode_branch(
+                        statement,
+                        "else",
+                        else_body.as_deref().unwrap_or_default(),
+                        continuation,
+                        scope,
+                        out,
+                    )?;
                 }
                 out.extend_from_slice(encoding.end);
             }
@@ -315,21 +343,9 @@ impl Compiler<'_> {
                 }
                 Callee::Name(name) => {
                     if let Some(command) = reserved_command(name) {
-                        match command {
-                            Command::Fixed {
-                                opcode,
-                                args: expected,
-                            } => {
-                                self.require_args(statement, args, expected, &format!("'{name}'"))?;
-                                out.extend_from_slice(opcode);
-                                out.extend_from_slice(args);
-                            }
-                            Command::Resume => {
-                                return Err(statement.error(
-                                    "resume() returns to a cursor owned by a contents, sub-contents, or route table; no block in this document owns one (spec §11.2)",
-                                ));
-                            }
-                        }
+                        self.require_args(statement, args, command.args, &format!("'{name}'"))?;
+                        out.extend_from_slice(command.opcode);
+                        out.extend_from_slice(args);
                     } else if let Some(&(group, id)) = self.names.actions.get(name.as_str()) {
                         self.require_args(statement, args, 1, "an action call")?;
                         out.extend_from_slice(&bytecode::encode_action(group, id, args[0]));
@@ -373,23 +389,19 @@ impl Compiler<'_> {
                 }
                 out.push(0x04);
             }
-            StatementKind::Repeat { .. } => {
-                return Err(statement.error(
-                    "repeat is parsed but not emitted yet: 0x24's handler (0x108628F0) and the width routine (0x10860730) disagree about the size of its body marker, so the closing sequence is unconfirmed (spec §11.9)",
-                ));
-            }
             StatementKind::Native { bytes } => {
                 out.extend_from_slice(bytes);
                 self.warnings.push(Diagnostic::at(
-                statement.line,
-                statement.column,
-                format!(
-                    "native(...) keeps its bytes verbatim: {}. Only instruction widths are checked (spec §5)",
-                    describe_escape(bytes)
-                ),
-            ));
+                    statement.line,
+                    statement.column,
+                    format!(
+                        "native(...) keeps its bytes verbatim: {}. Instruction widths and native block structure are checked (spec §6)",
+                        describe_escape(bytes)
+                    ),
+                ));
             }
         }
+        self.raw_return_blocked = previous_blocked;
         Ok(())
     }
 
@@ -407,6 +419,28 @@ impl Compiler<'_> {
             )));
         }
         Ok(())
+    }
+}
+
+/// Calls and anonymous entries have their own return boundary.
+fn contains_return(statement: &Statement) -> bool {
+    match &statement.kind {
+        StatementKind::Return => true,
+        StatementKind::If {
+            then_body,
+            else_body,
+            ..
+        } => then_body
+            .iter()
+            .chain(else_body.iter().flatten())
+            .any(contains_return),
+        StatementKind::Random(branches) => branches
+            .iter()
+            .any(|(_, body)| body.iter().any(contains_return)),
+        StatementKind::TargetDistanceGroups(branches) => {
+            branches.iter().any(|body| body.iter().any(contains_return))
+        }
+        _ => false,
     }
 }
 
@@ -542,6 +576,8 @@ impl Document {
             stack: Vec::new(),
             native_functions: &self.native_functions,
             native_scope: None,
+            raw_boundary: 0,
+            raw_return_blocked: false,
         };
         // Check even unused helpers, so a broken imported file cannot be hidden
         // by the current entry bindings. Context-specific checks still happen
