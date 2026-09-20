@@ -321,10 +321,33 @@ fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) 
             StatementKind::EntryBody(body) => {
                 rewrite(body, path, imports)?;
             }
+            StatementKind::Handle { handler, then_body } => {
+                if let Some((alias, member)) = handler.split_once('.') {
+                    let target = imports.get(alias).ok_or_else(|| {
+                        Error::at(
+                            statement.line,
+                            statement.column,
+                            format!("{path}: unknown import '{alias}'"),
+                        )
+                    })?;
+                    *handler = qualify(target, member);
+                } else if !is_reserved_command(handler) {
+                    *handler = qualify(path, handler);
+                }
+                rewrite(then_body, path, imports)?;
+            }
             StatementKind::Random(branches) => {
                 for (_, body) in branches {
                     rewrite(body, path, imports)?;
                 }
+            }
+            StatementKind::ContextQuery {
+                branches, fallback, ..
+            } => {
+                for (_, body) in branches {
+                    rewrite(body, path, imports)?;
+                }
+                rewrite(fallback, path, imports)?;
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 for body in branches {

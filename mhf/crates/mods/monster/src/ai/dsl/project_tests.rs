@@ -505,6 +505,21 @@ fn enraged_conditions_work_in_states_events_and_mixed_branches() {
 }
 
 #[test]
+fn context_query_encodes_callback_branch() {
+    let source = "mhf_ai 1; species 11; fn main() { match self.context.query(4) { 1 => nop(); else => reset; } }";
+    let compiled = parse(source).unwrap().compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x79, 0, 1, 4, 0x79, 1, 1, 0x92, 0x79, 2, 0xff, 0, 0x79, 3, 0xff, 0,
+        ]
+    );
+    for body in ["self.zenith = 1;", "if self.zenith() {}"] {
+        assert!(parse(&format!("mhf_ai 1; species 11; fn main() {{ {body} }}")).is_err());
+    }
+}
+
+#[test]
 fn flashed_conditions_encode_nested_branches_and_keep_entry_tails() {
     let compiled = parse("mhf_ai 1; species 6; events { awareness => react; } fn main() { if self.flashed { if self.flashed { reset; } else { restart; } } else { nop(); } wait(3); } fn react() { if self.flashed { reset; } }")
         .unwrap().compile().unwrap();
@@ -1210,5 +1225,225 @@ fn shipped_multifile_examples_compile_for_default_and_specific_maps() {
         assert_eq!(compiled.program.species, 6);
         assert!(p.files.len() >= 4);
         assert!(script(&compiled.program, 0, 0).ends_with(&[7, if map == 31 { 4 } else { 1 }]));
+    }
+}
+
+#[test]
+fn context_query_rejects_invalid_selectors_and_cases() {
+    for body in [
+        "if self.zenith {}",
+        "self.context.query(4);",
+        "if self.context.query(4) {}",
+        "match self.context.query() { 1 => {} else => {} }",
+        "match self.context.query(256) { 1 => {} else => {} }",
+        "match self.context.query(4) { 256 => {} else => {} }",
+        "match self.context.query(4) { else => {} }",
+        "match self.context.query(4) { 1 => {} }",
+        "match self.context.query(4) { 1 => {} 1 => {} else => {} }",
+        "match self.context.query(4) { 2 => {} 1 => {} else => {} }",
+        "match self.context.query(4) { 1 => {} else => {} 2 => {} }",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+    let cases: String = (0..=255).map(|i| format!("{i} => {{}} ")).collect();
+    assert!(parse(&format!("mhf_ai 1; species 6; fn main() {{ match self.context.query(0) {{ {cases} else => {{}} }} }}")).is_err());
+}
+
+#[test]
+fn context_query_supports_byte_boundaries_and_nested_matches() {
+    let source = "mhf_ai 1; species 14; fn main() {
+        match self.context.query(255) {
+            0 => { match self.context.query(0) { 255 => nop(); else => {} } }
+            255 => nop();
+            else => {}
+        }
+    }";
+    let compiled = parse(source).unwrap().compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x79, 0, 2, 255, 0x79, 1, 0, 0x79, 0, 1, 0, 0x79, 1, 255, 0x92, 0x79, 2, 0x79, 3, 0x79,
+            1, 255, 0x92, 0x79, 2, 0x79, 3, 0xff, 0,
+        ]
+    );
+    let cases: String = (0..255).map(|i| format!("{i} => {{}} ")).collect();
+    let compiled = parse(&format!("mhf_ai 1; species 6; fn main() {{ match self.context.query(0) {{ {cases} else => {{}} }} }}")).unwrap().compile().unwrap();
+    assert_eq!(&script(&compiled.program, 0, 0)[..4], &[0x79, 0, 255, 0]);
+}
+
+#[test]
+fn context_query_imports_and_returns_preserve_continuations() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.choose(); wait(3); } events { awareness => h.choose; }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn leaf() { nop(); } fn choose() { match self.context.query(4) { 0 => return; 1 => leaf(); else => leaf(); } wait(2); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    let prefix = [
+        0x79, 0, 2, 4, 0x79, 1, 0, 0x79, 1, 1, 0x92, 0x48, 2, 0x79, 2, 0x92, 0x48, 2, 0x79, 3,
+    ];
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [prefix.as_slice(), &[0x48, 3, 0xff, 0]].concat()
+    );
+    assert_eq!(
+        script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
+        [prefix.as_slice(), &[0xff, EVENT_SLOTS[3].ending]].concat()
+    );
+}
+
+#[test]
+fn handle_dispatches_to_a_handler_and_keeps_every_outcome_separate() {
+    // `pass;` clears the takeover byte, so the protocol's check must immediately
+    // follow the inlined handler; `return;` leaves the byte set.
+    let source = "mhf_ai 1; species 6; fn main() {
+        handle dispatch() then { reset; }
+        wait(1);
+    }
+    handler fn dispatch() {
+        if self.flashed { pass; }
+        clear_requests();
+    }";
+    let compiled = parse(source).unwrap().compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x1b, 0, 1, // request guard
+            0x0c, 4, 1, // default takeover
+            // pass ends the handler, so the rest moves into the false branch
+            0x39, 0, 0x0d, 0x04, 0x39, 1, 0x1e, 0x39, 2, 0x2b, 0, 4, 1, 0xff, 0, 0x2b,
+            2, // then { reset; }
+            0x1b, 2, // end of the protocol
+            0x48, 1, // the statement after the block
+            0xff, 0,
+        ]
+    );
+}
+
+#[test]
+fn handle_keeps_the_slot_call_level_and_the_handler_tail() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+        fn main() { wait(2); handle h.dispatch() then { nop(); } wait(3); }
+        events { awareness => h.on_awareness; }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn on_awareness() { wait(4); }
+             @slot(table = 15, index = 7)
+             handler fn leaf() { if self.enraged { pass; } clear_requests(); }
+             handler fn dispatch() { leaf(); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x48, 2, // wait(2)
+            // dispatch is inlined here, and its tail @slot call keeps its level
+            0x1b, 0, 1, 0x0c, 4, 1, 0x82, 0, 7, 0x2b, 0, 4, 1, 0x92, 0x2b, 2, 0x1b,
+            2, // then { nop(); }
+            0x48, 3, 0xff, 0,
+        ]
+    );
+    // leaf is table 15, so a pass inside it returns with that level's ending.
+    let Node::Table(root) = &compiled.program.nodes[compiled.program.root] else {
+        panic!()
+    };
+    let Node::Table(table) = &compiled.program.nodes[root.get(15).unwrap()] else {
+        panic!()
+    };
+    let Node::Script(leaf) = &compiled.program.nodes[table.get(7).unwrap()] else {
+        panic!()
+    };
+    assert_eq!(
+        leaf,
+        &[0x35, 0, 0x0d, 0x04, 0xff, 2, 0x35, 2, 0x1e, 0xff, 2]
+    );
+}
+
+#[test]
+fn sequential_handle_blocks_restart_the_protocol_in_order() {
+    let source = "mhf_ai 1; species 6; fn main() {
+        handle first() then { nop(); }
+        handle second() then { }
+        wait(2);
+    }
+    handler fn first() { if self.enraged { return; } pass; }
+    handler fn second() { clear_requests(); return; }";
+    let compiled = parse(source).unwrap().compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            // Returning from the enraged branch moves `pass` into its else branch.
+            0x1b, 0, 1, 0x0c, 4, 1, 0x35, 0, 0x35, 1, 0x0d, 0x04, 0x35, 2, 0x2b, 0, 4, 1, 0x92,
+            0x2b, 2, 0x1b, 2, //
+            0x1b, 0, 1, 0x0c, 4, 1, 0x1e, 0x2b, 0, 4, 1, 0x2b, 2, 0x1b, 2, 0x48, 2, 0xff, 0,
+        ]
+    );
+}
+
+#[test]
+fn request_handlers_reject_uses_outside_the_protocol() {
+    for (source, reason) in [
+        (
+            "mhf_ai 1; species 6; fn main() { dispatch(); } handler fn dispatch() { nop(); }",
+            "a handler needs handle",
+        ),
+        (
+            "mhf_ai 1; species 6; handler fn main() { nop(); }",
+            "main is not a handler",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { wait(1); } events { awareness => watch; } handler fn watch() { nop(); }",
+            "a handler is not an event entry",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { handle plain() then {} } fn plain() { nop(); }",
+            "the target must be a handler",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { handle missing() then {} }",
+            "the target must exist",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { if self.flashed { pass; } }",
+            "pass needs a handler",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() {} states { idle => { pass; } }",
+            "anonymous states cannot pass",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() {} events { awareness => { if self.flashed { pass; } } }",
+            "anonymous event branches cannot pass",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { handle dispatch() then { return; } } handler fn dispatch() { nop(); }",
+            "then cannot return",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { handle dispatch() then { pass; } } handler fn dispatch() { nop(); }",
+            "then cannot pass",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { handle dispatch() then {} } handler fn dispatch() { handle leaf() then {} } handler fn leaf() { nop(); }",
+            "a handler cannot dispatch again",
+        ),
+        (
+            "mhf_ai 1; species 6; fn main() { handle dispatch() then {} } handler fn dispatch() { leaf(); nop(); } handler fn leaf() { nop(); }",
+            "a handler call must be the last action",
+        ),
+    ] {
+        assert!(
+            parse(source)
+                .and_then(|document| document.compile())
+                .is_err(),
+            "{reason}: {source}"
+        );
     }
 }

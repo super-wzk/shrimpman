@@ -8,9 +8,9 @@
 //! block.  The compiler never reads the client's tables, so it has nothing
 //! to say about how far a table reaches.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use super::parser::{Callee, Document, Statement, StatementKind, check_document};
+use super::parser::{Callee, Document, Function, Statement, StatementKind, check_document};
 use super::slot::NativeSlot;
 use crate::ai::control::EVENT_SLOTS;
 use crate::ai::{Base, Diagnostic, Error, Node, Program, Result, Table, bytecode};
@@ -33,7 +33,7 @@ struct Command {
 fn reserved_command(name: &str) -> Option<Command> {
     let (opcode, args): (&[u8], usize) = match name {
         "stop" => (&[0x68], 0),
-        "clear_behavior_requests" => (&[0x1e], 0),
+        "clear_requests" => (&[0x1e], 0),
         "nop" => (&[0x92], 0),
         "wait" => (&[0x48], 1),
         "area_end" => (&[0xff, 0xfb], 0),
@@ -131,17 +131,24 @@ impl Compiler<'_> {
             if out.len() > super::super::decompile::MAX_SCRIPT_BYTES {
                 return Err(statement.error("expanded function exceeds 64 KiB"));
             }
-            if matches!(statement.kind, StatementKind::Return) {
-                if let Some(slot) = self.native_scope
-                    && self.stack.len() == 1
+            if matches!(statement.kind, StatementKind::Return | StatementKind::Pass) {
+                let passing = matches!(statement.kind, StatementKind::Pass);
+                let slot_return = self.native_scope.filter(|_| self.stack.len() == 1);
+                if slot_return.is_none()
+                    && (self.raw_return_blocked || !closed(&out[self.raw_boundary..])?)
                 {
+                    return Err(statement.error(if passing {
+                        "pass inside a native conditional is not supported"
+                    } else {
+                        "return inside a native conditional is not supported"
+                    }));
+                }
+                if passing {
+                    out.extend_from_slice(&[0x0d, 4]);
+                }
+                if let Some(slot) = slot_return {
                     out.extend_from_slice(&[0xff, slot.ending()]);
                     return Ok(true);
-                }
-                if self.raw_return_blocked || !closed(&out[self.raw_boundary..])? {
-                    return Err(
-                        statement.error("return inside a native conditional is not supported")
-                    );
                 }
                 return Ok(false);
             }
@@ -149,35 +156,9 @@ impl Compiler<'_> {
                 callee: Callee::Name(name),
                 args,
             } = &statement.kind
-                && let Some(function) = self.functions.iter().find(|f| f.name == *name)
+                && self.functions.iter().any(|function| function.name == *name)
             {
-                if name == "main" {
-                    return Err(statement.error("main is an entry point, not a callable helper"));
-                }
-                self.require_args(statement, args, 0, name)?;
-                if let Some(slot) = self.native_functions.get(name) {
-                    let call = slot.call();
-                    out.extend_from_slice(&call);
-                    if self
-                        .native_scope
-                        .is_some_and(|current| current.is_same_level_call(&call))
-                        && closed(out)?
-                    {
-                        return Ok(true);
-                    }
-                    continue;
-                }
-                if self.stack.contains(name) || self.stack.len() >= 64 {
-                    return Err(statement.error(format!(
-                        "recursive or excessively deep function call: {name}"
-                    )));
-                }
-                self.stack.push(name.clone());
-                let transferred = self
-                    .encode_body(&function.body, scope, out)
-                    .map_err(|error| Error::new(format!("{}: {error}", function.name)))?;
-                self.stack.pop();
-                if transferred {
+                if self.encode_call(statement, name, args, scope, out)? {
                     return Ok(true);
                 }
                 continue;
@@ -185,8 +166,8 @@ impl Compiler<'_> {
             // Only lexical returns belong to this function. A helper's return
             // must not consume its caller's continuation. Native slot returns
             // already have a real FF instruction and need no restructuring.
-            let move_continuation = contains_return(statement)
-                && !(self.native_scope.is_some() && self.stack.len() == 1);
+            let move_continuation =
+                contains_exit(statement) && !(self.native_scope.is_some() && self.stack.len() == 1);
             let continuation: Vec<_> = if move_continuation {
                 body.clone().collect()
             } else {
@@ -215,6 +196,48 @@ impl Compiler<'_> {
         Ok(false)
     }
 
+    /// Emit one call to a declared function. Returns whether the call ends the
+    /// caller's own control flow: a same-level @slot call is a tail jump, and
+    /// an inlined body can transfer with `reset`/`transition`.
+    fn encode_call(
+        &mut self,
+        statement: &Statement,
+        name: &str,
+        args: &[u8],
+        scope: Scope,
+        out: &mut Vec<u8>,
+    ) -> Result<bool> {
+        if name == "main" {
+            return Err(statement.error("main is an entry point, not a callable helper"));
+        }
+        self.require_args(statement, args, 0, name)?;
+        let native_functions = self.native_functions;
+        if let Some(slot) = native_functions.get(name) {
+            let call = slot.call();
+            out.extend_from_slice(&call);
+            return Ok(self
+                .native_scope
+                .is_some_and(|current| current.is_same_level_call(&call))
+                && closed(out)?);
+        }
+        let functions = self.functions;
+        let function = functions
+            .iter()
+            .find(|function| function.name == name)
+            .expect("the caller resolved the name before dispatching");
+        if self.stack.iter().any(|entry| entry == name) || self.stack.len() >= 64 {
+            return Err(statement.error(format!(
+                "recursive or excessively deep function call: {name}"
+            )));
+        }
+        self.stack.push(name.to_owned());
+        let transferred = self
+            .encode_body(&function.body, scope, out)
+            .map_err(|error| Error::new(format!("{}: {error}", function.name)))?;
+        self.stack.pop();
+        Ok(transferred)
+    }
+
     fn encode_statement(
         &mut self,
         statement: &Statement,
@@ -228,12 +251,31 @@ impl Compiler<'_> {
             StatementKind::If { .. }
                 | StatementKind::Random(_)
                 | StatementKind::TargetDistanceGroups(_)
+                | StatementKind::ContextQuery { .. }
         ) {
             self.raw_return_blocked |= !closed(&out[self.raw_boundary..])?;
         }
         match &statement.kind {
             StatementKind::EntryBody(body) => {
                 self.encode_body(body, scope, out)?;
+            }
+            StatementKind::Handle { handler, then_body } => {
+                out.extend_from_slice(&[0x1b, 0, 1, 0x0c, 4, 1]);
+                let previous_boundary = self.raw_boundary;
+                let previous_blocked = self.raw_return_blocked;
+                self.raw_boundary = out.len();
+                self.raw_return_blocked = false;
+                let result = self.encode_call(statement, handler, &[], scope, out);
+                self.raw_boundary = previous_boundary;
+                self.raw_return_blocked = previous_blocked;
+                if result? {
+                    return Err(statement.error(format!(
+                        "handler '{handler}' must return to the request protocol; a same-level @slot call transfers control instead"
+                    )));
+                }
+                out.extend_from_slice(&[0x2b, 0, 4, 1]);
+                self.encode_branch(statement, "then", then_body, &[], scope, out)?;
+                out.extend_from_slice(&[0x2b, 2, 0x1b, 2]);
             }
             StatementKind::Random(branches) => {
                 let total: u64 = branches.iter().map(|(weight, _)| u64::from(*weight)).sum();
@@ -281,6 +323,34 @@ impl Compiler<'_> {
                     self.encode_branch(statement, "random", body, continuation, scope, out)?;
                 }
                 out.extend_from_slice(&[0x80, 0xff]);
+            }
+            StatementKind::ContextQuery {
+                argument,
+                branches,
+                fallback,
+            } => {
+                if !(1..=255).contains(&branches.len())
+                    || branches.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                {
+                    return Err(
+                        statement.error("context query requires 1..255 strictly increasing cases")
+                    );
+                }
+                out.extend_from_slice(&[0x79, 0, branches.len() as u8, *argument]);
+                for (value, body) in branches {
+                    out.extend_from_slice(&[0x79, 1, *value]);
+                    self.encode_branch(statement, "context query", body, continuation, scope, out)?;
+                }
+                out.extend_from_slice(&[0x79, 2]);
+                self.encode_branch(
+                    statement,
+                    "context query else",
+                    fallback,
+                    continuation,
+                    scope,
+                    out,
+                )?;
+                out.extend_from_slice(&[0x79, 3]);
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 if !(2..=5).contains(&branches.len()) {
@@ -335,7 +405,9 @@ impl Compiler<'_> {
                 }
                 out.extend_from_slice(encoding.end);
             }
-            StatementKind::Return => unreachable!("handled by encode_body"),
+            StatementKind::Return | StatementKind::Pass => {
+                unreachable!("handled by encode_body")
+            }
             StatementKind::Call { callee, args } => match callee {
                 Callee::Action { group, id } => {
                     self.require_args(statement, args, 1, "an action call")?;
@@ -422,10 +494,226 @@ impl Compiler<'_> {
     }
 }
 
+/// The native protocol hands control back through one shared byte rather than a
+/// stack of request contexts, so a handler is only reachable from `handle` or
+/// from the tail of another handler.
+fn validate_handlers(document: &Document) -> Result<()> {
+    let functions: HashMap<&str, &Function> = document
+        .functions
+        .iter()
+        .map(|function| (function.name.as_str(), function))
+        .collect();
+
+    fn validate_body(
+        body: &[Statement],
+        inside_handler: bool,
+        tail: bool,
+        functions: &HashMap<&str, &Function>,
+    ) -> Result<()> {
+        for (index, statement) in body.iter().enumerate() {
+            let tail_here = tail && index + 1 == body.len();
+            match &statement.kind {
+                StatementKind::Pass if !inside_handler => {
+                    return Err(statement.error("pass; is only valid inside a request handler"));
+                }
+                StatementKind::Handle { handler, then_body } => {
+                    if inside_handler {
+                        return Err(statement.error(
+                            "a handler cannot start another handle block; dispatch from the ordinary entry",
+                        ));
+                    }
+                    match functions.get(handler.as_str()).copied() {
+                        Some(function) if function.handler => {}
+                        Some(_) => {
+                            return Err(statement.error(format!(
+                                "handle target '{handler}' must be declared with `handler fn`"
+                            )));
+                        }
+                        None => {
+                            return Err(statement.error(format!(
+                                "handle target '{handler}' is not a declared function"
+                            )));
+                        }
+                    }
+                    // The protocol owns the takeover byte, so `then` is the
+                    // caller's code and cannot leave it with a lexical return.
+                    if then_body.iter().any(contains_exit) {
+                        return Err(statement.error(
+                            "return; and pass; cannot appear in a then block; write reset; or return from the enclosing function after the block",
+                        ));
+                    }
+                    validate_body(then_body, false, tail_here, functions)?;
+                }
+                StatementKind::Call {
+                    callee: Callee::Name(name),
+                    ..
+                } if functions
+                    .get(name.as_str())
+                    .is_some_and(|function| function.handler) =>
+                {
+                    if !inside_handler {
+                        return Err(statement.error(format!(
+                            "'{name}' is a request handler; enter it with `handle {name}() then {{ ... }}`"
+                        )));
+                    }
+                    if !tail_here {
+                        return Err(statement.error(format!(
+                            "a handler call must be the last action on its path: '{name}'"
+                        )));
+                    }
+                }
+                StatementKind::EntryBody(body) => {
+                    validate_body(body, inside_handler, tail_here, functions)?;
+                }
+                StatementKind::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    validate_body(then_body, inside_handler, tail_here, functions)?;
+                    if let Some(body) = else_body {
+                        validate_body(body, inside_handler, tail_here, functions)?;
+                    }
+                }
+                StatementKind::Random(branches) => {
+                    for (_, body) in branches {
+                        validate_body(body, inside_handler, tail_here, functions)?;
+                    }
+                }
+                StatementKind::ContextQuery {
+                    branches, fallback, ..
+                } => {
+                    for (_, body) in branches {
+                        validate_body(body, inside_handler, tail_here, functions)?;
+                    }
+                    validate_body(fallback, inside_handler, tail_here, functions)?;
+                }
+                StatementKind::TargetDistanceGroups(branches) => {
+                    for body in branches {
+                        validate_body(body, inside_handler, tail_here, functions)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    for function in &document.functions {
+        validate_body(&function.body, function.handler, true, &functions)?;
+    }
+    for body in document
+        .states
+        .iter()
+        .filter_map(|decl| decl.body.as_ref())
+        .chain(document.events.iter().filter_map(|decl| decl.body.as_ref()))
+    {
+        validate_body(body, false, true, &functions)?;
+    }
+
+    // An ordinary function reached from a handler must not start a second
+    // request protocol of its own.
+    fn contains_handle(body: &[Statement]) -> bool {
+        body.iter().any(|statement| match &statement.kind {
+            StatementKind::Handle { .. } => true,
+            StatementKind::EntryBody(body) => contains_handle(body),
+            StatementKind::If {
+                then_body,
+                else_body,
+                ..
+            } => contains_handle(then_body) || else_body.as_deref().is_some_and(contains_handle),
+            StatementKind::Random(branches) => {
+                branches.iter().any(|(_, body)| contains_handle(body))
+            }
+            StatementKind::ContextQuery {
+                branches, fallback, ..
+            } => {
+                branches.iter().any(|(_, body)| contains_handle(body)) || contains_handle(fallback)
+            }
+            StatementKind::TargetDistanceGroups(branches) => {
+                branches.iter().any(|body| contains_handle(body))
+            }
+            _ => false,
+        })
+    }
+    for function in document
+        .functions
+        .iter()
+        .filter(|function| function.handler)
+    {
+        let mut pending = called_functions(&function.body);
+        let mut visited = HashSet::new();
+        while let Some(name) = pending.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            let Some(callee) = functions.get(name).copied() else {
+                continue;
+            };
+            if contains_handle(&callee.body) {
+                return Err(Error::new(format!(
+                    "{}: a function reached from a handler cannot start another handle block",
+                    callee.name
+                )));
+            }
+            pending.extend(called_functions(&callee.body));
+        }
+    }
+    Ok(())
+}
+
+/// Every named call inside a body, including nested branches.
+fn called_functions(body: &[Statement]) -> Vec<&str> {
+    let mut names = Vec::new();
+    for statement in body {
+        match &statement.kind {
+            StatementKind::Call {
+                callee: Callee::Name(name),
+                ..
+            } => names.push(name.as_str()),
+            StatementKind::EntryBody(body) => names.extend(called_functions(body)),
+            StatementKind::Handle { then_body, .. } => {
+                names.extend(called_functions(then_body));
+            }
+            StatementKind::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                names.extend(called_functions(then_body));
+                if let Some(body) = else_body {
+                    names.extend(called_functions(body));
+                }
+            }
+            StatementKind::Random(branches) => {
+                for (_, body) in branches {
+                    names.extend(called_functions(body));
+                }
+            }
+            StatementKind::ContextQuery {
+                branches, fallback, ..
+            } => {
+                for (_, body) in branches {
+                    names.extend(called_functions(body));
+                }
+                names.extend(called_functions(fallback));
+            }
+            StatementKind::TargetDistanceGroups(branches) => {
+                for body in branches {
+                    names.extend(called_functions(body));
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 /// Calls and anonymous entries have their own return boundary.
-fn contains_return(statement: &Statement) -> bool {
+fn contains_exit(statement: &Statement) -> bool {
     match &statement.kind {
-        StatementKind::Return => true,
+        StatementKind::Return | StatementKind::Pass => true,
+        StatementKind::Handle { then_body, .. } => then_body.iter().any(contains_exit),
         StatementKind::If {
             then_body,
             else_body,
@@ -433,12 +721,19 @@ fn contains_return(statement: &Statement) -> bool {
         } => then_body
             .iter()
             .chain(else_body.iter().flatten())
-            .any(contains_return),
+            .any(contains_exit),
         StatementKind::Random(branches) => branches
             .iter()
-            .any(|(_, body)| body.iter().any(contains_return)),
+            .any(|(_, body)| body.iter().any(contains_exit)),
+        StatementKind::ContextQuery {
+            branches, fallback, ..
+        } => branches
+            .iter()
+            .flat_map(|(_, body)| body)
+            .chain(fallback)
+            .any(contains_exit),
         StatementKind::TargetDistanceGroups(branches) => {
-            branches.iter().any(|body| body.iter().any(contains_return))
+            branches.iter().any(|body| body.iter().any(contains_exit))
         }
         _ => false,
     }
@@ -527,6 +822,7 @@ impl Document {
     /// The binding merges that declaration onto the block it will replace.
     pub fn compile(&self) -> Result<Compiled> {
         check_document(self)?;
+        validate_handlers(self)?;
         if self.module || !self.imports.is_empty() {
             return Err(Error::new(
                 "compile an entry project to resolve imports; a module is not an entry",

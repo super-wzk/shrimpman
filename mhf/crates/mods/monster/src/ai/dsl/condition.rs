@@ -63,6 +63,54 @@ impl Mode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConditionMarker {
+    Begin(Condition),
+    Else,
+    End,
+    /// A known condition family with an operand/layout the DSL cannot express.
+    /// Unlike a non-condition instruction, this prevents structured recovery.
+    Unsupported,
+}
+
+impl ConditionMarker {
+    /// Decode a complete instruction, never inventing missing condition operands.
+    /// The request protocol's `1B 00 01` and the generic `79` callback blocks
+    /// need their whole enclosing structure, so both stay unsupported here.
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+        use ConditionMarker::{Begin, Else, End, Unsupported};
+
+        let (&opcode, operands) = bytes.split_first()?;
+        let marker = match (opcode, operands) {
+            (0x08, [0]) => Begin(Condition::Active),
+            (0x39, [0]) => Begin(Condition::Flashed),
+            (0x35, [0]) => Begin(Condition::Enraged),
+            (0x54, [0]) => Begin(Condition::TargetAvailable),
+            (0x02, [0]) => Begin(Condition::CheckTrackedPlayers),
+            (0x78, [0, min, max]) if min <= max => Begin(Condition::TargetAngleIn {
+                min: Degrees::from_native(*min),
+                max: Degrees::from_native(*max),
+            }),
+            (0x0b, [0, value]) => match Mode::from_native(*value) {
+                Some(mode) => Begin(Condition::ModeIs(mode)),
+                None => Unsupported,
+            },
+            (opcode, [1]) if Self::is_condition_opcode(opcode) => Else,
+            (opcode, [2]) if Self::is_condition_opcode(opcode) => End,
+            (opcode, _) if Self::is_condition_opcode(opcode) => Unsupported,
+            _ => return None,
+        };
+        Some(marker)
+    }
+
+    fn is_condition_opcode(opcode: u8) -> bool {
+        matches!(
+            opcode,
+            0x02 | 0x08 | 0x0b | 0x1b | 0x35 | 0x39 | 0x54 | 0x78
+        )
+    }
+}
+
 pub(super) struct ConditionEncoding {
     pub begin: Vec<u8>,
     pub otherwise: &'static [u8],
@@ -109,22 +157,6 @@ impl Condition {
         )
     }
 
-    pub(crate) fn from_opcode(opcode: u8) -> Option<Self> {
-        match opcode {
-            0x08 => Some(Self::Active),
-            0x78 => Some(Self::TargetAngleIn {
-                min: Degrees::from_native(0),
-                max: Degrees::from_native(0),
-            }),
-            0x39 => Some(Self::Flashed),
-            0x35 => Some(Self::Enraged),
-            0x54 => Some(Self::TargetAvailable),
-            0x02 => Some(Self::CheckTrackedPlayers),
-            0x0b => Some(Self::ModeIs(Mode::Normal)),
-            _ => None,
-        }
-    }
-
     pub(super) fn encoding(self) -> ConditionEncoding {
         match self {
             Self::Active => ConditionEncoding {
@@ -169,6 +201,68 @@ impl Condition {
                 otherwise: &[0x39, 0x01],
                 end: &[0x39, 0x02],
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn condition_markers_decode_actual_operands() {
+        use ConditionMarker::{Begin, Else, End};
+        for condition in [
+            Condition::Active,
+            Condition::Flashed,
+            Condition::Enraged,
+            Condition::TargetAvailable,
+            Condition::CheckTrackedPlayers,
+            Condition::ModeIs(Mode::Normal),
+            Condition::ModeIs(Mode::Attack),
+            Condition::TargetAngleIn {
+                min: Degrees::from_native(32),
+                max: Degrees::from_native(200),
+            },
+        ] {
+            let encoding = condition.encoding();
+            assert_eq!(
+                ConditionMarker::decode(&encoding.begin),
+                Some(Begin(condition))
+            );
+            assert_eq!(ConditionMarker::decode(encoding.otherwise), Some(Else));
+            assert_eq!(ConditionMarker::decode(encoding.end), Some(End));
+        }
+    }
+
+    #[test]
+    fn unsupported_conditions_are_distinct_from_other_instructions() {
+        for bytes in [
+            &[][..],
+            &[0x92],
+            &[0x79],
+            &[0x79, 2],
+            &[0x79, 3],
+            &[0x79, 0, 1, 4, 0x79, 1, 1],
+        ] {
+            assert_eq!(ConditionMarker::decode(bytes), None);
+        }
+        for bytes in [
+            &[0x08][..],
+            &[0x35, 0, 1],
+            &[0x39, 3],
+            &[0x78, 0],
+            &[0x78, 0, 200, 32],
+            &[0x0b, 0],
+            &[0x0b, 0, 2],
+            &[0x1b, 0],
+            &[0x1b, 0, 0],
+            &[0x1b, 0, 2],
+        ] {
+            assert_eq!(
+                ConditionMarker::decode(bytes),
+                Some(ConditionMarker::Unsupported)
+            );
         }
     }
 }

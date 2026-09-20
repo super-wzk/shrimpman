@@ -1,9 +1,10 @@
 //! Bounds-checked codec for the verified monster-selection instruction stream.
 //!
-//! The client treats the first byte as an opcode and advances through the
-//! stream with the equivalent of `10860730`. Only instruction *widths* are
-//! encoded here: the meaning of the handlers is recorded separately in the
-//! opcode catalog, and the DSL does not need it to carry bytes losslessly.
+//! These are logical linear instruction boundaries, not the cursor movement
+//! of the native skip routine `10860730`. Compound selector-zero headers are
+//! followed by a separate first branch marker; native handlers consume both
+//! on entry. Keeping them separate preserves operands and block structure.
+//! The opcode catalog records handler semantics.
 //!
 //! Every one of the 256 opcode bytes is covered. 137 of them are dispatched
 //! by the interpreter switch at `10869761` and consume a fixed or
@@ -77,14 +78,16 @@ fn subtype(bytes: &[u8], _opcode: u8) -> Result<u8> {
     Ok(bytes[1])
 }
 
-/// Return the number of bytes consumed by the native skip routine.
+/// Return one logical instruction's width, including its own operands only.
 ///
-/// The native decoder has fall-through behavior for unknown selectors. The
-/// returned width follows the exact pointer movement in `0x10860730`,
-/// including deliberately short forms. For the 119 default opcodes the width
-/// routine is never reached: [`is_stop`] reports the switch default, whose
-/// terminal reset is modelled by `Runtime`. They are reported as one byte so
-/// that [`decode`] stays total and lossless.
+/// For list/choice families, selector zero owns the count (and, for 79, the
+/// callback argument), not the following branch marker or its operand. Native
+/// skip widths instead cover header + first marker (e.g. 70: 6, 15: 7, 80: 6,
+/// 83: 5). 94 is especially different: its skip width is 5, landing on the
+/// first case operand, while handler 108682B0 consumes that operand as well.
+/// Neither skip widths nor execution cursor deltas are linear token widths.
+/// Unknown selector forms retain the legacy codec widths but are rejected by
+/// structure validation. Default opcodes occupy one byte.
 pub fn instruction_len(bytes: &[u8]) -> Result<usize> {
     need(bytes, 1)?;
     let opcode = bytes[0];
@@ -127,10 +130,8 @@ pub fn instruction_len(bytes: &[u8]) -> Result<usize> {
             }
             0x0f => 6,
             0x15 => match subtype(bytes, opcode)? {
-                // Native advances past opcode/subtype, consumes three bytes,
-                // then consumes the two-byte marker payload: seven bytes
-                // total for subtype 0.
-                0 => 7,
+                // 10861BB0: count, then a separate 15/1 + be_u16 case.
+                0 => 3,
                 1 => 4,
                 2 | 3 => 2,
                 _ => 2,
@@ -138,7 +139,8 @@ pub fn instruction_len(bytes: &[u8]) -> Result<usize> {
             0x17 => 5,
             0x1c | 0x1d | 0x20 | 0x23 | 0x27 | 0x2c | 0x33 | 0x70 | 0x73 | 0x75 | 0x76 | 0x7a
             | 0x7d => match subtype(bytes, opcode)? {
-                0 => 6,
+                // Count, then a separate opcode/1 + u8 case.
+                0 => 3,
                 1 => 3,
                 _ => 2,
             },
@@ -154,32 +156,33 @@ pub fn instruction_len(bytes: &[u8]) -> Result<usize> {
                 _ => 1,
             },
             0x3e | 0x57 => match subtype(bytes, opcode)? {
-                0 => 7,
+                // 10863A40/10865910: count, then opcode/1 + be_u16.
+                0 => 3,
                 1 => 4,
                 2 | 3 => 2,
                 _ => 1,
             },
             0x79 => match subtype(bytes, opcode)? {
-                0 => 7,
+                // 10862D20: count and callback argument, then 79/1 + u8.
+                0 => 4,
                 1 => 3,
                 _ => 2,
             },
             0x80 => match subtype(bytes, opcode)? {
-                0 => 6,
+                // 10866E50 scans from the end of this count header.
+                0 => 3,
                 1..=0x20 => 3,
                 0xff => 2,
                 _ => 1,
             },
             0x83 => match subtype(bytes, opcode)? {
-                // The native helper enters LABEL_38 from the subtype byte,
-                // then advances four more bytes.  Including the opcode and
-                // subtype this is a five-byte form (not four).
-                0 => 5,
+                // 10867460: count, then a separate two-byte branch marker.
+                0 => 3,
                 1..=5 | 0xff => 2,
                 _ => 1,
             },
             0x94 => match subtype(bytes, opcode)? {
-                0 => 5,
+                0 => 3,
                 1 => 3,
                 _ => 2,
             },
@@ -237,6 +240,7 @@ pub fn validate_structure(bytes: &[u8]) -> Result<()> {
 #[derive(Default)]
 pub(crate) struct ScriptStructure {
     blocks: Vec<(u8, u8)>,
+    pending_first_branch: Option<u8>,
 }
 
 impl ScriptStructure {
@@ -244,9 +248,22 @@ impl ScriptStructure {
         self.blocks.is_empty()
     }
 
+    /// How many native blocks are still open. Used to prove that nothing but
+    /// closing markers follows a handler's early exit.
+    pub(crate) fn depth(&self) -> usize {
+        self.blocks.len()
+    }
+
     pub(crate) fn push(&mut self, instruction: &[u8]) -> Result<()> {
         let opcode = instruction[0];
         let selector = instruction.get(1).copied();
+        if let Some(expected) = self.pending_first_branch.take()
+            && (opcode != expected || selector != Some(1))
+        {
+            return Err(Error::new(format!(
+                "compound header {expected:#04x} requires its first branch marker"
+            )));
+        }
         // 24 and 62 have execution/skip-width disagreements; FF's unknown
         // selectors redispatch rather than consuming a two-byte instruction.
         if matches!(opcode, 0x24 | 0x62)
@@ -283,6 +300,9 @@ impl ScriptStructure {
         }
         if selector == 0 {
             self.blocks.push((opcode, close));
+            if close == 3 || close == 0xff {
+                self.pending_first_branch = Some(opcode);
+            }
         } else if self.blocks.last() != Some(&(opcode, close)) {
             return Err(Error::new(format!(
                 "AI 标记 {opcode:#04x}/{selector:#04x} 没有匹配的条件块"
@@ -318,7 +338,8 @@ mod tests {
             0x14, 0, 45, // angle condition
             0x14, 1, // angle marker
             0x14, 2, // angle marker
-            0x15, 0, 1, 2, 3, 4, 5, // long subtype (7 bytes total)
+            0x15, 0, 1, // list count header
+            0x15, 1, 4, 5, // first case (be_u16 operand)
             0x15, 2, // native short subtype
             0x15, 3, // native short subtype
             0x80, 1, 9, // short subtype
@@ -334,7 +355,7 @@ mod tests {
                 .iter()
                 .map(|item| item.bytes.len())
                 .collect::<Vec<_>>(),
-            [4, 3, 2, 2, 7, 2, 2, 3, 2, 3, 3, 3, 2]
+            [4, 3, 2, 2, 3, 4, 2, 2, 3, 2, 3, 3, 3, 2]
         );
         assert_eq!(decoded[4].offset, 11);
     }
@@ -344,9 +365,12 @@ mod tests {
         for full in [
             vec![0x05, 0, 0, 0],
             vec![0x14, 0, 0],
-            vec![0x15, 0, 0, 0, 0, 0, 0],
+            vec![0x15, 0, 1],
+            vec![0x15, 1, 0, 0],
+            vec![0x79, 0, 1, 4],
+            vec![0x94, 0, 2],
             vec![0x80, 1, 0],
-            vec![0x83, 0, 0, 0, 0],
+            vec![0x83, 0, 1],
         ] {
             for length in 0..full.len() {
                 assert!(
@@ -360,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn follows_native_unknown_selector_widths() {
+    fn preserves_legacy_unknown_selector_widths() {
         assert_eq!(instruction_len(&[0x14, 3]).unwrap(), 2);
         assert_eq!(instruction_len(&[0x0e, 3]).unwrap(), 2);
         assert_eq!(instruction_len(&[0x15, 4]).unwrap(), 2);
@@ -399,6 +423,48 @@ mod tests {
                 !FIXED_TWO.contains(stop),
                 "stop byte {stop:#04x} is a fixed two-byte opcode"
             );
+        }
+    }
+
+    #[test]
+    fn compound_headers_leave_first_markers_and_zero_operands_visible() {
+        for opcode in [
+            0x15, 0x1c, 0x1d, 0x20, 0x23, 0x27, 0x2c, 0x33, 0x3e, 0x57, 0x70, 0x73, 0x75, 0x76,
+            0x79, 0x7a, 0x7d, 0x80, 0x83, 0x94,
+        ] {
+            let mut header = vec![opcode, 0, 1];
+            if opcode == 0x79 {
+                header.push(4);
+            }
+            let mut marker = vec![opcode, 1];
+            if opcode != 0x83 {
+                marker.push(0);
+            }
+            if matches!(opcode, 0x15 | 0x3e | 0x57) {
+                marker.push(0);
+            }
+            let close = if matches!(opcode, 0x80 | 0x83) {
+                0xff
+            } else {
+                3
+            };
+            let mut bytes = header.clone();
+            bytes.extend_from_slice(&marker);
+            // An early reset must not hide the closing marker.
+            bytes.extend_from_slice(&[0xff, 0, opcode, close, 0xff, 0]);
+            let decoded = decode(&bytes).unwrap();
+            assert_eq!(decoded[0].bytes, header);
+            assert_eq!(decoded[1].bytes, marker);
+            assert_eq!(decoded[1].offset, header.len());
+            validate_structure(&bytes).unwrap();
+            assert!(validate_structure(&bytes[..header.len() + marker.len() + 2]).is_err());
+            // Losing a first marker must not become a valid, shorter block.
+            let mut missing = header.clone();
+            missing.extend_from_slice(&[opcode, close]);
+            assert!(validate_structure(&missing).is_err());
+            // A genuine default opcode inside a block is still unsafe.
+            bytes[header.len() + marker.len()] = 0;
+            assert!(validate_structure(&bytes).is_err());
         }
     }
 

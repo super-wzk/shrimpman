@@ -266,7 +266,7 @@ states {
         wait(0x10);
         nop();
         stop();
-        clear_behavior_requests();
+        clear_requests();
         restart;
     }
 }
@@ -285,7 +285,7 @@ states {
                 0x48, 0x10, // wait(0x10)
                 0x92, // nop()
                 0x68, // stop()
-                0x1e, // clear_behavior_requests()
+                0x1e, // clear_requests()
                 0x04, // restart
             ]
         );

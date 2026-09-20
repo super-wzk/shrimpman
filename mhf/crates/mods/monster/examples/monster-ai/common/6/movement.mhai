@@ -1,5 +1,5 @@
 fn prepare() {
-    clear_behavior_requests();
+    clear_requests();
 }
 
 fn recover() {

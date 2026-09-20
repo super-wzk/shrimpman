@@ -32,6 +32,8 @@ pub struct Document {
 pub struct Function {
     pub name: String,
     pub body: Vec<Statement>,
+    /// `handler fn`: a native request handler with its own return contract.
+    pub handler: bool,
     pub line: usize,
     pub column: usize,
 }
@@ -94,9 +96,20 @@ impl Statement {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatementKind {
     EntryBody(Vec<Statement>),
+    /// Guarded dispatch to a handler, then the takeover continuation.
+    Handle {
+        handler: String,
+        then_body: Vec<Statement>,
+    },
     Random(Vec<(u32, Vec<Statement>)>),
     /// Ordered distance groups followed by the required fallback body.
     TargetDistanceGroups(Vec<Vec<Statement>>),
+    /// Evaluate the native context callback once, then select a byte-valued case.
+    ContextQuery {
+        argument: u8,
+        branches: Vec<(u8, Vec<Statement>)>,
+        fallback: Vec<Statement>,
+    },
     SelectTargetEntity(TargetStrategy),
     SelectPlayerSlot(u8),
     SelectWaypoint(u8),
@@ -112,6 +125,8 @@ pub enum StatementKind {
         else_body: Option<Vec<Statement>>,
     },
     Return,
+    /// `pass;` — give the turn back to the normal AI, handlers only.
+    Pass,
     /// `name(args);`, or the anonymous `action[group:id](parameter);`.
     Call {
         callee: Callee,
@@ -250,7 +265,17 @@ impl Parser {
                 None
             };
             let token = self.take_word("an actions, events, or states block")?;
-            let name = word(&token).to_owned();
+            let keyword = word(&token);
+            // `handler` is contextual: only `handler fn` declares a handler, so
+            // an ordinary function may still be called handler().
+            let handler = keyword == "handler" && self.current_word() == Some("fn");
+            let name = if handler {
+                self.advance();
+                "fn"
+            } else {
+                keyword
+            }
+            .to_owned();
             if binding.is_some() && name != "fn" {
                 return Err(token.error("@slot must annotate a function"));
             }
@@ -292,6 +317,7 @@ impl Parser {
                 document.functions.push(Function {
                     name: identifier(&name)?.into(),
                     body: self.parse_body()?,
+                    handler,
                     line: name.line,
                     column: name.column,
                 });
@@ -506,6 +532,20 @@ impl Parser {
         };
 
         match name.as_str() {
+            "handle" => {
+                let target = self.take_word("handler name")?;
+                let handler = self.qualified_name(identifier(&target)?.into())?;
+                self.expect(&TokenKind::LeftParen, "'(' after the handler name")?;
+                self.expect(&TokenKind::RightParen, "')' (handlers take no arguments)")?;
+                self.expect_keyword("then")?;
+                self.expect(&TokenKind::LeftBrace, "'{' after then")?;
+                let then_body = self.parse_body()?;
+                Ok(position(StatementKind::Handle { handler, then_body }))
+            }
+            "pass" => {
+                self.expect(&TokenKind::Semicolon, "';'")?;
+                Ok(position(StatementKind::Pass))
+            }
             "if" => {
                 self.expect_keyword("self")?;
                 self.expect(&TokenKind::Dot, "'.' after self")?;
@@ -600,6 +640,50 @@ impl Parser {
                 self.body_depth += 1;
                 self.expect_keyword("self")?;
                 self.expect(&TokenKind::Dot, "'.' after self")?;
+                if self.current_word() == Some("context") {
+                    self.advance();
+                    self.expect(&TokenKind::Dot, "'.' after context")?;
+                    self.expect_keyword("query")?;
+                    self.expect(&TokenKind::LeftParen, "'('")?;
+                    let (argument, at) = self.take_number("context query ID")?;
+                    let argument = byte(argument, &at, "context query ID")?;
+                    self.expect(&TokenKind::RightParen, "')'")?;
+                    self.expect(&TokenKind::LeftBrace, "'{' after match selector")?;
+                    let mut branches = Vec::new();
+                    let fallback = loop {
+                        if self.current_word() == Some("else") {
+                            self.advance();
+                            if branches.is_empty() {
+                                return Err(
+                                    token.error("context query requires 1..255 cases before else")
+                                );
+                            }
+                            self.expect(&TokenKind::FatArrow, "'=>' after else")?;
+                            let body = self.parse_branch_body()?;
+                            self.expect(&TokenKind::RightBrace, "'}' after final else branch")?;
+                            break body;
+                        }
+                        let (value, at) = self.take_number("context query case or else")?;
+                        let value = byte(value, &at, "context query case")?;
+                        if branches.len() == 255
+                            || branches
+                                .last()
+                                .is_some_and(|(previous, _)| *previous >= value)
+                        {
+                            return Err(
+                                at.error("context query requires 1..255 strictly increasing cases")
+                            );
+                        }
+                        self.expect(&TokenKind::FatArrow, "'=>' after case")?;
+                        branches.push((value, self.parse_branch_body()?));
+                    };
+                    self.body_depth -= 1;
+                    return Ok(position(StatementKind::ContextQuery {
+                        argument,
+                        branches,
+                        fallback,
+                    }));
+                }
                 self.expect_keyword("target_distance_group")?;
                 self.expect(&TokenKind::LeftParen, "'('")?;
                 self.expect(&TokenKind::RightParen, "')'")?;
@@ -934,6 +1018,8 @@ const KEYWORDS: &[&str] = &[
     "as",
     "map",
     "return",
+    "handle",
+    "pass",
 ];
 
 /// Check everything that does not need to look at a block body.
@@ -1004,6 +1090,25 @@ pub(super) fn check_document(document: &Document) -> Result<()> {
             ));
         }
     }
+    for function in &document.functions {
+        if function.handler && function.name == "main" {
+            return Err(Error::at(
+                function.line,
+                function.column,
+                "main is the state 0 entry, not a request handler",
+            ));
+        }
+        if !function.handler && contains_pass(&function.body) {
+            return Err(Error::at(
+                function.line,
+                function.column,
+                format!(
+                    "pass; is only valid inside a request handler; declare {} with `handler fn`",
+                    function.name
+                ),
+            ));
+        }
+    }
     if document.version != VERSION {
         return Err(Error::new(format!(
             "unsupported monster-AI DSL version {}; this build reads version {VERSION}",
@@ -1063,4 +1168,26 @@ pub(super) fn check_document(document: &Document) -> Result<()> {
         slots.push(decl.slot);
     }
     Ok(())
+}
+
+/// Whether `body` reaches a `pass;` anywhere, including nested branches.
+fn contains_pass(body: &[Statement]) -> bool {
+    body.iter().any(|statement| match &statement.kind {
+        StatementKind::Pass => true,
+        StatementKind::EntryBody(body) => contains_pass(body),
+        StatementKind::Handle { then_body, .. } => contains_pass(then_body),
+        StatementKind::If {
+            then_body,
+            else_body,
+            ..
+        } => contains_pass(then_body) || else_body.as_deref().is_some_and(contains_pass),
+        StatementKind::Random(branches) => branches.iter().any(|(_, body)| contains_pass(body)),
+        StatementKind::ContextQuery {
+            branches, fallback, ..
+        } => branches.iter().any(|(_, body)| contains_pass(body)) || contains_pass(fallback),
+        StatementKind::TargetDistanceGroups(branches) => {
+            branches.iter().any(|body| contains_pass(body))
+        }
+        _ => false,
+    })
 }
