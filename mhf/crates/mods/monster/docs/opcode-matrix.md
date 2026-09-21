@@ -110,7 +110,7 @@
 | `0x29` | positive-counter gate | 选择子 | 仅在带符号的 `+2910` 为正时继续，否则走嵌套 `0x29` 体 | named | confirmed |
 | `0x2A` | positive-angle-counter gate | 选择子 | 仅在带符号的 `+2912` 为正时继续，否则走嵌套 `0x2A` 体 | generic | operation_confirmed |
 | `0x2B` | field-equality branch | 选择子 + `u8` | 选择子 0 比较九个运行字段/actor 类型组合之一与载荷字节，不等则跳过嵌套 `0x2B` 体 | named | confirmed |
-| `0x2C` | actor-kind-class list gate | 选择子 + 计数 + 类型字节 | 用物种字节 `+3` 与每个载荷字节索引按物种键表 `0x11A4E9C0`，比较表项首字节；无匹配则走嵌套体 | named | operation_confirmed |
+| `0x2C` | species-group branch | 选择子 + 计数 + 物种 ID | 按顺序把当前物种与各 case 物种经 `0x11A4E9C0` 归组后比较；首个同组 case 进入正文，无匹配则进入可选 else 或结束 | named | confirmed |
 | `0x2D` | copy-action-context-7 | 无 | 设动作模式 7，把 `+2922`（两态字节 a）拷进当前动作组/下标字段 | named | confirmed |
 | `0x2E` | select-context-table | `u8` | 由 actor 类型与载荷字节重算 `+1968`；特殊类型选不同的上下文表偏移与模式值 | named | confirmed |
 | `0x2F` | available-lane gate | 选择子 | 在配置的 lane 里找低位可用标志非零的项；没找到则走嵌套 `0x2F` 体 | named | confirmed |
@@ -152,7 +152,7 @@
 | `0x54` | lane_record_gate | 选择子 | 选择子 0 在选中 lane 记录有效、其 `+2042` 为零且 `0x10A94CE0` 返回非零时直接返回，否则扫 `0x54` 标记块 | named | confirmed |
 | `0x55` | lane_timer_gate | 选择子 | 选择子 0 在无选中 lane 或该 lane 的 `+2824` 小于 30000 时扫 `0x55` 标记块 | named | confirmed |
 | `0x56` | global_word_gate | 选择子 + 大端 `u16` | 选择子 0 读大端 `u16`，与全局 `0x1E8001EC`+8 的字不等时扫 `0x56` 标记块 | generic | operation_confirmed |
-| `0x57` | timed_marker_selection | 选择子 + 载荷 | 按选择子扫标记：选择子 0 读计数与大端 `u16` 值，与 `+3185` 比较后在 `0x57` 标记处前进或停下 | generic | operation_confirmed |
+| `0x57` | area_route_profile_selection | 选择子 + 载荷 | 按 `u8 +3185` 区域移动路线配置编号有序精确分支；`00 count` 开始，`01 value:u16be` case，`02` else，`03` 结束。字段来自生成记录 `+0x18`，用于选择物种/地图的区域路线表 | named | confirmed |
 | `0x58` | copy_parent_lane_context | 选择子 | 设动作类型 `+2581`=1、下标 `+2582`=0；若 `+3172`（em 数组里的关联 actor 指针）存在则把其 `+1826`（该 actor 自己的目标槽）拷进 `+2584` 与 `+2612`，否则都置 -1 | named | operation_confirmed |
 | `0x59` | runtime_flag_gate_3200 | 选择子 | 选择子 0 仅在 `+3200` 为零时扫 `0x59` 标记块 | generic | operation_confirmed |
 | `0x5a` | lane_value_gate | `u8` | 选择子 0 在保存的动作类型 `+3231` 为 11 或 1 且选中 lane 时，若值等于 `0x1086A530`(lane`+2040`, lane`+2008`) 则立即返回 | named | confirmed |

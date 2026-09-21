@@ -110,6 +110,16 @@ pub enum StatementKind {
         branches: Vec<(u8, Vec<Statement>)>,
         fallback: Vec<Statement>,
     },
+    /// Select the species/map-specific area-route configuration.
+    AreaRouteProfile {
+        branches: Vec<(u8, Vec<Statement>)>,
+        fallback: Vec<Statement>,
+    },
+    /// Match the current species against normalized species groups in source order.
+    SpeciesGroup {
+        branches: Vec<(u8, Vec<Statement>)>,
+        fallback: Option<Vec<Statement>>,
+    },
     SelectTargetEntity(TargetStrategy),
     SelectPlayerSlot(u8),
     SelectWaypoint(u8),
@@ -532,6 +542,7 @@ impl Parser {
         };
 
         match name.as_str() {
+            "context" => Err(token.error("context.query(id) is only valid as a match selector")),
             "handle" => {
                 let target = self.take_word("handler name")?;
                 let handler = self.qualified_name(identifier(&target)?.into())?;
@@ -638,16 +649,62 @@ impl Parser {
                     return Err(token.error("block nesting exceeds 64 levels"));
                 }
                 self.body_depth += 1;
-                self.expect_keyword("self")?;
-                self.expect(&TokenKind::Dot, "'.' after self")?;
-                if self.current_word() == Some("context") {
+                let context_query = self.current_word() == Some("context");
+                if !context_query {
+                    self.expect_keyword("self")?;
+                    self.expect(&TokenKind::Dot, "'.' after self")?;
+                }
+                let area_route =
+                    !context_query && self.current_word() == Some("area_route_profile");
+                if !context_query && self.current_word() == Some("species_group") {
                     self.advance();
-                    self.expect(&TokenKind::Dot, "'.' after context")?;
-                    self.expect_keyword("query")?;
-                    self.expect(&TokenKind::LeftParen, "'('")?;
-                    let (argument, at) = self.take_number("context query ID")?;
-                    let argument = byte(argument, &at, "context query ID")?;
-                    self.expect(&TokenKind::RightParen, "')'")?;
+                    self.expect(&TokenKind::LeftBrace, "'{' after match selector")?;
+                    let mut branches = Vec::new();
+                    let fallback = loop {
+                        if self.consume(&TokenKind::RightBrace) {
+                            if branches.is_empty() {
+                                return Err(
+                                    token.error("species group match requires 1..255 cases")
+                                );
+                            }
+                            break None;
+                        }
+                        if self.current_word() == Some("else") {
+                            self.advance();
+                            if branches.is_empty() {
+                                return Err(token.error(
+                                    "species group match requires 1..255 cases before else",
+                                ));
+                            }
+                            self.expect(&TokenKind::FatArrow, "'=>' after else")?;
+                            let body = self.parse_branch_body()?;
+                            self.expect(&TokenKind::RightBrace, "'}' after final else branch")?;
+                            break Some(body);
+                        }
+                        if branches.len() == 255 {
+                            return Err(token.error("species group match requires 1..255 cases"));
+                        }
+                        let (value, at) = self.take_number("species group case or else")?;
+                        let value = byte(value, &at, "species group case")?;
+                        self.expect(&TokenKind::FatArrow, "'=>' after case")?;
+                        branches.push((value, self.parse_branch_body()?));
+                    };
+                    self.body_depth -= 1;
+                    return Ok(position(StatementKind::SpeciesGroup { branches, fallback }));
+                }
+                if area_route || context_query {
+                    self.advance();
+                    let argument = if area_route {
+                        None
+                    } else {
+                        self.expect(&TokenKind::Dot, "'.' after context")?;
+                        self.expect_keyword("query")?;
+                        self.expect(&TokenKind::LeftParen, "'('")?;
+                        let (argument, at) = self.take_number("context query ID")?;
+                        let argument = byte(argument, &at, "context query ID")?;
+                        self.expect(&TokenKind::RightParen, "')'")?;
+                        Some(argument)
+                    };
                     self.expect(&TokenKind::LeftBrace, "'{' after match selector")?;
                     let mut branches = Vec::new();
                     let fallback = loop {
@@ -655,7 +712,7 @@ impl Parser {
                             self.advance();
                             if branches.is_empty() {
                                 return Err(
-                                    token.error("context query requires 1..255 cases before else")
+                                    token.error("byte match requires 1..255 cases before else")
                                 );
                             }
                             self.expect(&TokenKind::FatArrow, "'=>' after else")?;
@@ -663,25 +720,28 @@ impl Parser {
                             self.expect(&TokenKind::RightBrace, "'}' after final else branch")?;
                             break body;
                         }
-                        let (value, at) = self.take_number("context query case or else")?;
-                        let value = byte(value, &at, "context query case")?;
+                        let (value, at) = self.take_number("byte match case or else")?;
+                        let value = byte(value, &at, "byte match case")?;
                         if branches.len() == 255
                             || branches
                                 .last()
                                 .is_some_and(|(previous, _)| *previous >= value)
                         {
                             return Err(
-                                at.error("context query requires 1..255 strictly increasing cases")
+                                at.error("byte match requires 1..255 strictly increasing cases")
                             );
                         }
                         self.expect(&TokenKind::FatArrow, "'=>' after case")?;
                         branches.push((value, self.parse_branch_body()?));
                     };
                     self.body_depth -= 1;
-                    return Ok(position(StatementKind::ContextQuery {
-                        argument,
-                        branches,
-                        fallback,
+                    return Ok(position(match argument {
+                        Some(argument) => StatementKind::ContextQuery {
+                            argument,
+                            branches,
+                            fallback,
+                        },
+                        None => StatementKind::AreaRouteProfile { branches, fallback },
                     }));
                 }
                 self.expect_keyword("target_distance_group")?;
@@ -1011,6 +1071,7 @@ const KEYWORDS: &[&str] = &[
     "action",
     "native",
     "self",
+    "context",
     "if",
     "else",
     "fn",
@@ -1184,7 +1245,14 @@ fn contains_pass(body: &[Statement]) -> bool {
         StatementKind::Random(branches) => branches.iter().any(|(_, body)| contains_pass(body)),
         StatementKind::ContextQuery {
             branches, fallback, ..
-        } => branches.iter().any(|(_, body)| contains_pass(body)) || contains_pass(fallback),
+        }
+        | StatementKind::AreaRouteProfile { branches, fallback } => {
+            branches.iter().any(|(_, body)| contains_pass(body)) || contains_pass(fallback)
+        }
+        StatementKind::SpeciesGroup { branches, fallback } => {
+            branches.iter().any(|(_, body)| contains_pass(body))
+                || fallback.as_deref().is_some_and(contains_pass)
+        }
         StatementKind::TargetDistanceGroups(branches) => {
             branches.iter().any(|body| contains_pass(body))
         }

@@ -252,6 +252,8 @@ impl Compiler<'_> {
                 | StatementKind::Random(_)
                 | StatementKind::TargetDistanceGroups(_)
                 | StatementKind::ContextQuery { .. }
+                | StatementKind::AreaRouteProfile { .. }
+                | StatementKind::SpeciesGroup { .. }
         ) {
             self.raw_return_blocked |= !closed(&out[self.raw_boundary..])?;
         }
@@ -325,32 +327,63 @@ impl Compiler<'_> {
                 out.extend_from_slice(&[0x80, 0xff]);
             }
             StatementKind::ContextQuery {
-                argument,
-                branches,
-                fallback,
-            } => {
+                branches, fallback, ..
+            }
+            | StatementKind::AreaRouteProfile { branches, fallback } => {
                 if !(1..=255).contains(&branches.len())
                     || branches.windows(2).any(|pair| pair[0].0 >= pair[1].0)
                 {
                     return Err(
-                        statement.error("context query requires 1..255 strictly increasing cases")
+                        statement.error("byte match requires 1..255 strictly increasing cases")
                     );
                 }
-                out.extend_from_slice(&[0x79, 0, branches.len() as u8, *argument]);
+                let opcode = if let StatementKind::ContextQuery { argument, .. } = &statement.kind {
+                    out.extend_from_slice(&[0x79, 0, branches.len() as u8, *argument]);
+                    0x79
+                } else {
+                    out.extend_from_slice(&[0x57, 0, branches.len() as u8]);
+                    0x57
+                };
                 for (value, body) in branches {
-                    out.extend_from_slice(&[0x79, 1, *value]);
-                    self.encode_branch(statement, "context query", body, continuation, scope, out)?;
+                    out.extend_from_slice(&[opcode, 1]);
+                    if opcode == 0x57 {
+                        out.push(0);
+                    }
+                    out.push(*value);
+                    self.encode_branch(statement, "byte match", body, continuation, scope, out)?;
                 }
-                out.extend_from_slice(&[0x79, 2]);
+                out.extend_from_slice(&[opcode, 2]);
                 self.encode_branch(
                     statement,
-                    "context query else",
+                    "byte match else",
                     fallback,
                     continuation,
                     scope,
                     out,
                 )?;
-                out.extend_from_slice(&[0x79, 3]);
+                out.extend_from_slice(&[opcode, 3]);
+            }
+            StatementKind::SpeciesGroup { branches, fallback } => {
+                if !(1..=255).contains(&branches.len()) {
+                    return Err(statement.error("species group match requires 1..255 cases"));
+                }
+                out.extend_from_slice(&[0x2c, 0, branches.len() as u8]);
+                for (species, body) in branches {
+                    out.extend_from_slice(&[0x2c, 1, *species]);
+                    self.encode_branch(statement, "species group", body, continuation, scope, out)?;
+                }
+                if let Some(fallback) = fallback {
+                    out.extend_from_slice(&[0x2c, 2]);
+                    self.encode_branch(
+                        statement,
+                        "species group else",
+                        fallback,
+                        continuation,
+                        scope,
+                        out,
+                    )?;
+                }
+                out.extend_from_slice(&[0x2c, 3]);
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 if !(2..=5).contains(&branches.len()) {
@@ -582,11 +615,20 @@ fn validate_handlers(document: &Document) -> Result<()> {
                 }
                 StatementKind::ContextQuery {
                     branches, fallback, ..
-                } => {
+                }
+                | StatementKind::AreaRouteProfile { branches, fallback } => {
                     for (_, body) in branches {
                         validate_body(body, inside_handler, tail_here, functions)?;
                     }
                     validate_body(fallback, inside_handler, tail_here, functions)?;
+                }
+                StatementKind::SpeciesGroup { branches, fallback } => {
+                    for (_, body) in branches {
+                        validate_body(body, inside_handler, tail_here, functions)?;
+                    }
+                    if let Some(fallback) = fallback {
+                        validate_body(fallback, inside_handler, tail_here, functions)?;
+                    }
                 }
                 StatementKind::TargetDistanceGroups(branches) => {
                     for body in branches {
@@ -627,8 +669,13 @@ fn validate_handlers(document: &Document) -> Result<()> {
             }
             StatementKind::ContextQuery {
                 branches, fallback, ..
-            } => {
+            }
+            | StatementKind::AreaRouteProfile { branches, fallback } => {
                 branches.iter().any(|(_, body)| contains_handle(body)) || contains_handle(fallback)
+            }
+            StatementKind::SpeciesGroup { branches, fallback } => {
+                branches.iter().any(|(_, body)| contains_handle(body))
+                    || fallback.as_deref().is_some_and(contains_handle)
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 branches.iter().any(|body| contains_handle(body))
@@ -692,11 +739,20 @@ fn called_functions(body: &[Statement]) -> Vec<&str> {
             }
             StatementKind::ContextQuery {
                 branches, fallback, ..
-            } => {
+            }
+            | StatementKind::AreaRouteProfile { branches, fallback } => {
                 for (_, body) in branches {
                     names.extend(called_functions(body));
                 }
                 names.extend(called_functions(fallback));
+            }
+            StatementKind::SpeciesGroup { branches, fallback } => {
+                for (_, body) in branches {
+                    names.extend(called_functions(body));
+                }
+                if let Some(fallback) = fallback {
+                    names.extend(called_functions(fallback));
+                }
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 for body in branches {
@@ -727,10 +783,16 @@ fn contains_exit(statement: &Statement) -> bool {
             .any(|(_, body)| body.iter().any(contains_exit)),
         StatementKind::ContextQuery {
             branches, fallback, ..
-        } => branches
+        }
+        | StatementKind::AreaRouteProfile { branches, fallback } => branches
             .iter()
             .flat_map(|(_, body)| body)
             .chain(fallback)
+            .any(contains_exit),
+        StatementKind::SpeciesGroup { branches, fallback } => branches
+            .iter()
+            .flat_map(|(_, body)| body)
+            .chain(fallback.iter().flatten())
             .any(contains_exit),
         StatementKind::TargetDistanceGroups(branches) => {
             branches.iter().any(|body| body.iter().any(contains_exit))

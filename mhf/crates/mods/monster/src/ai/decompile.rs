@@ -559,54 +559,63 @@ fn distance_branches(instructions: &[bytecode::Instruction]) -> Option<(usize, B
     None
 }
 
-struct RecoveredContextQuery {
+struct RecoveredByteMatch {
     instruction_count: usize,
-    argument: u8,
+    selector: String,
     branches: BranchBodies,
-    fallback: Vec<u8>,
+    fallback: Option<Vec<u8>>,
 }
 
-/// Only recover complete, ordered callback branches that re-encode losslessly.
-/// Query IDs have no universal meaning, even when the branch layout is canonical.
-fn recover_context_query(instructions: &[bytecode::Instruction]) -> Option<RecoveredContextQuery> {
-    let [0x79, 0, count, argument] = instructions.first()?.bytes.as_slice() else {
-        return None;
+/// Only recover complete byte-valued matches that re-encode losslessly.
+fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<RecoveredByteMatch> {
+    let (opcode, count, selector) = match instructions.first()?.bytes.as_slice() {
+        [0x2c, 0, count] => (0x2c, count, "self.species_group".to_owned()),
+        [0x57, 0, count] => (0x57, count, "self.area_route_profile".to_owned()),
+        [0x79, 0, count, argument] => (0x79, count, format!("context.query({argument})")),
+        _ => return None,
     };
-    let [0x79, 1, first] = instructions.get(1)?.bytes.as_slice() else {
-        return None;
+    let case_value = |bytes: &[u8]| match bytes {
+        [op @ (0x2c | 0x79), 1, value] if *op == opcode => Some(*value),
+        [0x57, 1, 0, value] if opcode == 0x57 => Some(*value),
+        _ => None,
     };
+    let first = case_value(&instructions.get(1)?.bytes)?;
     if *count == 0 {
         return None;
     }
-    let mut branches = vec![(*first, Vec::new())];
+    let mut branches = vec![(first, Vec::new())];
     let mut fallback: Option<Vec<u8>> = None;
     let mut structure = bytecode::ScriptStructure::default();
     for (index, instruction) in instructions.iter().enumerate().skip(2) {
         if structure.is_closed() {
             match instruction.bytes.as_slice() {
-                [0x79, 1, value] => {
-                    if fallback.is_some() || *value <= branches.last()?.0 {
+                bytes if case_value(bytes).is_some() => {
+                    let value = case_value(bytes)?;
+                    if fallback.is_some() || (opcode != 0x2c && value <= branches.last()?.0) {
                         return None;
                     }
-                    branches.push((*value, Vec::new()));
+                    branches.push((value, Vec::new()));
                     continue;
                 }
-                [0x79, 2] => {
+                [op, 2] if *op == opcode => {
                     if fallback.is_some() {
                         return None;
                     }
                     fallback = Some(Vec::new());
                     continue;
                 }
-                [0x79, 3] => {
+                [op, 3] if *op == opcode => {
                     if branches.len() != usize::from(*count) {
                         return None;
                     }
-                    return Some(RecoveredContextQuery {
+                    if opcode != 0x2c && fallback.is_none() {
+                        return None;
+                    }
+                    return Some(RecoveredByteMatch {
                         instruction_count: index + 1,
-                        argument: *argument,
+                        selector,
                         branches,
-                        fallback: fallback?,
+                        fallback,
                     });
                 }
                 _ => {}
@@ -868,12 +877,12 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             skip_until = index + recovered.instruction_count;
             continue;
         }
-        if structured && let Some(recovered) = recover_context_query(&instructions[index..]) {
+        if structured && let Some(recovered) = recover_byte_match(&instructions[index..]) {
             writeln!(
                 out,
-                "{}match self.context.query({}) {{",
+                "{}match {} {{",
                 "    ".repeat(indent),
-                recovered.argument
+                recovered.selector
             )
             .unwrap();
             for (value, body) in &recovered.branches {
@@ -881,9 +890,11 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
                 append_indented_body(out, body, indent + 1, context)?;
                 writeln!(out, "{}}}", "    ".repeat(indent + 1)).unwrap();
             }
-            writeln!(out, "{}else => {{", "    ".repeat(indent + 1)).unwrap();
-            append_indented_body(out, &recovered.fallback, indent + 1, context)?;
-            writeln!(out, "{}}}", "    ".repeat(indent + 1)).unwrap();
+            if let Some(fallback) = &recovered.fallback {
+                writeln!(out, "{}else => {{", "    ".repeat(indent + 1)).unwrap();
+                append_indented_body(out, fallback, indent + 1, context)?;
+                writeln!(out, "{}}}", "    ".repeat(indent + 1)).unwrap();
+            }
             writeln!(out, "{}}}", "    ".repeat(indent)).unwrap();
             skip_until = index + recovered.instruction_count;
             continue;
@@ -1128,8 +1139,12 @@ mod tests {
             assert_eq!(script(&image, 0x300).unwrap(), bytes);
             let result = decompile(&image, 0x100, 1, 0, None).unwrap();
             assert!(result.warnings.is_empty());
-            if opcode == 0x79 {
-                assert!(result.source.contains("match self.context.query(3)"));
+            if opcode == 0x2c {
+                assert!(result.source.contains("match self.species_group"));
+            } else if opcode == 0x57 {
+                assert!(result.source.contains("match self.area_route_profile"));
+            } else if opcode == 0x79 {
+                assert!(result.source.contains("match context.query(3)"));
             } else {
                 assert!(
                     result
@@ -1590,6 +1605,73 @@ mod tests {
     }
 
     #[test]
+    fn species_group_recovers_source_order_without_adding_else() {
+        let bytes = [
+            0x2c, 0, 3, 0x2c, 1, 42, 0x92, 0x2c, 1, 1, 0x2c, 1, 42, 0x48, 2, 0x2c, 3, 0xff, 0,
+        ];
+        let mut image = Image::default();
+        image.put(0x100, &[0; 60]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x200, 0x300);
+        image.put(0x300, &bytes);
+        let result = decompile(&image, 0x100, 1, 0, None).unwrap();
+        assert!(result.source.contains("match self.species_group"));
+        assert!(result.source.contains("42 =>"));
+        assert!(result.source.contains("1 =>"));
+        assert!(!result.source.contains("else =>"));
+        assert!(!result.source.contains("native(0x2c"));
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn area_route_profile_preserves_noncanonical_layouts() {
+        for bytes in [
+            vec![0x57, 0, 1, 0x57, 1, 1, 0, 0x57, 2, 0x57, 3],
+            vec![0x57, 0, 2, 0x57, 1, 0, 1, 0x57, 2, 0x57, 3],
+            vec![0x57, 0, 2, 0x57, 1, 0, 2, 0x57, 1, 0, 1, 0x57, 2, 0x57, 3],
+            vec![0x57, 0, 2, 0x57, 1, 0, 1, 0x57, 1, 0, 1, 0x57, 2, 0x57, 3],
+            vec![0x57, 0, 1, 0x57, 1, 0, 1, 0x57, 3],
+        ] {
+            let mut source = String::new();
+            format_test_body(&mut source, &bytes, None).unwrap();
+            assert!(!source.contains("self.area_route_profile"), "{source}");
+            let compiled =
+                crate::ai::dsl::parse(&format!("mhf_ai 1; species 6; fn main() {{ {source} }}"))
+                    .unwrap()
+                    .compile()
+                    .unwrap();
+            let mut expected = bytes;
+            expected.extend_from_slice(&[0xff, 0]);
+            assert!(compiled.program.nodes.iter().any(
+                |node| matches!(node, crate::ai::Node::Script(actual) if *actual == expected)
+            ));
+        }
+    }
+
+    #[test]
+    fn area_route_profile_recovers_nested_matches() {
+        let bytes = [
+            0x57, 0, 2, 0x57, 1, 0, 0, 0x57, 0, 1, 0x57, 1, 0, 255, 0x92, 0x57, 2, 0x57, 3, 0x57,
+            1, 0, 255, 0x57, 2, 0x57, 3, 0xff, 0,
+        ];
+        let mut image = Image::default();
+        image.put(0x100, &[0; 60]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x200, 0x300);
+        image.put(0x300, &bytes);
+        let result = decompile(&image, 0x100, 1, 0, None).unwrap();
+        assert_eq!(
+            result
+                .source
+                .matches("match self.area_route_profile")
+                .count(),
+            2
+        );
+        assert!(result.warnings.is_empty());
+        assert!(!result.source.contains("native(0x57"));
+    }
+
+    #[test]
     fn context_query_preserves_noncanonical_layouts() {
         for bytes in [
             vec![0x79, 0, 2, 4, 0x79, 1, 1, 0x79, 2, 0x79, 3],
@@ -1600,7 +1682,7 @@ mod tests {
         ] {
             let mut source = String::new();
             format_test_body(&mut source, &bytes, None).unwrap();
-            assert!(!source.contains("self.context.query"), "{source}");
+            assert!(!source.contains("context.query"), "{source}");
             assert!(source.contains("native(0x79"));
         }
     }
@@ -1618,7 +1700,7 @@ mod tests {
             image.pointer(0x200, 0x300);
             image.put(0x300, &bytes);
             let result = decompile(&image, 0x100, species, 0, None).unwrap();
-            assert_eq!(result.source.matches("self.context.query").count(), 2);
+            assert_eq!(result.source.matches("context.query").count(), 2);
             assert!(!result.source.contains("zenith"));
             assert!(!result.source.contains("native(0x79"));
             assert!(result.warnings.is_empty());
@@ -1638,7 +1720,7 @@ mod tests {
             ],
         );
         let result = decompile(&image, 0x100, 11, 0, None).unwrap();
-        assert!(result.source.contains("match self.context.query(4) {"));
+        assert!(result.source.contains("match context.query(4) {"));
         assert!(result.source.contains("else => {\n            reset;"));
         assert!(!result.source.contains("native(0x79"));
 
@@ -1650,7 +1732,7 @@ mod tests {
         )
         .unwrap();
         assert!(!source.contains("self.zenith"));
-        assert!(source.contains("match self.context.query(3)"));
+        assert!(source.contains("match context.query(3)"));
     }
 
     #[test]

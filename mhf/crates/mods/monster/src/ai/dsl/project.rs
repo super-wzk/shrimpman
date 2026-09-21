@@ -343,11 +343,20 @@ fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) 
             }
             StatementKind::ContextQuery {
                 branches, fallback, ..
-            } => {
+            }
+            | StatementKind::AreaRouteProfile { branches, fallback } => {
                 for (_, body) in branches {
                     rewrite(body, path, imports)?;
                 }
                 rewrite(fallback, path, imports)?;
+            }
+            StatementKind::SpeciesGroup { branches, fallback } => {
+                for (_, body) in branches {
+                    rewrite(body, path, imports)?;
+                }
+                if let Some(fallback) = fallback {
+                    rewrite(fallback, path, imports)?;
+                }
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 for body in branches {

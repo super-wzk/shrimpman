@@ -506,7 +506,8 @@ fn enraged_conditions_work_in_states_events_and_mixed_branches() {
 
 #[test]
 fn context_query_encodes_callback_branch() {
-    let source = "mhf_ai 1; species 11; fn main() { match self.context.query(4) { 1 => nop(); else => reset; } }";
+    let source =
+        "mhf_ai 1; species 11; fn main() { match context.query(4) { 1 => nop(); else => reset; } }";
     let compiled = parse(source).unwrap().compile().unwrap();
     assert_eq!(
         script(&compiled.program, 0, 0),
@@ -516,6 +517,47 @@ fn context_query_encodes_callback_branch() {
     );
     for body in ["self.zenith = 1;", "if self.zenith() {}"] {
         assert!(parse(&format!("mhf_ai 1; species 11; fn main() {{ {body} }}")).is_err());
+    }
+}
+
+#[test]
+fn species_group_preserves_source_order_and_optional_else() {
+    let compiled = parse(
+        "mhf_ai 1; species 1; fn main() { match self.species_group { 42 => nop(); 1 => { wait(3); } else => reset; } }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x2c, 0, 2, 0x2c, 1, 42, 0x92, 0x2c, 1, 1, 0x48, 3, 0x2c, 2, 0xff, 0, 0x2c, 3, 0xff, 0,
+        ]
+    );
+
+    let compiled = parse(
+        "mhf_ai 1; species 1; fn main() { match self.species_group { 42 => nop(); 1 => {} 42 => wait(2); } }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x2c, 0, 3, 0x2c, 1, 42, 0x92, 0x2c, 1, 1, 0x2c, 1, 42, 0x48, 2, 0x2c, 3, 0xff, 0,
+        ]
+    );
+
+    for body in [
+        "match self.species_group() { 1 => {} }",
+        "match self.species_group {}",
+        "match self.species_group { else => {} }",
+        "match self.species_group { 256 => {} }",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 1; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
     }
 }
 
@@ -1229,19 +1271,69 @@ fn shipped_multifile_examples_compile_for_default_and_specific_maps() {
 }
 
 #[test]
+fn area_route_profile_encodes_and_validates_cases() {
+    let source = "mhf_ai 1; species 1; fn main() { match self.area_route_profile { 0 => nop(); 255 => {} else => {} } }";
+    let compiled = parse(source).unwrap().compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x57, 0, 2, 0x57, 1, 0, 0, 0x92, 0x57, 1, 0, 255, 0x57, 2, 0x57, 3, 0xff, 0
+        ]
+    );
+    for body in [
+        "match self.area_route_profile() { 0 => {} else => {} }",
+        "match self.area_route_profile { else => {} }",
+        "match self.area_route_profile { 256 => {} else => {} }",
+        "match self.area_route_profile { 1 => {} }",
+        "match self.area_route_profile { 1 => {} 1 => {} else => {} }",
+        "match self.area_route_profile { 2 => {} 1 => {} else => {} }",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 1; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+    let cases: String = (0..255).map(|i| format!("{i} => {{}} ")).collect();
+    let valid = format!(
+        "mhf_ai 1; species 1; fn main() {{ match self.area_route_profile {{ {cases} else => {{}} }} }}"
+    );
+    assert!(parse(&valid).unwrap().compile().is_ok());
+    let too_many_cases = format!(
+        "mhf_ai 1; species 1; fn main() {{ match self.area_route_profile {{ {cases} 255 => {{}} else => {{}} }} }}"
+    );
+    assert!(parse(&too_many_cases).is_err());
+}
+
+#[test]
+fn area_route_profile_supports_imports_and_early_return() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.choose(); }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn choose() { match self.area_route_profile { 0 => { return; } else => work(); } nop(); } fn work() { wait(1); }",
+        )],
+    );
+    assert!(p.compile().is_ok());
+    let invalid_pass = "mhf_ai 1; species 1; fn main() {} states { idle => { match self.area_route_profile { 0 => pass; else => {} } } }";
+    assert!(parse(invalid_pass).unwrap().compile().is_err());
+}
+
+#[test]
 fn context_query_rejects_invalid_selectors_and_cases() {
     for body in [
         "if self.zenith {}",
-        "self.context.query(4);",
-        "if self.context.query(4) {}",
-        "match self.context.query() { 1 => {} else => {} }",
-        "match self.context.query(256) { 1 => {} else => {} }",
-        "match self.context.query(4) { 256 => {} else => {} }",
-        "match self.context.query(4) { else => {} }",
-        "match self.context.query(4) { 1 => {} }",
-        "match self.context.query(4) { 1 => {} 1 => {} else => {} }",
-        "match self.context.query(4) { 2 => {} 1 => {} else => {} }",
-        "match self.context.query(4) { 1 => {} else => {} 2 => {} }",
+        "match self.context.query(4) { 1 => {} else => {} }",
+        "match context.area_route_profile { 1 => {} else => {} }",
+        "context.query(4);",
+        "if context.query(4) {}",
+        "match context.query() { 1 => {} else => {} }",
+        "match context.query(256) { 1 => {} else => {} }",
+        "match context.query(4) { 256 => {} else => {} }",
+        "match context.query(4) { else => {} }",
+        "match context.query(4) { 1 => {} }",
+        "match context.query(4) { 1 => {} 1 => {} else => {} }",
+        "match context.query(4) { 2 => {} 1 => {} else => {} }",
+        "match context.query(4) { 1 => {} else => {} 2 => {} }",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
@@ -1249,14 +1341,19 @@ fn context_query_rejects_invalid_selectors_and_cases() {
         );
     }
     let cases: String = (0..=255).map(|i| format!("{i} => {{}} ")).collect();
-    assert!(parse(&format!("mhf_ai 1; species 6; fn main() {{ match self.context.query(0) {{ {cases} else => {{}} }} }}")).is_err());
+    assert!(
+        parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ match context.query(0) {{ {cases} else => {{}} }} }}"
+        ))
+        .is_err()
+    );
 }
 
 #[test]
 fn context_query_supports_byte_boundaries_and_nested_matches() {
     let source = "mhf_ai 1; species 14; fn main() {
-        match self.context.query(255) {
-            0 => { match self.context.query(0) { 255 => nop(); else => {} } }
+        match context.query(255) {
+            0 => { match context.query(0) { 255 => nop(); else => {} } }
             255 => nop();
             else => {}
         }
@@ -1270,7 +1367,12 @@ fn context_query_supports_byte_boundaries_and_nested_matches() {
         ]
     );
     let cases: String = (0..255).map(|i| format!("{i} => {{}} ")).collect();
-    let compiled = parse(&format!("mhf_ai 1; species 6; fn main() {{ match self.context.query(0) {{ {cases} else => {{}} }} }}")).unwrap().compile().unwrap();
+    let compiled = parse(&format!(
+        "mhf_ai 1; species 6; fn main() {{ match context.query(0) {{ {cases} else => {{}} }} }}"
+    ))
+    .unwrap()
+    .compile()
+    .unwrap();
     assert_eq!(&script(&compiled.program, 0, 0)[..4], &[0x79, 0, 255, 0]);
 }
 
@@ -1280,7 +1382,7 @@ fn context_query_imports_and_returns_preserve_continuations() {
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.choose(); wait(3); } events { awareness => h.choose; }",
         &[(
             "maps/31/6/helper.mhai",
-            "fn leaf() { nop(); } fn choose() { match self.context.query(4) { 0 => return; 1 => leaf(); else => leaf(); } wait(2); }",
+            "fn leaf() { nop(); } fn choose() { match context.query(4) { 0 => return; 1 => leaf(); else => leaf(); } wait(2); }",
         )],
     );
     let compiled = p.compile().unwrap();
