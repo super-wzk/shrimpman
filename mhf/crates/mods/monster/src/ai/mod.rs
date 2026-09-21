@@ -18,6 +18,7 @@ pub mod bytecode;
 pub mod control;
 pub mod decompile;
 pub mod dsl;
+pub use dsl::slot::NativeSlot;
 #[cfg(all(feature = "provider", windows, target_arch = "x86"))]
 pub(crate) mod overlay;
 
@@ -59,6 +60,17 @@ pub struct Program {
     pub base: Base,
     pub root: usize,
     pub nodes: Vec<Node>,
+    /// Provisional function positions. Native binding moves them to empty slots.
+    pub automatic_slots: Vec<NativeSlot>,
+    /// Only generated calls are relocated; native(...) bytes are never patched.
+    pub relocations: Vec<CallRelocation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallRelocation {
+    pub script: usize,
+    pub offset: usize,
+    pub target: NativeSlot,
 }
 
 /// A pointer table keyed by logical index.
@@ -168,6 +180,7 @@ impl Program {
         }
 
         let mut payload = 0usize;
+        let mut call_targets = BTreeMap::new();
         for (node_index, node) in self.nodes.iter().enumerate() {
             match node {
                 Node::Table(table) => {
@@ -198,15 +211,55 @@ impl Program {
                     payload = payload
                         .checked_add(bytes.len())
                         .ok_or_else(|| Error::new("program payload size overflows"))?;
-                    bytecode::decode(bytes).map_err(|message| {
+                    let instructions = bytecode::decode(bytes).map_err(|message| {
                         Error::new(format!("script node {node_index}: {message}"))
                     })?;
+                    if !self.relocations.is_empty() {
+                        for instruction in instructions {
+                            if let Some(target) = NativeSlot::from_call(&instruction.bytes) {
+                                call_targets.insert((node_index, instruction.offset), target);
+                            }
+                        }
+                    }
                 }
             }
             if payload > MAX_PAYLOAD {
                 return Err(Error::new(format!(
                     "program payload exceeds {MAX_PAYLOAD} bytes"
                 )));
+            }
+        }
+
+        let mut automatic = std::collections::BTreeSet::new();
+        for &slot in &self.automatic_slots {
+            if !matches!(slot.table, 1 | 9 | 15..=270) || !automatic.insert(slot) {
+                return Err(Error::new("invalid or duplicate automatic function slot"));
+            }
+            let Node::Table(root) = &self.nodes[self.root] else {
+                return Err(Error::new("root node must be a table"));
+            };
+            let Some(Node::Table(table)) = root.get(slot.table).map(|node| &self.nodes[node])
+            else {
+                return Err(Error::new("automatic function table is missing"));
+            };
+            let Some(Node::Script(_)) = table
+                .get(usize::from(slot.index))
+                .map(|node| &self.nodes[node])
+            else {
+                return Err(Error::new("automatic function script is missing"));
+            };
+        }
+        let mut sites = std::collections::BTreeSet::new();
+        for relocation in &self.relocations {
+            let Some(Node::Script(_)) = self.nodes.get(relocation.script) else {
+                return Err(Error::new("call relocation does not reference a script"));
+            };
+            let site = (relocation.script, relocation.offset);
+            if !automatic.contains(&relocation.target)
+                || !sites.insert(site)
+                || call_targets.get(&site) != Some(&relocation.target)
+            {
+                return Err(Error::new("invalid automatic call relocation"));
             }
         }
 
@@ -339,6 +392,8 @@ mod tests {
                 Node::Table(Table::from_entries([(0, Some(2)), (1, Some(2))])),
                 Node::Script(vec![7, 0]),
             ],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         program.validate_lossless().unwrap();
         let Node::Table(main) = &program.nodes[1] else {
@@ -358,6 +413,8 @@ mod tests {
                 Node::Table(Table::from_entries([(0, Some(1))])),
                 Node::Table(Table::from_entries([(0, Some(0))])),
             ],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         assert!(
             program
@@ -377,6 +434,8 @@ mod tests {
             base: Base::Native,
             root: 0,
             nodes: vec![Node::Table(Table::from_entries([(14, None)]))],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         program.validate_lossless().unwrap();
     }
@@ -390,6 +449,8 @@ mod tests {
             base: Base::Empty,
             root: 0,
             nodes: vec![Node::Table(Table::from_entries([(14, Some(0))]))],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         assert!(
             missing_table
@@ -407,6 +468,8 @@ mod tests {
                 Node::Table(Table::from_entries([(0, Some(1))])),
                 Node::Table(Table::new()),
             ],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         assert!(
             empty_table
@@ -429,6 +492,8 @@ mod tests {
                 Node::Table(Table::from_entries([(0, Some(2))])),
                 Node::Script(vec![0x92]),
             ],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         assert!(
             program

@@ -88,7 +88,7 @@
 | `0x13` | bind-current-lane | 无 | 设动作模式 1/组 0，把 `+2612`（cmd_pl_target）当当前下标（非 -1 时掩到 4 位） | named | confirmed |
 | `0x14` | angle-threshold gate | 选择子 + `u8` | 把载荷字节换算成角度阈值，算到所选目标上下文的相对角，超阈值则扫到 `0x14` 体标记 | named | confirmed |
 | `0x15` | target-id list gate | 选择子 + 计数 + 大端 id 列表 | 选择子 0 读计数与大端目标 id 列表，逐个归一化，未命中则跳过嵌套 `0x15` 体 | named | confirmed |
-| `0x16` | bind-script-table | `u8` | 存脚本表选择子，把 `+2608`（第三保存游标）指向载荷续行，并把对应表项装进 `+2652`（分派游标） | named | confirmed |
+| `0x16` | call_table9_subscript | `u8` | 调用 `root[9][index]`；无条件把续行保存到 `+2608`，由 `FF 03` 返回；不改变 stage，再次调用会覆盖续行；DSL 使用 table 9 函数 | named | confirmed |
 | `0x17` | set-target-context | 4 字节 | 只在 `+2844`（区域移动计数）未置位时初始化四字节目标上下文：目标模式、计数、表选择子、上下文标志 | named | confirmed |
 | `0x18` | advance-target-context | 无 | 目标上下文模式大于 1 且全局门允许时，标记上下文有效、调用目标选择、装入选中的脚本指针 | named | confirmed |
 | `0x19` | copy-target-id-to-action | 无 | 把 `+3208`（maji_next_stage_no）拷进当前动作元组（模式 3/组/下标），并调用该路径使用的原生空钩子 | named | confirmed |

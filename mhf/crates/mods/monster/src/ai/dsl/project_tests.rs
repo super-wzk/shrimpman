@@ -19,6 +19,13 @@ fn script(program: &Program, root_slot: usize, index: usize) -> &[u8] {
     bytes
 }
 
+fn assert_shared_helper(program: &Program, body: &[u8], entries: &[(usize, u8)]) {
+    assert_eq!(script(program, 1, 0), [body, &[0xff, 1]].concat());
+    for &(root, ending) in entries {
+        assert_eq!(script(program, root, 0), [0x81, 0, 0xff, ending]);
+    }
+}
+
 fn project(entry: &str, modules: &[(&str, &str)]) -> Project {
     let mut project = Project::single(Some(31), 6, entry.into());
     project
@@ -48,13 +55,10 @@ fn target_strategies_encode_in_imported_conditions_and_events() {
             &[("maps/31/6/helper.mhai", &helper)],
         );
         let compiled = p.compile().unwrap();
-        assert_eq!(
-            script(&compiled.program, 0, 0),
-            [0x54, 0, opcode, 0x54, 2, 0xff, 0]
-        );
-        assert_eq!(
-            script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-            [0x54, 0, opcode, 0x54, 2, 0xff, EVENT_SLOTS[3].ending]
+        assert_shared_helper(
+            &compiled.program,
+            &[0x54, 0, opcode, 0x54, 2],
+            &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
         );
     }
     for body in [
@@ -90,12 +94,11 @@ fn player_slot_selection_encodes_without_implicit_binding_or_refresh() {
         )],
     );
     let compiled = p.compile().unwrap();
-    for (root, ending) in [(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)] {
-        assert_eq!(
-            script(&compiled.program, root, 0),
-            [0x54, 0, 6, 1, 0, 3, 0x4d, 0x54, 2, 0xff, ending]
-        );
-    }
+    assert_shared_helper(
+        &compiled.program,
+        &[0x54, 0, 6, 1, 0, 3, 0x4d, 0x54, 2],
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
+    );
     for body in [
         "self.select_target_entity(-1);",
         "self.select_target_entity(1.5);",
@@ -146,10 +149,10 @@ fn target_binding_methods_encode_without_arguments() {
         )],
     );
     let compiled = p.compile().unwrap();
-    assert_eq!(script(&compiled.program, 0, 0), [0x11, 0x13, 0xff, 0]);
-    assert_eq!(
-        script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-        [0x11, 0x13, 0xff, EVENT_SLOTS[3].ending]
+    assert_shared_helper(
+        &compiled.program,
+        &[0x11, 0x13],
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
     );
     for body in [
         "self.bind_awareness_target;",
@@ -175,7 +178,11 @@ fn annotated_functions_survive_imports_disk_reload_and_renaming() {
     let mut p = Project::load(&dir.0, 31, 6).unwrap().unwrap();
     let compiled = p.compile().unwrap();
     assert_eq!(script(&compiled.program, 0, 0), [0x81, 200, 0xff, 0]);
-    assert_eq!(script(&compiled.program, 1, 200), [0x48, 2, 0x92, 0xff, 1]);
+    assert_eq!(
+        script(&compiled.program, 1, 200),
+        [0x82, 0, 0, 0x92, 0xff, 1]
+    );
+    assert_eq!(script(&compiled.program, 15, 0), [0x48, 2, 0xff, 2]);
     for file in &mut p.files {
         file.source = file.source.replace("attack", "renamed");
     }
@@ -205,8 +212,6 @@ fn invalid_slot_annotations_are_rejected() {
         "@slot(table = 1, index = 1) fn main() {}",
         "@slot(table = 1, index = 1) states {}",
         "@slot(table = 1, index = 1) fn f() {} @slot(table = 1, index = 1) fn g() {}",
-        "@slot(table = 1, index = 1) fn f() {} states { fight => f; }",
-        "@slot(table = 1, index = 1) fn f() {} events { awareness => f; }",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 6; {body}")).is_err(),
@@ -222,6 +227,157 @@ fn native_calls_preserve_cross_level_transfers() {
     assert_eq!(script(&compiled.program, 0, 0), [0x82, 0, 0, 0xff, 0]);
     assert_eq!(script(&compiled.program, 15, 0), [0x81, 0, 0xff, 2]);
     assert_eq!(script(&compiled.program, 1, 0), [0xff, 1]);
+}
+
+#[test]
+fn automatic_functions_have_distinct_scripts_and_native_return_slots() {
+    let compiled = parse(
+        "mhf_ai 1; species 6;
+        fn main() { first(); first(); }
+        @slot(table = 1, index = 0) fn reserved() {}
+        fn first() { second(); wait(1); }
+        fn second() { third(); wait(2); }
+        fn third() { fourth(); wait(3); }
+        fn fourth() { third(); wait(4); }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(script(&compiled.program, 0, 0), [0x81, 1, 0x81, 1, 0xff, 0]);
+    assert_eq!(script(&compiled.program, 1, 0), [0xff, 1]);
+    assert_eq!(
+        script(&compiled.program, 1, 1),
+        [0x82, 0, 0, 0x48, 1, 0xff, 1]
+    );
+    assert_eq!(
+        script(&compiled.program, 15, 0),
+        [0x16, 0, 0x48, 2, 0xff, 2]
+    );
+    assert_eq!(script(&compiled.program, 9, 0), [0x16, 1, 0x48, 3, 0xff, 3]);
+    assert_eq!(script(&compiled.program, 9, 1), [0x16, 0, 0x48, 4, 0xff, 3]);
+    assert_eq!(compiled.program.automatic_slots.len(), 4);
+    assert_eq!(compiled.program.relocations.len(), 6);
+}
+
+#[test]
+fn recursive_calls_compile_without_a_synthetic_call_stack() {
+    let compiled = parse(
+        "mhf_ai 1; species 6;
+        fn main() { again(); }
+        fn again() { again(); wait(99); }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    // A same-stage 81 is a tail transfer, not a new stack frame.
+    assert_eq!(script(&compiled.program, 1, 0), [0x81, 0]);
+    let compiled = parse(
+        "mhf_ai 1; species 6;
+        fn main() { first(); }
+        fn first() { second(); }
+        fn second() { first(); }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(script(&compiled.program, 1, 0), [0x82, 0, 0, 0xff, 1]);
+    assert_eq!(script(&compiled.program, 15, 0), [0x81, 0, 0xff, 2]);
+}
+
+#[test]
+fn table_nine_calls_preserve_their_independent_return_cursor() {
+    let compiled = parse(
+        "mhf_ai 1; species 6;
+        fn main() { special(); primary(); secondary(); }
+        states { another => special; }
+        events { awareness => special; }
+        @slot(table = 9, index = 200) fn special() { nested(); wait(1); }
+        @slot(table = 9, index = 201) fn nested() { if self.flashed { return; } nop(); }
+        @slot(table = 1, index = 3) fn primary() { special(); wait(2); }
+        @slot(table = 15, index = 7) fn secondary() { special(); wait(3); }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [0x16, 200, 0x81, 3, 0x82, 0, 7, 0xff, 0]
+    );
+    assert_eq!(script(&compiled.program, 0, 1), [0x16, 200, 0xff, 0]);
+    assert_eq!(script(&compiled.program, 3, 0), [0x16, 200, 0xff, 0xfd]);
+    assert_eq!(
+        script(&compiled.program, 9, 200),
+        [0x16, 201, 0x48, 1, 0xff, 3]
+    );
+    assert_eq!(
+        script(&compiled.program, 9, 201),
+        [0x39, 0, 0xff, 3, 0x39, 2, 0x92, 0xff, 3]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 3),
+        [0x16, 200, 0x48, 2, 0xff, 1]
+    );
+    assert_eq!(
+        script(&compiled.program, 15, 7),
+        [0x16, 200, 0x48, 3, 0xff, 2]
+    );
+    assert!(compiled.program.automatic_slots.is_empty());
+}
+
+#[test]
+fn native_function_returns_keep_raw_condition_closing_markers() {
+    for (annotation, table, ending) in [("", 1, 1), ("@slot(table = 9, index = 0)", 9, 3)] {
+        let compiled = parse(&format!(
+            "mhf_ai 1; species 6;
+            fn main() {{ helper(); }}
+            {annotation} fn helper() {{ native(0x35, 0); return; native(0x35, 2); nop(); }}"
+        ))
+        .unwrap()
+        .compile()
+        .unwrap();
+        assert_eq!(
+            script(&compiled.program, table, 0),
+            [0x35, 0, 0xff, ending, 0x35, 2, 0x92, 0xff, ending]
+        );
+    }
+}
+
+#[test]
+fn unused_functions_are_allocated_and_checked_without_inlining() {
+    let compiled = parse("mhf_ai 1; species 6; fn main() {} fn unused() { nop(); }")
+        .unwrap()
+        .compile()
+        .unwrap();
+    assert_eq!(script(&compiled.program, 1, 0), [0x92, 0xff, 1]);
+    assert!(
+        parse("mhf_ai 1; species 6; fn main() {} fn unused() { missing(); }")
+            .unwrap()
+            .compile()
+            .is_err()
+    );
+    let mut program = compiled.program;
+    program.automatic_slots.push(program.automatic_slots[0]);
+    assert!(
+        program
+            .validate_lossless()
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate automatic")
+    );
+}
+
+#[test]
+fn relocation_sites_must_be_generated_calls_at_instruction_boundaries() {
+    let compiled = parse("mhf_ai 1; species 6; fn main() { wait(129); helper(); } fn helper() {}")
+        .unwrap()
+        .compile()
+        .unwrap();
+    let mut program = compiled.program.clone();
+    program.relocations[0].offset = 1;
+    assert!(program.validate_lossless().is_err());
+    let mut program = compiled.program;
+    program.relocations.push(program.relocations[0]);
+    assert!(program.validate_lossless().is_err());
 }
 
 #[test]
@@ -262,9 +418,10 @@ fn mode_is_encodes_enum_arguments_and_rejects_invalid_calls() {
             "fn check() { if self.mode_is(Mode::Attack) { nop(); } }",
         )],
     );
-    assert_eq!(
-        script(&p.compile().unwrap().program, 0, 0),
-        [0x0b, 0, 1, 0x92, 0x0b, 2, 0xff, 0]
+    assert_shared_helper(
+        &p.compile().unwrap().program,
+        &[0x0b, 0, 1, 0x92, 0x0b, 2],
+        &[(0, 0)],
     );
 }
 
@@ -281,13 +438,10 @@ fn tracked_players_check_is_a_condition_method_with_native_side_effects() {
     let body = [
         2, 0, 0x54, 0, 0x92, 0x54, 2, 2, 1, 0xff, 0, 2, 2, 2, 0, 2, 2,
     ];
-    assert_eq!(
-        script(&compiled.program, 0, 0),
-        [&body[..], &[0xff, 0]].concat()
-    );
-    assert_eq!(
-        script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-        [&body[..], &[0xff, EVENT_SLOTS[3].ending]].concat()
+    assert_shared_helper(
+        &compiled.program,
+        &body,
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
     );
     for body in [
         "if self.check_tracked_players {}",
@@ -314,13 +468,10 @@ fn target_available_resolves_in_imported_helpers_and_events() {
     );
     let compiled = p.compile().unwrap();
     let body = [0x54, 0, 0x35, 0, 0x92, 0x35, 2, 0x54, 1, 0xff, 0, 0x54, 2];
-    assert_eq!(
-        script(&compiled.program, 0, 0),
-        [&body[..], &[0xff, 0]].concat()
-    );
-    assert_eq!(
-        script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-        [&body[..], &[0xff, EVENT_SLOTS[3].ending]].concat()
+    assert_shared_helper(
+        &compiled.program,
+        &body,
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
     );
     for body in [
         "if self.target {}",
@@ -346,8 +497,7 @@ fn distance_match_compiles_imports_and_native_fallback_without_changing_threshol
     assert_eq!(
         script(&compiled.program, 0, 0),
         [
-            0x83, 0, 2, 0x83, 1, 0x80, 0, 1, 0x80, 1, 32, 0x92, 0x80, 0xff, 0x83, 2, 0x4d, 0x83, 3,
-            0xff, 0xf7, 0x83, 0xff, 0xff, 0
+            0x83, 0, 2, 0x83, 1, 0x81, 0, 0x83, 2, 0x4d, 0x83, 3, 0xff, 0xf7, 0x83, 0xff, 0xff, 0
         ]
     );
     let compiled = parse("mhf_ai 1; species 6; base native; events { awareness => { match self.target_distance_group() { 1 => {} else => {} } } }").unwrap().compile().unwrap();
@@ -495,9 +645,10 @@ fn enraged_conditions_work_in_states_events_and_mixed_branches() {
             0x35, 0, 0x39, 0, 0xff, 0, 0x39, 1, 0x92, 0x39, 2, 0x35, 1, 4, 0x35, 2, 0xff, 0,
         ]
     );
-    assert_eq!(
-        script(&compiled.program, EVENT_SLOTS[4].root_index, 0),
-        [0x35, 0, 0x92, 0x35, 2, 0xff, EVENT_SLOTS[4].ending]
+    assert_shared_helper(
+        &compiled.program,
+        &[0x35, 0, 0x92, 0x35, 2],
+        &[(EVENT_SLOTS[4].root_index, EVENT_SLOTS[4].ending)],
     );
     for body in ["self.enraged = 1;", "if self.enraged() {}"] {
         assert!(parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err());
@@ -572,9 +723,10 @@ fn flashed_conditions_encode_nested_branches_and_keep_entry_tails() {
             0,
         ]
     );
-    assert_eq!(
-        script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-        [0x39, 0, 0xff, 0, 0x39, 2, 0xff, EVENT_SLOTS[3].ending]
+    assert_shared_helper(
+        &compiled.program,
+        &[0x39, 0, 0xff, 0, 0x39, 2],
+        &[(EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
     );
     let compiled = parse("mhf_ai 1; species 6; states { fight => attack; } fn main() { if self.flashed { transition fight; } restart; } fn attack() {}")
         .unwrap().compile().unwrap();
@@ -593,14 +745,12 @@ fn condition_branches_resolve_imported_helpers_and_actions() {
     let compiled = p.compile().unwrap();
     assert_eq!(
         script(&compiled.program, 0, 0),
-        [
-            0x39, 0, 0x39, 0, 5, 3, 6, 1, 0x39, 2, 0x39, 1, 5, 3, 6, 2, 0x39, 2, 0xff, 0,
-        ]
+        [0x39, 0, 0x81, 0, 0x39, 1, 5, 3, 6, 2, 0x39, 2, 0xff, 0,]
     );
 }
 
 #[test]
-fn block_returns_only_skip_the_current_functions_continuation() {
+fn entry_returns_restructure_but_function_returns_use_their_slot() {
     for (body, expected) in [
         (
             "if self.flashed { return; } wait(1);",
@@ -635,6 +785,14 @@ fn block_returns_only_skip_the_current_functions_continuation() {
             "if self.flashed { reset; wait(2); } else {}",
         ),
     ] {
+        let entry = |body| {
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}"))
+                .unwrap()
+                .compile()
+                .unwrap()
+                .program
+        };
+        assert_eq!(entry(body), entry(expected));
         for entry in [
             "fn main() { helper(); wait(3); }",
             "fn main() { if self.active { helper(); wait(3); } }",
@@ -649,8 +807,12 @@ fn block_returns_only_skip_the_current_functions_continuation() {
                 .unwrap()
             };
             let actual = compile(body);
-            let expected = compile(expected);
-            assert_eq!(actual.program, expected.program, "{entry}: {body}");
+            let explicit = parse(&format!("mhf_ai 1; species 6; base native; {entry} @slot(table = 1, index = 0) fn helper() {{ {body} }}"))
+                .unwrap().compile().unwrap();
+            assert_eq!(
+                actual.program.nodes, explicit.program.nodes,
+                "{entry}: {body}"
+            );
         }
     }
 }
@@ -669,7 +831,12 @@ fn entry_and_native_slot_returns_keep_their_endings() {
     .unwrap()
     .compile()
     .unwrap();
-    for (root, index, ending) in [(0, 0, 0), (0, 1, 0), (3, 0, 0xfd)] {
+    assert_eq!(script(&compiled.program, 3, 0), [0x81, 1, 0xff, 0xfd]);
+    assert_eq!(
+        script(&compiled.program, 1, 1),
+        [0x39, 0, 0xff, 1, 0x39, 2, 0x48, 1, 0xff, 1]
+    );
+    for (root, index, ending) in [(0, 0, 0), (0, 1, 0)] {
         assert_eq!(
             script(&compiled.program, root, index),
             [0x39, 0, 0x39, 1, 0x48, 1, 0x39, 2, 0xff, ending]
@@ -684,7 +851,7 @@ fn entry_and_native_slot_returns_keep_their_endings() {
 }
 
 #[test]
-fn inline_returns_inside_native_slots_do_not_return_from_the_slot() {
+fn automatically_allocated_helpers_return_to_the_native_caller() {
     let compiled = parse(
         "mhf_ai 1; species 6; base native;
         @slot(table = 1, index = 0) fn sub() { if self.active { helper(); wait(3); } }
@@ -695,17 +862,25 @@ fn inline_returns_inside_native_slots_do_not_return_from_the_slot() {
     .unwrap();
     assert_eq!(
         script(&compiled.program, 1, 0),
-        [
-            0x08, 0, 0x39, 0, 0x39, 1, 0x48, 2, 0x39, 2, 0x48, 3, 0x08, 2, 0xff, 1
-        ]
+        [0x08, 0, 0x82, 0, 0, 0x48, 3, 0x08, 2, 0xff, 1]
+    );
+    assert_eq!(
+        script(&compiled.program, 15, 0),
+        [0x39, 0, 0xff, 2, 0x39, 2, 0x48, 2, 0xff, 2]
     );
 }
 
 #[test]
-fn raw_native_conditionals_still_reject_inline_returns() {
+fn raw_native_conditionals_reject_entry_returns_but_allow_function_calls() {
+    let compiled = parse("mhf_ai 1; species 6; fn main() { native(0x39, 0); helper(); native(0x39, 2); } fn helper() { return; }")
+        .unwrap().compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [0x39, 0, 0x81, 0, 0x39, 2, 0xff, 0]
+    );
+    assert_eq!(script(&compiled.program, 1, 0), [0xff, 1]);
     for body in [
         "native(0x39, 0); return; native(0x39, 2);",
-        "native(0x39, 0); helper(); native(0x39, 2);",
         "native(0x39, 0); if self.active { return; } native(0x39, 2);",
         "if self.active { native(0x39, 0); return; native(0x39, 2); }",
     ] {
@@ -763,13 +938,14 @@ fn invalid_conditions_fail_without_guessing_native_semantics() {
 }
 
 #[test]
-fn explicit_event_reset_does_not_append_the_event_tail() {
+fn an_event_call_keeps_its_tail_when_the_callee_resets() {
     let compiled = parse("mhf_ai 1; species 6; base native; events { awareness => handler; } fn handler() { reset; wait(9); }")
         .unwrap().compile().unwrap();
     assert_eq!(
         script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-        [0xff, 0]
+        [0x81, 0, 0xff, EVENT_SLOTS[3].ending]
     );
+    assert_eq!(script(&compiled.program, 1, 0), [0xff, 0]);
     for declaration in [
         "fn reset() {}",
         "fn restart() {}",
@@ -889,7 +1065,7 @@ fn explicit_zero_random_weights_keep_branches_and_do_not_receive_rounding_shares
 }
 
 #[test]
-fn random_weights_normalize_and_imported_branches_expand() {
+fn random_weights_normalize_and_imported_branches_call_helpers() {
     let p = project(
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { random { 1 => h.attack(); 2 => { h.attack(); self.update_target_position(); } 1 => reset forget_target; } }",
         &[("maps/31/6/helper.mhai", "fn attack() { nop(); }")],
@@ -898,8 +1074,8 @@ fn random_weights_normalize_and_imported_branches_expand() {
     assert_eq!(
         script(&compiled.program, 0, 0),
         [
-            0x80, 0, 3, 0x80, 1, 8, 0x92, 0x80, 2, 16, 0x92, 0x4d, 0x80, 3, 8, 0xff, 0xf7, 0x80,
-            0xff, 0xff, 0
+            0x80, 0, 3, 0x80, 1, 8, 0x81, 0, 0x80, 2, 16, 0x81, 0, 0x4d, 0x80, 3, 8, 0xff, 0xf7,
+            0x80, 0xff, 0xff, 0
         ]
     );
     assert!(compiled.warnings.is_empty());
@@ -942,8 +1118,9 @@ fn reset_forget_target_is_a_terminal_reset_variant() {
         .unwrap().compile().unwrap();
     assert_eq!(
         script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-        [0xff, 0xf7]
+        [0x81, 0, 0xff, EVENT_SLOTS[3].ending]
     );
+    assert_eq!(script(&compiled.program, 1, 0), [0xff, 0xf7]);
     for body in [
         "reset forget_target();",
         "reset unknown;",
@@ -962,7 +1139,8 @@ fn main_is_the_unique_entry_and_restart_reenters_it() {
     let compiled = parse("mhf_ai 1; species 6; states { fight => attack; } fn main() { transition fight; } fn attack() { restart; }")
         .unwrap().compile().unwrap();
     assert_eq!(script(&compiled.program, 0, 0), [7, 1]);
-    assert_eq!(script(&compiled.program, 0, 1), [4]);
+    assert_eq!(script(&compiled.program, 0, 1), [0x81, 0, 0xff, 0]);
+    assert_eq!(script(&compiled.program, 1, 0), [4]);
     let compiled = parse("mhf_ai 1; species 6; fn main() {}")
         .unwrap()
         .compile()
@@ -1025,7 +1203,7 @@ fn map_declaration_matches_project_scope() {
 }
 
 #[test]
-fn module_calls_expand_with_local_names_and_context_specific_endings() {
+fn module_calls_allocate_shared_scripts_and_preserve_entry_endings() {
     let entry = "mhf_ai 1; species 6; map 31; base native;
         import \"#common/combat.mhai\" as combat;
         states { fight = 4 => fight; recovery => recovery; }
@@ -1047,17 +1225,19 @@ fn module_calls_expand_with_local_names_and_context_specific_endings() {
         ],
     );
     let c = p.compile().unwrap();
-    assert_eq!(script(&c.program, 0, 0), [0x48, 5, 5, 3, 6, 0, 7, 4]);
-    assert_eq!(script(&c.program, 0, 4), [7, 5]);
-    assert_eq!(script(&c.program, 0, 5), [4]);
-    assert_eq!(
-        script(&c.program, EVENT_SLOTS[0].root_index, 0),
-        [0x48, 5, 5, 3, 6, 0, 0xff, 0xf5]
-    );
-    assert_eq!(
-        script(&c.program, EVENT_SLOTS[1].root_index, 0),
-        [0x48, 5, 5, 3, 6, 0, 0xff, 0xf6]
-    );
+    assert_eq!(script(&c.program, 0, 0), [0x81, 0, 7, 4]);
+    assert_eq!(script(&c.program, 0, 4), [0x81, 1, 0xff, 0]);
+    assert_eq!(script(&c.program, 0, 5), [0x81, 2, 0xff, 0]);
+    assert_eq!(script(&c.program, 1, 0), [0x82, 0, 0, 5, 3, 6, 0, 0xff, 1]);
+    assert_eq!(script(&c.program, 1, 1), [7, 5]);
+    assert_eq!(script(&c.program, 1, 2), [4]);
+    assert_eq!(script(&c.program, 15, 0), [0x48, 5, 0xff, 2]);
+    for event in &EVENT_SLOTS[..2] {
+        assert_eq!(
+            script(&c.program, event.root_index, 0),
+            [0x81, 0, 0xff, event.ending]
+        );
+    }
 }
 
 #[test]
@@ -1073,8 +1253,9 @@ fn named_events_map_independently_of_order_and_get_their_verified_endings() {
     {
         assert_eq!(
             script(&compiled.program, EVENT_SLOTS[slot].root_index, 0),
-            [0x92, 0xff, ending]
+            [0x81, 0, 0xff, ending]
         );
+        assert_eq!(script(&compiled.program, 1, 0), [0x92, 0xff, 1]);
     }
     let doc =
         parse("mhf_ai 1; species 6; events { group_signal => end; dung_reaction => end; rage_entered => end; } fn end() {}")
@@ -1089,8 +1270,6 @@ fn named_events_map_independently_of_order_and_get_their_verified_endings() {
 fn rejects_invalid_calls_and_bindings() {
     for body in [
         "states { a => absent; } fn end() {}",
-        "states { a => end; } fn end() { end(); }",
-        "states { a => end; } fn end() { other(); } fn other() { end(); }",
         "states { a => end; } fn end() { other(1); transition a; } fn other() {}",
         "events { bait_detected = 6 => end; } fn end() {}",
         "events { 0 => end; } fn end() {}",
@@ -1113,12 +1292,15 @@ fn state_functions_reset_on_fallthrough_without_changing_explicit_endings() {
         ("", vec![0xff, 0x00]),
         ("action[0:1](0);", vec![0x05, 0, 1, 0, 0xff, 0x00]),
         ("return; wait(9);", vec![0xff, 0x00]),
-        ("helper(); wait(2);", vec![0x48, 1, 0x48, 2, 0xff, 0x00]),
+        ("helper(); wait(2);", vec![0x81, 0, 0x48, 2, 0xff, 0x00]),
         ("restart; wait(9);", vec![0x04]),
         ("restart;", vec![0x04]),
         ("reset; wait(9);", vec![0xff, 0x00]),
         ("reset forget_target; wait(9);", vec![0xff, 0xf7]),
-        ("reset_helper(); wait(9);", vec![0xff, 0x00]),
+        (
+            "reset_helper(); wait(9);",
+            vec![0x81, 0, 0x48, 9, 0xff, 0x00],
+        ),
         ("native(0xff, 0x00);", vec![0xff, 0x00]),
         ("stop();", vec![0x68]),
     ] {
@@ -1179,7 +1361,10 @@ fn equivalent_paths_share_one_module_and_other_species_are_rejected() {
         fn main() { a.end(); b.end(); restart; }",
         &[("common/6/a.mhai", "fn end() { nop(); }")],
     );
-    assert_eq!(script(&p.compile().unwrap().program, 0, 0), [0x92, 0x92, 4]);
+    let compiled = p.compile().unwrap();
+    assert_eq!(script(&compiled.program, 0, 0), [0x81, 0, 0x81, 0, 4]);
+    assert_eq!(script(&compiled.program, 1, 0), [0x92, 0xff, 1]);
+    assert_eq!(compiled.program.automatic_slots.len(), 1);
     assert!(p.check_target(32, 6).is_err());
     assert!(p.check_target(31, 7).is_err());
     let mut mismatch = p.clone();
@@ -1232,10 +1417,7 @@ fn disk_loading_falls_back_only_when_specific_entry_is_missing_and_preserves_dra
     assert_eq!(p.entry, "common/6/main.mhai");
     p.files[1].source = "fn finish() { wait(5); }".into();
     p.complete(&dir.0).unwrap();
-    assert_eq!(
-        script(&p.compile().unwrap().program, 14, 0),
-        [0x48, 5, 0xff, 0xf5]
-    );
+    assert_shared_helper(&p.compile().unwrap().program, &[0x48, 5], &[(14, 0xf5)]);
     dir.write("maps/31/6/main.mhai", "broken");
     assert!(Project::load(&dir.0, 31, 6).is_err());
 }
@@ -1386,23 +1568,25 @@ fn context_query_imports_and_returns_preserve_continuations() {
         )],
     );
     let compiled = p.compile().unwrap();
-    let prefix = [
-        0x79, 0, 2, 4, 0x79, 1, 0, 0x79, 1, 1, 0x92, 0x48, 2, 0x79, 2, 0x92, 0x48, 2, 0x79, 3,
-    ];
-    assert_eq!(
-        script(&compiled.program, 0, 0),
-        [prefix.as_slice(), &[0x48, 3, 0xff, 0]].concat()
-    );
+    assert_eq!(script(&compiled.program, 0, 0), [0x81, 0, 0x48, 3, 0xff, 0]);
     assert_eq!(
         script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
-        [prefix.as_slice(), &[0xff, EVENT_SLOTS[3].ending]].concat()
+        [0x81, 0, 0xff, EVENT_SLOTS[3].ending]
     );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x79, 0, 2, 4, 0x79, 1, 0, 0xff, 1, 0x79, 1, 1, 0x82, 0, 0, 0x79, 2, 0x82, 0, 0, 0x79,
+            3, 0x48, 2, 0xff, 1,
+        ]
+    );
+    assert_eq!(script(&compiled.program, 15, 0), [0x92, 0xff, 2]);
 }
 
 #[test]
 fn handle_dispatches_to_a_handler_and_keeps_every_outcome_separate() {
-    // `pass;` clears the takeover byte, so the protocol's check must immediately
-    // follow the inlined handler; `return;` leaves the byte set.
+    // `pass;` clears the takeover byte and returns from the handler script;
+    // `return;` leaves the byte set. The caller checks it after the call.
     let source = "mhf_ai 1; species 6; fn main() {
         handle dispatch() then { reset; }
         wait(1);
@@ -1417,13 +1601,16 @@ fn handle_dispatches_to_a_handler_and_keeps_every_outcome_separate() {
         [
             0x1b, 0, 1, // request guard
             0x0c, 4, 1, // default takeover
-            // pass ends the handler, so the rest moves into the false branch
-            0x39, 0, 0x0d, 0x04, 0x39, 1, 0x1e, 0x39, 2, 0x2b, 0, 4, 1, 0xff, 0, 0x2b,
-            2, // then { reset; }
+            0x81, 0, // handler script
+            0x2b, 0, 4, 1, 0xff, 0, 0x2b, 2, // then { reset; }
             0x1b, 2, // end of the protocol
             0x48, 1, // the statement after the block
             0xff, 0,
         ]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [0x39, 0, 0x0d, 4, 0xff, 1, 0x39, 2, 0x1e, 0xff, 1]
     );
 }
 
@@ -1446,12 +1633,13 @@ fn handle_keeps_the_slot_call_level_and_the_handler_tail() {
         script(&compiled.program, 0, 0),
         [
             0x48, 2, // wait(2)
-            // dispatch is inlined here, and its tail @slot call keeps its level
-            0x1b, 0, 1, 0x0c, 4, 1, 0x82, 0, 7, 0x2b, 0, 4, 1, 0x92, 0x2b, 2, 0x1b,
+            // dispatch owns a primary slot and calls the fixed secondary slot.
+            0x1b, 0, 1, 0x0c, 4, 1, 0x81, 0, 0x2b, 0, 4, 1, 0x92, 0x2b, 2, 0x1b,
             2, // then { nop(); }
             0x48, 3, 0xff, 0,
         ]
     );
+    assert_eq!(script(&compiled.program, 1, 0), [0x82, 0, 7, 0xff, 1]);
     // leaf is table 15, so a pass inside it returns with that level's ending.
     let Node::Table(root) = &compiled.program.nodes[compiled.program.root] else {
         panic!()
@@ -1481,12 +1669,15 @@ fn sequential_handle_blocks_restart_the_protocol_in_order() {
     assert_eq!(
         script(&compiled.program, 0, 0),
         [
-            // Returning from the enraged branch moves `pass` into its else branch.
-            0x1b, 0, 1, 0x0c, 4, 1, 0x35, 0, 0x35, 1, 0x0d, 0x04, 0x35, 2, 0x2b, 0, 4, 1, 0x92,
-            0x2b, 2, 0x1b, 2, //
-            0x1b, 0, 1, 0x0c, 4, 1, 0x1e, 0x2b, 0, 4, 1, 0x2b, 2, 0x1b, 2, 0x48, 2, 0xff, 0,
+            0x1b, 0, 1, 0x0c, 4, 1, 0x81, 0, 0x2b, 0, 4, 1, 0x92, 0x2b, 2, 0x1b, 2, 0x1b, 0, 1,
+            0x0c, 4, 1, 0x81, 1, 0x2b, 0, 4, 1, 0x2b, 2, 0x1b, 2, 0x48, 2, 0xff, 0,
         ]
     );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [0x35, 0, 0xff, 1, 0x35, 2, 0x0d, 4, 0xff, 1]
+    );
+    assert_eq!(script(&compiled.program, 1, 1), [0x1e, 0xff, 1]);
 }
 
 #[test]

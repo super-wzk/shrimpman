@@ -1,7 +1,7 @@
 //! Bounded extraction of reachable state scripts and event entry scripts.
 //!
 //! Native tables have no lengths. Follow explicit state references instead of
-//! guessing a table end from adjacent pointers. Explicit 81/82 references
+//! guessing a table end from adjacent pointers. Explicit 81/82/16 references
 //! recover annotated functions. Other tables remain
 //! inherited through `base native`.
 
@@ -151,51 +151,52 @@ pub fn decompile(
     for warning in &warnings {
         writeln!(source, "// {warning}").unwrap();
     }
+    let handlers = handler_slots(&states, &events, &subs);
+    let state_context = BodyContext {
+        states: Some(&states),
+        subs: &subs,
+        handlers: &handlers,
+        scope: None,
+    };
+    let event_context = BodyContext {
+        states: None,
+        ..state_context
+    };
+    // Entries already own a script. Named functions always make native calls,
+    // so anonymous bodies preserve the entry bytes without an extra call layer.
     source.push_str("\nstates {\n");
-    for &index in states.keys() {
+    for (&index, bytes) in &states {
         if index == 0 {
             continue;
         }
-        writeln!(source, "    state_{index} = {index} => state_{index};").unwrap();
+        writeln!(source, "    state_{index} = {index} => {{").unwrap();
+        append_indented_body(
+            &mut source,
+            without_automatic_tail(bytes, 0)?,
+            1,
+            &state_context,
+        )?;
+        source.push_str("    }\n");
     }
     source.push_str("}\n\nevents {\n");
-    for index in events.keys() {
-        let name = EVENT_SLOTS[*index].name;
-        writeln!(source, "    {name} => on_{name};").unwrap();
+    for (&index, bytes) in &events {
+        let event = &EVENT_SLOTS[index];
+        writeln!(source, "    {} => {{", event.name).unwrap();
+        append_indented_body(
+            &mut source,
+            without_automatic_tail(bytes, event.ending)?,
+            1,
+            &event_context,
+        )?;
+        source.push_str("    }\n");
     }
     source.push_str("}\n");
-    let handlers = handler_slots(&states, &events, &subs);
-    for (&index, bytes) in &states {
-        if index == 0 {
-            writeln!(source, "\nfn main() {{").unwrap();
-        } else {
-            writeln!(source, "\nfn state_{index}() {{").unwrap();
-        }
+    if let Some(bytes) = states.get(&0) {
+        source.push_str("\nfn main() {\n");
         format_body(
             &mut source,
-            without_automatic_tail(bytes, 0x00)?,
-            &BodyContext {
-                states: Some(&states),
-                subs: &subs,
-                handlers: &handlers,
-                scope: None,
-            },
-        )?;
-        source.push_str("}\n");
-    }
-    for (&index, bytes) in &events {
-        let name = EVENT_SLOTS[index].name;
-        writeln!(source, "\nfn on_{name}() {{").unwrap();
-        let body = without_automatic_tail(bytes, EVENT_SLOTS[index].ending)?;
-        format_body(
-            &mut source,
-            body,
-            &BodyContext {
-                states: None,
-                subs: &subs,
-                handlers: &handlers,
-                scope: None,
-            },
+            without_automatic_tail(bytes, 0)?,
+            &state_context,
         )?;
         source.push_str("}\n");
     }
@@ -382,7 +383,7 @@ fn sub_name(slot: NativeSlot) -> String {
     format!("sub_{}_{}", slot.table, slot.index)
 }
 
-/// Collect ordinary `81`/`82` calls, skipping calls owned by the request
+/// Collect ordinary `81`/`82`/`16` calls, skipping calls owned by the request
 /// protocol. Any ordinary call site keeps the callee a plain subscript.
 fn collect_call_targets(bytes: &[u8], targets: &mut BTreeSet<NativeSlot>) {
     let Ok(instructions) = bytecode::decode(bytes) else {
@@ -633,7 +634,7 @@ fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<Recovere
 
 struct RecoveredRequest {
     instruction_count: usize,
-    /// The `81`/`82` call that enters the handler.
+    /// The native call that enters the handler.
     call: Vec<u8>,
     then_body: Vec<u8>,
 }
@@ -1044,6 +1045,7 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{Node, dsl};
 
     #[derive(Default)]
     struct Image(BTreeMap<u32, u8>);
@@ -1074,6 +1076,64 @@ mod tests {
     }
 
     #[test]
+    fn table_nine_calls_and_nested_reentry_round_trip_as_fixed_functions() {
+        let mut image = Image::default();
+        image.put(0x100, &[0; 76]);
+        let tables = BTreeMap::from([(0, 0x200), (1, 0xa00), (9, 0x600), (15, 0xc00)]);
+        for (&index, &address) in &tables {
+            image.pointer(0x100 + index as u32 * 4, address);
+        }
+        let scripts: &[(usize, usize, u32, &[u8])] = &[
+            (0, 0, 0x300, &[0x16, 200, 0x81, 3, 0x82, 0, 7, 0xff, 0]),
+            (9, 200, 0x400, &[0x16, 201, 0x48, 1, 0xff, 3]),
+            (9, 201, 0x500, &[0x39, 0, 0xff, 3, 0x39, 2, 0x92, 0xff, 3]),
+            (1, 3, 0xb00, &[0x16, 200, 0xff, 1]),
+            (15, 7, 0xd00, &[0x16, 200, 0xff, 2]),
+        ];
+        for &(table, index, address, bytes) in scripts {
+            image.pointer(tables[&table] + index as u32 * 4, address);
+            image.put(address, bytes);
+        }
+        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert!(result.source.contains("@slot(table = 9, index = 200)"));
+        assert!(result.source.contains("sub_9_201();"));
+        assert!(!result.source.contains("native(0x16"));
+        let program = dsl::parse(&result.source)
+            .unwrap()
+            .compile()
+            .unwrap()
+            .program;
+        assert!(program.automatic_slots.is_empty());
+        let Node::Table(root) = &program.nodes[program.root] else {
+            panic!()
+        };
+        for &(table, index, _, bytes) in scripts {
+            let Node::Table(table) = &program.nodes[root.get(table).unwrap()] else {
+                panic!()
+            };
+            assert_eq!(
+                program.nodes[table.get(index).unwrap()],
+                Node::Script(bytes.to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_table_nine_targets_stay_native() {
+        let mut image = Image::default();
+        image.put(0x100, &[0; 76]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x200, 0x300);
+        image.pointer(0x124, 0x400);
+        image.put(0x300, &[0x16, 200, 0xff, 0]);
+        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        assert!(!result.warnings.is_empty());
+        assert!(result.source.contains("native(0x16, 0xc8)"));
+        assert!(!result.source.contains("@slot(table = 9"));
+    }
+
+    #[test]
     fn rathian_state_three_keeps_zero_case_operand_and_nested_species_cases() {
         // IDA ZZ HD bytes at 11854D88, through the outer FF 00 (not padding).
         // Previously 94/0 swallowed 94/1 and misread 11854D8E's operand as STOP.
@@ -1098,7 +1158,7 @@ mod tests {
         // Called bodies are intentionally absent; only they should be inherited.
         // decompile also recompiles and checks the entire recovered state bytes.
         let result = decompile(&image, 0x100, 1, 3, None).unwrap();
-        assert!(result.source.contains("fn state_3()"));
+        assert!(result.source.contains("state_3 = 3 => {"));
         assert!(result.source.contains("native(0x94, 0x01, 0x00);"));
         assert!(
             !result
@@ -1908,7 +1968,11 @@ mod tests {
         image.put(0x400, &[0x92, 0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(result.source.contains("fn main()"));
-        assert!(result.source.contains("fn state_1() {\n    nop();\n}"));
+        assert!(
+            result
+                .source
+                .contains("state_1 = 1 => {\n        nop();\n    }")
+        );
         assert!(!result.source.contains("native(0xff, 0x00)"));
 
         image.put(0x300, &[0x39, 0, 0xff, 0, 0x39, 2, 0x92, 0xff, 0]);
@@ -1941,11 +2005,7 @@ mod tests {
         // decompile checks the compiled bytes of every exported body itself.
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         for event in EVENT_SLOTS {
-            assert!(
-                result
-                    .source
-                    .contains(&format!("{} => on_{};", event.name, event.name))
-            );
+            assert!(result.source.contains(&format!("{} => {{", event.name)));
         }
         assert!(!result.source.contains("native(0xff"));
         assert!(!result.source.contains("_end()"));
@@ -1963,7 +2023,7 @@ mod tests {
 
         image.put(0x300, &[0xff, 0xf5]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert!(result.source.contains("fn on_dung_reaction() {\n}"));
+        assert!(result.source.contains("dung_reaction => {\n    }"));
     }
 
     #[test]

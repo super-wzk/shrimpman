@@ -1,11 +1,10 @@
 //! Materialisation of a `base native;` declaration onto the live descriptor.
 //!
-//! The compiler never reads the client's tables: such a document writes only
-//! the entries it names and marks everything else as inherited. This module is
-//! the other half of that decision. It reads a window of the live block the
-//! actor is about to use, overlays the declaration, and fills caller-owned
-//! storage with a private descriptor plus the tables and scripts that
-//! declaration owns.
+//! The compiler never reads the client's tables: explicit slots are fixed,
+//! automatic function slots are provisional, and other entries are inherited.
+//! This module resolves automatic slots against the live tables before applying
+//! the declaration, then fills caller-owned storage with a private descriptor
+//! plus the tables and scripts that declaration owns.
 //!
 //! Only two windows are fixed by the client, and both come from the width of
 //! the index the client uses:
@@ -27,10 +26,15 @@
 //! client would read on its own. Copying the full window therefore reproduces
 //! the native reader's view instead of inventing a shorter one.
 
-use std::collections::HashMap;
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap},
+};
 
 use crate::ai::control::{EVENT_SLOTS, MAIN_ROOT_INDEX};
-use crate::ai::{Base, Error, NATIVE_DESCRIPTOR_SLOTS, Node, Program, Result, Table};
+use crate::ai::{
+    Base, Error, NATIVE_DESCRIPTOR_SLOTS, NativeSlot, Node, Program, Result, Table, bytecode,
+};
 
 /// Words read from the live descriptor.
 ///
@@ -105,15 +109,15 @@ pub fn materialize(
                 .map_err(|error| Error::new(format!("script node {index}: {error}")))?;
         }
     }
+    let words = read_exact(memory, address, DESCRIPTOR_WORDS, "descriptor")?;
+    let resolved = resolve_automatic(program, &words, memory)?;
+    let program = resolved.as_ref();
     let Node::Table(root) = &program.nodes[program.root] else {
         unreachable!("validate_lossless checked the root kind")
     };
 
     let mut blocks = Blocks::default();
-    let descriptor = blocks.push(
-        read_exact(memory, address, DESCRIPTOR_WORDS, "descriptor")?,
-        Vec::new(),
-    );
+    let descriptor = blocks.push(words, Vec::new());
     let mut scripts = HashMap::new();
 
     if root.declares(MAIN_ROOT_INDEX) {
@@ -179,7 +183,7 @@ pub fn materialize(
     }
 
     for (index, node) in root.iter() {
-        if index == 1 || (15..DESCRIPTOR_WORDS).contains(&index) {
+        if matches!(index, 1 | 9) || (15..DESCRIPTOR_WORDS).contains(&index) {
             let node = node.ok_or_else(|| Error::new("cannot clear a subscript table"))?;
             let Node::Table(declaration) = &program.nodes[node] else {
                 return Err(Error::new("subscript binding must reference a table"));
@@ -209,7 +213,7 @@ pub fn materialize(
             index == MAIN_ROOT_INDEX || EVENT_SLOTS.iter().any(|slot| slot.root_index == index);
         if !known {
             return Err(Error::new(format!(
-                "descriptor slot {index} has no binding window yet: only the state table and the seven event slots can be overlaid (spec §11.1)"
+                "descriptor slot {index} has no binding window: only state, event and subscript tables can be overlaid"
             )));
         }
     }
@@ -232,6 +236,106 @@ pub fn materialize(
         descriptor: addresses[descriptor],
         state_table: words[descriptor][MAIN_ROOT_INDEX],
     })
+}
+
+/// Resolve provisional slots against the actual native tables before any arena
+/// allocation. Nonzero native entries, explicit declarations and literal calls
+/// are all reserved. Only call sites emitted by the compiler are rewritten.
+fn resolve_automatic<'a>(
+    program: &'a Program,
+    descriptor: &[u32],
+    memory: &impl NativeMemory,
+) -> Result<Cow<'a, Program>> {
+    if program.automatic_slots.is_empty() {
+        return Ok(Cow::Borrowed(program));
+    }
+    let automatic: BTreeSet<_> = program.automatic_slots.iter().copied().collect();
+    let generated_calls: BTreeSet<_> = program
+        .relocations
+        .iter()
+        .map(|site| (site.script, site.offset))
+        .collect();
+    let mut reserved = BTreeSet::new();
+    for (script, node) in program.nodes.iter().enumerate() {
+        let Node::Script(bytes) = node else {
+            continue;
+        };
+        for instruction in bytecode::decode(bytes)? {
+            if !generated_calls.contains(&(script, instruction.offset))
+                && let Some(slot) = NativeSlot::from_call(&instruction.bytes)
+            {
+                reserved.insert(slot);
+            }
+        }
+    }
+    let Node::Table(root) = &program.nodes[program.root] else {
+        unreachable!()
+    };
+    let mut resolved = program.clone();
+    let mut relocated_slots = BTreeMap::new();
+    let tables: BTreeSet<_> = automatic.iter().map(|slot| slot.table).collect();
+    for table_index in tables {
+        let node = root.get(table_index).expect("validated automatic table");
+        let Node::Table(table) = &program.nodes[node] else {
+            unreachable!()
+        };
+        let address = descriptor[table_index];
+        let native = if address == 0 {
+            vec![0; 256]
+        } else {
+            read_exact(memory, address, 256, "automatic subscript table")?
+        };
+        let mut entries = Table::new();
+        for (index, script) in table.iter() {
+            if index > 255 {
+                return Err(Error::new("subscript index exceeds 255"));
+            }
+            let slot = NativeSlot {
+                table: table_index,
+                index: index as u8,
+            };
+            if !automatic.contains(&slot) {
+                reserved.insert(slot);
+                match script {
+                    Some(script) => entries.insert(index, script),
+                    None => entries.clear(index),
+                }
+            }
+        }
+        for &slot in automatic.iter().filter(|slot| slot.table == table_index) {
+            let target = std::iter::once(slot.index)
+                .chain(0..=u8::MAX)
+                .map(|index| NativeSlot {
+                    table: table_index,
+                    index,
+                })
+                .find(|target| native[usize::from(target.index)] == 0 && !reserved.contains(target))
+                .ok_or_else(|| {
+                    Error::new(format!(
+                        "native subscript table {table_index} has no empty slot for automatic functions; specify @slot to replace a known entry"
+                    ))
+                })?;
+            reserved.insert(target);
+            relocated_slots.insert(slot, target);
+            entries.insert(
+                usize::from(target.index),
+                table
+                    .get(usize::from(slot.index))
+                    .expect("validated automatic script"),
+            );
+        }
+        resolved.nodes[node] = Node::Table(entries);
+    }
+    for site in &program.relocations {
+        let Node::Script(bytes) = &mut resolved.nodes[site.script] else {
+            unreachable!()
+        };
+        let call = relocated_slots[&site.target].call();
+        bytes[site.offset..site.offset + call.len()].copy_from_slice(&call);
+    }
+    resolved.automatic_slots.clear();
+    resolved.relocations.clear();
+    Ok(Cow::Owned(resolved))
 }
 
 /// Overlay one declaration's entries onto a window read from the live block.
@@ -424,13 +528,17 @@ mod tests {
         memory.0.get_mut(&DESCRIPTOR).unwrap()[1] = address;
         memory.0.insert(address, vec![NATIVE_SCRIPTS[1]; 256]);
         memory.0.insert(0x0100_5000, vec![NATIVE_SCRIPTS[2]; 256]);
-        let program = crate::ai::dsl::parse("mhf_ai 1; species 6; base native; fn main() { outer(); } @slot(table = 1, index = 200) fn outer() { inner(); } @slot(table = 15, index = 7) fn inner() { nop(); }")
+        memory.0.get_mut(&DESCRIPTOR).unwrap()[9] = 0x0100_7000;
+        memory.0.insert(0x0100_7000, vec![NATIVE_SCRIPTS[0]; 256]);
+        let program = crate::ai::dsl::parse("mhf_ai 1; species 6; base native; fn main() { outer(); } @slot(table = 1, index = 200) fn outer() { inner(); } @slot(table = 15, index = 7) fn inner() { special(); } @slot(table = 9, index = 9) fn special() { nop(); }")
             .unwrap().compile().unwrap().program;
         let mut arena = TestArena::default();
         materialize(&program, DESCRIPTOR, &memory, &mut arena).unwrap();
-        for (root_slot, changed, original) in
-            [(1, 200, NATIVE_SCRIPTS[1]), (15, 7, NATIVE_SCRIPTS[2])]
-        {
+        for (root_slot, changed, original) in [
+            (1, 200, NATIVE_SCRIPTS[1]),
+            (15, 7, NATIVE_SCRIPTS[2]),
+            (9, 9, NATIVE_SCRIPTS[0]),
+        ] {
             let table_address = arena.block(0)[root_slot];
             let table = &arena
                 .blocks
@@ -451,6 +559,118 @@ mod tests {
         memory.0.remove(&address);
         assert!(materialize(&program, DESCRIPTOR, &memory, &mut arena).is_err());
         assert_eq!(arena.blocks.len(), before);
+    }
+
+    #[test]
+    fn automatic_slots_relocate_only_generated_calls_and_preserve_native_tables() {
+        let mut memory = Memory::live();
+        let primary = 0x0100_6000;
+        let special = 0x0100_7000;
+        memory.0.get_mut(&DESCRIPTOR).unwrap()[1] = primary;
+        memory.0.get_mut(&DESCRIPTOR).unwrap()[9] = special;
+        for (address, free) in [
+            (primary, vec![0, 3, 5, 200]),
+            (0x0100_5000, vec![7]),
+            (special, vec![42]),
+        ] {
+            let mut words = vec![NATIVE_SCRIPTS[1]; 256];
+            for index in free {
+                words[index] = 0;
+            }
+            memory.0.insert(address, words);
+        }
+        let before = memory.0.clone();
+        let program = crate::ai::dsl::parse(
+            "mhf_ai 1; species 6; base native;
+            fn main() { native(0x81, 0); first(); }
+            @slot(table = 1, index = 3) fn fixed() {}
+            fn first() { second(); }
+            fn second() { third(); }
+            fn third() { nop(); }
+            fn unused() { wait(4); }",
+        )
+        .unwrap()
+        .compile()
+        .unwrap()
+        .program;
+        let mut arena = TestArena::default();
+        materialize(&program, DESCRIPTOR, &memory, &mut arena).unwrap();
+        let at = |address| {
+            arena
+                .blocks
+                .iter()
+                .find(|(a, _)| *a == address)
+                .unwrap()
+                .1
+                .as_slice()
+        };
+        let descriptor = arena.block(0);
+        let assert_script = |address, bytes: &[u8]| {
+            // Materialized scripts include a zero guard after the bytecode.
+            let guarded = [bytes, &[0]].concat();
+            assert_eq!(at(address), super::pack(&guarded));
+        };
+        let states = at(descriptor[0]);
+        assert_script(states[0], &[0x81, 0, 0x81, 5, 0xff, 0]);
+        let primary = at(descriptor[1]);
+        assert_eq!(primary[0], 0); // Literal native call is not rebound to the new function.
+        assert_script(primary[3], &[0xff, 1]);
+        assert_script(primary[5], &[0x82, 0, 7, 0xff, 1]);
+        assert_script(primary[200], &[0x48, 4, 0xff, 1]);
+        assert_script(at(descriptor[15])[7], &[0x16, 42, 0xff, 2]);
+        assert_script(at(descriptor[9])[42], &[0x92, 0xff, 3]);
+        for (table, changed) in [(1, vec![0, 3, 5, 200]), (15, vec![7]), (9, vec![42])] {
+            for (index, &value) in at(descriptor[table]).iter().enumerate() {
+                if !changed.contains(&index) {
+                    assert_eq!(value, NATIVE_SCRIPTS[1]);
+                }
+            }
+        }
+        assert_eq!(memory.0, before);
+    }
+
+    #[test]
+    fn automatic_slot_exhaustion_or_unreadable_tables_fail_before_allocation() {
+        let program = crate::ai::dsl::parse(
+            "mhf_ai 1; species 6; base native; fn main() { helper(); } fn helper() {}",
+        )
+        .unwrap()
+        .compile()
+        .unwrap()
+        .program;
+        let mut memory = Memory::live();
+        let address = 0x0100_6000;
+        memory.0.get_mut(&DESCRIPTOR).unwrap()[1] = address;
+        memory.0.insert(address, vec![NATIVE_SCRIPTS[1]; 256]);
+        let mut arena = TestArena::default();
+        assert!(
+            materialize(&program, DESCRIPTOR, &memory, &mut arena)
+                .unwrap_err()
+                .to_string()
+                .contains("no empty slot")
+        );
+        assert!(arena.blocks.is_empty());
+        memory.0.remove(&address);
+        assert!(materialize(&program, DESCRIPTOR, &memory, &mut arena).is_err());
+        assert!(arena.blocks.is_empty());
+    }
+
+    #[test]
+    fn automatic_slots_can_create_missing_native_tables() {
+        let program = crate::ai::dsl::parse(
+            "mhf_ai 1; species 6; base native; fn main() { helper(); } fn helper() {}",
+        )
+        .unwrap()
+        .compile()
+        .unwrap()
+        .program;
+        let memory = Memory::live();
+        let mut arena = TestArena::default();
+        materialize(&program, DESCRIPTOR, &memory, &mut arena).unwrap();
+        let address = arena.block(0)[1];
+        let table = &arena.blocks.iter().find(|(a, _)| *a == address).unwrap().1;
+        assert_ne!(table[0], 0);
+        assert!(table[1..].iter().all(|&value| value == 0));
     }
 
     /// Handing out one fixed address per allocation, so a test can name them.
@@ -503,6 +723,8 @@ mod tests {
                 Node::Table(Table::from_entries([(0, Some(4))])),
                 Node::Script(vec![0xff, 0xfd]),
             ],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         }
     }
 
@@ -562,6 +784,8 @@ mod tests {
                 EVENT_SLOTS[0].root_index,
                 Some(1),
             )]))],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         let mut nodes = program.nodes;
         nodes.push(Node::Table(Table::from_entries([(0, Some(2))])));
@@ -585,6 +809,8 @@ mod tests {
                 EVENT_SLOTS[0].root_index,
                 None,
             )]))],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         materialize(&program, DESCRIPTOR, &memory, &mut arena).unwrap();
         assert_eq!(arena.block(0)[EVENT_SLOTS[0].root_index], 0);
@@ -622,6 +848,8 @@ mod tests {
                 Node::Table(Table::from_entries([(0, Some(2))])),
                 Node::Script(vec![0x92]),
             ],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         let error = materialize(&program, DESCRIPTOR, &memory, &mut arena)
             .unwrap_err()
@@ -638,6 +866,8 @@ mod tests {
             base: Base::Empty,
             root: 0,
             nodes: vec![Node::Table(Table::from_entries([(0, Some(1))]))],
+            automatic_slots: Vec::new(),
+            relocations: Vec::new(),
         };
         let error = materialize(&program, DESCRIPTOR, &memory, &mut arena)
             .unwrap_err()

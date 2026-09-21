@@ -10,10 +10,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::allocation::{Allocation, event_functions};
 use super::parser::{Callee, Document, Function, Statement, StatementKind, check_document};
 use super::slot::NativeSlot;
 use crate::ai::control::EVENT_SLOTS;
-use crate::ai::{Base, Diagnostic, Error, Node, Program, Result, Table, bytecode};
+use crate::ai::{Base, CallRelocation, Diagnostic, Error, Node, Program, Result, Table, bytecode};
 
 /// A compiled document plus the facts the compiler could not prove statically.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,19 +81,66 @@ enum Scope {
     Events,
 }
 
+struct EncodedScript {
+    bytes: Vec<u8>,
+    relocations: Vec<(usize, NativeSlot)>,
+}
+
+fn push_script(
+    nodes: &mut Vec<Node>,
+    relocations: &mut Vec<CallRelocation>,
+    encoded: EncodedScript,
+) -> usize {
+    let script = nodes.len();
+    nodes.push(Node::Script(encoded.bytes));
+    relocations.extend(
+        encoded
+            .relocations
+            .into_iter()
+            .map(|(offset, target)| CallRelocation {
+                script,
+                offset,
+                target,
+            }),
+    );
+    script
+}
+
 struct Compiler<'a> {
     auto_finish: bool,
     names: Names<'a>,
     warnings: Vec<Diagnostic>,
     functions: &'a [super::parser::Function],
-    stack: Vec<String>,
-    native_functions: &'a HashMap<String, NativeSlot>,
+    allocation: &'a Allocation,
+    relocations: Vec<(usize, NativeSlot)>,
     native_scope: Option<NativeSlot>,
     raw_boundary: usize,
     raw_return_blocked: bool,
 }
 
 impl Compiler<'_> {
+    fn encode_script(
+        &mut self,
+        body: &[Statement],
+        scope: Scope,
+        slot: Option<NativeSlot>,
+        ending: Option<u8>,
+    ) -> Result<EncodedScript> {
+        self.native_scope = slot;
+        self.raw_boundary = 0;
+        self.raw_return_blocked = false;
+        self.relocations.clear();
+        let mut bytes = Vec::new();
+        self.encode_body(body, scope, &mut bytes)?;
+        if let Some(ending) = ending {
+            finish(&mut bytes, ending, slot)?;
+        }
+        Ok(EncodedScript {
+            bytes,
+            relocations: std::mem::take(&mut self.relocations),
+        })
+    }
+
     fn encode_branch(
         &mut self,
         statement: &Statement,
@@ -129,11 +177,11 @@ impl Compiler<'_> {
     ) -> Result<bool> {
         while let Some(statement) = body.next() {
             if out.len() > super::super::decompile::MAX_SCRIPT_BYTES {
-                return Err(statement.error("expanded function exceeds 64 KiB"));
+                return Err(statement.error("generated script exceeds 64 KiB"));
             }
             if matches!(statement.kind, StatementKind::Return | StatementKind::Pass) {
                 let passing = matches!(statement.kind, StatementKind::Pass);
-                let slot_return = self.native_scope.filter(|_| self.stack.len() == 1);
+                let slot_return = self.native_scope;
                 if slot_return.is_none()
                     && (self.raw_return_blocked || !closed(&out[self.raw_boundary..])?)
                 {
@@ -148,7 +196,10 @@ impl Compiler<'_> {
                 }
                 if let Some(slot) = slot_return {
                     out.extend_from_slice(&[0xff, slot.ending()]);
-                    return Ok(true);
+                    if closed(out)? {
+                        return Ok(true);
+                    }
+                    continue; // Keep the closing markers of a raw native branch.
                 }
                 return Ok(false);
             }
@@ -158,16 +209,14 @@ impl Compiler<'_> {
             } = &statement.kind
                 && self.functions.iter().any(|function| function.name == *name)
             {
-                if self.encode_call(statement, name, args, scope, out)? {
+                if self.encode_call(statement, name, args, out)? {
                     return Ok(true);
                 }
                 continue;
             }
-            // Only lexical returns belong to this function. A helper's return
-            // must not consume its caller's continuation. Native slot returns
-            // already have a real FF instruction and need no restructuring.
-            let move_continuation =
-                contains_exit(statement) && !(self.native_scope.is_some() && self.stack.len() == 1);
+            // Entry returns need lexical restructuring; subscript returns emit
+            // their own FF instruction and leave the caller untouched.
+            let move_continuation = self.native_scope.is_none() && contains_exit(statement);
             let continuation: Vec<_> = if move_continuation {
                 body.clone().collect()
             } else {
@@ -175,7 +224,7 @@ impl Compiler<'_> {
             };
             self.encode_statement(statement, &continuation, scope, out)?;
             if out.len() > super::super::decompile::MAX_SCRIPT_BYTES {
-                return Err(statement.error("expanded function exceeds 64 KiB"));
+                return Err(statement.error("generated script exceeds 64 KiB"));
             }
             if move_continuation {
                 return Ok(false);
@@ -196,46 +245,29 @@ impl Compiler<'_> {
         Ok(false)
     }
 
-    /// Emit one call to a declared function. Returns whether the call ends the
-    /// caller's own control flow: a same-level @slot call is a tail jump, and
-    /// an inlined body can transfer with `reset`/`transition`.
+    /// Emit one native call. Same-level 81/82 calls terminate this path;
+    /// table 9 inherits the runtime stage, so no such assumption is made there.
     fn encode_call(
         &mut self,
         statement: &Statement,
         name: &str,
         args: &[u8],
-        scope: Scope,
         out: &mut Vec<u8>,
     ) -> Result<bool> {
         if name == "main" {
             return Err(statement.error("main is an entry point, not a callable helper"));
         }
         self.require_args(statement, args, 0, name)?;
-        let native_functions = self.native_functions;
-        if let Some(slot) = native_functions.get(name) {
-            let call = slot.call();
-            out.extend_from_slice(&call);
-            return Ok(self
-                .native_scope
-                .is_some_and(|current| current.is_same_level_call(&call))
-                && closed(out)?);
+        let slot = self.allocation.slots[name];
+        if self.allocation.automatic.contains(&slot) {
+            self.relocations.push((out.len(), slot));
         }
-        let functions = self.functions;
-        let function = functions
-            .iter()
-            .find(|function| function.name == name)
-            .expect("the caller resolved the name before dispatching");
-        if self.stack.iter().any(|entry| entry == name) || self.stack.len() >= 64 {
-            return Err(statement.error(format!(
-                "recursive or excessively deep function call: {name}"
-            )));
-        }
-        self.stack.push(name.to_owned());
-        let transferred = self
-            .encode_body(&function.body, scope, out)
-            .map_err(|error| Error::new(format!("{}: {error}", function.name)))?;
-        self.stack.pop();
-        Ok(transferred)
+        let call = slot.call();
+        out.extend_from_slice(&call);
+        Ok(self
+            .native_scope
+            .is_some_and(|current| current.is_same_level_call(&call))
+            && closed(out)?)
     }
 
     fn encode_statement(
@@ -267,14 +299,10 @@ impl Compiler<'_> {
                 let previous_blocked = self.raw_return_blocked;
                 self.raw_boundary = out.len();
                 self.raw_return_blocked = false;
-                let result = self.encode_call(statement, handler, &[], scope, out);
+                let result = self.encode_call(statement, handler, &[], out);
                 self.raw_boundary = previous_boundary;
                 self.raw_return_blocked = previous_blocked;
-                if result? {
-                    return Err(statement.error(format!(
-                        "handler '{handler}' must return to the request protocol; a same-level @slot call transfers control instead"
-                    )));
-                }
+                result?;
                 out.extend_from_slice(&[0x2b, 0, 4, 1]);
                 self.encode_branch(statement, "then", then_body, &[], scope, out)?;
                 out.extend_from_slice(&[0x2b, 2, 0x1b, 2]);
@@ -710,7 +738,7 @@ fn validate_handlers(document: &Document) -> Result<()> {
 }
 
 /// Every named call inside a body, including nested branches.
-fn called_functions(body: &[Statement]) -> Vec<&str> {
+pub(super) fn called_functions(body: &[Statement]) -> Vec<&str> {
     let mut names = Vec::new();
     for statement in body {
         match &statement.kind {
@@ -719,7 +747,8 @@ fn called_functions(body: &[Statement]) -> Vec<&str> {
                 ..
             } => names.push(name.as_str()),
             StatementKind::EntryBody(body) => names.extend(called_functions(body)),
-            StatementKind::Handle { then_body, .. } => {
+            StatementKind::Handle { handler, then_body } => {
+                names.push(handler.as_str());
                 names.extend(called_functions(then_body));
             }
             StatementKind::If {
@@ -825,7 +854,7 @@ fn check_decodes(bytes: &[u8], line: usize, column: usize, what: &str) -> Result
 }
 
 /// Endings verified in 108675A0 and the corresponding native event scripts.
-/// Functions are expanded at the call site, so a normal return emits no bytes.
+/// Entry returns end their lane; subscript returns use their native slot.
 fn finish(bytes: &mut Vec<u8>, ending: u8, slot: Option<NativeSlot>) -> Result<()> {
     let mut structure = bytecode::ScriptStructure::default();
     let mut terminal = false;
@@ -926,30 +955,18 @@ impl Document {
                 ));
             }
         }
+        let allocation = Allocation::new(self)?;
         let mut compiler = Compiler {
             auto_finish: self.auto_finish,
             names: Names::collect(self),
             warnings: Vec::new(),
             functions: &self.functions,
-            stack: Vec::new(),
-            native_functions: &self.native_functions,
+            allocation: &allocation,
+            relocations: Vec::new(),
             native_scope: None,
             raw_boundary: 0,
             raw_return_blocked: false,
         };
-        // Check even unused helpers, so a broken imported file cannot be hidden
-        // by the current entry bindings. Context-specific checks still happen
-        // again while compiling each entry.
-        for function in &self.functions {
-            compiler.native_scope = self.native_functions.get(&function.name).copied();
-            compiler.stack.push(function.name.clone());
-            compiler
-                .encode_body(&function.body, Scope::States, &mut Vec::new())
-                .map_err(|error| Error::new(format!("{}: {error}", function.name)))?;
-            compiler.stack.pop();
-        }
-        compiler.warnings.clear();
-        compiler.native_scope = None;
         let states = self.encode_states(&mut compiler)?;
         let events = self.encode_events(&mut compiler)?;
         let mut program = match self.base {
@@ -957,6 +974,7 @@ impl Document {
             Base::Native => assemble_native(self, states, events)?,
         };
         self.encode_native_functions(&mut compiler, &mut program)?;
+        program.automatic_slots = allocation.automatic.iter().copied().collect();
         program.validate_lossless()?;
         Ok(Compiled {
             program,
@@ -969,23 +987,24 @@ impl Document {
         compiler: &mut Compiler<'_>,
         program: &mut Program,
     ) -> Result<()> {
-        let mut bindings: Vec<_> = self.native_functions.iter().collect();
-        bindings.sort_by_key(|(_, slot)| **slot);
-        for (name, slot) in bindings {
-            let function = self
-                .functions
-                .iter()
-                .find(|f| &f.name == name)
-                .ok_or_else(|| Error::new(format!("@slot function '{name}' is not declared")))?;
-            compiler.native_scope = Some(*slot);
-            compiler.stack.push(name.clone());
-            let mut bytes = Vec::new();
-            compiler.encode_body(&function.body, Scope::States, &mut bytes)?;
-            compiler.stack.pop();
-            finish(&mut bytes, slot.ending(), Some(*slot))?;
-
-            let script = program.nodes.len();
-            program.nodes.push(Node::Script(bytes));
+        let event_functions = event_functions(self);
+        let mut functions: Vec<_> = self
+            .functions
+            .iter()
+            .filter(|function| function.name != "main")
+            .collect();
+        functions.sort_by_key(|function| compiler.allocation.slots[&function.name]);
+        for function in functions {
+            let slot = compiler.allocation.slots[&function.name];
+            let scope = if event_functions.contains(function.name.as_str()) {
+                Scope::Events
+            } else {
+                Scope::States
+            };
+            let encoded = compiler
+                .encode_script(&function.body, scope, Some(slot), Some(slot.ending()))
+                .map_err(|error| Error::new(format!("{}: {error}", function.name)))?;
+            let script = push_script(&mut program.nodes, &mut program.relocations, encoded);
             let table = ensure_root_table(program, slot.table);
             let Node::Table(table) = &mut program.nodes[table] else {
                 unreachable!()
@@ -995,53 +1014,54 @@ impl Document {
         Ok(())
     }
 
-    fn encode_states(&self, compiler: &mut Compiler<'_>) -> Result<Vec<(u8, Option<Vec<u8>>)>> {
+    fn encode_states(
+        &self,
+        compiler: &mut Compiler<'_>,
+    ) -> Result<Vec<(u8, Option<EncodedScript>)>> {
         let mut encoded = Vec::with_capacity(self.states.len());
         if let Some(main) = self.functions.iter().find(|f| f.name == "main") {
-            let mut bytes = Vec::new();
-            compiler.stack.push(main.name.clone());
-            compiler.encode_body(&main.body, Scope::States, &mut bytes)?;
-            compiler.stack.pop();
-            finish(&mut bytes, 0x00, None)?;
-            check_decodes(&bytes, main.line, main.column, "main")?;
-            encoded.push((0, Some(bytes)));
+            let script = compiler.encode_script(&main.body, Scope::States, None, Some(0))?;
+            check_decodes(&script.bytes, main.line, main.column, "main")?;
+            encoded.push((0, Some(script)));
         }
         for decl in &self.states {
             let Some(body) = &decl.body else {
                 encoded.push((decl.index, None));
                 continue;
             };
-            let mut bytes = Vec::new();
-            compiler.encode_body(body, Scope::States, &mut bytes)?;
-            if self.auto_finish {
-                finish(&mut bytes, 0x00, None)?;
-            }
+            let script =
+                compiler.encode_script(body, Scope::States, None, self.auto_finish.then_some(0))?;
             check_decodes(
-                &bytes,
+                &script.bytes,
                 decl.line,
                 decl.column,
                 &format!("state '{}'", decl.name),
             )?;
-            encoded.push((decl.index, Some(bytes)));
+            encoded.push((decl.index, Some(script)));
         }
         Ok(encoded)
     }
 
-    fn encode_events(&self, compiler: &mut Compiler<'_>) -> Result<Vec<(u8, Option<Vec<u8>>)>> {
+    fn encode_events(
+        &self,
+        compiler: &mut Compiler<'_>,
+    ) -> Result<Vec<(u8, Option<EncodedScript>)>> {
         let mut encoded = Vec::with_capacity(self.events.len());
         for decl in &self.events {
             let Some(body) = &decl.body else {
                 encoded.push((decl.slot, None));
                 continue;
             };
-            let mut bytes = Vec::new();
-            compiler.encode_body(body, Scope::Events, &mut bytes)?;
-            if self.auto_finish {
-                finish(&mut bytes, EVENT_SLOTS[usize::from(decl.slot)].ending, None)?;
-            }
-            let what = format!("event '{}'", EVENT_SLOTS[usize::from(decl.slot)].name);
-            check_decodes(&bytes, decl.line, decl.column, &what)?;
-            encoded.push((decl.slot, Some(bytes)));
+            let event = &EVENT_SLOTS[usize::from(decl.slot)];
+            let script = compiler.encode_script(
+                body,
+                Scope::Events,
+                None,
+                self.auto_finish.then_some(event.ending),
+            )?;
+            let what = format!("event '{}'", event.name);
+            check_decodes(&script.bytes, decl.line, decl.column, &what)?;
+            encoded.push((decl.slot, Some(script)));
         }
         Ok(encoded)
     }
@@ -1051,8 +1071,8 @@ impl Document {
 /// script per declared entry.  An index the document does not write is empty.
 fn assemble_empty(
     document: &Document,
-    states: Vec<(u8, Option<Vec<u8>>)>,
-    events: Vec<(u8, Option<Vec<u8>>)>,
+    states: Vec<(u8, Option<EncodedScript>)>,
+    events: Vec<(u8, Option<EncodedScript>)>,
 ) -> Result<Program> {
     if states.is_empty() {
         return Err(Error::new(
@@ -1062,15 +1082,15 @@ fn assemble_empty(
 
     let main_index = 1;
     let mut nodes = vec![Node::Table(Table::new()), Node::Table(Table::new())];
+    let mut relocations = Vec::new();
     let mut root = Table::new();
     root.insert(0, main_index);
     let mut main = Table::new();
 
-    for (index, body) in &states {
-        let Some(bytes) = body else { continue };
-        let node = nodes.len();
-        nodes.push(Node::Script(bytes.clone()));
-        main.insert(usize::from(*index), node);
+    for (index, body) in states {
+        let Some(script) = body else { continue };
+        let node = push_script(&mut nodes, &mut relocations, script);
+        main.insert(usize::from(index), node);
     }
     if main.get(0).is_none() {
         return Err(Error::new(
@@ -1078,13 +1098,12 @@ fn assemble_empty(
         ));
     }
 
-    for (slot, body) in &events {
-        let Some(bytes) = body else { continue };
-        let script = nodes.len();
-        nodes.push(Node::Script(bytes.clone()));
+    for (slot, body) in events {
+        let Some(encoded) = body else { continue };
+        let script = push_script(&mut nodes, &mut relocations, encoded);
         let cell = nodes.len();
         nodes.push(Node::Table(Table::from_entries([(0, Some(script))])));
-        root.insert(EVENT_SLOTS[usize::from(*slot)].root_index, cell);
+        root.insert(EVENT_SLOTS[usize::from(slot)].root_index, cell);
     }
 
     nodes[main_index] = Node::Table(main);
@@ -1094,6 +1113,8 @@ fn assemble_empty(
         base: Base::Empty,
         root: 0,
         nodes,
+        automatic_slots: Vec::new(),
+        relocations,
     })
 }
 
@@ -1107,22 +1128,22 @@ fn assemble_empty(
 /// whole descriptor.
 fn assemble_native(
     document: &Document,
-    states: Vec<(u8, Option<Vec<u8>>)>,
-    events: Vec<(u8, Option<Vec<u8>>)>,
+    states: Vec<(u8, Option<EncodedScript>)>,
+    events: Vec<(u8, Option<EncodedScript>)>,
 ) -> Result<Program> {
     let mut nodes = vec![Node::Table(Table::new())];
+    let mut relocations = Vec::new();
     let mut root = Table::new();
 
     if !states.is_empty() {
         let main_index = nodes.len();
         nodes.push(Node::Table(Table::new()));
         let mut main = Table::new();
-        for (index, body) in &states {
-            let index = usize::from(*index);
+        for (index, body) in states {
+            let index = usize::from(index);
             match body {
-                Some(bytes) => {
-                    let node = nodes.len();
-                    nodes.push(Node::Script(bytes.clone()));
+                Some(encoded) => {
+                    let node = push_script(&mut nodes, &mut relocations, encoded);
                     main.insert(index, node);
                 }
                 // A bare entry clears the slot it names.
@@ -1138,12 +1159,11 @@ fn assemble_native(
         root.insert(0, main_index);
     }
 
-    for (slot, body) in &events {
-        let root_index = EVENT_SLOTS[usize::from(*slot)].root_index;
+    for (slot, body) in events {
+        let root_index = EVENT_SLOTS[usize::from(slot)].root_index;
         match body {
-            Some(bytes) => {
-                let script = nodes.len();
-                nodes.push(Node::Script(bytes.clone()));
+            Some(encoded) => {
+                let script = push_script(&mut nodes, &mut relocations, encoded);
                 let cell = nodes.len();
                 nodes.push(Node::Table(Table::from_entries([(0, Some(script))])));
                 root.insert(root_index, cell);
@@ -1159,5 +1179,7 @@ fn assemble_native(
         base: Base::Native,
         root: 0,
         nodes,
+        automatic_slots: Vec::new(),
+        relocations,
     })
 }

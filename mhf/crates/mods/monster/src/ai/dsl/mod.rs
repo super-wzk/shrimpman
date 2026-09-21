@@ -1,4 +1,4 @@
-//! Monster-AI source projects: parsing, scoped imports, function expansion,
+//! Monster-AI source projects: parsing, scoped imports, function allocation,
 //! native bytecode emission and pointer-free graph assembly.
 //!
 //! Project::load resolves map/common entry files and preserves editable sources.
@@ -6,6 +6,7 @@
 //! The binder publishes the graph only after all compilation and validation pass.
 //! See docs/dsl-spec.md for syntax, automatic endings and current limitations.
 
+mod allocation;
 mod compile;
 pub(crate) mod condition;
 mod lexer;

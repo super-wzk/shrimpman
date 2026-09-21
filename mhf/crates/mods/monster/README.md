@@ -83,9 +83,10 @@ AI Hook 与上限补丁共用生命周期：attach 先写补丁再装 Hook，Hoo
 `events { player_detected => reactions.handle; }`。辅助函数用 `combat.attack();` 调用。
 `restart;` 重入 main，主状态自然结束自动补 FF 00，事件自动补对应收尾。
 `import "#common/combat.mhai" as combat;` 只访问
-当前物种默认目录；普通路径相对于当前文件。普通函数在编译期展开；
-`@slot(table = 1, index = 3)` 可将函数绑定到原生子脚本表项。
-反编译跟随 `81/82` 并默认输出单文件，调用与返回保留原生固定层级语义，无需清单文件。
+当前物种默认目录；普通路径相对于当前文件。函数生成独立子脚本并自动分配槽位；
+`@slot(table = 1, index = 3)` 显式固定表项，table 9 对应 `16 / FF03`。
+安装时自动槽位避开原生非空项，并重定位生成的调用。
+反编译跟随 `81/82/16` 并默认输出单文件，调用与返回沿用原生游标语义，不提供通用调用栈。
 完整可编译示例位于 [examples/monster-ai](examples/monster-ai/)。
 
 ## 验证

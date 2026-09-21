@@ -258,8 +258,8 @@ impl Parser {
                 self.expect_keyword("table")?;
                 self.expect(&TokenKind::Equals, "'=' after table")?;
                 let (table, token) = self.take_number("table index")?;
-                if table != 1 && !(15..=270).contains(&table) {
-                    return Err(token.error("subscript table must be 1 or 15..=270"));
+                if !matches!(table, 1 | 9 | 15..=270) {
+                    return Err(token.error("subscript table must be 1, 9 or 15..=270"));
                 }
                 self.expect(&TokenKind::Comma, "','")?;
                 self.expect_keyword("index")?;
@@ -1088,29 +1088,6 @@ const KEYWORDS: &[&str] = &[
 /// [`parse`] calls this at the end of a successful read, and compilation calls
 /// it again so a hand-built [`Document`] cannot skip it.
 pub(super) fn check_document(document: &Document) -> Result<()> {
-    for body in document
-        .states
-        .iter()
-        .filter_map(|d| d.body.as_ref())
-        .chain(document.events.iter().filter_map(|d| d.body.as_ref()))
-    {
-        if let [
-            Statement {
-                kind:
-                    StatementKind::Call {
-                        callee: Callee::Name(name),
-                        ..
-                    },
-                ..
-            },
-        ] = body.as_slice()
-            && document.native_functions.contains_key(name)
-        {
-            return Err(Error::new(
-                "@slot function cannot also be a state/event entry; use a wrapper function",
-            ));
-        }
-    }
     if document.module && document.functions.iter().any(|f| f.name == "main") {
         return Err(Error::new("main can only be declared in the project entry"));
     }
