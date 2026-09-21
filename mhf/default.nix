@@ -177,6 +177,16 @@ in
       ];
     };
     development.commands = {
+      mhf-ai-decompile-build = mkDefault (
+        command "mhf-ai-decompile-build" ''
+          exec cargo build -p mhf-ai-decompile --release \
+            --target i686-pc-windows-msvc --locked "$@"
+        ''
+      );
+      mhf-ai-decompile = mkDefault (windowsCommand {
+        name = "mhf-ai-decompile";
+        buildCommand = config.development.commands.mhf-ai-decompile-build;
+      });
       mhf-mods-build = mkDefault (
         command "mhf-mods-build" ''
           exec cargo build -p mhf-mod-manager --bin mhf-mods --release \

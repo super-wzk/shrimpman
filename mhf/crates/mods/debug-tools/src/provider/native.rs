@@ -284,14 +284,26 @@ unsafe fn restart(state: &State, runtime: &mut Runtime) -> Result<(), String> {
 unsafe fn catalog(state: &State) -> Catalog {
     let mut catalog = Catalog::default();
     unsafe {
-        catalog.monsters = super::monsters::NAMES
-            .iter()
-            .enumerate()
-            .skip(1)
-            .filter(|(id, _)| state.read::<u32>(0x118c3628 + id * 4) != 0)
-            .map(|(id, name)| super::Monster {
+        // The loaded EMD has already had its root/header offsets relocated.
+        // Resource slots are candidates, not proof of native spawn support.
+        let emd_base = state.read::<usize>(0x1e77dce0);
+        let header = if emd_base == 0 {
+            0
+        } else {
+            state.read::<usize>(emd_base)
+        };
+        let species_count = if header == 0 {
+            0
+        } else {
+            state.read::<u8>(header + 4)
+        };
+        // ZZ HD's fixed dispatcher has 177 entries. Never index beyond it even
+        // if a replacement EMD advertises more slots; this is not a name limit.
+        catalog.monsters = (1..usize::from(species_count).min(177))
+            .filter(|id| state.read::<u32>(0x118c3628 + id * 4) != 0)
+            .map(|id| super::Monster {
                 id: id as u8,
-                name,
+                name: super::monsters::NAMES[id],
                 variants: super::monsters::variants(id as u8),
                 actions: Arc::new(super::monsters::actions(id as u8)),
             })
@@ -330,7 +342,8 @@ unsafe fn catalog(state: &State) -> Catalog {
 }
 
 unsafe fn initialize_catalog(state: &State, runtime: &mut Runtime) {
-    if !runtime.catalog_ready {
+    // Do not permanently cache an empty species list before EMD is loaded.
+    if !runtime.catalog_ready && unsafe { state.read::<usize>(0x1e77dce0) } != 0 {
         runtime.catalog = Arc::new(unsafe { catalog(state) });
         runtime.catalog_ready = true;
     }

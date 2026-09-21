@@ -1,0 +1,10 @@
+[package]
+name = "mhf-ai-decompile"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+mhf-monster = { path = "../../mods/monster" }
+sha2 = "0.11"

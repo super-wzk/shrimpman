@@ -35,6 +35,9 @@ const WNDPROC: usize = 0x114d_5720;
 const POLL: usize = 0x114d_6580;
 const RESET: usize = 0x114d_6e20;
 const WINDOW: usize = 0x1e81_1a38;
+// Created by 1000A160 during native initialization; Reset dereferences it
+// unconditionally in 114D3250 before releasing the device resources.
+const FONT_OBJECT: usize = 0x11b8_04a8;
 const CLOSE_ALLOWED: usize = (-999_i32) as usize;
 const DEVICE_LOST: i32 = 0x8876_0868_u32 as i32;
 const WINDOW_CONTROLS: u32 = WS_THICKFRAME.0 | WS_MAXIMIZEBOX.0 | WS_SYSMENU.0;
@@ -344,6 +347,11 @@ unsafe extern "C" fn poll() -> i32 {
     if ready == 0 {
         return 0;
     }
+    // The first polls precede font initialization. Let those frames run while
+    // preserving the queued resize for a later poll.
+    if unsafe { state.client.read::<usize>(FONT_OBJECT) } == 0 {
+        return ready;
+    }
     let pending = state.window.resize_pending.swap(false, Ordering::AcqRel);
     let failed = state.window.reset_failed.load(Ordering::Acquire);
     if !pending && !failed {
@@ -368,7 +376,11 @@ unsafe extern "C" fn reset(mode: i32) -> i32 {
             unsafe { transmute(BASE.load(Ordering::Relaxed) + RESET - 0x1000_0000) };
         return unsafe { original(mode) };
     };
-    if state.window.sizing.load(Ordering::Acquire) {
+    // Native polling can also request Reset (device loss or mode changes),
+    // so guarding only the workbench's explicit resize call is insufficient.
+    if unsafe { state.client.read::<usize>(FONT_OBJECT) } == 0
+        || state.window.sizing.load(Ordering::Acquire)
+    {
         state.window.resize_pending.store(true, Ordering::Release);
         return DEVICE_LOST;
     }

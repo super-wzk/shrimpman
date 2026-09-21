@@ -13,6 +13,7 @@ provider = [
 ]
 
 [dependencies]
+mhf-resource = { path = "../../shared/resource" }
 mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
 safer-ffi = { workspace = true, features = ["dyn-traits"] }
 

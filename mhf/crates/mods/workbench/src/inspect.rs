@@ -16,6 +16,7 @@ use crate::field::{
 mod archive_tests;
 mod dat;
 mod effect_bank;
+mod emd;
 mod inf;
 mod legacy_stage;
 mod mha;
@@ -55,6 +56,10 @@ pub enum Kind {
     Dat,
     DatTable(usize),
     DatRecord(usize),
+    Emd,
+    EmdSpecies,
+    EmdTable(usize, Option<usize>),
+    EmdRecord(mhf_resource::emd::RecordKind),
     Inf,
     InfCategory(usize),
     InfQuest,
@@ -130,6 +135,10 @@ impl Kind {
             Self::Dat => "DAT 游戏数据",
             Self::DatTable(_) => "DAT 数据表",
             Self::DatRecord(_) => "DAT 记录",
+            Self::Emd => "EMD 物种资源",
+            Self::EmdSpecies => "EMD 物种记录",
+            Self::EmdTable(..) => "EMD 数据表",
+            Self::EmdRecord(_) => "EMD 记录",
             Self::Inf => "INF 任务资料",
             Self::InfCategory(_) => "INF 任务分类",
             Self::InfQuest => "INF 任务记录前缀",
@@ -351,6 +360,11 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
         Kind::InfCategory(index) => builder.inf_category_records(node, index)?,
         Kind::InfQuest => builder.inf_quest_fields(node)?,
+        Kind::EmdSpecies => {
+            builder.emd_record_fields(node, mhf_resource::emd::RecordKind::Species)?
+        }
+        Kind::EmdTable(slot, index) => builder.emd_table_records(node, slot, index)?,
+        Kind::EmdRecord(kind) => builder.emd_record_fields(node, kind)?,
         Kind::SdtEntry(index) => builder.sdt_entry_tables(node, index)?,
         Kind::SdtAttackTable | Kind::SdtAuxiliaryTable | Kind::SdtExtraTable => {
             builder.sdt_table_records(node)?;
@@ -455,6 +469,7 @@ struct Hint {
     object_tables: bool,
     object_words: bool,
     sdt: bool,
+    emd: bool,
 }
 
 impl Hint {
@@ -475,6 +490,7 @@ impl Hint {
             fskl: extension == "fskl",
             motion: extension == "mot",
             sdt: file.file_name().and_then(|name| name.to_str()) == Some("mhfsdt.bin"),
+            emd: file.file_name().and_then(|name| name.to_str()) == Some("mhfemd.bin"),
             ..Self::default()
         }
     }
@@ -934,6 +950,12 @@ impl Builder {
         if bytes.starts_with(mhf_resource::inf::MAGIC) {
             self.document.nodes[node].kind = Kind::Inf;
             self.inspect_inf(node, bytes, base);
+            return;
+        }
+        // EMD has no verified magic; only parse it in its named file context.
+        if hint.emd {
+            self.document.nodes[node].kind = Kind::Emd;
+            self.inspect_emd(node, bytes, base);
             return;
         }
         // SDT has no magic. The filename supplies a trusted parsing context;

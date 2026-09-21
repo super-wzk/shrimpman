@@ -13,6 +13,7 @@ pub mod dds;
 mod decoded;
 pub mod effect;
 pub mod effect_archive;
+pub mod emd;
 pub mod event_camera;
 pub mod fmod;
 pub mod fskl;
@@ -22,6 +23,7 @@ pub mod material;
 pub mod motion;
 pub mod png;
 pub mod sdt;
+pub mod species;
 pub mod stage;
 pub mod txb;
 
