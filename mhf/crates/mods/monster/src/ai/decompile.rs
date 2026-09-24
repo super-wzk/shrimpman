@@ -11,7 +11,7 @@ use std::fmt::Write;
 use super::dsl::{
     condition::{ConditionMarker, Mode},
     slot::NativeSlot,
-    target::{Direction, TargetStrategy},
+    target::{Direction, EntityTarget},
 };
 use super::{Error, Result, bytecode, control::EVENT_SLOTS};
 
@@ -157,10 +157,7 @@ pub fn decompile(
         subs: &subs,
         handlers: &handlers,
         scope: None,
-    };
-    let event_context = BodyContext {
-        states: None,
-        ..state_context
+        return_ending: None,
     };
     // Entries already own a script. Named functions always make native calls,
     // so anonymous bodies preserve the entry bytes without an extra call layer.
@@ -182,6 +179,11 @@ pub fn decompile(
     for (&index, bytes) in &events {
         let event = &EVENT_SLOTS[index];
         writeln!(source, "    {} => {{", event.name).unwrap();
+        let event_context = BodyContext {
+            states: None,
+            return_ending: Some(event.ending),
+            ..state_context
+        };
         append_indented_body(
             &mut source,
             without_automatic_tail(bytes, event.ending)?,
@@ -219,6 +221,7 @@ pub fn decompile(
                 subs: &subs,
                 handlers: &handlers,
                 scope: Some(*slot),
+                return_ending: Some(slot.ending()),
             },
         )?;
         source.push_str("}\n");
@@ -375,6 +378,7 @@ fn format_test_body(
             subs: &BTreeMap::new(),
             handlers: &BTreeSet::new(),
             scope: None,
+            return_ending: None,
         },
     )
 }
@@ -563,21 +567,25 @@ fn distance_branches(instructions: &[bytecode::Instruction]) -> Option<(usize, B
 struct RecoveredByteMatch {
     instruction_count: usize,
     selector: String,
-    branches: BranchBodies,
+    branches: Vec<(u16, Vec<u8>)>,
     fallback: Option<Vec<u8>>,
 }
 
-/// Only recover complete byte-valued matches that re-encode losslessly.
+/// Only recover complete numeric matches that re-encode losslessly.
 fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<RecoveredByteMatch> {
     let (opcode, count, selector) = match instructions.first()?.bytes.as_slice() {
+        [0x15, 0, count] => (0x15, count, "self.area".to_owned()),
         [0x2c, 0, count] => (0x2c, count, "self.species_group".to_owned()),
+        [0x94, 0, count] => (0x94, count, "context.debug_mode".to_owned()),
+        [0x70, 0, count] => (0x70, count, "self.species".to_owned()),
         [0x57, 0, count] => (0x57, count, "self.area_route_profile".to_owned()),
         [0x79, 0, count, argument] => (0x79, count, format!("context.query({argument})")),
         _ => return None,
     };
     let case_value = |bytes: &[u8]| match bytes {
-        [op @ (0x2c | 0x79), 1, value] if *op == opcode => Some(*value),
-        [0x57, 1, 0, value] if opcode == 0x57 => Some(*value),
+        [op @ (0x2c | 0x70 | 0x79 | 0x94), 1, value] if *op == opcode => Some(u16::from(*value)),
+        [0x57, 1, 0, value] if opcode == 0x57 => Some(u16::from(*value)),
+        [0x15, 1, high, low] if opcode == 0x15 => Some(u16::from_be_bytes([*high, *low])),
         _ => None,
     };
     let first = case_value(&instructions.get(1)?.bytes)?;
@@ -592,7 +600,11 @@ fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<Recovere
             match instruction.bytes.as_slice() {
                 bytes if case_value(bytes).is_some() => {
                     let value = case_value(bytes)?;
-                    if fallback.is_some() || (opcode != 0x2c && value <= branches.last()?.0) {
+                    // Area and species-group matches keep source order; every
+                    // other selector re-encodes only when its cases ascend.
+                    if fallback.is_some()
+                        || (!matches!(opcode, 0x15 | 0x2c) && value <= branches.last()?.0)
+                    {
                         return None;
                     }
                     branches.push((value, Vec::new()));
@@ -609,7 +621,8 @@ fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<Recovere
                     if branches.len() != usize::from(*count) {
                         return None;
                     }
-                    if opcode != 0x2c && fallback.is_none() {
+                    // Route-profile and callback matches always carry an else.
+                    if matches!(opcode, 0x57 | 0x79) && fallback.is_none() {
                         return None;
                     }
                     return Some(RecoveredByteMatch {
@@ -777,6 +790,8 @@ struct BodyContext<'a> {
     /// handler contract and may render `pass;` and their own return.
     handlers: &'a BTreeSet<NativeSlot>,
     scope: Option<NativeSlot>,
+    /// Native return shared by all nested bodies in this function or event.
+    return_ending: Option<u8>,
 }
 
 impl BodyContext<'_> {
@@ -787,10 +802,10 @@ impl BodyContext<'_> {
 
 /// Whether `bytes` is the enclosing slot's own return instruction.
 fn is_own_return(bytes: &[u8], context: &BodyContext) -> bool {
-    matches!(
-        (bytes, context.scope),
-        ([0xff, ending], Some(slot)) if *ending == slot.ending()
-    )
+    let [0xff, ending] = bytes else {
+        return false;
+    };
+    context.return_ending == Some(*ending)
 }
 
 /// Return the `handle` target when it is a subscript that no ordinary call site
@@ -852,6 +867,7 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
     let structured = can_structure_body(&instructions, context.handlers);
     let mut indent = 1;
     let mut skip_until = 0;
+    // Validate native markers even when a block cannot be recovered structurally.
     let mut raw_blocks = bytecode::ScriptStructure::default();
     for (index, instruction) in instructions.iter().enumerate() {
         if index < skip_until {
@@ -968,8 +984,6 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             }
             continue;
         }
-        // Structured branches own their closing markers. Raw blocks do not:
-        // raising an early exit to `return` would discard their remaining bytes.
         // A handler's `pass;` clears the takeover byte and then leaves the
         // function, so it is either the last statement or followed by the return.
         if context.is_handler() && *b == [0x0d, 0x04] {
@@ -990,24 +1004,29 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             {
                 format!("{}();", sub_name(slot))
             }
-            bytes if is_own_return(bytes, context) && structured && raw_blocks.is_closed() => {
-                "return;".into()
-            }
+            bytes if is_own_return(bytes, context) => "return;".into(),
             [0x11] => "self.bind_awareness_target();".into(),
             [0x13] => "self.bind_current_target();".into(),
             [0x40, value] if let Some(mode) = Mode::from_native(*value) => {
                 format!("self.set_mode({});", mode.name())
             }
-            [0x4d] => "self.update_target_position();".into(),
+            [0x4d] => "self.resolve_target();".into(),
+            [0x18] => "self.try_change_area();".into(),
             [0x7b] | [0x84] => "self.increment_random_value();".into(),
-            [opcode] if let Some(strategy) = TargetStrategy::from_opcode(*opcode) => {
+            bytes if let Some(strategy) = EntityTarget::decode(bytes) => {
                 format!(
-                    "self.select_target_entity(TargetStrategy::{});",
+                    "self.select_target_entity(EntityTarget::{});",
                     strategy.name()
                 )
             }
-            [0x05, group, id, arg] => format!("action[{group}:{id}]({arg});"),
+            [0x05, group, id, arg] => format!("self.action({group}:{id}, {arg});"),
+            [0x06, 3, 0, hi, lo] => format!(
+                "self.select_target_area({});",
+                u16::from_be_bytes([*hi, *lo])
+            ),
+            [0x06, 10, 0, 0] => "self.select_target_area(AreaTarget::TargetPlayer);".into(),
             [0x06, 1, 0, slot] => format!("self.select_target_entity({slot});"),
+            [0x06, 2, 0, 0] => "self.select_target_point(PointTarget::Default);".into(),
             [0x06, 2, 1, index] => format!("self.select_target_point({index});"),
             [0x06, 6, value, 0] if let Some(direction) = Direction::from_native(*value) => {
                 format!("self.select_target_point(Direction::{});", direction.name())
@@ -1022,8 +1041,8 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             }
             [0x04] if context.states.is_some() => "restart;".into(),
             [0x68] => "stop();".into(),
-            [0xff, 0x00] => "reset;".into(),
-            [0xff, 0xf7] => "reset forget_target;".into(),
+            [0xff, 0x00] => "end;".into(),
+            [0xff, 0xf7] => "end forget_target;".into(),
             [0x1e] => "clear_requests();".into(),
             [0x92] => "nop();".into(),
             [0x48, ticks] => format!("wait({ticks});"),
@@ -1159,7 +1178,9 @@ mod tests {
         // decompile also recompiles and checks the entire recovered state bytes.
         let result = decompile(&image, 0x100, 1, 3, None).unwrap();
         assert!(result.source.contains("state_3 = 3 => {"));
-        assert!(result.source.contains("native(0x94, 0x01, 0x00);"));
+        assert!(result.source.contains("match context.debug_mode"));
+        assert!(result.source.contains("0 =>"));
+        assert!(!result.source.contains("native(0x94"));
         assert!(
             !result
                 .warnings
@@ -1199,19 +1220,20 @@ mod tests {
             assert_eq!(script(&image, 0x300).unwrap(), bytes);
             let result = decompile(&image, 0x100, 1, 0, None).unwrap();
             assert!(result.warnings.is_empty());
-            if opcode == 0x2c {
-                assert!(result.source.contains("match self.species_group"));
-            } else if opcode == 0x57 {
-                assert!(result.source.contains("match self.area_route_profile"));
-            } else if opcode == 0x79 {
-                assert!(result.source.contains("match context.query(3)"));
-            } else {
-                assert!(
-                    result
-                        .source
-                        .contains(&format!("native(0x{opcode:02x}, 0x00, 0x01"))
-                );
-            }
+            let rendered = match opcode {
+                0x15 => "match self.area".to_owned(),
+                0x2c => "match self.species_group".to_owned(),
+                0x70 => "match self.species".to_owned(),
+                0x94 => "match context.debug_mode".to_owned(),
+                0x57 => "match self.area_route_profile".to_owned(),
+                0x79 => "match context.query(3)".to_owned(),
+                other => format!("native(0x{other:02x}, 0x00, 0x01"),
+            };
+            assert!(
+                result.source.contains(&rendered),
+                "{rendered}: {}",
+                result.source
+            );
         }
     }
 
@@ -1224,16 +1246,18 @@ mod tests {
         image.put(0x300, &[0x52, 0x53, 0x5f, 0x7e, 0x12, 0x58, 0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         for name in [
-            "AllowedAreas",
             "SameArea",
-            "GroundFiltered",
-            "PlayerOrMonster",
-            "TrackedBySlot",
+            "SameAreaGroundGroup",
+            "SameOrAllowedArea",
+            "TrackedPlayer",
             "LeaderTarget",
+            "PlayerOrMonster",
         ] {
-            assert!(result.source.contains(&format!(
-                "self.select_target_entity(TargetStrategy::{name});"
-            )));
+            assert!(
+                result
+                    .source
+                    .contains(&format!("self.select_target_entity(EntityTarget::{name});"))
+            );
         }
         assert!(!result.source.contains("native("));
     }
@@ -1275,13 +1299,14 @@ mod tests {
         image.pointer(0x200, 0x300);
         image.put(
             0x300,
-            &[0x40, 0, 0x40, 1, 0x4d, 0x84, 0x7b, 0x40, 2, 0xff, 0],
+            &[0x40, 0, 0x40, 1, 0x4d, 0x18, 0x84, 0x7b, 0x40, 2, 0xff, 0],
         );
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         for method in [
             "self.set_mode(Mode::Normal);",
             "self.set_mode(Mode::Attack);",
-            "self.update_target_position();",
+            "self.resolve_target();",
+            "self.try_change_area();",
             "self.increment_random_value();",
             "native(0x40, 0x02);",
         ] {
@@ -1318,7 +1343,7 @@ mod tests {
             result.source
         );
         assert!(result.source.contains("32 => nop();"));
-        assert!(result.source.contains("reset forget_target;"));
+        assert!(result.source.contains("end forget_target;"));
         image.put(0x300, &[0x80, 0, 1, 0x80, 1, 31, 0x92, 0x80, 0xff, 0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(!result.source.contains("random {"));
@@ -1374,6 +1399,61 @@ mod tests {
     }
 
     #[test]
+    fn area_and_monster_targets_round_trip() {
+        let mut image = Image::default();
+        image.put(0x100, &[0; 60]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x200, 0x300);
+        let mut bytes = vec![6, 3, 0, 1, 70, 6, 3, 0, 255, 255, 6, 10, 0, 0];
+        for subtype in 0..4 {
+            bytes.extend_from_slice(&[6, 13, subtype, 0]);
+        }
+        // Opaque operands and unsupported subtypes must retain their exact bytes.
+        bytes.extend_from_slice(&[
+            6, 3, 1, 0, 1, 6, 10, 1, 0, 6, 10, 0, 1, 6, 13, 2, 1, 6, 13, 4, 0, 0xff, 0,
+        ]);
+        image.put(0x300, &bytes);
+        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        assert!(result.warnings.is_empty());
+        for text in [
+            "self.select_target_area(326);",
+            "self.select_target_area(65535);",
+            "self.select_target_area(AreaTarget::TargetPlayer);",
+            "EntityTarget::CurrentOrLargeMonster",
+            "EntityTarget::LargeMonster",
+            "EntityTarget::OtherMonster",
+            "EntityTarget::OtherLargeMonster",
+            "native(0x06, 0x03, 0x01, 0x00, 0x01);",
+            "native(0x06, 0x0a, 0x01, 0x00);",
+            "native(0x06, 0x0a, 0x00, 0x01);",
+            "native(0x06, 0x0d, 0x02, 0x01);",
+            "native(0x06, 0x0d, 0x04, 0x00);",
+        ] {
+            assert!(result.source.contains(text), "{text}: {}", result.source);
+        }
+        assert!(
+            dsl::parse(
+                "mhf_ai 1; species 6; base native; fn main() { self.select_target_area(0); }"
+            )
+            .is_ok()
+        );
+        for expression in [
+            "self.select_target_area(65536);",
+            "self.select_target_area(-1);",
+            "self.select_target_area(AreaTarget::Unknown);",
+            "self.select_target_area();",
+            "self.select_target_entity(EntityTarget::EligibleOtherMonster);",
+        ] {
+            assert!(
+                dsl::parse(&format!(
+                    "mhf_ai 1; species 6; base native; fn main() {{ {expression} }}"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn waypoint_selection_round_trips_without_reinterpreting_other_target_types() {
         let mut image = Image::default();
         image.put(0x100, &[0; 60]);
@@ -1412,7 +1492,7 @@ mod tests {
         }
         assert_eq!(result.source.matches("select_target_entity(").count(), 256);
         assert!(result.source.contains("native(0x06, 0x01, 0x01, 0x03);"));
-        assert!(result.source.contains("self.update_target_position();"));
+        assert!(result.source.contains("self.resolve_target();"));
     }
 
     #[test]
@@ -1452,7 +1532,7 @@ mod tests {
         assert_eq!(result.source.matches("select_target_point(").count(), 8);
         assert!(result.source.contains("native(0x06, 0x06, 0x04, 0x00);"));
         assert!(result.source.contains("native(0x06, 0x06, 0x00, 0x01);"));
-        assert!(result.source.contains("self.update_target_position();"));
+        assert!(result.source.contains("self.resolve_target();"));
     }
 
     #[test]
@@ -1517,7 +1597,7 @@ mod tests {
         image.pointer(0x200, 0x300);
         image.put(0x300, &[0xff, 0xf7]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert!(result.source.contains("reset forget_target;"));
+        assert!(result.source.contains("end forget_target;"));
         assert!(!result.source.contains("native(0xff, 0xf7)"));
     }
 
@@ -1639,6 +1719,276 @@ mod tests {
         assert!(!result.source.contains("native(0x54"));
     }
 
+    /// Render `bytes` as a script body, recompile the rendered source, and check
+    /// that the round trip reproduces those bytes plus the entry return.
+    fn round_trip_body(bytes: &[u8]) -> String {
+        let mut source = String::new();
+        format_test_body(&mut source, bytes, None).unwrap();
+        let compiled = dsl::parse(&format!("mhf_ai 1; species 6; fn main() {{ {source} }}"))
+            .unwrap()
+            .compile()
+            .unwrap();
+        let mut expected = bytes.to_vec();
+        expected.extend_from_slice(&[0xff, 0]);
+        assert!(
+            compiled
+                .program
+                .nodes
+                .iter()
+                .any(|node| matches!(node, Node::Script(actual) if *actual == expected)),
+            "{source}"
+        );
+        source
+    }
+
+    #[test]
+    fn carrying_conditions_round_trip() {
+        for (bytes, structured) in [
+            (vec![0x2f, 0, 0x07, 4, 0x2f, 1, 0x07, 9, 0x2f, 2], true),
+            (vec![0x2f, 0, 0x2f, 0, 0x92, 0x2f, 2, 0x2f, 2], true),
+            (vec![0x2f, 0, 0x2f, 1, 0x2f, 1, 0x2f, 2], false),
+        ] {
+            let source = round_trip_body(&bytes);
+            assert_eq!(
+                source.contains("if context.any_player_carrying {"),
+                structured,
+                "{source}"
+            );
+        }
+        for condition in [
+            "self.any_player_carrying",
+            "context.active",
+            "context.any_player_carrying()",
+        ] {
+            assert!(
+                dsl::parse(&format!(
+                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ nop(); }} }}"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn area_matches_round_trip() {
+        for (bytes, structured) in [
+            (
+                vec![0x15, 0, 2, 0x15, 1, 1, 70, 0x92, 0x15, 1, 0, 1, 0x15, 3],
+                true,
+            ),
+            (
+                vec![
+                    0x15, 0, 2, 0x15, 1, 255, 255, 0x15, 1, 255, 255, 0x15, 2, 0x92, 0x15, 3,
+                ],
+                true,
+            ),
+            (
+                vec![
+                    0x15, 0, 1, 0x15, 1, 0, 1, 0x15, 0, 1, 0x15, 1, 1, 70, 0xff, 0, 0x15, 3, 0x15,
+                    3,
+                ],
+                true,
+            ),
+            (vec![0x15, 0, 2, 0x15, 1, 0, 1, 0x15, 3], false),
+            (
+                vec![0x15, 0, 1, 0x15, 1, 0, 1, 0x15, 2, 0x15, 2, 0x15, 3],
+                false,
+            ),
+        ] {
+            let source = round_trip_body(&bytes);
+            assert_eq!(source.contains("match self.area {"), structured, "{source}");
+        }
+        for body in [
+            "match self.area {}",
+            "match self.area { 65536 => {} }",
+            "match context.area { 1 => {} }",
+            "match self.area { else => {} }",
+        ] {
+            assert!(dsl::parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err());
+        }
+    }
+
+    #[test]
+    fn has_player_in_area_conditions_round_trip() {
+        for (bytes, structured) in [
+            (vec![0x28, 0, 0x92, 0x28, 2], true),
+            (vec![0x28, 0, 0x07, 4, 0x28, 1, 0x07, 9, 0x28, 2], true),
+            (vec![0x28, 0, 0x39, 0, 0x92, 0x39, 2, 0x28, 2], true),
+            (vec![0x28, 0, 0x28, 1, 0x28, 1, 0x28, 2], false),
+        ] {
+            let source = round_trip_body(&bytes);
+            assert_eq!(
+                source.contains("if self.has_player_in_area {"),
+                structured,
+                "{source}"
+            );
+            if structured {
+                assert!(!source.contains("native(0x28"), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn daytime_conditions_round_trip() {
+        for (bytes, structured) in [
+            (vec![0x77, 0, 0x92, 0x77, 2], true),
+            (vec![0x77, 0, 0x07, 4, 0x77, 1, 0x07, 9, 0x77, 2], true),
+            (vec![0x77, 0, 0x77, 0, 0x92, 0x77, 2, 0x77, 2], true),
+            (vec![0x77, 0, 0x2f, 0, 0x92, 0x2f, 2, 0x77, 2], true),
+            (vec![0x77, 0, 0x77, 1, 0x77, 1, 0x77, 2], false),
+        ] {
+            let source = round_trip_body(&bytes);
+            assert_eq!(
+                source.contains("if context.is_daytime {"),
+                structured,
+                "{source}"
+            );
+            if structured {
+                assert!(!source.contains("native(0x77"), "{source}");
+            }
+        }
+        // Unknown selectors have no verified instruction boundary.
+        assert!(format_test_body(&mut String::new(), &[0x77, 3], None).is_err());
+        for condition in [
+            "self.is_daytime",
+            "context.is_daytime()",
+            "context.is_daytime(1)",
+        ] {
+            assert!(
+                dsl::parse(&format!(
+                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ nop(); }} }}"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn default_point_round_trip() {
+        let source = round_trip_body(&[0x06, 2, 0, 0]);
+        assert!(source.contains("self.select_target_point(PointTarget::Default);"));
+        let mut native = String::new();
+        format_test_body(&mut native, &[0x06, 2, 0, 1], None).unwrap();
+        assert!(native.contains("native("));
+    }
+
+    #[test]
+    fn in_action_conditions_round_trip() {
+        for (group, id) in [(0, 0), (2, 16), (255, 255)] {
+            let bytes = vec![0x34, 0, group, id, 0x92, 0x34, 1, 0x48, 1, 0x34, 2];
+            let source = round_trip_body(&bytes);
+            assert!(source.contains(&format!("self.in_action({group}:{id})")));
+        }
+        for condition in [
+            "self.in_action(256:0)",
+            "self.in_action(0:256)",
+            "self.in_action(1)",
+            "self.in_action()",
+            "self.in_action",
+            "context.in_action(1, 2)",
+        ] {
+            assert!(
+                dsl::parse(&format!(
+                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn near_target_conditions_round_trip() {
+        for value in 0..=255u8 {
+            let bytes = vec![0x22, 0, value, 0x92, 0x22, 1, 0x48, 1, 0x22, 2];
+            let source = round_trip_body(&bytes);
+            assert!(source.contains(&format!("self.near_target({value})")));
+        }
+        for condition in [
+            "self.near_target(256)",
+            "self.near_target()",
+            "self.near_target",
+            "context.near_target(1)",
+        ] {
+            assert!(
+                dsl::parse(&format!(
+                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn in_area_conditions_round_trip() {
+        for area in [0u16, 326, 65535] {
+            let [hi, lo] = area.to_be_bytes();
+            let bytes = vec![0x0e, 0, hi, lo, 0x92, 0x0e, 1, 0x48, 1, 0x0e, 2];
+            let source = round_trip_body(&bytes);
+            assert!(source.contains(&format!("self.in_area({area})")));
+        }
+        for condition in [
+            "self.in_area(65536)",
+            "self.in_area()",
+            "self.in_area",
+            "context.in_area(1)",
+        ] {
+            assert!(
+                dsl::parse(&format!(
+                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn airborne_conditions_round_trip() {
+        for (bytes, structured) in [
+            (vec![9, 0, 0x92, 9, 2], true),
+            (vec![9, 0, 9, 0, 0x92, 9, 2, 9, 1, 0x48, 1, 9, 2], true),
+            (vec![9, 0, 9, 1, 9, 1, 9, 2], false),
+        ] {
+            let source = round_trip_body(&bytes);
+            assert_eq!(source.contains("if self.airborne"), structured);
+        }
+    }
+
+    #[test]
+    fn attack_timer_conditions_round_trip() {
+        for bytes in [
+            vec![0x2a, 0, 0x92, 0x2a, 2],
+            vec![0x2a, 0, 0x2a, 0, 0x92, 0x2a, 2, 0x2a, 1, 0x48, 1, 0x2a, 2],
+            vec![0x2a, 0, 0x2a, 1, 0x2a, 1, 0x2a, 2],
+        ] {
+            let source = round_trip_body(&bytes);
+            if bytes == [0x2a, 0, 0x2a, 1, 0x2a, 1, 0x2a, 2] {
+                assert!(!source.contains("self.attack_timer_active"));
+                assert_eq!(source.matches("native(").count(), 4);
+            } else {
+                assert!(source.contains("if self.attack_timer_active {"), "{source}");
+                assert!(!source.contains("native(0x2a"), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn area_timer_conditions_round_trip_and_preserve_irregular_blocks() {
+        for bytes in [
+            vec![0x29, 0, 0x92, 0x29, 2],
+            vec![
+                0x29, 0, 0x29, 0, 0x92, 0x29, 1, 0x48, 1, 0x29, 2, 0x29, 1, 0x92, 0x29, 2,
+            ],
+        ] {
+            let source = round_trip_body(&bytes);
+            assert!(source.contains("if self.area_timer_expired {"), "{source}");
+            assert!(!source.contains("native(0x29"), "{source}");
+        }
+        let bytes = [0x29, 0, 0x29, 1, 0x29, 1, 0x29, 2];
+        let source = round_trip_body(&bytes);
+        assert!(!source.contains("self.area_timer_expired"));
+        assert_eq!(source.matches("native(").count(), 4);
+    }
+
     #[test]
     fn mixed_rage_and_flash_conditions_round_trip() {
         let mut image = Image::default();
@@ -1665,6 +2015,45 @@ mod tests {
     }
 
     #[test]
+    fn species_matches_round_trip_without_folding_by_project_species() {
+        for (bytes, recovered) in [
+            (
+                vec![0x70, 0, 2, 0x70, 1, 1, 0x92, 0x70, 1, 11, 0x70, 3],
+                true,
+            ),
+            (vec![0x70, 0, 1, 0x70, 1, 255, 0x70, 2, 0x92, 0x70, 3], true),
+            (
+                vec![
+                    0x70, 0, 1, 0x70, 1, 1, 0x70, 0, 1, 0x70, 1, 11, 0xff, 0, 0x70, 3, 0x70, 3,
+                ],
+                true,
+            ),
+            (vec![0x70, 0, 0, 0x70, 1, 1, 0x70, 3], false),
+            (vec![0x70, 0, 2, 0x70, 1, 1, 0x70, 3], false),
+            (vec![0x70, 0, 2, 0x70, 1, 11, 0x70, 1, 1, 0x70, 3], false),
+            (vec![0x70, 0, 2, 0x70, 1, 1, 0x70, 1, 1, 0x70, 3], false),
+        ] {
+            let mut source = String::new();
+            format_test_body(&mut source, &bytes, None).unwrap();
+            assert_eq!(source.contains("match self.species"), recovered, "{source}");
+            let compiled = dsl::parse(&format!("mhf_ai 1; species 1; fn main() {{ {source} }}"))
+                .unwrap()
+                .compile()
+                .unwrap();
+            let mut expected = bytes;
+            expected.extend([0xff, 0]);
+            assert!(
+                compiled
+                    .program
+                    .nodes
+                    .iter()
+                    .any(|node| matches!(node, Node::Script(actual) if *actual == expected)),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
     fn species_group_recovers_source_order_without_adding_else() {
         let bytes = [
             0x2c, 0, 3, 0x2c, 1, 42, 0x92, 0x2c, 1, 1, 0x2c, 1, 42, 0x48, 2, 0x2c, 3, 0xff, 0,
@@ -1681,6 +2070,50 @@ mod tests {
         assert!(!result.source.contains("else =>"));
         assert!(!result.source.contains("native(0x2c"));
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn debug_mode_preserves_canonical_and_irregular_layouts() {
+        for (bytes, recovered) in [
+            (
+                vec![0x94, 0, 2, 0x94, 1, 0, 0x92, 0x94, 1, 255, 0x94, 3],
+                true,
+            ),
+            (vec![0x94, 0, 1, 0x94, 1, 0, 0x94, 2, 0x92, 0x94, 3], true),
+            // A nested match and an early return must retain their exact bytes.
+            (
+                vec![
+                    0x94, 0, 1, 0x94, 1, 0, 0x94, 0, 1, 0x94, 1, 1, 0xff, 0, 0x94, 3, 0x94, 3,
+                ],
+                true,
+            ),
+            (vec![0x94, 0, 0, 0x94, 1, 0, 0x94, 3], false),
+            (vec![0x94, 0, 2, 0x94, 1, 0, 0x94, 3], false),
+            (vec![0x94, 0, 2, 0x94, 1, 1, 0x94, 1, 0, 0x94, 3], false),
+            (vec![0x94, 0, 2, 0x94, 1, 0, 0x94, 1, 0, 0x94, 3], false),
+        ] {
+            let mut source = String::new();
+            format_test_body(&mut source, &bytes, None).unwrap();
+            assert_eq!(
+                source.contains("match context.debug_mode"),
+                recovered,
+                "{source}"
+            );
+            let compiled = dsl::parse(&format!("mhf_ai 1; species 1; fn main() {{ {source} }}"))
+                .unwrap()
+                .compile()
+                .unwrap();
+            let mut expected = bytes;
+            expected.extend([0xff, 0]);
+            assert!(
+                compiled
+                    .program
+                    .nodes
+                    .iter()
+                    .any(|node| matches!(node, Node::Script(actual) if *actual == expected)),
+                "{source}"
+            );
+        }
     }
 
     #[test]
@@ -1781,7 +2214,7 @@ mod tests {
         );
         let result = decompile(&image, 0x100, 11, 0, None).unwrap();
         assert!(result.source.contains("match context.query(4) {"));
-        assert!(result.source.contains("else => {\n            reset;"));
+        assert!(result.source.contains("else => {\n            end;"));
         assert!(!result.source.contains("native(0x79"));
 
         let mut source = String::new();
@@ -1820,7 +2253,7 @@ mod tests {
         assert!(
             result
                 .source
-                .contains("        if self.flashed {\n            reset;")
+                .contains("        if self.flashed {\n            end;")
         );
         // Repeated native else markers cannot be expressed as an ordinary if.
         let mut source = String::new();
@@ -1944,7 +2377,7 @@ mod tests {
         assert!(
             result
                 .source
-                .contains("handle sub_1_7() then {\n        reset;\n    }")
+                .contains("handle sub_1_7() then {\n        end;\n    }")
         );
         assert!(result.source.contains("handler fn sub_1_7()"));
         assert!(!result.source.contains("native(0x0c"));
@@ -1977,7 +2410,7 @@ mod tests {
 
         image.put(0x300, &[0x39, 0, 0xff, 0, 0x39, 2, 0x92, 0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert_eq!(result.source.matches("reset;").count(), 1);
+        assert_eq!(result.source.matches("end;").count(), 1);
 
         image.put(0x300, &[0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
@@ -2015,11 +2448,24 @@ mod tests {
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(result.source.contains("native(0xff, 0xfd);"));
 
-        // An early exit inside a conditional is retained; only the outer tail
-        // can be reconstructed by the compiler.
+        // An early exit inside a structured conditional keeps its `return;`;
+        // only the outer tail is reconstructed by the compiler.
         image.put(0x300, &[0x39, 0, 0xff, 0xf5, 0x39, 2, 0x92, 0xff, 0xf5]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert_eq!(result.source.matches("native(0xff, 0xf5);").count(), 1);
+        assert!(result.source.contains(
+            "dung_reaction => {\n        if self.flashed {\n            return;\n        }\n        nop();\n    }"
+        ));
+
+        // An early exit inside an open raw block still keeps `return;` while the
+        // enclosing markers keep their own bytes.
+        image.put(
+            0x300,
+            &[0x5d, 0, 0x39, 0, 0xff, 0xf5, 0x39, 2, 0x5d, 2, 0xff, 0xf5],
+        );
+        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        assert!(result.source.contains(
+            "native(0x5d, 0x00);\n        if self.flashed {\n            return;\n        }\n        native(0x5d, 0x02);"
+        ));
 
         image.put(0x300, &[0xff, 0xf5]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
@@ -2037,7 +2483,7 @@ mod tests {
         image.put(0x400, &[0x99, 2, 4]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(result.warnings.is_empty());
-        assert!(result.source.contains("action[3:6](0);"));
+        assert!(result.source.contains("self.action(3:6, 0);"));
         assert!(result.source.contains("transition state_9;"));
         assert!(result.source.contains("state_9 = 9"));
         assert!(result.source.contains("native(0x99, 0x02);"));
@@ -2088,24 +2534,48 @@ mod tests {
 
     #[test]
     fn returns_inside_raw_subscript_blocks_preserve_closing_markers() {
-        for body in [
-            // This condition has no structured DSL equivalent.
-            vec![0x14, 0, 45, 0xff, 1, 0x14, 2, 0xff, 1],
-            // Noncanonical weights keep this random block as native bytes.
-            vec![0x80, 0, 1, 0x80, 1, 1, 0xff, 1, 0x80, 0xff, 0xff, 1],
-        ] {
-            let mut image = Image::default();
-            image.put(0x100, &[0; 60]);
-            image.pointer(0x100, 0x200);
-            image.pointer(0x104, 0x800);
-            image.pointer(0x200, 0x300);
-            image.put(0x300, &[0x81, 1, 0xff, 0]);
-            image.pointer(0x804, 0x400);
-            image.put(0x400, &body);
-            // decompile checks every recovered script against its original bytes.
-            let result = decompile(&image, 0x100, 2, 0, None).unwrap();
-            assert!(result.warnings.is_empty());
-            assert!(result.source.contains("native(0xff, 0x01);"));
+        for table in [1, 9, 15] {
+            let slot = NativeSlot { table, index: 1 };
+            let ending = slot.ending();
+            for body in [
+                // This condition has no structured DSL equivalent.
+                vec![0x14, 0, 45, 0xff, ending, 0x14, 2, 0xff, ending],
+                // Noncanonical weights keep this random block as native bytes.
+                vec![
+                    0x80, 0, 1, 0x80, 1, 1, 0xff, ending, 0x80, 0xff, 0xff, ending,
+                ],
+                // A structured condition inside an open raw block.
+                vec![
+                    0x5d, 0, 0x09, 0, 0xff, ending, 0x09, 2, 0x92, 0x5d, 2, 0xff, ending,
+                ],
+                // A different return convention must stay native.
+                vec![
+                    0x5d, 0, 0xff, 0xfc, 0xff, ending, 0x92, 0x5d, 2, 0xff, ending,
+                ],
+            ] {
+                let mut image = Image::default();
+                image.put(0x100, &[0; 64]);
+                image.pointer(0x100, 0x200);
+                image.pointer(0x100 + table as u32 * 4, 0x800);
+                image.pointer(0x200, 0x300);
+                let mut entry = slot.call();
+                entry.extend_from_slice(&[0xff, 0]);
+                image.put(0x300, &entry);
+                image.pointer(0x804, 0x400);
+                image.put(0x400, &body);
+                // decompile checks every recovered script against its original bytes.
+                let result = decompile(&image, 0x100, 2, 0, None).unwrap();
+                assert!(result.warnings.is_empty());
+                assert!(result.source.contains("return;"));
+                assert!(
+                    !result
+                        .source
+                        .contains(&format!("native(0xff, 0x{ending:02x});"))
+                );
+                if body.windows(2).any(|bytes| bytes == [0xff, 0xfc]) {
+                    assert!(result.source.contains("native(0xff, 0xfc);"));
+                }
+            }
         }
     }
 

@@ -256,7 +256,7 @@ actions {
 
 events {
     dung_reaction {
-        action[4:1](0x02);
+        self.action(4:1, 0x02);
         native(0x11, 0x92);
     }
 }
@@ -515,8 +515,8 @@ states {
                 "'wait' takes exactly 1 argument(s)",
             ),
             (
-                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { reset(); } }\n",
-                "reset is a keyword, not a call",
+                "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { end(); } }\n",
+                "end is a keyword, not a call",
             ),
             (
                 "mhf_ai 1;\nspecies 6;\nstates { idle = 0 { transition(combat); } combat { nop(); } }\n",

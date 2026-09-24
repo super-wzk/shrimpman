@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::compile::is_reserved_command;
 use super::condition::{Condition, Degrees, Mode};
 use super::lexer::{Lexer, Token, TokenKind};
-use super::target::{Direction, TargetStrategy};
+use super::target::{Direction, EntityTarget};
 use super::{EVENT_SLOT_COUNT, VERSION};
 use crate::ai::control::EVENT_SLOTS;
 use crate::ai::{Base, Error, Result};
@@ -115,19 +115,38 @@ pub enum StatementKind {
         branches: Vec<(u8, Vec<Statement>)>,
         fallback: Vec<Statement>,
     },
-    /// Match the current species against normalized species groups in source order.
-    SpeciesGroup {
-        branches: Vec<(u8, Vec<Statement>)>,
+    /// Exact matching of the current species ID in ascending order.
+    Species {
+        branches: Vec<(u16, Vec<Statement>)>,
         fallback: Option<Vec<Statement>>,
     },
-    SelectTargetEntity(TargetStrategy),
+    /// Ordered matching of the shared native debug selector.
+    DebugMode {
+        branches: Vec<(u16, Vec<Statement>)>,
+        fallback: Option<Vec<Statement>>,
+    },
+    /// Match map-adapted area IDs in source order.
+    Area {
+        branches: Vec<(u16, Vec<Statement>)>,
+        fallback: Option<Vec<Statement>>,
+    },
+    /// Match the current species against normalized species groups in source order.
+    SpeciesGroup {
+        branches: Vec<(u16, Vec<Statement>)>,
+        fallback: Option<Vec<Statement>>,
+    },
+    SelectTargetEntity(EntityTarget),
     SelectPlayerSlot(u8),
     SelectWaypoint(u8),
+    SelectDefaultPoint,
+    SelectTargetArea(u16),
+    SelectTargetPlayerArea,
     SelectRelativePoint(Direction),
     BindAwarenessTarget,
     BindCurrentTarget,
     SetMode(Mode),
-    UpdateTargetPosition,
+    ResolveTarget,
+    TryChangeArea,
     IncrementRandomValue,
     If {
         condition: Condition,
@@ -137,7 +156,7 @@ pub enum StatementKind {
     Return,
     /// `pass;` — give the turn back to the normal AI, handlers only.
     Pass,
-    /// `name(args);`, or the anonymous `action[group:id](parameter);`.
+    /// `name(args);`, or the anonymous `self.action(group:id, parameter);`.
     Call {
         callee: Callee,
         args: Vec<u8>,
@@ -148,9 +167,9 @@ pub enum StatementKind {
     },
     /// `restart;` — states blocks only.
     Restart,
-    /// `reset;` — reset the main entry and active event lanes.
+    /// `end;` — reset the main entry and active event lanes.
     Reset,
-    /// `reset forget_target;` — additionally clear the current target's tracking data.
+    /// `end forget_target;` — additionally clear the current target's tracking data.
     ResetForgetTarget,
     /// `native(0xff, 0xfd);` — the only bare-value escape.
     Native {
@@ -558,13 +577,25 @@ impl Parser {
                 Ok(position(StatementKind::Pass))
             }
             "if" => {
-                self.expect_keyword("self")?;
-                self.expect(&TokenKind::Dot, "'.' after self")?;
+                let namespace = self.take_word("self or context")?;
+                if !matches!(word(&namespace), "self" | "context") {
+                    return Err(namespace.error("expected self or context"));
+                }
+                self.expect(&TokenKind::Dot, "'.' after condition namespace")?;
                 let property = self.take_word("condition property")?;
                 let property_name = self.qualified_name(word(&property).into())?;
-                let mut condition = Condition::parse(&property_name).ok_or_else(|| {
+                let parsed = if word(&namespace) == "context" {
+                    match property_name.as_str() {
+                        "any_player_carrying" => Some(Condition::AnyPlayerCarrying),
+                        "is_daytime" => Some(Condition::IsDaytime),
+                        _ => None,
+                    }
+                } else {
+                    Condition::parse(&property_name)
+                };
+                let mut condition = parsed.ok_or_else(|| {
                     property.error(format!(
-                        "unknown condition self.{property_name}; expected self.active, self.flashed, self.enraged, self.target.available, self.target_angle_in(min, max), self.check_tracked_players() or self.mode_is(value)"
+                        "unknown condition {}.{property_name}; expected a supported self condition or context.any_player_carrying / context.is_daytime", word(&namespace)
                     ))
                 })?;
                 if condition.is_method() {
@@ -577,6 +608,22 @@ impl Parser {
                             return Err(property.error("target_angle_in requires min <= max; intervals crossing zero are not supported"));
                         }
                         condition = Condition::TargetAngleIn { min, max };
+                    } else if matches!(condition, Condition::InAction(_, _)) {
+                        let (group, token) = self.take_number("action group")?;
+                        let group = byte(group, &token, "action group")?;
+                        self.expect(&TokenKind::Colon, "':' between action group and ID")?;
+                        let (id, token) = self.take_number("action ID")?;
+                        condition = Condition::InAction(group, byte(id, &token, "action ID")?);
+                    } else if matches!(condition, Condition::NearTarget(_)) {
+                        let (value, token) = self.take_number("distance threshold")?;
+                        condition =
+                            Condition::NearTarget(byte(value, &token, "distance threshold")?);
+                    } else if matches!(condition, Condition::InArea(_)) {
+                        let (area, token) = self.take_number("area ID")?;
+                        condition = Condition::InArea(
+                            u16::try_from(area)
+                                .map_err(|_| token.error("area ID must be 0..65535"))?,
+                        );
                     } else if matches!(condition, Condition::ModeIs(_)) {
                         self.expect_keyword("Mode")?;
                         self.expect(&TokenKind::DoubleColon, "'::' after Mode")?;
@@ -625,38 +672,89 @@ impl Parser {
                 self.expect(&TokenKind::Semicolon, "';'")?;
                 Ok(position(StatementKind::Transition { state }))
             }
-            "restart" | "reset" => {
+            "restart" | "end" => {
                 if self.peek_is(&TokenKind::LeftParen) {
                     return Err(
                         token.error(format!("{name} is a keyword, not a call: write `{name};`"))
                     );
                 }
-                let forget_target = name == "reset" && self.current_word() == Some("forget_target");
+                let forget_target = name == "end" && self.current_word() == Some("forget_target");
                 if forget_target {
                     self.advance();
                 }
                 self.expect(&TokenKind::Semicolon, "';'")?;
                 Ok(position(if forget_target {
                     StatementKind::ResetForgetTarget
-                } else if name == "reset" {
+                } else if name == "end" {
                     StatementKind::Reset
                 } else {
                     StatementKind::Restart
                 }))
             }
             "match" => {
+                /// The byte-match selectors share one layout; they differ only in
+                /// the diagnostic label, the case width and the ordering rule.
+                #[derive(Clone, Copy)]
+                enum MatchSelector {
+                    Species,
+                    SpeciesGroup,
+                    Area,
+                    DebugMode,
+                }
+
+                impl MatchSelector {
+                    fn label(self) -> &'static str {
+                        match self {
+                            Self::Species => "species",
+                            Self::SpeciesGroup => "species group",
+                            Self::Area => "area",
+                            Self::DebugMode => "debug mode",
+                        }
+                    }
+
+                    fn kind(
+                        self,
+                        branches: Vec<(u16, Vec<Statement>)>,
+                        fallback: Option<Vec<Statement>>,
+                    ) -> StatementKind {
+                        match self {
+                            Self::Species => StatementKind::Species { branches, fallback },
+                            Self::SpeciesGroup => {
+                                StatementKind::SpeciesGroup { branches, fallback }
+                            }
+                            Self::Area => StatementKind::Area { branches, fallback },
+                            Self::DebugMode => StatementKind::DebugMode { branches, fallback },
+                        }
+                    }
+                }
+
                 if self.body_depth >= 64 {
                     return Err(token.error("block nesting exceeds 64 levels"));
                 }
                 self.body_depth += 1;
-                let context_query = self.current_word() == Some("context");
-                if !context_query {
+                let context_match = self.current_word() == Some("context");
+                if context_match {
+                    self.advance();
+                    self.expect(&TokenKind::Dot, "'.' after context")?;
+                } else {
                     self.expect_keyword("self")?;
                     self.expect(&TokenKind::Dot, "'.' after self")?;
                 }
                 let area_route =
-                    !context_query && self.current_word() == Some("area_route_profile");
-                if !context_query && self.current_word() == Some("species_group") {
+                    !context_match && self.current_word() == Some("area_route_profile");
+                let selector = match self.current_word() {
+                    Some("debug_mode") if context_match => Some(MatchSelector::DebugMode),
+                    Some("species") if !context_match => Some(MatchSelector::Species),
+                    Some("species_group") if !context_match => Some(MatchSelector::SpeciesGroup),
+                    Some("area") if !context_match => Some(MatchSelector::Area),
+                    _ => None,
+                };
+                if let Some(selector) = selector {
+                    let label = selector.label();
+                    // Area cases are 16-bit; every other selector carries one byte.
+                    let area_case = matches!(selector, MatchSelector::Area);
+                    let ordered =
+                        matches!(selector, MatchSelector::Species | MatchSelector::DebugMode);
                     self.advance();
                     self.expect(&TokenKind::LeftBrace, "'{' after match selector")?;
                     let mut branches = Vec::new();
@@ -664,7 +762,7 @@ impl Parser {
                         if self.consume(&TokenKind::RightBrace) {
                             if branches.is_empty() {
                                 return Err(
-                                    token.error("species group match requires 1..255 cases")
+                                    token.error(format!("{label} match requires 1..255 cases"))
                                 );
                             }
                             break None;
@@ -672,9 +770,9 @@ impl Parser {
                         if self.current_word() == Some("else") {
                             self.advance();
                             if branches.is_empty() {
-                                return Err(token.error(
-                                    "species group match requires 1..255 cases before else",
-                                ));
+                                return Err(token.error(format!(
+                                    "{label} match requires 1..255 cases before else"
+                                )));
                             }
                             self.expect(&TokenKind::FatArrow, "'=>' after else")?;
                             let body = self.parse_branch_body()?;
@@ -682,22 +780,35 @@ impl Parser {
                             break Some(body);
                         }
                         if branches.len() == 255 {
-                            return Err(token.error("species group match requires 1..255 cases"));
+                            return Err(token.error(format!("{label} match requires 1..255 cases")));
                         }
-                        let (value, at) = self.take_number("species group case or else")?;
-                        let value = byte(value, &at, "species group case")?;
+                        let (value, at) = self.take_number(&format!("{label} case or else"))?;
+                        let value = if area_case {
+                            u16::try_from(value)
+                                .map_err(|_| at.error("area case must be 0..65535"))?
+                        } else {
+                            u16::from(byte(value, &at, &format!("{label} case"))?)
+                        };
+                        if ordered
+                            && branches
+                                .last()
+                                .is_some_and(|(previous, _)| *previous >= value)
+                        {
+                            return Err(
+                                at.error(format!("{label} cases must be strictly increasing"))
+                            );
+                        }
                         self.expect(&TokenKind::FatArrow, "'=>' after case")?;
                         branches.push((value, self.parse_branch_body()?));
                     };
                     self.body_depth -= 1;
-                    return Ok(position(StatementKind::SpeciesGroup { branches, fallback }));
+                    return Ok(position(selector.kind(branches, fallback)));
                 }
-                if area_route || context_query {
-                    self.advance();
+                if area_route || context_match {
                     let argument = if area_route {
+                        self.advance();
                         None
                     } else {
-                        self.expect(&TokenKind::Dot, "'.' after context")?;
                         self.expect_keyword("query")?;
                         self.expect(&TokenKind::LeftParen, "'('")?;
                         let (argument, at) = self.take_number("context query ID")?;
@@ -806,7 +917,12 @@ impl Parser {
                 self.expect(&TokenKind::LeftParen, &format!("'(' after {name}"))?;
                 let kind = match name {
                     "select_target_point" => {
-                        if self.current_word() == Some("Direction") {
+                        if self.current_word() == Some("PointTarget") {
+                            self.advance();
+                            self.expect(&TokenKind::DoubleColon, "'::' after PointTarget")?;
+                            self.expect_keyword("Default")?;
+                            StatementKind::SelectDefaultPoint
+                        } else if self.current_word() == Some("Direction") {
                             self.advance();
                             self.expect(&TokenKind::DoubleColon, "'::' after Direction")?;
                             let member = self.take_word("Direction member")?;
@@ -816,23 +932,34 @@ impl Parser {
                             StatementKind::SelectRelativePoint(direction)
                         } else {
                             let (index, token) =
-                                self.take_number("waypoint index or Direction member")?;
+                                self.take_number("waypoint index, Direction member or PointTarget::Default")?;
                             StatementKind::SelectWaypoint(byte(index, &token, "waypoint index")?)
                         }
                     }
                     "select_target_entity" => {
-                        if self.current_word() == Some("TargetStrategy") {
+                        if self.current_word() == Some("EntityTarget") {
                             self.advance();
-                            self.expect(&TokenKind::DoubleColon, "'::' after TargetStrategy")?;
-                            let member = self.take_word("TargetStrategy member")?;
-                            let strategy = TargetStrategy::parse(word(&member)).ok_or_else(|| {
-                                member.error("unknown TargetStrategy member; expected AllowedAreas, SameArea, GroundFiltered, PlayerOrMonster, TrackedBySlot or LeaderTarget")
+                            self.expect(&TokenKind::DoubleColon, "'::' after EntityTarget")?;
+                            let member = self.take_word("EntityTarget member")?;
+                            let strategy = EntityTarget::parse(word(&member)).ok_or_else(|| {
+                                member.error("unknown EntityTarget member; expected SameArea, SameAreaGroundGroup, SameOrAllowedArea, TrackedPlayer, LeaderTarget, PlayerOrMonster, CurrentOrLargeMonster, LargeMonster, OtherMonster or OtherLargeMonster")
                             })?;
                             StatementKind::SelectTargetEntity(strategy)
                         } else {
                             let (slot, token) =
-                                self.take_number("player slot or TargetStrategy member")?;
+                                self.take_number("player slot or EntityTarget member")?;
                             StatementKind::SelectPlayerSlot(byte(slot, &token, "player slot")?)
+                        }
+                    }
+                    "select_target_area" => {
+                        if self.current_word() == Some("AreaTarget") {
+                            self.advance();
+                            self.expect(&TokenKind::DoubleColon, "'::' after AreaTarget")?;
+                            self.expect_keyword("TargetPlayer")?;
+                            StatementKind::SelectTargetPlayerArea
+                        } else {
+                            let (area, token) = self.take_number("area ID or AreaTarget::TargetPlayer")?;
+                            StatementKind::SelectTargetArea(u16::try_from(area).map_err(|_| token.error("area ID must be 0..65535"))?)
                         }
                     }
                     "set_mode" => {
@@ -846,10 +973,27 @@ impl Parser {
                     }
                     "bind_awareness_target" => StatementKind::BindAwarenessTarget,
                     "bind_current_target" => StatementKind::BindCurrentTarget,
-                    "update_target_position" => StatementKind::UpdateTargetPosition,
+                    "resolve_target" => StatementKind::ResolveTarget,
+                    "try_change_area" => StatementKind::TryChangeArea,
                     "increment_random_value" => StatementKind::IncrementRandomValue,
+                    "action" => {
+                        let (group, token) = self.take_number("action group")?;
+                        let group = byte(group, &token, "action group")?;
+                        self.expect(&TokenKind::Colon, "':' between action group and ID")?;
+                        let (id, token) = self.take_number("action ID")?;
+                        let id = byte(id, &token, "action ID")?;
+                        self.expect(&TokenKind::Comma, "',' between action ID and parameter")?;
+                        let (parameter, token) = self.take_number("action parameter")?;
+                        let parameter = byte(parameter, &token, "action parameter")?;
+                        self.expect(&TokenKind::RightParen, "')' after action arguments")?;
+                        self.expect(&TokenKind::Semicolon, "';'")?;
+                        return Ok(position(StatementKind::Call {
+                            callee: Callee::Action { group, id },
+                            args: vec![parameter],
+                        }));
+                    }
                     _ => return Err(method.error(format!(
-                        "unknown self method '{name}'; expected select_target_entity, select_target_point, bind_awareness_target, bind_current_target, set_mode, update_target_position or increment_random_value"
+                        "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, set_mode, resolve_target, try_change_area or increment_random_value"
                     ))),
                 };
                 self.expect(
@@ -858,21 +1002,6 @@ impl Parser {
                 )?;
                 self.expect(&TokenKind::Semicolon, "';'")?;
                 Ok(position(kind))
-            }
-            "action" if self.peek_is(&TokenKind::LeftBracket) => {
-                self.expect(&TokenKind::LeftBracket, "'['")?;
-                let (group, group_token) = self.take_number("action group")?;
-                let group = byte(group, &group_token, "action group")?;
-                self.expect(&TokenKind::Colon, "':'")?;
-                let (id, id_token) = self.take_number("action id")?;
-                let id = byte(id, &id_token, "action id")?;
-                self.expect(&TokenKind::RightBracket, "']'")?;
-                let args = self.parse_call_arguments()?;
-                self.expect(&TokenKind::Semicolon, "';'")?;
-                Ok(position(StatementKind::Call {
-                    callee: Callee::Action { group, id },
-                    args,
-                }))
             }
             _ => {
                 let name = self.qualified_name(name)?;
@@ -1055,8 +1184,10 @@ fn describe_token(kind: &TokenKind) -> String {
 /// Reserved keywords. None of them can become an action alias (spec §6).
 const KEYWORDS: &[&str] = &[
     "Mode",
-    "TargetStrategy",
+    "EntityTarget",
+    "AreaTarget",
     "Direction",
+    "PointTarget",
     "mhf_ai",
     "species",
     "base",
@@ -1065,7 +1196,7 @@ const KEYWORDS: &[&str] = &[
     "states",
     "transition",
     "restart",
-    "reset",
+    "end",
     "random",
     "match",
     "action",
@@ -1226,7 +1357,10 @@ fn contains_pass(body: &[Statement]) -> bool {
         | StatementKind::AreaRouteProfile { branches, fallback } => {
             branches.iter().any(|(_, body)| contains_pass(body)) || contains_pass(fallback)
         }
-        StatementKind::SpeciesGroup { branches, fallback } => {
+        StatementKind::Area { branches, fallback }
+        | StatementKind::SpeciesGroup { branches, fallback }
+        | StatementKind::DebugMode { branches, fallback }
+        | StatementKind::Species { branches, fallback } => {
             branches.iter().any(|(_, body)| contains_pass(body))
                 || fallback.as_deref().is_some_and(contains_pass)
         }

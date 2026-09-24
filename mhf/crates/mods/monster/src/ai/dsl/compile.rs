@@ -116,6 +116,7 @@ struct Compiler<'a> {
     native_scope: Option<NativeSlot>,
     raw_boundary: usize,
     raw_return_blocked: bool,
+    return_ending: Option<u8>,
 }
 
 impl Compiler<'_> {
@@ -129,10 +130,13 @@ impl Compiler<'_> {
         self.native_scope = slot;
         self.raw_boundary = 0;
         self.raw_return_blocked = false;
+        self.return_ending = slot
+            .map(NativeSlot::ending)
+            .or_else(|| ending.filter(|_| matches!(scope, Scope::Events)));
         self.relocations.clear();
         let mut bytes = Vec::new();
-        self.encode_body(body, scope, &mut bytes)?;
-        if let Some(ending) = ending {
+        let terminated = self.encode_body(body, scope, &mut bytes)?;
+        if !terminated && let Some(ending) = ending {
             finish(&mut bytes, ending, slot)?;
         }
         Ok(EncodedScript {
@@ -181,8 +185,9 @@ impl Compiler<'_> {
             }
             if matches!(statement.kind, StatementKind::Return | StatementKind::Pass) {
                 let passing = matches!(statement.kind, StatementKind::Pass);
-                let slot_return = self.native_scope;
-                if slot_return.is_none()
+                // Functions and events emit their scope's native return;
+                // entry returns remain lexical.
+                if self.return_ending.is_none()
                     && (self.raw_return_blocked || !closed(&out[self.raw_boundary..])?)
                 {
                     return Err(statement.error(if passing {
@@ -194,12 +199,16 @@ impl Compiler<'_> {
                 if passing {
                     out.extend_from_slice(&[0x0d, 4]);
                 }
-                if let Some(slot) = slot_return {
-                    out.extend_from_slice(&[0xff, slot.ending()]);
-                    if closed(out)? {
+                if let Some(ending) = self.return_ending {
+                    out.extend_from_slice(&[0xff, ending]);
+                    // A return inside an open native block still has to reproduce
+                    // that block's closing markers, so it only ends the body once
+                    // the script is closed and no statement follows.
+                    let trailing = body.clone().next().is_none();
+                    if trailing && closed(out)? {
                         return Ok(true);
                     }
-                    continue; // Keep the closing markers of a raw native branch.
+                    continue;
                 }
                 return Ok(false);
             }
@@ -216,7 +225,7 @@ impl Compiler<'_> {
             }
             // Entry returns need lexical restructuring; subscript returns emit
             // their own FF instruction and leave the caller untouched.
-            let move_continuation = self.native_scope.is_none() && contains_exit(statement);
+            let move_continuation = self.return_ending.is_none() && contains_exit(statement);
             let continuation: Vec<_> = if move_continuation {
                 body.clone().collect()
             } else {
@@ -285,7 +294,10 @@ impl Compiler<'_> {
                 | StatementKind::TargetDistanceGroups(_)
                 | StatementKind::ContextQuery { .. }
                 | StatementKind::AreaRouteProfile { .. }
+                | StatementKind::Area { .. }
                 | StatementKind::SpeciesGroup { .. }
+                | StatementKind::DebugMode { .. }
+                | StatementKind::Species { .. }
         ) {
             self.raw_return_blocked |= !closed(&out[self.raw_boundary..])?;
         }
@@ -391,27 +403,49 @@ impl Compiler<'_> {
                 )?;
                 out.extend_from_slice(&[opcode, 3]);
             }
-            StatementKind::SpeciesGroup { branches, fallback } => {
-                if !(1..=255).contains(&branches.len()) {
-                    return Err(statement.error("species group match requires 1..255 cases"));
+            StatementKind::Area { branches, fallback }
+            | StatementKind::SpeciesGroup { branches, fallback }
+            | StatementKind::DebugMode { branches, fallback }
+            | StatementKind::Species { branches, fallback } => {
+                let opcode = match statement.kind {
+                    StatementKind::Area { .. } => 0x15,
+                    StatementKind::DebugMode { .. } => 0x94,
+                    StatementKind::Species { .. } => 0x70,
+                    _ => 0x2c,
+                };
+                if matches!(opcode, 0x70 | 0x94)
+                    && branches.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                {
+                    return Err(statement.error("byte match cases must be strictly increasing"));
                 }
-                out.extend_from_slice(&[0x2c, 0, branches.len() as u8]);
-                for (species, body) in branches {
-                    out.extend_from_slice(&[0x2c, 1, *species]);
-                    self.encode_branch(statement, "species group", body, continuation, scope, out)?;
+                if !(1..=255).contains(&branches.len()) {
+                    return Err(statement.error("byte match requires 1..255 cases"));
+                }
+                out.extend_from_slice(&[opcode, 0, branches.len() as u8]);
+                for (value, body) in branches {
+                    out.extend_from_slice(&[opcode, 1]);
+                    if opcode == 0x15 {
+                        out.extend_from_slice(&value.to_be_bytes());
+                    } else {
+                        out.push(
+                            u8::try_from(*value)
+                                .map_err(|_| statement.error("byte match case must be 0..255"))?,
+                        );
+                    }
+                    self.encode_branch(statement, "byte match", body, continuation, scope, out)?;
                 }
                 if let Some(fallback) = fallback {
-                    out.extend_from_slice(&[0x2c, 2]);
+                    out.extend_from_slice(&[opcode, 2]);
                     self.encode_branch(
                         statement,
-                        "species group else",
+                        "byte match else",
                         fallback,
                         continuation,
                         scope,
                         out,
                     )?;
                 }
-                out.extend_from_slice(&[0x2c, 3]);
+                out.extend_from_slice(&[opcode, 3]);
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 if !(2..=5).contains(&branches.len()) {
@@ -424,8 +458,16 @@ impl Compiler<'_> {
                 }
                 out.extend_from_slice(&[0x83, 0xff]);
             }
-            StatementKind::SelectTargetEntity(strategy) => out.push(strategy.opcode()),
+            StatementKind::SelectTargetEntity(strategy) => {
+                out.extend_from_slice(&strategy.encode())
+            }
+            StatementKind::SelectTargetArea(area) => {
+                out.extend_from_slice(&[0x06, 3, 0]);
+                out.extend_from_slice(&area.to_be_bytes());
+            }
+            StatementKind::SelectTargetPlayerArea => out.extend_from_slice(&[0x06, 10, 0, 0]),
             StatementKind::SelectPlayerSlot(slot) => out.extend_from_slice(&[0x06, 1, 0, *slot]),
+            StatementKind::SelectDefaultPoint => out.extend_from_slice(&[0x06, 2, 0, 0]),
             StatementKind::SelectWaypoint(index) => out.extend_from_slice(&[0x06, 2, 1, *index]),
             StatementKind::SelectRelativePoint(direction) => {
                 out.extend_from_slice(&[0x06, 6, *direction as u8, 0]);
@@ -433,7 +475,8 @@ impl Compiler<'_> {
             StatementKind::BindAwarenessTarget => out.push(0x11),
             StatementKind::BindCurrentTarget => out.push(0x13),
             StatementKind::SetMode(mode) => out.extend_from_slice(&[0x40, *mode as u8]),
-            StatementKind::UpdateTargetPosition => out.push(0x4d),
+            StatementKind::ResolveTarget => out.push(0x4d),
+            StatementKind::TryChangeArea => out.push(0x18),
             StatementKind::IncrementRandomValue => out.push(0x84),
             StatementKind::If {
                 condition,
@@ -600,7 +643,7 @@ fn validate_handlers(document: &Document) -> Result<()> {
                     // caller's code and cannot leave it with a lexical return.
                     if then_body.iter().any(contains_exit) {
                         return Err(statement.error(
-                            "return; and pass; cannot appear in a then block; write reset; or return from the enclosing function after the block",
+                            "return; and pass; cannot appear in a then block; write end; or return from the enclosing function after the block",
                         ));
                     }
                     validate_body(then_body, false, tail_here, functions)?;
@@ -650,7 +693,10 @@ fn validate_handlers(document: &Document) -> Result<()> {
                     }
                     validate_body(fallback, inside_handler, tail_here, functions)?;
                 }
-                StatementKind::SpeciesGroup { branches, fallback } => {
+                StatementKind::Area { branches, fallback }
+                | StatementKind::SpeciesGroup { branches, fallback }
+                | StatementKind::DebugMode { branches, fallback }
+                | StatementKind::Species { branches, fallback } => {
                     for (_, body) in branches {
                         validate_body(body, inside_handler, tail_here, functions)?;
                     }
@@ -701,7 +747,10 @@ fn validate_handlers(document: &Document) -> Result<()> {
             | StatementKind::AreaRouteProfile { branches, fallback } => {
                 branches.iter().any(|(_, body)| contains_handle(body)) || contains_handle(fallback)
             }
-            StatementKind::SpeciesGroup { branches, fallback } => {
+            StatementKind::SpeciesGroup { branches, fallback }
+            | StatementKind::DebugMode { branches, fallback }
+            | StatementKind::Species { branches, fallback }
+            | StatementKind::Area { branches, fallback } => {
                 branches.iter().any(|(_, body)| contains_handle(body))
                     || fallback.as_deref().is_some_and(contains_handle)
             }
@@ -775,7 +824,10 @@ pub(super) fn called_functions(body: &[Statement]) -> Vec<&str> {
                 }
                 names.extend(called_functions(fallback));
             }
-            StatementKind::SpeciesGroup { branches, fallback } => {
+            StatementKind::SpeciesGroup { branches, fallback }
+            | StatementKind::DebugMode { branches, fallback }
+            | StatementKind::Species { branches, fallback }
+            | StatementKind::Area { branches, fallback } => {
                 for (_, body) in branches {
                     names.extend(called_functions(body));
                 }
@@ -818,7 +870,10 @@ fn contains_exit(statement: &Statement) -> bool {
             .flat_map(|(_, body)| body)
             .chain(fallback)
             .any(contains_exit),
-        StatementKind::SpeciesGroup { branches, fallback } => branches
+        StatementKind::SpeciesGroup { branches, fallback }
+        | StatementKind::DebugMode { branches, fallback }
+        | StatementKind::Species { branches, fallback }
+        | StatementKind::Area { branches, fallback } => branches
             .iter()
             .flat_map(|(_, body)| body)
             .chain(fallback.iter().flatten())
@@ -966,6 +1021,7 @@ impl Document {
             native_scope: None,
             raw_boundary: 0,
             raw_return_blocked: false,
+            return_ending: None,
         };
         let states = self.encode_states(&mut compiler)?;
         let events = self.encode_events(&mut compiler)?;

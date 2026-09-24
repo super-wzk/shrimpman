@@ -2,11 +2,11 @@ import "movement.mhai" as movement;
 
 fn attack() {
     movement.prepare();
-    action[3:6](0);
+    self.action(3:6, 0);
     wait(10);
     movement.recover();
 }
 
 fn quick_attack() {
-    action[3:6](0);
+    self.action(3:6, 0);
 }

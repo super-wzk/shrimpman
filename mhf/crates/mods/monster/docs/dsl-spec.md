@@ -74,7 +74,8 @@ import "#common/combat.mhai" as defaults;
 内置命令名和关键字不能用作函数、模块或动作别名；`handler` 与 `then` 是上下文关键字，
 只在 `handler fn` 和 `handle ... then` 中生效，仍可用作普通函数名。
 `.` 用于模块成员引用；
-`self.flashed`、`self.enraged` 和 `self.target.available`
+`self.airborne`、`self.flashed`、`self.enraged`、`self.area_timer_expired`、`self.attack_timer_active`、
+`self.has_player_in_area` 和 `self.target.available`
 是内置的只读条件属性，不参与模块名字解析。
 
 ## 3. 函数
@@ -84,7 +85,7 @@ import "movement.mhai" as movement;
 
 fn attack() {
     movement.prepare();
-    action[3:6](0);
+    self.action(3:6, 0);
     wait(10);
     movement.recover();
 }
@@ -125,7 +126,7 @@ fn main() { attack(); }
 @slot(table = 1, index = 3)
 fn attack() {
     approach();
-    action[3:6](0);
+    self.action(3:6, 0);
 }
 
 @slot(table = 15, index = 2)
@@ -166,7 +167,7 @@ fn approach() { wait(15); }
 ```text
 match self.target_distance_group() {
     1 => attack();
-    2 => { self.update_target_position(); approach(); }
+    2 => { self.resolve_target(); approach(); }
     3 => ranged_attack();
     4 => chase();
     else => search();
@@ -206,6 +207,47 @@ match context.query(4) {
 最终 `else` 为 `79 02`，结束为 `79 03`。
 反编译只恢复可无损重编码的完整、有序布局，其他 `79` 结构保留 `native(...)`。
 
+### 调试模式分支
+
+```text
+match context.debug_mode {
+    0 => { /* 常规 AI */ }
+    1 => { /* 预设行为 */ }
+    else => {}
+}
+```
+
+`context.debug_mode` 是共享全局调试选择值，只能作为 `match` 选择项，
+不支持赋值、独立调用或布尔条件。它不是怪物自身的模式，也不切换调试状态。
+`debug_mode` 是 DSL 采用的约定名称；原生非零设置来源及调试用途尚未证实。
+
+必须有 1..255 个严格递增且不重复的 `0..255` case；`else` 可省略。
+原生有符号 i32 与 case 精确比较，命中后不穿透；未命中时执行 `else`，
+没有 `else` 则继续块后指令。全局值不限制为 0/1；负值或大于 255 的值不会命中 case。
+
+编码为 `94 00 count`、各 case 的 `94 01 value`、可选 `94 02`、结束 `94 03`。
+支持嵌套和单语句分支。反编译仅恢复完整且可无损重编码的有序布局，保留 `else`
+是否存在；计数不符、乱序或重复 case 等结构仍使用 `native(...)`。
+
+### 物种分支
+
+```text
+match self.species {
+    1 => { /* 物种 1 */ }
+    11 => { /* 物种 11 */ }
+    else => {}
+}
+```
+
+`self.species` 精确比较当前怪物的物种 ID，不经过物种组归一化。
+只能作为 `match` 选择项，不支持赋值、独立调用或布尔条件。
+必须有 1..255 个严格递增且不重复的 `0..255` case；`else` 可省略。
+命中后不穿透，未命中时执行 `else` 或继续块后指令。支持嵌套和单语句分支。
+工程的 `species` 声明不用于删除或折叠分支，共享脚本保留全部 case。
+
+编码为 `70 00 count`、各 case 的 `70 01 species`、可选的 `70 02` 和结束 `70 03`。
+反编译仅恢复完整、计数一致且有序的可无损布局，其他结构保留 `native(...)`。
+
 ### 物种组分支
 
 ```text
@@ -227,6 +269,25 @@ case 值为 `0..255`，按源码顺序匹配，首个同组 case 胜出，不要
 
 编码为 `2C 00 count`、各 case 的 `2C 01 species`、可选的 `2C 02` 和结束标记
 `2C 03`。反编译保留原始 case 物种 ID、顺序及 `else` 是否存在。
+
+### 当前区域分支
+
+```rust
+match self.area {
+    1 => { /* 区域 1 */ }
+    326 => { /* 区域 326 */ }
+    else => {}
+}
+```
+
+`self.area` 按原生地图适配规则比较当前区域与 case 区域 ID，不是原始 ID 的精确比较。
+双方的区域记录类型为 1 或 3 时分别经过当前地图的区域映射，其他类型保留原值；
+`65535` 保持不变。它不是物种分组，也不是区域移动路线配置编号。
+
+需要 1..255 个 case，值为 `0..65535`，按源码顺序首次匹配，不要求递增；
+重复或映射后等价的 case 保留，不重排、不合并。`else` 可省略，未匹配且无 else 时继续块后代码。
+编码为 `15 00 count`、各 case 的 `15 01 <u16 大端 ID>`、可选 `15 02` 和 `15 03`。
+编译器不预先映射 ID；映射由游戏在执行时完成。反编译仅恢复完整、计数一致且能无损往返的结构。
 
 ### 区域移动路线配置分支
 
@@ -255,7 +316,7 @@ random {
     1 => attack();
     2 => defend();
     1 => {
-        self.update_target_position();
+        self.resolve_target();
         retreat();
     }
 }
@@ -311,9 +372,56 @@ fn main() {
 `self.flashed` 表示当前怪物闪光致盲计时器（actor +2914）非零，
 `self.enraged` 表示怒态标志（actor +2726）非零，检查当前怒态，区别于
 刚进入怒态时触发的 `rage_entered` 事件。
+`self.in_action(group:id)` 接受两个 `0..255` 参数，比较当前实际原生动作的组号与编号。
+对应 `34 00 group id`、可选 else `34 01` 和结束 `34 02`；不提交动作，也不比较动画编号。
+物种分派可能转换提交的动作，原生逻辑也可自行切换动作，因此不等于最近一次 `self.action(group:id, ...)`。
+
+`self.near_target(n)` 接受 `0..255`，检查自身到已保存目标点的水平距离是否不超过
+`max(n × 100, 原生尺寸参数 × 实例缩放 + 60)`；不刷新目标，不比较高度差。
+对应 `22 00 n`、可选 else `22 01` 和结束 `22 02`。
+
+`self.in_area(id)` 接受 `0..65535` 区域 ID，对应 `0E 00 <u16 大端 ID>`、`0E 01`、`0E 02`。
+参数先经原生地图／昼夜适配，再与当前区域比较；不同于 `match self.area` 的双侧映射规则。
+
+`self.airborne` 检查原生空中状态（actor +1040 等于 2），对应 `09 00/01/02` 的 if/else/结束。
+该标记由动作代码维护，不是实时离地高度判断，也不保证所有跳跃或飞行动作都会设置它。
+完整可无损往返的结构恢复为条件，非规范布局保留 `native(...)`。
+
+`self.area_timer_expired` 表示区域相关倒计时（actor +2910，有符号 16 位）小于或等于零。
+它只检查到期状态，不等待、不重置计时，也不触发换区；到期不代表其他换区条件均满足。
+`self.attack_timer_active` 表示攻击模式计时器（actor +2912，有符号 16 位）大于零。
+该计时器仅在攻击模式下递减，但此条件不检查当前模式，也不表示某个招式的剩余时间。
+它不等待、不重置计时，不触发模式切换或换区。
 `self.target.available` 检查当前选中的玩家目标：下标非 `0xFF`、记录有效、
 目标切换状态 `+2042 == 0` 且与怪物处于同一区域；无目标时为假。
 它不检查生命值、视线或攻击距离，不等于存活、可见或可攻击。
+`self.has_player_in_area` 检查是否有活动玩家记录的原始区域 ID（`+2040`）
+与怪物自身的 `+2040` 相同。它不要求玩家已被追踪，也不检查距离、视线或地图／昼夜映射。
+该条件对应 `28 00`、可选的 `28 01` 和 `28 02`，不选择或绑定目标。
+`context.any_player_carrying` 检查所有配置的玩家槽：任一玩家的搬运状态低四位非零时为真。
+它不检查同区、距离、当前目标或物品类别，也不等于背包内持有任意道具。
+
+```rust
+if context.any_player_carrying {
+    transition state_4;
+} else {
+    transition state_9;
+}
+```
+
+该条件对应 `2F 00`、可选的 `2F 01` 和 `2F 02`，不选择目标或触发动作。
+`context.is_daytime` 检查共享环境的昼夜标志：昼位 `0x08` 已设置，或夜位 `0x10`
+未设置时为真；只有夜位设置而昼位未设置时为假。两位均清除或均设置也为真。
+它不读取现实时间、不改变昼夜。对应 `77 00`、可选的 `77 01` 和 `77 02`：
+
+```rust
+if context.is_daytime {
+    // 昼侧行为
+} else {
+    // 夜侧行为
+}
+```
+
 这些属性均为只读布尔条件，不是方法，
 也不能赋值。不支持其他条件属性、`!`、
 `&&`、`||`、比较表达式或 `else if`。
@@ -345,22 +453,28 @@ if self.check_tracked_players() {
 反编译遇到未知原生值时保留原生条件标记为 `native(...)`，确保字节不丢失。
 必须带一个参数，只能用于 if 条件，支持可选 else 和混合嵌套。
 
-实体目标选择使用独立方法语句，接受玩家槽位数字或内置枚举 `TargetStrategy`：
+实体目标选择使用独立方法语句，接受玩家槽位数字或内置枚举 `EntityTarget`：
 
 ```text
-self.select_target_entity(TargetStrategy::SameArea);
+self.select_target_entity(EntityTarget::SameArea);
 self.select_target_entity(3); // 06 01 00 03：玩家槽位 3
 ```
 
-| 策略 | 原生单字节指令 | 行为 |
+| 策略 | 原生编码 | 行为 |
 | --- | --- | --- |
-| `AllowedAreas` | `52` | 从已追踪玩家中按原生优先级选择，允许同区域及物种配置许可的其他区域 |
 | `SameArea` | `53` | 同区域原生复合选敌，包含零累计值时按当前随机值选择、物种专用保留和覆盖规则 |
-| `GroundFiltered` | `5F` | 同区域并按自身脚下碰撞面编号分组过滤，再按原生优先级选择 |
-| `PlayerOrMonster` | `7E` | 按原生配置决定先尝试玩家或怪物，失败后尝试另一类，同时绑定动作目标和目标类型 |
-| `TrackedBySlot` | `12` | 取已追踪玩家中槽位编号最大者，同时绑定动作目标并修改原生事件标志；不是最后加入或最后发现者 |
+| `SameAreaGroundGroup` | `5F` | 同区域并按自身脚下碰撞面编号分组过滤，再按原生优先级选择 |
+| `SameOrAllowedArea` | `52` | 从已追踪玩家中按原生优先级选择，允许同区域及物种配置许可的其他区域 |
+| `TrackedPlayer` | `12` | 取已追踪玩家中槽位编号最大者，同时绑定动作目标并修改原生事件标志；不是最后加入或最后发现者 |
 | `LeaderTarget` | `58` | 复制原生配对首领的已提交玩家目标，同时绑定动作目标；首领不存在则清空 |
+| `PlayerOrMonster` | `7E` | 按原生配置决定先尝试玩家或怪物，失败后尝试另一类，同时绑定动作目标和目标类型 |
+| `CurrentOrLargeMonster` | `06 0D 00 00` | 扫描同区其他大型怪物；后续目标解析在 Attack 模式且已有目标槽时，改用当前槽号模 40 |
+| `LargeMonster` | `06 0D 01 00` | 首个同区其他大型怪物，不要求存活或不同物种 |
+| `OtherMonster` | `06 0D 02 00` | 首个同区、存活、不同物种且通过原生资格过滤的怪物 |
+| `OtherLargeMonster` | `06 0D 03 00` | 首个同区、存活、不同物种的大型怪物，保留原生物种排除名单 |
 
+模式 13 按最多 40 个怪物槽的顺序扫描，不按距离排序；找不到时保存 `65535`，
+后续解析清空目标。`OtherMonster` 的过滤涉及物种特殊状态，不承诺目标可攻击或可捕食。
 这些枚举一一对应完整原生算法，保留全部副作用，不代表独立的随机、最远或最高仇恨算法。
 `52/53/5F` 通常先选累计值至少 50000、其次至少 30000 的候选，档内多人取距离最远者，
 否则取累计值最大者；原生目标保留路径可能提前返回。`5F` 普通区域按自身编号
@@ -368,15 +482,31 @@ self.select_target_entity(3); // 06 01 00 03：玩家槽位 3
 该分组不保证目标与自身同高度或路径可达。
 `12` 的追踪集合为空时不会主动清空旧目标参数。
 首领配对为野猪→大野猪王、黄速龙→黄速龙王、蓝速龙/白速龙→蓝速龙王、红速龙→红速龙王。
-`TargetStrategy` 为保留类型名；策略参数必须使用上述具名成员，不接受未知成员。
+`EntityTarget` 为保留类型名；策略参数必须使用上述具名成员，不接受未知成员。
 数字参数编码为 `06 01 00 slot`，表示玩家记录数组的槽位，不是玩家和怪物共用的实体编号。
 编码范围为 0～255，实际有效槽位取决于游戏中的玩家记录；字节可编码不代表对应槽位存在。
 该形式只设置动作目标参数，不修改策略选出的当前目标，也不隐式调用绑定或坐标更新。
-后续 `update_target_position()` 或动作提交按原生逻辑解析目标：在 `Attack` 模式下，
+后续 `resolve_target()` 或动作提交按原生逻辑解析目标：在 `Attack` 模式下，
 若已有当前选中目标，原生逻辑会以其低 4 位覆盖指定槽位，因此不代表强制锁定该玩家。
 反编译仅将 `06 01 00 slot` 恢复为数字调用，其他目标组保留 `native(...)`。
 该方法可用于主入口、状态、事件和辅助函数，不能作为 if 条件。
-反编译将这些单字节指令输出为上述方法调用；`native(...)` 可显式保留原始字节。
+反编译将上述完整编码输出为方法调用；模式 13 的末字节非零或子模式不受支持时保留
+`native(...)`，不丢弃原始参数。
+
+区域目标使用独立方法：
+
+```text
+self.select_target_area(326);                     // 06 03 00 01 46
+self.select_target_area(AreaTarget::TargetPlayer); // 06 0A 00 00
+```
+
+数字范围为 `0..65535`，编码为大端 u16，经原生地图、昼夜规则适配目的区域。
+`AreaTarget::TargetPlayer` 取当前目标玩家所在区域，无目标时取自身区域；只取区域低字节，
+不执行数字形式的地图适配。`AreaTarget` 是保留类型名，仅有 `TargetPlayer` 成员。
+两种形式均设置区域目标参数并重置路线目的地缓存，后续路线处理选择实际下一跳；
+不直接换区，也不等同于 `self.try_change_area()`。方法无返回值，不用于条件。
+反编译只恢复模式 3 的占位字节为零及模式 10 的两个占位字节均为零的布局，
+其他布局保留 `native(...)`，即使原生会覆盖这些参数也不进行有损归一化。
 
 已经选择目标后，可以为后续动作绑定玩家目标：
 
@@ -385,30 +515,36 @@ self.bind_awareness_target(); // 11
 self.bind_current_target();   // 13
 self.set_mode(Mode::Normal);  // 40 00
 self.set_mode(Mode::Attack);  // 40 01
-self.update_target_position();       // 4D
+self.resolve_target();       // 4D
+self.try_change_area();              // 18
 self.select_target_point(0);     // 06 02 01 00
+self.select_target_point(PointTarget::Default); // 06 02 00 00
 self.select_target_point(Direction::Forward500); // 06 06 00 00
 self.increment_random_value(); // 84
 ```
 
 `set_mode()` 调用原生模式切换逻辑，不切换状态槽；原生条件可能阻止切换，
-回到 Normal 时会清理玩家追踪及相关感知数据。`update_target_position()` 按当前目标配置
-解析动作目标实体或坐标，不执行目标选择策略或移动动作。
+回到 Normal 时会清理玩家追踪及相关感知数据。`resolve_target()` 按当前目标配置
+解析目标：实体模式可更新目标对象引用及坐标，点模式计算或读取坐标，区域模式解析路线下一跳。
+它不执行移动动作，也不表示建立追踪、仇恨或锁定关系。
 `increment_random_value()` 将实例保存的 16 位随机值加一（溢出回绕），
 不重新生成随机数、不立即选择目标。`0x7B` 和 `0x84` 均反编译为此方法，
 编译统一生成 `0x84`。导出的往返校验仅允许指令位置上的 `7B → 84` 归一化，
 不修改操作数中的 `0x7B`。`0x40` 的非标准非零操作数保留为 `native(...)`。
 
+`select_target_point(PointTarget::Default)` 选择当前区域的默认配置点，保留原生特殊选择及后备规则，
+不等同于点索引 `0`。只将 `06 02 00 00` 恢复为此语法，其他参数组合保留 `native(...)`。
+
 `select_target_point(index)` 从当前物种、当前区域的路线点表选择目标，索引编码范围为
 0～255；实际有效索引取决于该区域的点数，编译器无法静态验证原生表长度。
-该方法只配置目标，不隐式刷新坐标或执行移动；需要时随后调用 `update_target_position()`。
+该方法只配置目标，不隐式刷新坐标或执行移动；需要时随后调用 `resolve_target()`。
 它不修改当前玩家目标选择策略。
 
 同一方法也接受内置枚举 `Direction`，无需包装参数：
 
 ```text
 self.select_target_point(Direction::Forward500);
-self.update_target_position();
+self.resolve_target();
 ```
 
 枚举直接表示原生固定的“方向＋距离”组合，不接受第二个距离参数：
@@ -423,7 +559,7 @@ self.update_target_position();
 解析坐标时，以怪物自身位置和当前朝向计算对应距离的偏移目标点。
 与数字参数相同，方向参数只配置目标，不隐式更新坐标或执行移动。
 `Direction` 是保留类型名；参数必须使用表中的八个成员之一，不接受额外参数。
-反编译将 `06 02 01 index` 和上述八种方向编码恢复为 `select_target_point`；
+反编译将 `06 02 00 00`、`06 02 01 index` 和上述八种方向编码恢复为 `select_target_point`；
 非零尾参数及其他 `06` 形式保留 `native(...)`，保证字节不丢失。
 
 `bind_awareness_target()` 从察觉事件来源掩码 `+2821` 中取槽位编号最大者，
@@ -432,25 +568,36 @@ self.update_target_position();
 转换为动作上下文的 `0xFFFF`。两者均设置原生玩家目标命令类型与参数组，
 只影响接下来提交的动作，不执行新的目标搜索，也不接受参数。
 
+`self.try_change_area()` 尝试按当前区域路线选择目的区域并进入换区处理脚本。
+它不接受参数、不返回布尔值，不能用于 `if`。路线条目数大于 1 且原生全局门允许时，
+选择目的区域，保存续行位置并转入 `root[6]` 中配置的脚本；条件不满足时继续后续指令。
+它不直接传送、不保证立即完成换区，也不隐式检查 `self.area_timer_expired`。
+
 语义层以条件和两条语句分支表示 `if`；原生编码层为条件提供开始、
 可选的 else、结束标记。`self.flashed` 对应 `39 00`、`39 01`、`39 02`。
 `self.enraged` 对应 `35 00`、`35 01`、`35 02`，可与闪光条件混合嵌套。
+`self.area_timer_expired` 对应 `29 00`、`29 01`、`29 02`；计时值大于零时走 else。
+`self.attack_timer_active` 对应 `2A 00`、`2A 01`、`2A 02`；计时值小于或等于零时走 else。
+`self.has_player_in_area` 对应 `28 00`、可选的 `28 01` 和 `28 02`。
 `self.target.available` 对应 `54 00`、`54 01`、`54 02`，同样支持混合嵌套。
 `self.check_tracked_players()` 对应 `02 00`、`02 01`、`02 02`。
 `self.mode_is(value)` 对应 `0B 00 value`、`0B 01`、`0B 02`。
 没有 else 编码的条件不能使用 else；不隐式模拟未确认的原生行为。
 
-分支中可调用函数或使用当前入口允许的 `reset`、`restart`、`transition`。
+分支中可调用函数或使用当前入口允许的 `end`、`restart`、`transition`。
 花括号只结束条件块，不结束脚本。分支内的提前转移不视为整个函数终止，
 编译器保守保留块后的自动收尾（即使两条分支均已转移），以保持原生字节往返。
 分支内的原生条件必须在同一分支内闭合，不能跨越 DSL 花括号。
-主入口和匿名状态／事件入口分支中的 `return;` 通过重排后续代码实现：
+主入口和匿名状态入口分支中的 `return;` 通过重排后续代码实现：
 仅将剩余语句放入未返回的分支，不重复求值已有条件。
 重排可能复制后续代码，生成脚本仍受 64 KiB 上限约束。
 子脚本函数的 `return;` 直接生成其槽位对应的 `FF 01/02/03`，无论槽位是显式还是自动分配。
-未闭合的原始 `native(...)` 条件内不能使用入口的 `return;`，因为没有可重排的 DSL 分支结构；
-子脚本的返回保留原生条件闭合标记。
-反编译将完整的单 else `02`/`0B`/`35`/`39`/`54` 条件结构还原为该语法；无法表达的结构保留 native。
+命名事件的 `return;` 直接生成当前事件槽的 `FF xx`。
+子脚本和命名事件共用作用域返回规则：原生条件内部也可使用 `return;`，
+编译器保留其后语句及条件闭合标记；反编译只将匹配当前作用域的返回标记还原为 `return;`。
+未闭合的原始 `native(...)` 条件内不能使用主入口或匿名状态入口的 `return;`，
+因为没有可重排的 DSL 分支结构。
+反编译将完整的单 else `02`/`0B`/`29`/`35`/`39`/`54` 条件结构还原为该语法；无法表达的结构保留 native。
 
 ### 请求处理器
 
@@ -459,7 +606,7 @@ self.update_target_position();
 ```text
 fn main() {
     handle dispatch_request() then {
-        reset;
+        end;
     }
 
     // 没有请求，或处理器放行时，从处理器之后继续
@@ -481,7 +628,7 @@ handler fn process_request() {
 
 - `handle 处理器() then { ... }` 在进入时检查一次请求状态；没有请求则整段跳过。
   处理器正常结束后执行 `then`，并继续执行 `then` 之后的语句。
-- `then` 是调用方自己的代码，`reset`、`restart`、`transition` 保持原语义；
+- `then` 是调用方自己的代码，`end`、`restart`、`transition` 保持原语义；
   它不能使用 `return;` 或 `pass;`。
 - `handler fn` 是专用调用约定：只能通过 `handle` 或另一个处理器的尾调用进入，
   不能被普通函数调用，也不能作为状态或事件入口。
@@ -566,11 +713,11 @@ fn recover_loop() { restart; }
 主状态入口函数自然结束（或执行 `return;` 返回入口）时，编译器自动补 `FF 00`，
 重置到主状态 0。辅助函数返回后继续调用处，不在辅助函数末尾补重置。
 反编译省略 main 和普通状态末尾的 `FF 00`，由编译器补回；条件分支中的
-提前重置显示为 `reset;`。导出时校验重新编译后的字节一致。
-`reset;` 对应 `FF 00`，重置主状态及活动事件通道，可在主状态和事件中显式使用；
-`reset forget_target;` 对应 `FF F7`，在重置执行流程时额外清除当前目标槽的
+提前重置显示为 `end;`。导出时校验重新编译后的字节一致。
+`end;` 对应 `FF 00`，重置主状态及活动事件通道，可在主状态和事件中显式使用；
+`end forget_target;` 对应 `FF F7`，在重置执行流程时额外清除当前目标槽的
 追踪标记、追踪计时、感知累积和目标优先值；它不直接把当前目标编号写成 `0xFF`。
-`forget_target` 只作为 `reset` 的修饰项，不是独立关键字或可调用方法。
+`forget_target` 只作为 `end` 的修饰项，不是独立关键字或可调用方法。
 它不等同于事件自然收尾。`restart;` 对应 `04`，仅在主状态中重新进入 main。
 两者均为语句关键字，不接受 `reset()`／`restart()` 调用写法；reset 可带上述 forget_target 修饰项。
 已有显式 transition、restart 或终止指令的末尾不重复补齐；编辑器源码不被改写。
@@ -619,7 +766,7 @@ actions {
 
 fn attack() {
     slash(0);
-    action[3:6](0);
+    self.action(3:6, 0);
     wait(10);
     native(0x92);
 }
@@ -627,15 +774,15 @@ fn attack() {
 
 | 写法 | 编码/作用 |
 | --- | --- |
-| action[g:i](p) | 05 g i p，动作请求 |
+| self.action(g:i, p) | 05 g i p，动作请求 |
 | wait(n) | 48 n，原生延迟字段 |
 | clear_requests() | 1E |
 | nop() | 92 |
 | stop() | 68，原生停止并走重启收尾 |
 | transition alias | 07 index |
 | restart; | 04，重装状态 0 |
-| reset; | FF 00，重置主状态及活动事件通道 |
-| reset forget_target; | FF F7，清除当前目标槽的追踪数据并重置 |
+| end; | FF 00，重置主状态及活动事件通道 |
+| end forget_target; | FF F7，清除当前目标槽的追踪数据并重置 |
 | native(bytes…) | 原样保留字节，并输出提示 |
 
 `clear_requests()` 清除已接受请求的标志和编号、当前请求优先级、

@@ -11,11 +11,11 @@
 
 ## 二进制与样本范围
 
-静态分析对象为 `/Users/wzk/Projects/games/mhf/mhfo-hd.dll`，IDA 基址 `0x10000000`，
+静态分析对象为 `mhfo-hd.dll`，IDA 基址 `0x10000000`，
 SHA-256 为 `95c580195f4080d2e9582c8c9df36abeb280476e088b6366583c5f138da8f301`。
 下文函数和全局地址均属于此映像。
 
-只读验证样本为 `/Users/wzk/Games/mhfzz/dat/mhfsdt.bin`，SHA-256 为
+只读验证样本为 `dat/mhfsdt.bin`，SHA-256 为
 `1d1e8b417344916c20fa8ebc6eeb8aba1ea7d5efd80b9db3f0556a7a1fe53222`。
 使用现有 `mhf_resource::container::open_layers` 解码，得到：
 

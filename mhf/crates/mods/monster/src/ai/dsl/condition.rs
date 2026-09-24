@@ -3,9 +3,18 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Condition {
     Active,
+    Airborne,
+    InArea(u16),
+    NearTarget(u8),
+    InAction(u8, u8),
     TargetAngleIn { min: Degrees, max: Degrees },
     Flashed,
     Enraged,
+    AreaTimerExpired,
+    AttackTimerActive,
+    AnyPlayerCarrying,
+    IsDaytime,
+    HasPlayerInArea,
     TargetAvailable,
     CheckTrackedPlayers,
     ModeIs(Mode),
@@ -83,8 +92,17 @@ impl ConditionMarker {
         let (&opcode, operands) = bytes.split_first()?;
         let marker = match (opcode, operands) {
             (0x08, [0]) => Begin(Condition::Active),
+            (0x09, [0]) => Begin(Condition::Airborne),
+            (0x0e, [0, hi, lo]) => Begin(Condition::InArea(u16::from_be_bytes([*hi, *lo]))),
+            (0x34, [0, group, id]) => Begin(Condition::InAction(*group, *id)),
+            (0x22, [0, value]) => Begin(Condition::NearTarget(*value)),
             (0x39, [0]) => Begin(Condition::Flashed),
             (0x35, [0]) => Begin(Condition::Enraged),
+            (0x29, [0]) => Begin(Condition::AreaTimerExpired),
+            (0x2a, [0]) => Begin(Condition::AttackTimerActive),
+            (0x28, [0]) => Begin(Condition::HasPlayerInArea),
+            (0x2f, [0]) => Begin(Condition::AnyPlayerCarrying),
+            (0x77, [0]) => Begin(Condition::IsDaytime),
             (0x54, [0]) => Begin(Condition::TargetAvailable),
             (0x02, [0]) => Begin(Condition::CheckTrackedPlayers),
             (0x78, [0, min, max]) if min <= max => Begin(Condition::TargetAngleIn {
@@ -106,7 +124,22 @@ impl ConditionMarker {
     fn is_condition_opcode(opcode: u8) -> bool {
         matches!(
             opcode,
-            0x02 | 0x08 | 0x0b | 0x1b | 0x35 | 0x39 | 0x54 | 0x78
+            0x02 | 0x08
+                | 0x09
+                | 0x0b
+                | 0x0e
+                | 0x22
+                | 0x28
+                | 0x1b
+                | 0x29
+                | 0x2a
+                | 0x2f
+                | 0x34
+                | 0x35
+                | 0x39
+                | 0x54
+                | 0x77
+                | 0x78
         )
     }
 }
@@ -121,12 +154,19 @@ impl Condition {
     pub(super) fn parse(name: &str) -> Option<Self> {
         match name {
             "active" => Some(Self::Active),
+            "airborne" => Some(Self::Airborne),
+            "in_area" => Some(Self::InArea(0)),
+            "in_action" => Some(Self::InAction(0, 0)),
+            "near_target" => Some(Self::NearTarget(0)),
             "target_angle_in" => Some(Self::TargetAngleIn {
                 min: Degrees::from_native(0),
                 max: Degrees::from_native(0),
             }),
             "flashed" => Some(Self::Flashed),
             "enraged" => Some(Self::Enraged),
+            "area_timer_expired" => Some(Self::AreaTimerExpired),
+            "attack_timer_active" => Some(Self::AttackTimerActive),
+            "has_player_in_area" => Some(Self::HasPlayerInArea),
             "target.available" => Some(Self::TargetAvailable),
             "check_tracked_players" => Some(Self::CheckTrackedPlayers),
             "mode_is" => Some(Self::ModeIs(Mode::Normal)),
@@ -137,11 +177,20 @@ impl Condition {
     pub(crate) fn name(self) -> String {
         match self {
             Self::Active => "self.active",
+            Self::Airborne => "self.airborne",
+            Self::InAction(group, id) => return format!("self.in_action({group}:{id})"),
+            Self::NearTarget(value) => return format!("self.near_target({value})"),
+            Self::InArea(area) => return format!("self.in_area({area})"),
             Self::TargetAngleIn { min, max } => {
                 return format!("self.target_angle_in({}, {})", min.value(), max.value());
             }
             Self::Flashed => "self.flashed",
             Self::Enraged => "self.enraged",
+            Self::AreaTimerExpired => "self.area_timer_expired",
+            Self::AttackTimerActive => "self.attack_timer_active",
+            Self::AnyPlayerCarrying => "context.any_player_carrying",
+            Self::IsDaytime => "context.is_daytime",
+            Self::HasPlayerInArea => "self.has_player_in_area",
             Self::TargetAvailable => "self.target.available",
             Self::CheckTrackedPlayers => "self.check_tracked_players()",
             Self::ModeIs(value) => return format!("self.mode_is({})", value.name()),
@@ -153,12 +202,40 @@ impl Condition {
     pub(super) fn is_method(self) -> bool {
         matches!(
             self,
-            Self::CheckTrackedPlayers | Self::ModeIs(_) | Self::TargetAngleIn { .. }
+            Self::CheckTrackedPlayers
+                | Self::ModeIs(_)
+                | Self::InArea(_)
+                | Self::NearTarget(_)
+                | Self::InAction(_, _)
+                | Self::TargetAngleIn { .. }
         )
     }
 
     pub(super) fn encoding(self) -> ConditionEncoding {
         match self {
+            Self::InArea(area) => {
+                let [hi, lo] = area.to_be_bytes();
+                ConditionEncoding {
+                    begin: vec![0x0e, 0, hi, lo],
+                    otherwise: &[0x0e, 1],
+                    end: &[0x0e, 2],
+                }
+            }
+            Self::InAction(group, id) => ConditionEncoding {
+                begin: vec![0x34, 0, group, id],
+                otherwise: &[0x34, 1],
+                end: &[0x34, 2],
+            },
+            Self::NearTarget(value) => ConditionEncoding {
+                begin: vec![0x22, 0, value],
+                otherwise: &[0x22, 1],
+                end: &[0x22, 2],
+            },
+            Self::Airborne => ConditionEncoding {
+                begin: vec![0x09, 0],
+                otherwise: &[0x09, 1],
+                end: &[0x09, 2],
+            },
             Self::Active => ConditionEncoding {
                 begin: vec![0x08, 0],
                 otherwise: &[0x08, 1],
@@ -189,6 +266,38 @@ impl Condition {
                 otherwise: &[0x54, 0x01],
                 end: &[0x54, 0x02],
             },
+            // 10862F40: execute the body iff signed i16 +2910 is <= 0.
+            Self::AreaTimerExpired => ConditionEncoding {
+                begin: vec![0x29, 0],
+                otherwise: &[0x29, 1],
+                end: &[0x29, 2],
+            },
+            // 10862FC0: checks signed i16 +2912, not the current attack mode.
+            Self::AttackTimerActive => ConditionEncoding {
+                begin: vec![0x2a, 0],
+                otherwise: &[0x2a, 1],
+                end: &[0x2a, 2],
+            },
+            // 108632F0: any configured player has a nonzero carry-state low nibble.
+            // No area, distance, item-category, or target filter is applied.
+            Self::AnyPlayerCarrying => ConditionEncoding {
+                begin: vec![0x2f, 0],
+                otherwise: &[0x2f, 1],
+                end: &[0x2f, 2],
+            },
+            // 108665F0: day bit set OR night bit clear, including neither bit set.
+            Self::IsDaytime => ConditionEncoding {
+                begin: vec![0x77, 0],
+                otherwise: &[0x77, 1],
+                end: &[0x77, 2],
+            },
+            // 10862E40: some active player record shares the monster's raw
+            // area id at +2040. No tracking, distance, or mapping is applied.
+            Self::HasPlayerInArea => ConditionEncoding {
+                begin: vec![0x28, 0],
+                otherwise: &[0x28, 1],
+                end: &[0x28, 2],
+            },
             // 108635A0: execute the body iff the rage flag at +2726 is nonzero.
             Self::Enraged => ConditionEncoding {
                 begin: vec![0x35, 0x00],
@@ -216,6 +325,11 @@ mod tests {
             Condition::Active,
             Condition::Flashed,
             Condition::Enraged,
+            Condition::AreaTimerExpired,
+            Condition::AttackTimerActive,
+            Condition::AnyPlayerCarrying,
+            Condition::IsDaytime,
+            Condition::HasPlayerInArea,
             Condition::TargetAvailable,
             Condition::CheckTrackedPlayers,
             Condition::ModeIs(Mode::Normal),
@@ -251,6 +365,21 @@ mod tests {
             &[0x08][..],
             &[0x35, 0, 1],
             &[0x39, 3],
+            &[0x29],
+            &[0x29, 3],
+            &[0x29, 0, 1],
+            &[0x2a],
+            &[0x2a, 3],
+            &[0x2a, 0, 1],
+            &[0x2f],
+            &[0x2f, 3],
+            &[0x2f, 0, 1],
+            &[0x28],
+            &[0x28, 3],
+            &[0x28, 0, 1],
+            &[0x77],
+            &[0x77, 3],
+            &[0x77, 0, 1],
             &[0x78, 0],
             &[0x78, 0, 200, 32],
             &[0x0b, 0],

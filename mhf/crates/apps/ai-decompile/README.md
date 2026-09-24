@@ -7,7 +7,7 @@
 mhf-ai-decompile 1 31
 
 # 从其他目录运行：环境变量覆盖输入游戏目录
-MHF_GAME_DIR="$HOME/Games/mhfz" mhf-ai-decompile 1 31
+MHF_GAME_DIR="/path/to/game" mhf-ai-decompile 1 31
 ```
 
 PowerShell：
@@ -75,7 +75,7 @@ Nix 命令保留调用目录，传入 `--config` 和 `--game-dir`。
 ```sh
 cargo build -p mhf-ai-decompile --release
 cargo test -p mhf-ai-decompile --target aarch64-apple-darwin
-MHF_AI_DLL="$HOME/Games/mhfz/mhfo-hd.dll" \
+MHF_AI_DLL="/path/to/game/mhfo-hd.dll" \
   cargo test -p mhf-ai-decompile --target aarch64-apple-darwin real_dll_projects_compile -- --ignored
 ```
 

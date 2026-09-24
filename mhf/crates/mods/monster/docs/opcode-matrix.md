@@ -87,10 +87,10 @@
 | `0x12` | pick-mask-lane-and-bind | 无 | 扫 `+2687`（仇恨标志），把最高 lane 同时存为当前下标与 `+2612`（cmd_pl_target），并清两个续行标志 | named | confirmed |
 | `0x13` | bind-current-lane | 无 | 设动作模式 1/组 0，把 `+2612`（cmd_pl_target）当当前下标（非 -1 时掩到 4 位） | named | confirmed |
 | `0x14` | angle-threshold gate | 选择子 + `u8` | 把载荷字节换算成角度阈值，算到所选目标上下文的相对角，超阈值则扫到 `0x14` 体标记 | named | confirmed |
-| `0x15` | target-id list gate | 选择子 + 计数 + 大端 id 列表 | 选择子 0 读计数与大端目标 id 列表，逐个归一化，未命中则跳过嵌套 `0x15` 体 | named | confirmed |
+| `0x15` | area_match | 选择子 + 计数 / u16 大端 case | 按地图适配后的区域 ID 匹配 actor+2040；按源码顺序首次匹配；DSL 为 `match self.area`，else 可省略 | named | confirmed |
 | `0x16` | call_table9_subscript | `u8` | 调用 `root[9][index]`；无条件把续行保存到 `+2608`，由 `FF 03` 返回；不改变 stage，再次调用会覆盖续行；DSL 使用 table 9 函数 | named | confirmed |
 | `0x17` | set-target-context | 4 字节 | 只在 `+2844`（区域移动计数）未置位时初始化四字节目标上下文：目标模式、计数、表选择子、上下文标志 | named | confirmed |
-| `0x18` | advance-target-context | 无 | 目标上下文模式大于 1 且全局门允许时，标记上下文有效、调用目标选择、装入选中的脚本指针 | named | confirmed |
+| `0x18` | try_change_area | 无 | 路线条目数大于 1 且全局门允许时，选择目的区域、保存续行并转入 root[6] 配置脚本；DSL 为 self.try_change_area()，不保证立即完成换区 | named | confirmed |
 | `0x19` | copy-target-id-to-action | 无 | 把 `+3208`（maji_next_stage_no）拷进当前动作元组（模式 3/组/下标），并调用该路径使用的原生空钩子 | named | confirmed |
 | `0x1A` | set-normalized-target-id | 大端 `u16` | 读大端 16 位目标 id，归一化后写入待定/当前目标与动作选择字段 | named | confirmed |
 | `0x1B` | selection-byte equality gate | 选择子 + `u8` | 选择子 0 比较载荷字节与 `+2681`（mind 状态 b），否则扫到 `0x1B` 标记 | named | confirmed |
@@ -106,14 +106,14 @@
 | `0x25` | reset-repeat-counter | 无 | 清 `+2623`（解释器停止标志 2），也就是 `0x24` 用的重复计数器 | named | confirmed |
 | `0x26` | set-secondary-selection-byte | `u8` | 把载荷字节写入 `+2738` | named | confirmed |
 | `0x27` | ordered-runtime-byte branch | 选择子 + 计数 + 有序表 | 拿 `+27`（关联 actor 指针）与有序字节列表比较，按结果跳过嵌套 `0x27` 体 | generic | operation_confirmed |
-| `0x28` | same-species-actor gate | 选择子 | 扫活动 actor 记录，找与 `+2040`（动作 id）同归一化物种的记录；没找到则走嵌套 `0x28` 体 | named | confirmed |
-| `0x29` | positive-counter gate | 选择子 | 仅在带符号的 `+2910` 为正时继续，否则走嵌套 `0x29` 体 | named | confirmed |
-| `0x2A` | positive-angle-counter gate | 选择子 | 仅在带符号的 `+2912` 为正时继续，否则走嵌套 `0x2A` 体 | generic | operation_confirmed |
+| `0x28` | player-in-area gate | 选择子 | 扫活动玩家记录，找与自身 `+2040`（当前区域 id）相同的记录；找到则进入条件体，否则走 else 或结束。不做地图／昼夜映射，也不检查追踪或距离 | named | confirmed |
+| `0x29` | area_timer_expired | 选择子 | signed i16 `+2910 <= 0` 进入正文，正值跳至 else 或结束；只检查区域相关倒计时，不等待或触发换区；DSL 为 `self.area_timer_expired` | named | confirmed |
+| `0x2A` | attack_timer_active | 选择子 | signed i16 `+2912 > 0` 进入正文，否则跳至 else 或结束；DSL 为 `self.attack_timer_active`，不检查当前模式 | named | confirmed |
 | `0x2B` | field-equality branch | 选择子 + `u8` | 选择子 0 比较九个运行字段/actor 类型组合之一与载荷字节，不等则跳过嵌套 `0x2B` 体 | named | confirmed |
 | `0x2C` | species-group branch | 选择子 + 计数 + 物种 ID | 按顺序把当前物种与各 case 物种经 `0x11A4E9C0` 归组后比较；首个同组 case 进入正文，无匹配则进入可选 else 或结束 | named | confirmed |
 | `0x2D` | copy-action-context-7 | 无 | 设动作模式 7，把 `+2922`（两态字节 a）拷进当前动作组/下标字段 | named | confirmed |
 | `0x2E` | select-context-table | `u8` | 由 actor 类型与载荷字节重算 `+1968`；特殊类型选不同的上下文表偏移与模式值 | named | confirmed |
-| `0x2F` | available-lane gate | 选择子 | 在配置的 lane 里找低位可用标志非零的项；没找到则走嵌套 `0x2F` 体 | named | confirmed |
+| `0x2F` | any_player_carrying | 选择子 | 任一配置玩家的搬运状态低四位非零时进入正文，否则跳至 else 或结束；DSL 为 `context.any_player_carrying` | named | confirmed |
 | `0x30` | mark-available-lane | 无 | 找到第一个低位可用标志非零的 lane，把 `+3190` 置 1 | named | confirmed |
 | `0x31` | set-action-mode-8 | 无 | 把当前动作模式字节设为 8 | named | confirmed |
 | `0x32` | selection-byte equality gate | 选择子 + `u8` | 选择子 0 比较 `+2088` 与载荷字节，不等则走嵌套 `0x32` 体 | named | confirmed |
@@ -171,14 +171,14 @@
 | `0x67` | runtime_flag_2739_gate | 选择子 | 选择子 0 在 `+2739`（命令模式标志）为 0 时立即返回，否则扫 `0x67` 标记块 | named | confirmed |
 | `0x68` | request_runtime_refresh | 无 | 当 `+2739`（命令模式标志）与 `+2659` 都为 0 时，置 `+2659`=2、`+2622`=1 并调用 `0x10860430` | named | confirmed |
 | `0x69` | short_angle_threshold_branch | `u8` | 选择子 0 刷新向量，由后一字节缩放得阈值，与绝对角差比较后走 `0x69` 标记分支；另要求阈值小于 `0x4000` | generic | operation_confirmed |
-| `0x70` | ordered_selector_scan | 选择子 + 计数 | 选择子 0 读计数，把列表字节与 `+3`（物种 id）比较，扫过或跳过嵌套 `0x70` 块；选择子 1/2 扫到选择子 3 | named | confirmed |
+| `0x70` | species_match | 选择子 + 计数 / u8 case | 按递增 case 精确匹配 `actor+3` 物种 ID，不做物种组归一化；DSL 为 `match self.species`，else 可省略 | named | confirmed |
 | `0x71` | threshold_selector_gate | 选择子 + `u8` | 选择子 0 把载荷字节与带符号 `+3212`（带符号阈值）比较，不满足则扫嵌套 `0x71` 块 | named | confirmed |
 | `0x72` | global_guard_selector_gate | 选择子 | 选择子 0 由全局 `0x1E8001EC`+8、`0x1ED52870`、`0x1ED52951` 门控后扫嵌套 `0x72` 块 | generic | operation_confirmed |
 | `0x73` | masked_runtime_selector_scan | 选择子 + 计数 | 选择子 0 把列表与 `+2920`（目标标志字）按 `0x7f` 掩码后比较，相等时清掉保留高位的字段 | named | confirmed |
 | `0x74` | masked_runtime_threshold_gate | 选择子 + `u8` | 选择子 0 把载荷字节与 `+2920`（目标标志字）按 `0x7f` 掩码后比较；受保护的辅助函数可让条件直接成立 | generic | operation_confirmed |
 | `0x75` | ordered_runtime_2930_scan | 选择子 + 计数 | 选择子 0 把列表字节与 `+2930`（`0x75` 比较字节）比较，跳过或扫过嵌套 `0x75` 块 | generic | operation_confirmed |
 | `0x76` | global_flag_ordered_scan | 选择子 + 计数 | 选择子 0 由全局 `0x1E8001EC`+2357 的位推出比较字节，比较列表后扫嵌套 `0x76` 块 | generic | operation_confirmed |
-| `0x77` | global_bit_gate | 选择子 | 选择子 0 仅在全局字节 `0x1ED6BCA0` 置位 `0x10` 且清位 `0x08` 时继续 | generic | operation_confirmed |
+| `0x77` | daytime_branch | 选择子 | 全局 `0x1ED6BCA0` 昼位 `0x08` 已设置或夜位 `0x10` 未设置时进入正文；仅夜位设置时进入 else；两位均未设置也进入正文；DSL 为 `context.is_daytime` | named | confirmed |
 | `0x78` | angle_interval_gate | 选择子 + 2 字节 | 选择子 0 读上下界字节，由 `+2068`（角度来源）与 `+164` 算当前角，条件成立才扫嵌套 `0x78` 块 | named | confirmed |
 | `0x79` | callback_result_ordered_scan | 选择子 + 计数 + 参数 + 列表 | 选择子 0 用载荷字节 2 调 `+1140`（行为对象指针）+12 的函数指针，把返回字节与从偏移 4 开始的有序表比较 | named | confirmed |
 | `0x7a` | mapped_global_ordered_scan | 选择子 + 计数 | 选择子 0 把全局 `0x1E7FFF3C`+52 经表 `0x118648F0` 映射后比较列表，再扫嵌套 `0x7a` 块 | generic | operation_confirmed |
@@ -198,7 +198,7 @@
 | `0x91` | compute_angle_to_field_164 | `u8` | 由 `+172` 起的向量算出无符号 16 位结果存进 `+164`（朝向），并消耗载荷字节 | named | confirmed |
 | `0x92` | consume_only | 无 | 除消耗 opcode 字节外没有观察到其他动作 | named | confirmed |
 | `0x93` | consume_only | 无 | 与 `0x92` 相同的空实现 | named | confirmed |
-| `0x94` | global_value_ordered_scan | 选择子 + 计数 | 选择子 0 把计数列表与全局 dword `0x11C6A7E8` 比较并扫嵌套 `0x94` 块 | named | operation_confirmed |
+| `0x94` | context.debug_mode（DSL 约定名） | 选择子；0 带计数，1 带 u8 case | 有序精确匹配全局 i32 `0x11C6A7E8`；更大的 case 不会命中，而是跳至默认分支或结束。原生脚本在常规 AI 与 root[18][4] 之间选择；非零值来源未确认 | generic | operation_confirmed |
 | `0x99` | set_field_164_high_byte | `u8` | 把载荷字节左移 8 位写入 dword `+164`（朝向），共消耗 2 字节 | named | confirmed |
 | `0x9a` | scaled_runtime_threshold_gate | 选择子 + `u8` | 选择子 0 把载荷字节按全局浮点 `0x119B5EF0` 与 `+2712` 缩放，与 `+2700` 比较后条件性跳过嵌套 `0x9a` 块 | generic | operation_confirmed |
 | `0x9b` | selected_record_gate | 选择子 | 选择子 0 用原始记录标志、辅助函数与记录偏移 `+1040` 检查 `+1826`（玩家域下标，解析到 `0x1DC6B750 + 4176*slot`）处的选中记录，全部通过则立即返回 | named | confirmed |

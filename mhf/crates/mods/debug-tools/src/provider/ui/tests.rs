@@ -1035,7 +1035,8 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
         model: 0x2000,
         species: 6,
     };
-    let source = "mhf_ai 1; species 6; base native; states { idle { action[3:6](0); restart; } }";
+    let source =
+        "mhf_ai 1; species 6; base native; states { idle { self.action(3:6, 0); restart; } }";
     let mut ui = DebugUi::new(DebugSnapshot {
         ready: true,
         ai_targets: vec![target],

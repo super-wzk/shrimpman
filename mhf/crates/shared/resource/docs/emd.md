@@ -151,16 +151,16 @@ the known name range remain visible.
 
 ## Real-resource verification
 
-Local resources were found under `~/Games/mhfz/dat`, `~/Games/mhfzz/dat`, and
-`~/Games/zz/mhfz/dat`; the first and third files are byte-identical. The DLL in
-`mhfz` has SHA-256 `95c580195f4080d2e9582c8c9df36abeb280476e088b6366583c5f138da8f301`,
-matching the analyzed DLL. Do not assume the differently named installation
-uses the same executable: `mhfzz` has a different DLL hash.
+The two resource samples are identified by their encoded SHA-256 below.
+Sample A accompanies the analyzed DLL with SHA-256
+`95c580195f4080d2e9582c8c9df36abeb280476e088b6366583c5f138da8f301`.
+Sample B accompanies a different DLL; resource layouts do not establish
+executable compatibility.
 
 | Sample | Encoded SHA-256 | Decoded bytes | Species slots | Root 22 |
 | --- | --- | --- | --- | --- |
-| mhfz | `fc1cc983f1b3411fb62f256eb40f31984da3a160747d37cd8cf80a26d57d8c81` | 2,572,800 | 177 | offset 2,571,008; 64 records |
-| mhfzz | `e68e03f1274d9d055cc8e42b0427bb99b0cebfe9c905f951900b991f4cc8afd1` | 2,571,008 | 177 | offset 35,968; 40 records |
+| A | `fc1cc983f1b3411fb62f256eb40f31984da3a160747d37cd8cf80a26d57d8c81` | 2,572,800 | 177 | offset 2,571,008; 64 records |
+| B | `e68e03f1274d9d055cc8e42b0427bb99b0cebfe9c905f951900b991f4cc8afd1` | 2,571,008 | 177 | offset 35,968; 40 records |
 
 Both samples pass all 20 known root views, every supported nested directory,
 and workbench scalar-edit/envelope-repack/reopen checks. The latter compares
@@ -182,7 +182,7 @@ by any stride and does not traverse the targets, so the loader alone cannot
 establish it as a record count.
 
 Reading each non-null target as `value_04` records of 16 bytes is the only
-stride among 4, 8, 16 and 32 that fits the whole `mhfz` sample: 3,755 non-null
+stride among 4, 8, 16 and 32 that fits the whole sample A: 3,755 non-null
 entries give 39,682 records, in which bytes +3, +9, +11, +13 and +15 are zero in
 every single record, and 3,747 distinct target spans overlap the next target in
 only 8 cases. Under the 4- and 8-byte readings those zero lanes fail and the
@@ -222,7 +222,7 @@ to one index space without establishing what selects that index.
 
 ### Static consumer audit
 
-For the matching `mhfz` DLL, the current IDA database reports 2,185 direct
+For the DLL accompanying sample A, the current IDA database reports 2,185 direct
 references to the decoded EMD global at `1E77DCE0`, in 1,455 functions. Full
 disassembly and pseudocode were collected for those functions, including the
 13 decompilations whose inline MCP results were truncated. This closes the
