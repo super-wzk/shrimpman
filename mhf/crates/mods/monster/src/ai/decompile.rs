@@ -984,15 +984,20 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             }
             continue;
         }
-        // A handler's `pass;` clears the takeover byte and then leaves the
-        // function, so it is either the last statement or followed by the return.
-        if context.is_handler() && *b == [0x0d, 0x04] {
-            let returned = instructions
+        // Explicit clears followed by their own return are lossless in any function.
+        // Preserve implicit-return recovery only for existing handler tails.
+        if *b == [0x0d, 0x04] {
+            let followed_by_return = instructions
                 .get(index + 1)
                 .is_some_and(|next| is_own_return(&next.bytes, context));
-            if returned || index + 1 == instructions.len() {
+            let handler_tail = context.is_handler() && index + 1 == instructions.len();
+            if followed_by_return || handler_tail {
                 writeln!(out, "{}pass;", "    ".repeat(indent)).unwrap();
-                skip_until = if returned { index + 2 } else { index + 1 };
+                skip_until = if followed_by_return {
+                    index + 2
+                } else {
+                    index + 1
+                };
                 continue;
             }
         }
@@ -1012,6 +1017,8 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             }
             [0x4d] => "self.resolve_target();".into(),
             [0x18] => "self.try_change_area();".into(),
+            [0x2d] => "self.bind_scanned_object();".into(),
+            [0x2e, index] => format!("self.select_perception_profile({index});"),
             [0x7b] | [0x84] => "self.increment_random_value();".into(),
             bytes if let Some(strategy) = EntityTarget::decode(bytes) => {
                 format!(
@@ -1299,7 +1306,9 @@ mod tests {
         image.pointer(0x200, 0x300);
         image.put(
             0x300,
-            &[0x40, 0, 0x40, 1, 0x4d, 0x18, 0x84, 0x7b, 0x40, 2, 0xff, 0],
+            &[
+                0x40, 0, 0x40, 1, 0x4d, 0x18, 0x2e, 1, 0x2d, 0x84, 0x7b, 0x40, 2, 0xff, 0,
+            ],
         );
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         for method in [
@@ -1307,6 +1316,8 @@ mod tests {
             "self.set_mode(Mode::Attack);",
             "self.resolve_target();",
             "self.try_change_area();",
+            "self.select_perception_profile(1);",
+            "self.bind_scanned_object();",
             "self.increment_random_value();",
             "native(0x40, 0x02);",
         ] {
@@ -1829,6 +1840,30 @@ mod tests {
     }
 
     #[test]
+    fn target_detected_conditions_round_trip() {
+        for (bytes, structured) in [
+            (vec![0x4a, 0, 0x92, 0x4a, 2], true),
+            (vec![0x4a, 0, 0x07, 4, 0x4a, 1, 0x07, 9, 0x4a, 2], true),
+            (vec![0x4a, 0, 0x39, 0, 0x92, 0x39, 2, 0x4a, 2], true),
+            (
+                vec![0x4a, 0, 0x4a, 0, 0x92, 0x4a, 2, 0x4a, 1, 0x92, 0x4a, 2],
+                true,
+            ),
+            (vec![0x4a, 0, 0x4a, 1, 0x4a, 1, 0x4a, 2], false),
+        ] {
+            let source = round_trip_body(&bytes);
+            assert_eq!(
+                source.contains("if self.target_detected {"),
+                structured,
+                "{source}"
+            );
+            if structured {
+                assert!(!source.contains("native(0x4a"), "{source}");
+            }
+        }
+    }
+
+    #[test]
     fn daytime_conditions_round_trip() {
         for (bytes, structured) in [
             (vec![0x77, 0, 0x92, 0x77, 2], true),
@@ -1901,13 +1936,49 @@ mod tests {
         for value in 0..=255u8 {
             let bytes = vec![0x22, 0, value, 0x92, 0x22, 1, 0x48, 1, 0x22, 2];
             let source = round_trip_body(&bytes);
-            assert!(source.contains(&format!("self.near_target({value})")));
+            assert!(source.contains(&format!("self.near_target_2d({value})")));
+            let bytes = vec![0x36, 0, value, 0x92, 0x36, 1, 0x48, 1, 0x36, 2];
+            let source = round_trip_body(&bytes);
+            assert!(source.contains(&format!("self.near_target_3d({value})")));
         }
         for condition in [
-            "self.near_target(256)",
-            "self.near_target()",
-            "self.near_target",
-            "context.near_target(1)",
+            "self.near_target_2d(256)",
+            "self.near_target_2d()",
+            "self.near_target_2d",
+            "self.near_target_3d(256)",
+            "self.near_target_3d()",
+            "self.near_target_3d",
+            "self.near_target(5)",
+            "context.near_target_2d(1)",
+            "context.near_target_3d(1)",
+        ] {
+            assert!(
+                dsl::parse(&format!(
+                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn target_position_available_round_trips() {
+        // 5d 00 resolves the target once and enters the body only when all three
+        // reference-point components are nonzero.
+        let source = round_trip_body(&[0x5d, 0, 0x92, 0x5d, 1, 0x92, 0x5d, 2]);
+        assert!(
+            source.contains("if self.target_position_available() {"),
+            "{source}"
+        );
+        assert!(source.contains("} else {"), "{source}");
+        // A stray else marker has no matching condition block and is an error,
+        // never a silently accepted native escape.
+        assert!(format_test_body(&mut String::new(), &[0x5d, 1, 0x92, 0x5d, 2], None).is_err());
+        for condition in [
+            "self.target_position_available",
+            "self.target_position_available(1)",
+            "context.target_position_available()",
+            "self.target.position_available()",
         ] {
             assert!(
                 dsl::parse(&format!(
@@ -2301,8 +2372,8 @@ mod tests {
             assert!(source.contains("native(0x1b"), "{source}");
         }
 
-        // A subscript that an ordinary call also reaches stays a plain fn, so
-        // its 0D 04 clear must not become pass;.
+        // A final automatic return has already been removed; retain the raw
+        // clear rather than infer pass from a nested body boundary.
         image.put(0x300, &[0x81, 3, 0xff, 0]);
         image.pointer(0x80c, 0x400);
         image.pointer(0x808, 0x600);
@@ -2384,10 +2455,30 @@ mod tests {
         // The dispatch body has no DSL form, so it keeps its own bytes.
         assert!(result.source.contains("native(0x1d, 0x00, 0x07);"));
         assert!(result.source.contains("sub_22_1();"));
-        // An early clear cannot become pass;, because the rest of the body still runs.
+        // This branch returns after the clear; other paths keep their code.
         assert!(result.source.contains("fn sub_22_2()"));
-        assert!(result.source.contains("native(0x0d, 0x04);"));
-        assert!(!result.source.contains("pass;"));
+        assert!(result.source.contains("pass;"));
+        assert!(!result.source.contains("native(0x0d, 0x04);"));
+    }
+
+    #[test]
+    fn ordinary_clear_without_immediate_return_stays_native() {
+        for body in [
+            vec![0x0d, 4, 0x92, 0xff, 1],
+            vec![0x35, 0, 0x0d, 4, 0x35, 2, 0xff, 1],
+        ] {
+            let mut image = Image::default();
+            image.put(0x100, &[0; 64]);
+            image.pointer(0x100, 0x200);
+            image.pointer(0x104, 0x800);
+            image.pointer(0x200, 0x300);
+            image.put(0x300, &[0x81, 3, 0xff, 0]);
+            image.pointer(0x80c, 0x400);
+            image.put(0x400, &body);
+            let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+            assert!(result.source.contains("native(0x0d, 0x04);"));
+            assert!(!result.source.contains("pass;"));
+        }
     }
 
     #[test]
@@ -2460,11 +2551,13 @@ mod tests {
         // enclosing markers keep their own bytes.
         image.put(
             0x300,
-            &[0x5d, 0, 0x39, 0, 0xff, 0xf5, 0x39, 2, 0x5d, 2, 0xff, 0xf5],
+            &[
+                0x14, 0, 0x20, 0x39, 0, 0xff, 0xf5, 0x39, 2, 0x14, 2, 0xff, 0xf5,
+            ],
         );
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(result.source.contains(
-            "native(0x5d, 0x00);\n        if self.flashed {\n            return;\n        }\n        native(0x5d, 0x02);"
+            "native(0x14, 0x00, 0x20);\n        if self.flashed {\n            return;\n        }\n        native(0x14, 0x02);"
         ));
 
         image.put(0x300, &[0xff, 0xf5]);

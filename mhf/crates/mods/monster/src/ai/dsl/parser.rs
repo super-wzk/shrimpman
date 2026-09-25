@@ -147,6 +147,8 @@ pub enum StatementKind {
     SetMode(Mode),
     ResolveTarget,
     TryChangeArea,
+    BindScannedObject,
+    SelectPerceptionProfile(u8),
     IncrementRandomValue,
     If {
         condition: Condition,
@@ -614,10 +616,14 @@ impl Parser {
                         self.expect(&TokenKind::Colon, "':' between action group and ID")?;
                         let (id, token) = self.take_number("action ID")?;
                         condition = Condition::InAction(group, byte(id, &token, "action ID")?);
-                    } else if matches!(condition, Condition::NearTarget(_)) {
+                    } else if matches!(condition, Condition::NearTarget2d(_)) {
                         let (value, token) = self.take_number("distance threshold")?;
                         condition =
-                            Condition::NearTarget(byte(value, &token, "distance threshold")?);
+                            Condition::NearTarget2d(byte(value, &token, "distance threshold")?);
+                    } else if matches!(condition, Condition::NearTarget3d(_)) {
+                        let (value, token) = self.take_number("distance threshold")?;
+                        condition =
+                            Condition::NearTarget3d(byte(value, &token, "distance threshold")?);
                     } else if matches!(condition, Condition::InArea(_)) {
                         let (area, token) = self.take_number("area ID")?;
                         condition = Condition::InArea(
@@ -975,6 +981,15 @@ impl Parser {
                     "bind_current_target" => StatementKind::BindCurrentTarget,
                     "resolve_target" => StatementKind::ResolveTarget,
                     "try_change_area" => StatementKind::TryChangeArea,
+                    "bind_scanned_object" => StatementKind::BindScannedObject,
+                    "select_perception_profile" => {
+                        let (index, token) = self.take_number("perception profile index")?;
+                        StatementKind::SelectPerceptionProfile(byte(
+                            index,
+                            &token,
+                            "perception profile index",
+                        )?)
+                    }
                     "increment_random_value" => StatementKind::IncrementRandomValue,
                     "action" => {
                         let (group, token) = self.take_number("action group")?;
@@ -993,7 +1008,7 @@ impl Parser {
                         }));
                     }
                     _ => return Err(method.error(format!(
-                        "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, set_mode, resolve_target, try_change_area or increment_random_value"
+                        "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, set_mode, resolve_target, try_change_area, bind_scanned_object, select_perception_profile or increment_random_value"
                     ))),
                 };
                 self.expect(
@@ -1267,16 +1282,6 @@ pub(super) fn check_document(document: &Document) -> Result<()> {
                 "main is the state 0 entry, not a request handler",
             ));
         }
-        if !function.handler && contains_pass(&function.body) {
-            return Err(Error::at(
-                function.line,
-                function.column,
-                format!(
-                    "pass; is only valid inside a request handler; declare {} with `handler fn`",
-                    function.name
-                ),
-            ));
-        }
     }
     if document.version != VERSION {
         return Err(Error::new(format!(
@@ -1337,36 +1342,4 @@ pub(super) fn check_document(document: &Document) -> Result<()> {
         slots.push(decl.slot);
     }
     Ok(())
-}
-
-/// Whether `body` reaches a `pass;` anywhere, including nested branches.
-fn contains_pass(body: &[Statement]) -> bool {
-    body.iter().any(|statement| match &statement.kind {
-        StatementKind::Pass => true,
-        StatementKind::EntryBody(body) => contains_pass(body),
-        StatementKind::Handle { then_body, .. } => contains_pass(then_body),
-        StatementKind::If {
-            then_body,
-            else_body,
-            ..
-        } => contains_pass(then_body) || else_body.as_deref().is_some_and(contains_pass),
-        StatementKind::Random(branches) => branches.iter().any(|(_, body)| contains_pass(body)),
-        StatementKind::ContextQuery {
-            branches, fallback, ..
-        }
-        | StatementKind::AreaRouteProfile { branches, fallback } => {
-            branches.iter().any(|(_, body)| contains_pass(body)) || contains_pass(fallback)
-        }
-        StatementKind::Area { branches, fallback }
-        | StatementKind::SpeciesGroup { branches, fallback }
-        | StatementKind::DebugMode { branches, fallback }
-        | StatementKind::Species { branches, fallback } => {
-            branches.iter().any(|(_, body)| contains_pass(body))
-                || fallback.as_deref().is_some_and(contains_pass)
-        }
-        StatementKind::TargetDistanceGroups(branches) => {
-            branches.iter().any(|body| contains_pass(body))
-        }
-        _ => false,
-    })
 }

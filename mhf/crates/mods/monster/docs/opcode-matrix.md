@@ -100,7 +100,7 @@
 | `0x1F` | flag-not-one gate | 选择子 | 选择子 0 仅在 `+1040` 不等于 1 时继续，否则扫到 `0x1F` 标记 | named | confirmed |
 | `0x20` | relative-angle threshold branch | 选择子 + 阈值/列表 | 选择子 0 取目标位置，算相对 `+164`（朝向）的归一化相对角，与阈值表比较后走嵌套 `0x20` 体 | named | confirmed |
 | `0x21` | counter-threshold gate | 选择子 | 选择子 0 仅在 `+2696` 大于 `+2708` 乘全局系数时继续，否则扫标记 | generic | confirmed |
-| `0x22` | distance threshold gate | 选择子 + `u8` | 选择子 0 把 actor 位置与保存参考点 `+2852`/`+2856`/`+2860` 的距离与缩放后的阈值字节比较，超距离则跳过嵌套体 | named | operation_confirmed |
+| `0x22` | near-target-2d-gate | 选择子 + `u8` | 选择子 0 用**水平**（x/z）距离比较 actor `+172`/`+180` 与参考点 `+2852`/`+2860`，阈值取 `max(n×100, 体型×缩放+60)`；不超过则进入正文（忽略高度）。DSL：`self.near_target_2d(n)` | named | operation_confirmed |
 | `0x23` | actor-kind list gate | 选择子 + 计数 + 类型表 | 选择子 0 用最多 40 条 actor 记录比类型列表（含 `0xB1` 特例），无匹配则走嵌套 `0x23` 体 | named | confirmed |
 | `0x24` | repeat-body counter | 选择子 + `u8` | 选择子 0 存重复次数与体游标；选择子 1 递减计数，仍为正则回到体 | named | confirmed |
 | `0x25` | reset-repeat-counter | 无 | 清 `+2623`（解释器停止标志 2），也就是 `0x24` 用的重复计数器 | named | confirmed |
@@ -111,8 +111,8 @@
 | `0x2A` | attack_timer_active | 选择子 | signed i16 `+2912 > 0` 进入正文，否则跳至 else 或结束；DSL 为 `self.attack_timer_active`，不检查当前模式 | named | confirmed |
 | `0x2B` | field-equality branch | 选择子 + `u8` | 选择子 0 比较九个运行字段/actor 类型组合之一与载荷字节，不等则跳过嵌套 `0x2B` 体 | named | confirmed |
 | `0x2C` | species-group branch | 选择子 + 计数 + 物种 ID | 按顺序把当前物种与各 case 物种经 `0x11A4E9C0` 归组后比较；首个同组 case 进入正文，无匹配则进入可选 else 或结束 | named | confirmed |
-| `0x2D` | copy-action-context-7 | 无 | 设动作模式 7，把 `+2922`（两态字节 a）拷进当前动作组/下标字段 | named | confirmed |
-| `0x2E` | select-context-table | `u8` | 由 actor 类型与载荷字节重算 `+1968`；特殊类型选不同的上下文表偏移与模式值 | named | confirmed |
+| `0x2D` | bind-scanned-object | 无 | 把本帧物件扫描记录的全局 32 槽地面物件提交为动作目标（`+2581=7`，`+2582/+2584` 取 `+2922/+2923`）；本身不筛选、不移动、不执行动作 | named | confirmed |
+| `0x2E` | select-perception-profile | `u8` | 把 `actor+1968` 指向该物种感知参数表的第 `n` 条 32 字节记录（最大/最小距离、高度带、半视角、两个阈值）；下标为物种私有索引，无范围检查，且可被物种条件改写 | named | confirmed |
 | `0x2F` | any_player_carrying | 选择子 | 任一配置玩家的搬运状态低四位非零时进入正文，否则跳至 else 或结束；DSL 为 `context.any_player_carrying` | named | confirmed |
 | `0x30` | mark-available-lane | 无 | 找到第一个低位可用标志非零的 lane，把 `+3190` 置 1 | named | confirmed |
 | `0x31` | set-action-mode-8 | 无 | 把当前动作模式字节设为 8 | named | confirmed |
@@ -120,7 +120,7 @@
 | `0x33` | selection-byte list gate | 选择子 + 计数 + 表 | 选择子 0 拿 `+2088` 与载荷列表比较，直到命中前走嵌套 `0x33` 体 | named | confirmed |
 | `0x34` | actor-kind-pair gate | 选择子 + 2 字节 | 选择子 0 比较 actor 的 `+20`/`+21` 字节与两个载荷字节，任一不同则走嵌套 `0x34` 体 | named | confirmed |
 | `0x35` | rage-active condition | 选择子 | 0：`+2726` 怒态标志非零时执行正文，否则跳至 else/end；1：else；2：end | named | confirmed |
-| `0x36` | distance threshold gate | 选择子 + `u8` | 选择子 0 算 actor 位置（`+172`/`+180`）与保存参考点（`+2852`/`+2860`）的距离，超阈值则走嵌套 `0x36` 体 | named | operation_confirmed |
+| `0x36` | near-target-3d-gate | 选择子 + `u8` | 选择子 0 用**三维**距离比较 actor `+172`/`+176`/`+180` 与参考点 `+2852`/`+2856`/`+2860`，阈值为 `n×100`（无体型下限）；不超过则进入正文。DSL：`self.near_target_3d(n)` | named | confirmed |
 | `0x37` | global-flag gate | 选择子 | 选择子 0 仅在全局对象标志 `+44` 不含位 `0x200000` 时继续，否则走嵌套 `0x37` 体 | named | confirmed |
 | `0x38` | species-variant table gate | 选择子 | 选择子 0 按物种 id `+2040` 与变体 `+2008` 读表项，表项非零则抑制嵌套 `0x38` 体 | generic | operation_confirmed |
 | `0x39` | flash-active condition | 选择子 | 0：`+2914` 闪光计时器非零时执行正文，否则跳至 else/end；1：else；2：end | named | confirmed |
@@ -139,7 +139,7 @@
 | `0x47` | clear_one_shot_flag_or_wait | 选择子 | 选择子 0 清 `+2729`，非零时立即返回，否则扫 `0x47` 标记块 | generic | operation_confirmed |
 | `0x48` | set_runtime_word_3228 | `u8` | 把载荷字节（0 视作 0）写入 `+3228`（延迟 tick） | named | confirmed |
 | `0x49` | set_action_context_from_lane | `u8` | 用 `+2612`（cmd_pl_target）填当前动作字段；无选中 lane 时设类型 `+2581`=1、下标 `+2582`=0、值 `+2584`=-1，否则类型 11、下标 = lane 与 0xf | named | confirmed |
-| `0x4a` | lane_mask_gate | 选择子 | 选择子 0 在选中 lane 位出现在 `+2684`（模式重置标志字节）且 lane 不为 `0xff` 时直接返回，否则扫 `0x4a` 标记块 | named | operation_confirmed |
+| `0x4a` | lane_mask_gate | 选择子 | 选择子 0 检查当前目标的玩家发现位 `+2684`，目标非 `0xff` 且位已设置时执行正文，否则跳过分支；发现位也可被强制设置 | named | operation_confirmed |
 | `0x4b` | clear_lane_value | 无 | 有选中 lane 时清 `+2788`（仇恨表 1）+ 4×(`+2612` & `0xf`) 处的 dword | named | confirmed |
 | `0x4c` | clear_lane_timer | 无 | 有选中 lane 时清 `+2824`（仇恨表 2）+ 4×(`+2612` & `0xf`) 处的 dword | named | confirmed |
 | `0x4d` | refresh_runtime_vectors | 无 | 以该对象调用 `0x108538B0` 刷新向量 | named | confirmed |
@@ -158,7 +158,7 @@
 | `0x5a` | lane_value_gate | `u8` | 选择子 0 在保存的动作类型 `+3231` 为 11 或 1 且选中 lane 时，若值等于 `0x1086A530`(lane`+2040`, lane`+2008`) 则立即返回 | named | confirmed |
 | `0x5b` | clear_lane_words_by_mask | `u8` | 选择子为 0 时，对 `+2684` 里没有对应 lane 位的项，清 `+2688`（仇恨值）+ 2×i 处的字 | named | operation_confirmed |
 | `0x5c` | world_position_gate | 选择子 | 选择子 0 在 `+2040` 等于 `global+20` 且 `0x108CF5B0`(`+172`, …) 成功时立即返回，否则扫 `0x5c` 标记块 | named | confirmed |
-| `0x5d` | vector_initialized_gate | 选择子 | 选择子 0 刷新向量，`+2852`/`+2856`/`+2860` 三个浮点都非零则返回，否则调用 `nullsub_2` 并扫 `0x5d` 标记块 | named | operation_confirmed |
+| `0x5d` | target-reference-point-gate | 选择子 | 选择子 0 先解析一次当前目标，参考点 `+2852`/`+2856`/`+2860` 三个分量都非零时进入正文，否则扫到 `5D 01`/`5D 02`；分量等于 `0` 也算无效。DSL：`self.target_position_available()` | named | confirmed |
 | `0x5e` | species_value_gate | `u8` | 选择子 0 拿载荷字节与 `0x1086A530`(`+2040`, `+2008`) 比较，并对表值 365/367/369 有特殊处理 | generic | operation_confirmed |
 | `0x5f` | select_lane_by_species | `u8` | 选择子驱动 lane 搜索：按 `+2687`（仇恨标志）、活动记录、匹配 `+2040` 与辅助分类过滤，按 `+2740` 或 `+2824` 排名后写 `+2612` | generic | operation_confirmed |
 | `0x60` | global_flag_gate_9466 | 选择子 | 选择子 0 仅在全局字节 `0x1E7FFF3C`+9466 为 0 时扫 `0x60` 标记块 | generic | operation_confirmed |

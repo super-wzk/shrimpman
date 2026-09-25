@@ -75,7 +75,7 @@ import "#common/combat.mhai" as defaults;
 只在 `handler fn` 和 `handle ... then` 中生效，仍可用作普通函数名。
 `.` 用于模块成员引用；
 `self.airborne`、`self.flashed`、`self.enraged`、`self.area_timer_expired`、`self.attack_timer_active`、
-`self.has_player_in_area` 和 `self.target.available`
+`self.has_player_in_area`、`self.target_detected` 和 `self.target.available`
 是内置的只读条件属性，不参与模块名字解析。
 
 ## 3. 函数
@@ -376,9 +376,13 @@ fn main() {
 对应 `34 00 group id`、可选 else `34 01` 和结束 `34 02`；不提交动作，也不比较动画编号。
 物种分派可能转换提交的动作，原生逻辑也可自行切换动作，因此不等于最近一次 `self.action(group:id, ...)`。
 
-`self.near_target(n)` 接受 `0..255`，检查自身到已保存目标点的水平距离是否不超过
+`self.near_target_2d(n)` 接受 `0..255`，检查自身到已保存目标点的**水平**距离是否不超过
 `max(n × 100, 原生尺寸参数 × 实例缩放 + 60)`；不刷新目标，不比较高度差。
 对应 `22 00 n`、可选 else `22 01` 和结束 `22 02`。
+
+`self.near_target_3d(n)` 接受 `0..255`，用**三维距离**（含高度差）比较同一个目标点：
+`dist3d(自身位置, 目标点) <= n × 100`，没有体型下限。
+对应 `36 00 n`、可选 else `36 01` 和结束 `36 02`；同样不刷新目标。
 
 `self.in_area(id)` 接受 `0..65535` 区域 ID，对应 `0E 00 <u16 大端 ID>`、`0E 01`、`0E 02`。
 参数先经原生地图／昼夜适配，再与当前区域比较；不同于 `match self.area` 的双侧映射规则。
@@ -441,6 +445,12 @@ if self.check_tracked_players() {
 没有 else 时也执行该清除。它不会选择新目标，不保证玩家当前可见，
 也不等于当前目标存在。仅允许在 if 条件中使用，必须带空括号；不支持参数、
 属性写法或独立方法语句。副作用由原生 `02 00` 执行，不额外插入清除指令。
+
+`self.target_position_available()` 是另一个条件方法，不接受参数：
+它先解析一次当前目标，再检查参考点 `+2852`/`+2856`/`+2860` 三个分量是否都非零，
+三个分量中任一为 `0` 也算无效。它只报告是否得到参考点，
+不选择目标、不移动、不保证目标仍可见；同一参考点也是 `self.near_target_2d(n)`、
+`self.near_target_3d(n)` 的比较对象。
 
 `self.mode_is(mode)` 是另一个条件方法，接受内置枚举 `Mode`，
 例如 `if self.mode_is(Mode::Attack) { nop(); }`。
@@ -517,6 +527,8 @@ self.set_mode(Mode::Normal);  // 40 00
 self.set_mode(Mode::Attack);  // 40 01
 self.resolve_target();       // 4D
 self.try_change_area();              // 18
+self.bind_scanned_object();          // 2D
+self.select_perception_profile(n);   // 2E n
 self.select_target_point(0);     // 06 02 01 00
 self.select_target_point(PointTarget::Default); // 06 02 00 00
 self.select_target_point(Direction::Forward500); // 06 06 00 00
@@ -573,12 +585,39 @@ self.resolve_target();
 选择目的区域，保存续行位置并转入 `root[6]` 中配置的脚本；条件不满足时继续后续指令。
 它不直接传送、不保证立即完成换区，也不隐式检查 `self.area_timer_expired`。
 
+`self.select_perception_profile(n)` 选择该物种的感知参数档案：把 `actor +1968`
+指向该物种表里的第 `n` 条 32 字节记录，供原生感知 pass 使用。
+参数为 `0～255` 的原始下标，编译器不限制取值，也不验证表长度；
+下标含义与合法范围都由物种决定，不是共享枚举（实测各物种表长 1～6 条，
+同一索引在不同物种指向不同档案）。
+原生还会按物种与运行条件覆盖该编号（例如辿異类型、特定区域），
+因此脚本只是“请求”档案，最终生效的可能是另一条。
+该方法不接受其他参数、不返回布尔值，不能用于 `if`；
+它不选择目标、不改变朝向或位置，也不立即改变追踪结果。
+编码为 `2E n`，反编译将 `2E` 恢复为此方法。
+
+`self.bind_scanned_object()` 把本帧物件扫描已记录的地面物件提交为动作目标：
+原生把 `actor+2581` 设为 `7`（目标类型 7），把 `+2922`、`+2923` 写入 `+2582`、`+2584`。
+它不接受参数、不返回布尔值，不能用于 `if`，本身不移动、不播放动作，也不筛选物件。
+记录由原生维护：全局 32 槽地面物件表里要求同区域（`entry+0x18 == actor+2040`）、
+同高度、未被消耗（`entry+0x13 == 0`），每帧感知 pass 或按需查询写入
+`actor+2921..+2923`，失败则清为 `0xFF/0xFFFF`；已记录的物件被消费后置 `+0x13 = 1`。
+因此提交失败时目标仍是“未找到”，后续动作不会指向具体物件。
+具体物件类别尚未确认；`bait_detected` 事件用它将刚发现的诱饵物件设为动作目标，
+但物种动作处理器也走同一条路。编码为 `2D`，反编译将 `2D` 恢复为此方法。
+
 语义层以条件和两条语句分支表示 `if`；原生编码层为条件提供开始、
 可选的 else、结束标记。`self.flashed` 对应 `39 00`、`39 01`、`39 02`。
 `self.enraged` 对应 `35 00`、`35 01`、`35 02`，可与闪光条件混合嵌套。
 `self.area_timer_expired` 对应 `29 00`、`29 01`、`29 02`；计时值大于零时走 else。
 `self.attack_timer_active` 对应 `2A 00`、`2A 01`、`2A 02`；计时值小于或等于零时走 else。
 `self.has_player_in_area` 对应 `28 00`、可选的 `28 01` 和 `28 02`。
+`self.target_position_available()` 对应 `5D 00`、可选的 `5D 01` 和 `5D 02`，
+属于上文所述有副作用的判断（先解析一次目标）。
+`self.target_detected` 对应 `4A 00`、可选的 `4A 01` 和 `4A 02`。
+它读取当前目标已有的发现标志（`+2684` 中由 `+2612 & 0x0F` 选择的位）；
+无目标 `0xFF` 时为假，不重新执行视野检测。强制发现也算成立，仇恨仍保留时也可能为假。
+这是无参数属性条件，写作 `if self.target_detected { ... } else { ... }`。
 `self.target.available` 对应 `54 00`、`54 01`、`54 02`，同样支持混合嵌套。
 `self.check_tracked_players()` 对应 `02 00`、`02 01`、`02 02`。
 `self.mode_is(value)` 对应 `0B 00 value`、`0B 01`、`0B 02`。
@@ -632,7 +671,8 @@ handler fn process_request() {
   它不能使用 `return;` 或 `pass;`。
 - `handler fn` 是专用调用约定：只能通过 `handle` 或另一个处理器的尾调用进入，
   不能被普通函数调用，也不能作为状态或事件入口。
-- `pass;` 只在处理器内有效，表示放行并结束当前处理器，使调用方跳过 `then`。
+- `pass;` 清除共享接管标志并结束当前函数，也可用于普通函数，返回规则与 `return;` 相同。
+  普通函数返回后调用方继续执行，不会自动退出外层处理器；处理器返回到接管检查时，清除的标志使调用方跳过 `then`。
 - `return;` 与自然结束表示保留接管，不表示请求已完成或被清除。
 - 处理器之间只能尾调用：下层可能已经放行，上层不应再执行其他动作。
 - 不支持嵌套 `handle`：原生协议只有一个共享字节，不是可重入的上下文栈。
@@ -642,6 +682,9 @@ handler fn process_request() {
 
 编码固定为 `1B 00 01`、`0C 04 01`、处理器调用、`2B 00 04 01`、`then` 内容、
 `2B 02`、`1B 02`；处理器同样占用独立槽位，`pass;` 生成 `0D 04` 加该槽位的返回指令。
+普通内联函数中的 `pass;` 与处理器内一样只结束当前函数；
+反编译将 `0D 04` 紧接当前函数返回的序列恢复为 `pass;`，无需将函数声明为处理器；
+仅清除标志后继续执行的序列保持 `native(...)`，不凭自然结束推断普通函数的 `pass;`。
 调用层级沿用原生规则；若调用是尾跳转或覆盖了返回游标，不能保证执行到接管检查点。
 反编译只在完整协议、目标子脚本和返回结构可无损重编译时恢复这套结构；
 带 else、缺少后续检查或目标另有普通调用点的 `1B` 结构保留 `native(...)`。

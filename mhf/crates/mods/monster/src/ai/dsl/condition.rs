@@ -5,7 +5,8 @@ pub enum Condition {
     Active,
     Airborne,
     InArea(u16),
-    NearTarget(u8),
+    NearTarget2d(u8),
+    NearTarget3d(u8),
     InAction(u8, u8),
     TargetAngleIn { min: Degrees, max: Degrees },
     Flashed,
@@ -16,6 +17,8 @@ pub enum Condition {
     IsDaytime,
     HasPlayerInArea,
     TargetAvailable,
+    TargetDetected,
+    TargetPositionAvailable,
     CheckTrackedPlayers,
     ModeIs(Mode),
 }
@@ -95,7 +98,8 @@ impl ConditionMarker {
             (0x09, [0]) => Begin(Condition::Airborne),
             (0x0e, [0, hi, lo]) => Begin(Condition::InArea(u16::from_be_bytes([*hi, *lo]))),
             (0x34, [0, group, id]) => Begin(Condition::InAction(*group, *id)),
-            (0x22, [0, value]) => Begin(Condition::NearTarget(*value)),
+            (0x22, [0, value]) => Begin(Condition::NearTarget2d(*value)),
+            (0x36, [0, value]) => Begin(Condition::NearTarget3d(*value)),
             (0x39, [0]) => Begin(Condition::Flashed),
             (0x35, [0]) => Begin(Condition::Enraged),
             (0x29, [0]) => Begin(Condition::AreaTimerExpired),
@@ -103,7 +107,9 @@ impl ConditionMarker {
             (0x28, [0]) => Begin(Condition::HasPlayerInArea),
             (0x2f, [0]) => Begin(Condition::AnyPlayerCarrying),
             (0x77, [0]) => Begin(Condition::IsDaytime),
+            (0x4a, [0]) => Begin(Condition::TargetDetected),
             (0x54, [0]) => Begin(Condition::TargetAvailable),
+            (0x5d, [0]) => Begin(Condition::TargetPositionAvailable),
             (0x02, [0]) => Begin(Condition::CheckTrackedPlayers),
             (0x78, [0, min, max]) if min <= max => Begin(Condition::TargetAngleIn {
                 min: Degrees::from_native(*min),
@@ -136,8 +142,11 @@ impl ConditionMarker {
                 | 0x2f
                 | 0x34
                 | 0x35
+                | 0x36
                 | 0x39
+                | 0x4a
                 | 0x54
+                | 0x5d
                 | 0x77
                 | 0x78
         )
@@ -157,7 +166,8 @@ impl Condition {
             "airborne" => Some(Self::Airborne),
             "in_area" => Some(Self::InArea(0)),
             "in_action" => Some(Self::InAction(0, 0)),
-            "near_target" => Some(Self::NearTarget(0)),
+            "near_target_2d" => Some(Self::NearTarget2d(0)),
+            "near_target_3d" => Some(Self::NearTarget3d(0)),
             "target_angle_in" => Some(Self::TargetAngleIn {
                 min: Degrees::from_native(0),
                 max: Degrees::from_native(0),
@@ -167,7 +177,9 @@ impl Condition {
             "area_timer_expired" => Some(Self::AreaTimerExpired),
             "attack_timer_active" => Some(Self::AttackTimerActive),
             "has_player_in_area" => Some(Self::HasPlayerInArea),
+            "target_detected" => Some(Self::TargetDetected),
             "target.available" => Some(Self::TargetAvailable),
+            "target_position_available" => Some(Self::TargetPositionAvailable),
             "check_tracked_players" => Some(Self::CheckTrackedPlayers),
             "mode_is" => Some(Self::ModeIs(Mode::Normal)),
             _ => None,
@@ -179,7 +191,8 @@ impl Condition {
             Self::Active => "self.active",
             Self::Airborne => "self.airborne",
             Self::InAction(group, id) => return format!("self.in_action({group}:{id})"),
-            Self::NearTarget(value) => return format!("self.near_target({value})"),
+            Self::NearTarget2d(value) => return format!("self.near_target_2d({value})"),
+            Self::NearTarget3d(value) => return format!("self.near_target_3d({value})"),
             Self::InArea(area) => return format!("self.in_area({area})"),
             Self::TargetAngleIn { min, max } => {
                 return format!("self.target_angle_in({}, {})", min.value(), max.value());
@@ -191,7 +204,9 @@ impl Condition {
             Self::AnyPlayerCarrying => "context.any_player_carrying",
             Self::IsDaytime => "context.is_daytime",
             Self::HasPlayerInArea => "self.has_player_in_area",
+            Self::TargetDetected => "self.target_detected",
             Self::TargetAvailable => "self.target.available",
+            Self::TargetPositionAvailable => "self.target_position_available()",
             Self::CheckTrackedPlayers => "self.check_tracked_players()",
             Self::ModeIs(value) => return format!("self.mode_is({})", value.name()),
         }
@@ -203,9 +218,11 @@ impl Condition {
         matches!(
             self,
             Self::CheckTrackedPlayers
+                | Self::TargetPositionAvailable
                 | Self::ModeIs(_)
                 | Self::InArea(_)
-                | Self::NearTarget(_)
+                | Self::NearTarget2d(_)
+                | Self::NearTarget3d(_)
                 | Self::InAction(_, _)
                 | Self::TargetAngleIn { .. }
         )
@@ -226,7 +243,14 @@ impl Condition {
                 otherwise: &[0x34, 1],
                 end: &[0x34, 2],
             },
-            Self::NearTarget(value) => ConditionEncoding {
+            // 10862700: full 3D distance, no body-size floor.
+            Self::NearTarget3d(value) => ConditionEncoding {
+                begin: vec![0x36, 0x00, value],
+                otherwise: &[0x36, 0x01],
+                end: &[0x36, 0x02],
+            },
+            // 108625B0: horizontal (x/z) distance with a body-size floor.
+            Self::NearTarget2d(value) => ConditionEncoding {
                 begin: vec![0x22, 0, value],
                 otherwise: &[0x22, 1],
                 end: &[0x22, 2],
@@ -259,12 +283,25 @@ impl Condition {
                 otherwise: &[0x02, 0x01],
                 end: &[0x02, 0x02],
             },
+            // 108646B0 reads the existing detection bit; it does not rerun sight checks.
+            Self::TargetDetected => ConditionEncoding {
+                begin: vec![0x4a, 0],
+                otherwise: &[0x4a, 1],
+                end: &[0x4a, 2],
+            },
             // 10865450: selected player is active, not transitioning (+2042),
             // and in the same area as the monster. No target is false.
             Self::TargetAvailable => ConditionEncoding {
                 begin: vec![0x54, 0x00],
                 otherwise: &[0x54, 0x01],
                 end: &[0x54, 0x02],
+            },
+            // 10865CF0: resolves the current target once, then enters the body only
+            // when all three reference-point components +2852/+2856/+2860 are nonzero.
+            Self::TargetPositionAvailable => ConditionEncoding {
+                begin: vec![0x5d, 0x00],
+                otherwise: &[0x5d, 0x01],
+                end: &[0x5d, 0x02],
             },
             // 10862F40: execute the body iff signed i16 +2910 is <= 0.
             Self::AreaTimerExpired => ConditionEncoding {
@@ -331,7 +368,11 @@ mod tests {
             Condition::IsDaytime,
             Condition::HasPlayerInArea,
             Condition::TargetAvailable,
+            Condition::TargetDetected,
+            Condition::TargetPositionAvailable,
             Condition::CheckTrackedPlayers,
+            Condition::NearTarget2d(5),
+            Condition::NearTarget3d(7),
             Condition::ModeIs(Mode::Normal),
             Condition::ModeIs(Mode::Attack),
             Condition::TargetAngleIn {

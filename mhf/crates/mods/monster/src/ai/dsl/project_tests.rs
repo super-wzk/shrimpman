@@ -180,6 +180,90 @@ fn try_change_area_is_a_void_command_in_imported_functions_and_conditions() {
 }
 
 #[test]
+fn target_position_available_is_a_side_effecting_condition() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.watch(); }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn watch() { if self.target_position_available() { nop(); } else { nop(); } if self.target_position_available() { nop(); } }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x5d, 0, 0x92, 0x5d, 1, 0x92, 0x5d, 2, 0x5d, 0, 0x92, 0x5d, 2, 0xff, 1
+        ]
+    );
+    for body in [
+        "if self.target_position_available {}",
+        "if self.target_position_available(1) {}",
+        "self.target_position_available();",
+        "if self.target.position_available() {}",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn bind_scanned_object_is_a_void_command() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.watch(); } events { bait_detected => h.watch; }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn watch() { self.select_perception_profile(1); self.bind_scanned_object(); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_shared_helper(
+        &compiled.program,
+        &[0x2e, 1, 0x2d],
+        &[(0, 0), (EVENT_SLOTS[6].root_index, EVENT_SLOTS[6].ending)],
+    );
+    for body in [
+        "self.bind_scanned_object(1);",
+        "self.bind_scanned_object;",
+        "if self.bind_scanned_object() {}",
+        "self.bind_scanned_object = 1;",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn perception_profile_selection_takes_any_u8_index() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.watch(); }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn watch() { self.select_perception_profile(0); self.select_perception_profile(4); self.select_perception_profile(255); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [0x2e, 0, 0x2e, 4, 0x2e, 0xff, 0xff, 1]
+    );
+    for body in [
+        "self.select_perception_profile();",
+        "self.select_perception_profile(256);",
+        "if self.select_perception_profile(1) {}",
+        "self.select_perception_profile = 1;",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn target_binding_methods_encode_without_arguments() {
     let p = project(
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.bind(); } events { awareness => h.bind; }",
@@ -500,6 +584,36 @@ fn has_player_in_area_is_a_property_condition_with_optional_else() {
 }
 
 #[test]
+fn target_detected_is_a_property_condition_with_optional_else() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.check(); } events { awareness => h.check; }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn check() { if self.target_detected { if self.airborne { nop(); } } else { end; } if self.target_detected {} }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    let body = [
+        0x4a, 0, 9, 0, 0x92, 9, 2, 0x4a, 1, 0xff, 0, 0x4a, 2, 0x4a, 0, 0x4a, 2,
+    ];
+    assert_shared_helper(
+        &compiled.program,
+        &body,
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
+    );
+    for body in [
+        "if context.target_detected {}",
+        "if self.target_detected() {}",
+        "self.target_detected;",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn tracked_players_check_is_a_condition_method_with_native_side_effects() {
     let p = project(
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.check(); } events { awareness => h.check; }",
@@ -805,7 +919,6 @@ fn debug_mode_matches_ordered_bytes_with_optional_else() {
         "match context.debug_mode { 0 => {} 0 => {} }",
         "if context.debug_mode {}",
         "context.debug_mode = 1;",
-        "match context.debug_mode { 0 => { pass; } }",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 1; fn main() {{ {body} }}"))
@@ -864,7 +977,6 @@ fn species_matches_exact_ids_with_optional_else() {
         "match self.species { 0 => {} 0 => {} }",
         "if self.species {}",
         "self.species = 1;",
-        "match self.species { 0 => { pass; } }",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 1; fn main() {{ {body} }}"))
@@ -1701,8 +1813,8 @@ fn area_route_profile_supports_imports_and_early_return() {
         )],
     );
     assert!(p.compile().is_ok());
-    let invalid_pass = "mhf_ai 1; species 1; fn main() {} states { idle => { match self.area_route_profile { 0 => pass; else => {} } } }";
-    assert!(parse(invalid_pass).unwrap().compile().is_err());
+    let passing = "mhf_ai 1; species 1; fn main() {} states { idle => { match self.area_route_profile { 0 => pass; else => {} } } }";
+    assert!(parse(passing).unwrap().compile().is_ok());
 }
 
 #[test]
@@ -1909,18 +2021,6 @@ fn request_handlers_reject_uses_outside_the_protocol() {
             "the target must exist",
         ),
         (
-            "mhf_ai 1; species 6; fn main() { if self.flashed { pass; } }",
-            "pass needs a handler",
-        ),
-        (
-            "mhf_ai 1; species 6; fn main() {} states { idle => { pass; } }",
-            "anonymous states cannot pass",
-        ),
-        (
-            "mhf_ai 1; species 6; fn main() {} events { awareness => { if self.flashed { pass; } } }",
-            "anonymous event branches cannot pass",
-        ),
-        (
             "mhf_ai 1; species 6; fn main() { handle dispatch() then { return; } } handler fn dispatch() { nop(); }",
             "then cannot return",
         ),
@@ -1943,5 +2043,41 @@ fn request_handlers_reject_uses_outside_the_protocol() {
                 .is_err(),
             "{reason}: {source}"
         );
+    }
+}
+
+#[test]
+fn ordinary_pass_matches_clear_and_return() {
+    for body in [
+        "if self.enraged { EXIT } wait(3);",
+        "random { 1 => { EXIT } 1 => wait(2); } wait(3);",
+        "match context.debug_mode { 0 => { EXIT } } wait(3);",
+        "match self.species { 0 => { EXIT } } wait(3);",
+    ] {
+        for declaration in ["", "@slot(table = 22, index = 1)"] {
+            let compile = |exit| {
+                parse(&format!(
+                    "mhf_ai 1; species 6; fn main() {{ helper(); wait(9); }} {declaration} fn helper() {{ {} }}",
+                    body.replace("EXIT", exit)
+                )).unwrap().compile().unwrap()
+            };
+            let passing = compile("pass;");
+            let explicit = compile("native(0x0d, 0x04); return;");
+            assert_eq!(
+                script(&passing.program, 0, 0),
+                script(&explicit.program, 0, 0)
+            );
+            if !declaration.is_empty() {
+                assert_eq!(
+                    script(&passing.program, 22, 1),
+                    script(&explicit.program, 22, 1)
+                );
+            }
+            assert!(
+                script(&passing.program, 0, 0)
+                    .windows(2)
+                    .any(|w| w == [0x48, 9])
+            );
+        }
     }
 }

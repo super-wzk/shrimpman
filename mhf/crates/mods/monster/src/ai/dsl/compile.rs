@@ -477,6 +477,8 @@ impl Compiler<'_> {
             StatementKind::SetMode(mode) => out.extend_from_slice(&[0x40, *mode as u8]),
             StatementKind::ResolveTarget => out.push(0x4d),
             StatementKind::TryChangeArea => out.push(0x18),
+            StatementKind::BindScannedObject => out.push(0x2d),
+            StatementKind::SelectPerceptionProfile(index) => out.extend_from_slice(&[0x2e, *index]),
             StatementKind::IncrementRandomValue => out.push(0x84),
             StatementKind::If {
                 condition,
@@ -617,9 +619,6 @@ fn validate_handlers(document: &Document) -> Result<()> {
         for (index, statement) in body.iter().enumerate() {
             let tail_here = tail && index + 1 == body.len();
             match &statement.kind {
-                StatementKind::Pass if !inside_handler => {
-                    return Err(statement.error("pass; is only valid inside a request handler"));
-                }
                 StatementKind::Handle { handler, then_body } => {
                     if inside_handler {
                         return Err(statement.error(
