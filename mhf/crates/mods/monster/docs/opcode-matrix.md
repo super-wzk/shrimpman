@@ -95,7 +95,7 @@
 | `0x1A` | set-normalized-target-id | 大端 `u16` | 读大端 16 位目标 id，归一化后写入待定/当前目标与动作选择字段 | named | confirmed |
 | `0x1B` | selection-byte equality gate | 选择子 + `u8` | 选择子 0 比较载荷字节与 `+2681`（mind 状态 b），否则扫到 `0x1B` 标记 | named | confirmed |
 | `0x1C` | deterministic-ratio branch | 选择子 + 计数 + 阈值/体 | 选择子 0 用两个原生哈希式函数算确定性比值，与阈值列表比较，再走嵌套 `0x1C` 体 | named | confirmed |
-| `0x1D` | ordered-byte branch | 选择子 + 计数 + 有序表 | 选择子 0 拿 `+2682` 与有序字节列表比较，跳过嵌套 `0x1D` 体直到第一个匹配或更大的项 | named | confirmed |
+| `0x1D` | request-dispatch | 选择子 + 计数 + 有序表 | 选择子 0 按当前已被接受的请求编号 `+2682` 做有序分支：等于则进正文，小于 case 值则放弃整块，大于则跳到下一个 case。DSL：`match self.request` | named | confirmed |
 | `0x1E` | clear-behavior-requests | 无 | 清除已接受的行为请求、优先级、五类待处理标志及三类计时请求的已触发标志 | named | operation_confirmed |
 | `0x1F` | flag-not-one gate | 选择子 | 选择子 0 仅在 `+1040` 不等于 1 时继续，否则扫到 `0x1F` 标记 | named | confirmed |
 | `0x20` | relative-angle threshold branch | 选择子 + 阈值/列表 | 选择子 0 取目标位置，算相对 `+164`（朝向）的归一化相对角，与阈值表比较后走嵌套 `0x20` 体 | named | confirmed |

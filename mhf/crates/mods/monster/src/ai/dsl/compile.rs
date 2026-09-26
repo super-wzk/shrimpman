@@ -296,6 +296,7 @@ impl Compiler<'_> {
                 | StatementKind::AreaRouteProfile { .. }
                 | StatementKind::Area { .. }
                 | StatementKind::SpeciesGroup { .. }
+                | StatementKind::Request { .. }
                 | StatementKind::DebugMode { .. }
                 | StatementKind::Species { .. }
         ) {
@@ -405,15 +406,17 @@ impl Compiler<'_> {
             }
             StatementKind::Area { branches, fallback }
             | StatementKind::SpeciesGroup { branches, fallback }
+            | StatementKind::Request { branches, fallback }
             | StatementKind::DebugMode { branches, fallback }
             | StatementKind::Species { branches, fallback } => {
                 let opcode = match statement.kind {
                     StatementKind::Area { .. } => 0x15,
                     StatementKind::DebugMode { .. } => 0x94,
                     StatementKind::Species { .. } => 0x70,
+                    StatementKind::Request { .. } => 0x1d,
                     _ => 0x2c,
                 };
-                if matches!(opcode, 0x70 | 0x94)
+                if matches!(opcode, 0x1d | 0x70 | 0x94)
                     && branches.windows(2).any(|pair| pair[0].0 >= pair[1].0)
                 {
                     return Err(statement.error("byte match cases must be strictly increasing"));
@@ -694,6 +697,7 @@ fn validate_handlers(document: &Document) -> Result<()> {
                 }
                 StatementKind::Area { branches, fallback }
                 | StatementKind::SpeciesGroup { branches, fallback }
+                | StatementKind::Request { branches, fallback }
                 | StatementKind::DebugMode { branches, fallback }
                 | StatementKind::Species { branches, fallback } => {
                     for (_, body) in branches {
@@ -747,6 +751,7 @@ fn validate_handlers(document: &Document) -> Result<()> {
                 branches.iter().any(|(_, body)| contains_handle(body)) || contains_handle(fallback)
             }
             StatementKind::SpeciesGroup { branches, fallback }
+            | StatementKind::Request { branches, fallback }
             | StatementKind::DebugMode { branches, fallback }
             | StatementKind::Species { branches, fallback }
             | StatementKind::Area { branches, fallback } => {
@@ -824,6 +829,7 @@ pub(super) fn called_functions(body: &[Statement]) -> Vec<&str> {
                 names.extend(called_functions(fallback));
             }
             StatementKind::SpeciesGroup { branches, fallback }
+            | StatementKind::Request { branches, fallback }
             | StatementKind::DebugMode { branches, fallback }
             | StatementKind::Species { branches, fallback }
             | StatementKind::Area { branches, fallback } => {

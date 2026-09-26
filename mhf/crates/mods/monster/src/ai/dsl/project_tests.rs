@@ -899,6 +899,36 @@ fn context_query_encodes_callback_branch() {
 }
 
 #[test]
+fn request_matches_ordered_bytes_with_optional_else() {
+    for (fallback, encoded) in [("", vec![]), ("else => nop();", vec![0x1d, 2, 0x92])] {
+        let compiled = parse(&format!(
+            "mhf_ai 1; species 1; fn main() {{ match self.request {{ 1 => wait(3); 255 => {{}} {fallback} }} }}"
+        )).unwrap().compile().unwrap();
+        let mut expected = vec![0x1d, 0, 2, 0x1d, 1, 1, 0x48, 3, 0x1d, 1, 255];
+        expected.extend(encoded);
+        expected.extend([0x1d, 3, 0xff, 0]);
+        assert_eq!(script(&compiled.program, 0, 0), expected);
+    }
+    for body in [
+        "match context.request { 1 => {} }",
+        "match self.request() { 1 => {} }",
+        "match self.request {}",
+        "match self.request { else => {} }",
+        "match self.request { 256 => {} }",
+        "match self.request { 2 => {} 1 => {} }",
+        "match self.request { 1 => {} 1 => {} }",
+        "if self.request {}",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 1; fn main() {{ {body} }}"))
+                .and_then(|project| project.compile())
+                .is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn debug_mode_matches_ordered_bytes_with_optional_else() {
     for (fallback, encoded) in [("", vec![]), ("else => nop();", vec![0x94, 2, 0x92])] {
         let compiled = parse(&format!(

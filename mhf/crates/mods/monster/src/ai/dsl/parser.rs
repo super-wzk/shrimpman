@@ -135,6 +135,11 @@ pub enum StatementKind {
         branches: Vec<(u16, Vec<Statement>)>,
         fallback: Option<Vec<Statement>>,
     },
+    /// Ordered matching of the accepted MIND request number.
+    Request {
+        branches: Vec<(u16, Vec<Statement>)>,
+        fallback: Option<Vec<Statement>>,
+    },
     SelectTargetEntity(EntityTarget),
     SelectPlayerSlot(u8),
     SelectWaypoint(u8),
@@ -704,6 +709,7 @@ impl Parser {
                 enum MatchSelector {
                     Species,
                     SpeciesGroup,
+                    Request,
                     Area,
                     DebugMode,
                 }
@@ -713,6 +719,7 @@ impl Parser {
                         match self {
                             Self::Species => "species",
                             Self::SpeciesGroup => "species group",
+                            Self::Request => "request",
                             Self::Area => "area",
                             Self::DebugMode => "debug mode",
                         }
@@ -728,6 +735,7 @@ impl Parser {
                             Self::SpeciesGroup => {
                                 StatementKind::SpeciesGroup { branches, fallback }
                             }
+                            Self::Request => StatementKind::Request { branches, fallback },
                             Self::Area => StatementKind::Area { branches, fallback },
                             Self::DebugMode => StatementKind::DebugMode { branches, fallback },
                         }
@@ -752,6 +760,7 @@ impl Parser {
                     Some("debug_mode") if context_match => Some(MatchSelector::DebugMode),
                     Some("species") if !context_match => Some(MatchSelector::Species),
                     Some("species_group") if !context_match => Some(MatchSelector::SpeciesGroup),
+                    Some("request") if !context_match => Some(MatchSelector::Request),
                     Some("area") if !context_match => Some(MatchSelector::Area),
                     _ => None,
                 };
@@ -759,8 +768,10 @@ impl Parser {
                     let label = selector.label();
                     // Area cases are 16-bit; every other selector carries one byte.
                     let area_case = matches!(selector, MatchSelector::Area);
-                    let ordered =
-                        matches!(selector, MatchSelector::Species | MatchSelector::DebugMode);
+                    let ordered = matches!(
+                        selector,
+                        MatchSelector::Species | MatchSelector::Request | MatchSelector::DebugMode
+                    );
                     self.advance();
                     self.expect(&TokenKind::LeftBrace, "'{' after match selector")?;
                     let mut branches = Vec::new();

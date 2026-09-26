@@ -352,6 +352,7 @@ fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) 
             }
             StatementKind::Area { branches, fallback }
             | StatementKind::SpeciesGroup { branches, fallback }
+            | StatementKind::Request { branches, fallback }
             | StatementKind::DebugMode { branches, fallback }
             | StatementKind::Species { branches, fallback } => {
                 for (_, body) in branches {

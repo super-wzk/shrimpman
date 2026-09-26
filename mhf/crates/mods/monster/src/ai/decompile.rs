@@ -577,13 +577,16 @@ fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<Recovere
         [0x15, 0, count] => (0x15, count, "self.area".to_owned()),
         [0x2c, 0, count] => (0x2c, count, "self.species_group".to_owned()),
         [0x94, 0, count] => (0x94, count, "context.debug_mode".to_owned()),
+        [0x1d, 0, count] => (0x1d, count, "self.request".to_owned()),
         [0x70, 0, count] => (0x70, count, "self.species".to_owned()),
         [0x57, 0, count] => (0x57, count, "self.area_route_profile".to_owned()),
         [0x79, 0, count, argument] => (0x79, count, format!("context.query({argument})")),
         _ => return None,
     };
     let case_value = |bytes: &[u8]| match bytes {
-        [op @ (0x2c | 0x70 | 0x79 | 0x94), 1, value] if *op == opcode => Some(u16::from(*value)),
+        [op @ (0x1d | 0x2c | 0x70 | 0x79 | 0x94), 1, value] if *op == opcode => {
+            Some(u16::from(*value))
+        }
         [0x57, 1, 0, value] if opcode == 0x57 => Some(u16::from(*value)),
         [0x15, 1, high, low] if opcode == 0x15 => Some(u16::from_be_bytes([*high, *low])),
         _ => None,
@@ -1229,6 +1232,7 @@ mod tests {
             assert!(result.warnings.is_empty());
             let rendered = match opcode {
                 0x15 => "match self.area".to_owned(),
+                0x1d => "match self.request".to_owned(),
                 0x2c => "match self.species_group".to_owned(),
                 0x70 => "match self.species".to_owned(),
                 0x94 => "match context.debug_mode".to_owned(),
@@ -1241,6 +1245,35 @@ mod tests {
                 "{rendered}: {}",
                 result.source
             );
+        }
+    }
+
+    #[test]
+    fn request_dispatch_recovers_only_with_a_complete_case_count() {
+        for (count, recovered) in [(2u8, true), (7, false)] {
+            let mut image = Image::default();
+            image.put(0x100, &[0; 60]);
+            image.pointer(0x100, 0x200);
+            image.pointer(0x200, 0x300);
+            image.put(
+                0x300,
+                &[
+                    0x1d, 0, count, 0x1d, 1, 1, 0x92, 0x1d, 1, 2, 0x92, 0x1d, 3, 0xff, 0,
+                ],
+            );
+            let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+            assert_eq!(
+                result.source.contains("match self.request {"),
+                recovered,
+                "count {count}: {}",
+                result.source
+            );
+            if recovered {
+                assert!(result.source.contains("nop();"), "{}", result.source);
+                assert!(!result.source.contains("native(0x1d"));
+            } else {
+                assert!(result.source.contains("native(0x1d, 0x00, 0x07);"));
+            }
         }
     }
 
@@ -2452,8 +2485,10 @@ mod tests {
         );
         assert!(result.source.contains("handler fn sub_1_7()"));
         assert!(!result.source.contains("native(0x0c"));
-        // The dispatch body has no DSL form, so it keeps its own bytes.
+        // This fixture keeps the real count (7) with only two cases, so the
+        // dispatcher stays native instead of recovering a partial match.
         assert!(result.source.contains("native(0x1d, 0x00, 0x07);"));
+        assert!(!result.source.contains("match self.request"));
         assert!(result.source.contains("sub_22_1();"));
         // This branch returns after the clear; other paths keep their code.
         assert!(result.source.contains("fn sub_22_2()"));
