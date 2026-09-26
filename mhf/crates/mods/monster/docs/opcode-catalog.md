@@ -17,11 +17,11 @@ SHA-256 `95c580195f4080d2e9582c8c9df36abeb280476e088b6366583c5f138da8f301`）
 | 这些块调用的不重复 handler 例程 | 119 |
 | 就地完成工作的 case 块 | 18 |
 | 走 switch default 的字节（`0x00`、`0x43`、`0x6a..0x6f`、`0x87..0x8f`、`0x95..0x98`、`0x9d..0xfe`） | 119 |
-| 操作已确证的记录（`confirmed`） | 93 |
-| 操作已确证、但选择子集合是推断出来的记录（`operation_confirmed`） | 44 |
-| 每个操作数角色都已确证的记录（`domain: named`） | 106 |
-| 至少一个操作数仍只有地址的记录（`domain: generic`） | 31 |
-| 仍未确证的操作数引用 | 51 |
+| 操作已确证的记录（`confirmed`） | 101 |
+| 操作已确证、但选择子集合是推断出来的记录（`operation_confirmed`） | 36 |
+| 每个操作数角色都已确证的记录（`domain: named`） | 100 |
+| 至少一个操作数仍只有地址的记录（`domain: generic`） | 37 |
+| 仍未确证的操作数引用 | 61 |
 
 ## 信度分级
 
@@ -37,7 +37,8 @@ SHA-256 `95c580195f4080d2e9582c8c9df36abeb280476e088b6366583c5f138da8f301`）
 
 `domain` 描述*操作数*被钉死的程度：
 
-- **named** —— opcode 触碰的每个字段、表和全局都有已证明的角色。只有原生
+- **named** —— opcode 触碰的每个字段、表和全局都有已证明的角色；这不代表其
+  每个取值都有游戏层面的名字，也不代表已经接入 DSL。只有原生
   程序自己打印或存过的名字（`em->cmd_pl_target`、`maji_next_stage_no`、
   `EM_MODE_ATTACK`、`KIND_*` …）才会被当作游戏词汇使用。
 - **generic** —— 操作已证明，但至少一个操作数只有地址。这些操作数列在
@@ -111,7 +112,7 @@ contents/sub-contents 返回、`0x03` route 返回、`0x04`/`0x05`/`0x06` 地面
 - [`opcode-index.md`](opcode-index.md) —— 生成的 256 行索引（`opcode`、
   case 块、handler、操作、域、摘要）；
 - [`opcode-matrix.md`](opcode-matrix.md) —— 本总表与 JSON 记录的速查版：
-  按数值顺序的语义矩阵，以及按用途分类的作者视角；
+  按数值顺序的语义矩阵、按用途分类，以及当前控制指令的 DSL 覆盖和未实现建议；
 - `opcodes-01-3f.json`、`opcodes-40-6f.json`、`opcodes-70-9c.json`、
   `opcodes-f6-ff.json` —— 已分派 opcode，含逐选择子变体；
 - [`opcodes-default.json`](opcodes-default.json) —— 119 个 default 字节；
@@ -124,11 +125,20 @@ contents/sub-contents 返回、`0x03` route 返回、`0x04`/`0x05`/`0x06` 地面
 `runtime-fields.md` 里的残留清单必须与记录中的 `domain_unresolved` 数组保持
 同步。
 
+当前可用语法只以 [`dsl-spec.md`](dsl-spec.md) 及编译器／反编译器为准。
+[`opcode-matrix.md` 第 7 节](opcode-matrix.md#7-控制指令的-dsl-覆盖与建议)
+区分已实现、部分实现、尚无具名表达与安装校验拒绝；其中的方法名建议尚未实现。
+
 ## 指令宽度
 
 `src/ai/bytecode.rs` 编码的是**线性逻辑指令边界**，不是原生跳过例程
 `0x10860730` 的游标增量。复合块的 selector 0 头与首个分支标记分开解码；
 编译器输出的字节不变。`0x10860A10` 的跳过宽度不能直接拿来切分源指令。
+
+JSON 中已核对的 `variants[].length` 使用线性逻辑指令长度；复合头若另有
+不同的原生扫描增量，则以 `native_skip_length` 单独记录。这个增量可能跨过
+后面的首分支标记及参数，不能拿它当作一个 DSL 语句的字节数。
+未知选择子及 `24/62` 的遗留宽度不构成安全安装承诺，限制仍如下表与结构校验所述。
 
 | selector 0 家族 | 逻辑头宽度 | 原生 skip 增量 |
 | --- | ---: | ---: |
@@ -175,8 +185,11 @@ Rathian `11854D88` 的 `13 94 00 02 94 01 00 70 ...` 中，`11854D8E` 的
 
 ## 仍未解决
 
-剩余的缺口是*数据*角色，不是 opcode 行为：31 个已分派 opcode 引用 51 个操作数，
-它们的角色还没有解释器之外的消费者证明。它们按 opcode 列在
-`domain_unresolved` 里，并在 [`runtime-fields.md`](runtime-fields.md) 汇总。
-给它们命名需要追踪产生方子系统（例如设置 `+2729` 的模块，或
-`0x1E8001EC`/`0x1E7FFF3C` 背后的全局对象），而不是检查门本身。
+数据角色与控制 API 的缺口分别记录：覆盖表统计 JSON 中的 `generic` 条目和
+`domain_unresolved` 引用；[`runtime-fields.md`](runtime-fields.md) 说明已证明的
+字段机制及尚未确定的游戏含义。已知计时运算仍不等于已知请求业务名，物种私有字段
+也不能只凭写入方式命名。进一步定名需要追踪产生方与消费方。
+
+语义 DSL 的缺口见矩阵第 7 节。即使原生 handler 已经识别，`24/62` 的执行／扫描
+边界、路线上下文以及不匹配作用域的返回仍有独立约束；不能以完整 opcode 清单
+代替可安装性或游戏运行验证。文档中的本轮行为结论来自静态分析，未作实机验证。
