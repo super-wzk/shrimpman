@@ -477,6 +477,9 @@ impl Compiler<'_> {
             }
             StatementKind::BindAwarenessTarget => out.push(0x11),
             StatementKind::BindCurrentTarget => out.push(0x13),
+            StatementKind::BindTargetGroundPoint(profile) => {
+                out.extend_from_slice(&[0x49, *profile])
+            }
             StatementKind::SetMode(mode) => out.extend_from_slice(&[0x40, *mode as u8]),
             StatementKind::ResolveTarget => out.push(0x4d),
             StatementKind::TryChangeArea => out.push(0x18),

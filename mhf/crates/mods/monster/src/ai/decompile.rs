@@ -1015,6 +1015,7 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             bytes if is_own_return(bytes, context) => "return;".into(),
             [0x11] => "self.bind_awareness_target();".into(),
             [0x13] => "self.bind_current_target();".into(),
+            [0x49, profile] => format!("self.bind_target_ground_point({profile});"),
             [0x40, value] if let Some(mode) = Mode::from_native(*value) => {
                 format!("self.set_mode({});", mode.name())
             }
@@ -1660,6 +1661,26 @@ mod tests {
     }
 
     #[test]
+    fn target_ground_point_profiles_round_trip_the_full_byte_range() {
+        let mut bytes = Vec::new();
+        for profile in 0..=u8::MAX {
+            bytes.extend_from_slice(&[0x49, profile]);
+        }
+        // A raw kind-11 target uses a different encoding and does not have
+        // 0x49's immediate saved-context synchronization. Keep it native.
+        bytes.extend_from_slice(&[0x06, 11, 0, 2, 0x4d]);
+        let source = round_trip_body(&bytes);
+        for profile in 0..=u8::MAX {
+            assert!(
+                source.contains(&format!("self.bind_target_ground_point({profile});")),
+                "missing profile {profile}: {source}"
+            );
+        }
+        assert!(source.contains("native(0x06, 0x0b, 0x00, 0x02);"));
+        assert_eq!(source.matches("self.resolve_target();").count(), 1);
+    }
+
+    #[test]
     fn mode_is_round_trips_operands_nested_blocks_and_events() {
         let mut image = Image::default();
         image.put(0x100, &[0; 60]);
@@ -1893,6 +1914,47 @@ mod tests {
             if structured {
                 assert!(!source.contains("native(0x4a"), "{source}");
             }
+        }
+    }
+
+    #[test]
+    fn target_ground_conditions_round_trip_all_u8_operands() {
+        for value in 0..=u8::MAX {
+            for with_else in [false, true] {
+                let mut bytes = vec![0x5a, 0, value, 0x92];
+                if with_else {
+                    bytes.extend_from_slice(&[0x5a, 1, 0x48, 1]);
+                }
+                bytes.extend_from_slice(&[0x5a, 2]);
+                let source = round_trip_body(&bytes);
+                assert!(source.contains(&format!("if self.target_ground_is({value}) {{")));
+                assert_eq!(source.contains("} else {"), with_else, "{source}");
+                assert!(!source.contains("native(0x5a"), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn target_ground_conditions_preserve_nested_and_irregular_layouts() {
+        let source = round_trip_body(&[
+            0x49, 2, 0x5a, 0, 1, 0x5a, 0, 255, 0x13, 0x5a, 1, 0x92, 0x5a, 2, 0x5a, 1, 0x39, 0,
+            0x92, 0x39, 2, 0x5a, 2,
+        ]);
+        assert_eq!(source.matches("if self.target_ground_is(").count(), 2);
+        assert!(source.contains("self.bind_target_ground_point(2);"));
+        assert!(source.contains("if self.flashed {"));
+        assert!(!source.contains("native("));
+
+        let source = round_trip_body(&[0x5a, 0, 255, 0x92, 0x5a, 1, 0x5a, 1, 0x5a, 2]);
+        assert!(!source.contains("self.target_ground_is("));
+        assert!(source.contains("native(0x5a, 0x00, 0xff);"));
+        assert_eq!(source.matches("native(0x5a, 0x01);").count(), 2);
+
+        for bytes in [&[0x5a, 0][..], &[0x5a, 1, 0x92, 0x5a, 2], &[0x5a, 3]] {
+            assert!(
+                format_test_body(&mut String::new(), bytes, None).is_err(),
+                "{bytes:02x?}"
+            );
         }
     }
 

@@ -18,6 +18,7 @@ pub enum Condition {
     HasPlayerInArea,
     TargetAvailable,
     TargetDetected,
+    TargetGroundIs(u8),
     TargetPositionAvailable,
     CheckTrackedPlayers,
     ModeIs(Mode),
@@ -109,6 +110,7 @@ impl ConditionMarker {
             (0x77, [0]) => Begin(Condition::IsDaytime),
             (0x4a, [0]) => Begin(Condition::TargetDetected),
             (0x54, [0]) => Begin(Condition::TargetAvailable),
+            (0x5a, [0, value]) => Begin(Condition::TargetGroundIs(*value)),
             (0x5d, [0]) => Begin(Condition::TargetPositionAvailable),
             (0x02, [0]) => Begin(Condition::CheckTrackedPlayers),
             (0x78, [0, min, max]) if min <= max => Begin(Condition::TargetAngleIn {
@@ -146,6 +148,7 @@ impl ConditionMarker {
                 | 0x39
                 | 0x4a
                 | 0x54
+                | 0x5a
                 | 0x5d
                 | 0x77
                 | 0x78
@@ -179,6 +182,7 @@ impl Condition {
             "has_player_in_area" => Some(Self::HasPlayerInArea),
             "target_detected" => Some(Self::TargetDetected),
             "target.available" => Some(Self::TargetAvailable),
+            "target_ground_is" => Some(Self::TargetGroundIs(0)),
             "target_position_available" => Some(Self::TargetPositionAvailable),
             "check_tracked_players" => Some(Self::CheckTrackedPlayers),
             "mode_is" => Some(Self::ModeIs(Mode::Normal)),
@@ -206,6 +210,7 @@ impl Condition {
             Self::HasPlayerInArea => "self.has_player_in_area",
             Self::TargetDetected => "self.target_detected",
             Self::TargetAvailable => "self.target.available",
+            Self::TargetGroundIs(value) => return format!("self.target_ground_is({value})"),
             Self::TargetPositionAvailable => "self.target_position_available()",
             Self::CheckTrackedPlayers => "self.check_tracked_players()",
             Self::ModeIs(value) => return format!("self.mode_is({})", value.name()),
@@ -219,6 +224,7 @@ impl Condition {
             self,
             Self::CheckTrackedPlayers
                 | Self::TargetPositionAvailable
+                | Self::TargetGroundIs(_)
                 | Self::ModeIs(_)
                 | Self::InArea(_)
                 | Self::NearTarget2d(_)
@@ -296,6 +302,13 @@ impl Condition {
                 otherwise: &[0x54, 0x01],
                 end: &[0x54, 0x02],
             },
+            // 10865AE0 requires saved kind 1/11 and a selected player, then
+            // compares the low byte of its area-adapted ground number.
+            Self::TargetGroundIs(value) => ConditionEncoding {
+                begin: vec![0x5a, 0, value],
+                otherwise: &[0x5a, 1],
+                end: &[0x5a, 2],
+            },
             // 10865CF0: resolves the current target once, then enters the body only
             // when all three reference-point components +2852/+2856/+2860 are nonzero.
             Self::TargetPositionAvailable => ConditionEncoding {
@@ -369,6 +382,8 @@ mod tests {
             Condition::HasPlayerInArea,
             Condition::TargetAvailable,
             Condition::TargetDetected,
+            Condition::TargetGroundIs(0),
+            Condition::TargetGroundIs(255),
             Condition::TargetPositionAvailable,
             Condition::CheckTrackedPlayers,
             Condition::NearTarget2d(5),
@@ -423,6 +438,12 @@ mod tests {
             &[0x77, 0, 1],
             &[0x78, 0],
             &[0x78, 0, 200, 32],
+            &[0x5a],
+            &[0x5a, 0],
+            &[0x5a, 0, 1, 2],
+            &[0x5a, 1, 0],
+            &[0x5a, 2, 0],
+            &[0x5a, 3],
             &[0x0b, 0],
             &[0x0b, 0, 2],
             &[0x1b, 0],

@@ -292,6 +292,63 @@ fn target_binding_methods_encode_without_arguments() {
 }
 
 #[test]
+fn target_ground_point_binding_preserves_literal_profiles_without_extra_commands() {
+    for (literal, profile) in [("0", 0), ("4", 4), ("255", 255), ("0xff", 255)] {
+        let source = format!(
+            "mhf_ai 1; species 6; fn main() {{ self.bind_target_ground_point({literal}); }}"
+        );
+        let compiled = parse(&source).unwrap().compile().unwrap();
+        assert_eq!(
+            script(&compiled.program, 0, 0),
+            [0x49, profile, 0xff, 0],
+            "profile {literal}"
+        );
+    }
+}
+
+#[test]
+fn target_ground_point_binding_works_in_entries_and_imported_helpers() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { self.bind_target_ground_point(0); h.bind(); }
+         states { patrol = 1 => { self.bind_target_ground_point(4); h.bind(); } }
+         events { awareness => { self.bind_target_ground_point(255); h.bind(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn bind() { self.bind_target_ground_point(3); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_eq!(script(&compiled.program, 1, 0), [0x49, 3, 0xff, 1]);
+    assert_eq!(script(&compiled.program, 0, 0), [0x49, 0, 0x81, 0, 0xff, 0]);
+    assert_eq!(script(&compiled.program, 0, 1), [0x49, 4, 0x81, 0, 0xff, 0]);
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [0x49, 255, 0x81, 0, 0xff, event.ending]
+    );
+}
+
+#[test]
+fn target_ground_point_binding_requires_one_u8_argument_and_statement_context() {
+    for body in [
+        "self.bind_target_ground_point();",
+        "self.bind_target_ground_point(0, 1);",
+        "self.bind_target_ground_point(-1);",
+        "self.bind_target_ground_point(256);",
+        "self.bind_target_ground_point(1.5);",
+        "if self.bind_target_ground_point(0) {}",
+        "self.bind_target_ground_point;",
+        "self.bind_target_ground_point = 1;",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn annotated_functions_survive_imports_disk_reload_and_renaming() {
     let dir = Directory::new();
     dir.write(
@@ -605,6 +662,112 @@ fn target_detected_is_a_property_condition_with_optional_else() {
         "if context.target_detected {}",
         "if self.target_detected() {}",
         "self.target_detected;",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn target_ground_condition_preserves_u8_literals_without_binding_or_resolving() {
+    for (literal, value) in [("0", 0), ("255", 255), ("0xff", 255)] {
+        let source = format!(
+            "mhf_ai 1; species 6; fn main() {{ if self.target_ground_is({literal}) {{ nop(); }} }}"
+        );
+        let compiled = parse(&source).unwrap().compile().unwrap();
+        assert_eq!(
+            script(&compiled.program, 0, 0),
+            [0x5a, 0, value, 0x92, 0x5a, 2, 0xff, 0],
+            "ground {literal}"
+        );
+    }
+}
+
+#[test]
+fn target_ground_condition_nests_in_shared_imported_helpers() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { h.check(); }
+         states { patrol = 1 => h.check; }
+         events { awareness => h.check; }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn check() {
+                if self.target_ground_is(0) {
+                    if self.target_ground_is(255) { nop(); }
+                    else { if self.enraged { wait(1); } }
+                } else { wait(2); }
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_shared_helper(
+        &compiled.program,
+        &[
+            0x5a, 0, 0, 0x5a, 0, 255, 0x92, 0x5a, 1, 0x35, 0, 0x48, 1, 0x35, 2, 0x5a, 2, 0x5a, 1,
+            0x48, 2, 0x5a, 2,
+        ],
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
+    );
+    assert_eq!(script(&compiled.program, 0, 1), [0x81, 0, 0xff, 0]);
+}
+
+#[test]
+fn target_ground_condition_keeps_entry_event_and_helper_return_semantics() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { if self.target_ground_is(0) { return; } h.check(); }
+         states { patrol = 1 => { if self.target_ground_is(255) { return; } h.check(); } }
+         events { awareness => { if self.target_ground_is(0xff) { return; } h.check(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn check() { if self.target_ground_is(7) { return; } nop(); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    for (index, value) in [(0, 0), (1, 255)] {
+        assert_eq!(
+            script(&compiled.program, 0, index),
+            [0x5a, 0, value, 0x5a, 1, 0x81, 0, 0x5a, 2, 0xff, 0]
+        );
+    }
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [
+            0x5a,
+            0,
+            255,
+            0xff,
+            event.ending,
+            0x5a,
+            2,
+            0x81,
+            0,
+            0xff,
+            event.ending,
+        ]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [0x5a, 0, 7, 0xff, 1, 0x5a, 2, 0x92, 0xff, 1]
+    );
+}
+
+#[test]
+fn target_ground_condition_requires_one_u8_argument_and_condition_context() {
+    for body in [
+        "if self.target_ground_is() {}",
+        "if self.target_ground_is(0, 1) {}",
+        "if self.target_ground_is(-1) {}",
+        "if self.target_ground_is(256) {}",
+        "if self.target_ground_is(1.5) {}",
+        "self.target_ground_is(0);",
+        "if self.target_ground_is {}",
+        "self.target_ground_is;",
+        "self.target_ground_is = 1;",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),

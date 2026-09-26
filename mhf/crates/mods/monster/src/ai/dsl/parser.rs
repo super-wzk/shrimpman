@@ -149,6 +149,7 @@ pub enum StatementKind {
     SelectRelativePoint(Direction),
     BindAwarenessTarget,
     BindCurrentTarget,
+    BindTargetGroundPoint(u8),
     SetMode(Mode),
     ResolveTarget,
     TryChangeArea,
@@ -161,7 +162,7 @@ pub enum StatementKind {
         else_body: Option<Vec<Statement>>,
     },
     Return,
-    /// `pass;` — give the turn back to the normal AI, handlers only.
+    /// `pass;` — clear takeover and return from the current function.
     Pass,
     /// `name(args);`, or the anonymous `self.action(group:id, parameter);`.
     Call {
@@ -607,45 +608,43 @@ impl Parser {
                 })?;
                 if condition.is_method() {
                     self.expect(&TokenKind::LeftParen, "'(' after condition method")?;
-                    if matches!(condition, Condition::TargetAngleIn { .. }) {
-                        let min = self.take_degrees()?;
-                        self.expect(&TokenKind::Comma, "',' between angle bounds")?;
-                        let max = self.take_degrees()?;
-                        if min.value() > max.value() {
-                            return Err(property.error("target_angle_in requires min <= max; intervals crossing zero are not supported"));
+                    match &mut condition {
+                        Condition::TargetAngleIn { min, max } => {
+                            *min = self.take_degrees()?;
+                            self.expect(&TokenKind::Comma, "',' between angle bounds")?;
+                            *max = self.take_degrees()?;
+                            if min.value() > max.value() {
+                                return Err(property.error("target_angle_in requires min <= max; intervals crossing zero are not supported"));
+                            }
                         }
-                        condition = Condition::TargetAngleIn { min, max };
-                    } else if matches!(condition, Condition::InAction(_, _)) {
-                        let (group, token) = self.take_number("action group")?;
-                        let group = byte(group, &token, "action group")?;
-                        self.expect(&TokenKind::Colon, "':' between action group and ID")?;
-                        let (id, token) = self.take_number("action ID")?;
-                        condition = Condition::InAction(group, byte(id, &token, "action ID")?);
-                    } else if matches!(condition, Condition::NearTarget2d(_)) {
-                        let (value, token) = self.take_number("distance threshold")?;
-                        condition =
-                            Condition::NearTarget2d(byte(value, &token, "distance threshold")?);
-                    } else if matches!(condition, Condition::NearTarget3d(_)) {
-                        let (value, token) = self.take_number("distance threshold")?;
-                        condition =
-                            Condition::NearTarget3d(byte(value, &token, "distance threshold")?);
-                    } else if matches!(condition, Condition::InArea(_)) {
-                        let (area, token) = self.take_number("area ID")?;
-                        condition = Condition::InArea(
-                            u16::try_from(area)
-                                .map_err(|_| token.error("area ID must be 0..65535"))?,
-                        );
-                    } else if matches!(condition, Condition::ModeIs(_)) {
-                        self.expect_keyword("Mode")?;
-                        self.expect(&TokenKind::DoubleColon, "'::' after Mode")?;
-                        let member = self.take_word("Mode member")?;
-                        let mode = Mode::parse(word(&member)).ok_or_else(|| {
-                            member.error(format!(
-                                "unknown Mode member '{}'; expected Normal or Attack",
-                                word(&member)
-                            ))
-                        })?;
-                        condition = Condition::ModeIs(mode);
+                        Condition::InAction(group, id) => {
+                            *group = self.take_byte("action group")?;
+                            self.expect(&TokenKind::Colon, "':' between action group and ID")?;
+                            *id = self.take_byte("action ID")?;
+                        }
+                        Condition::NearTarget2d(value) | Condition::NearTarget3d(value) => {
+                            *value = self.take_byte("distance threshold")?;
+                        }
+                        Condition::TargetGroundIs(value) => {
+                            *value = self.take_byte("target ground number")?;
+                        }
+                        Condition::InArea(area) => {
+                            let (value, token) = self.take_number("area ID")?;
+                            *area = u16::try_from(value)
+                                .map_err(|_| token.error("area ID must be 0..65535"))?;
+                        }
+                        Condition::ModeIs(mode) => {
+                            self.expect_keyword("Mode")?;
+                            self.expect(&TokenKind::DoubleColon, "'::' after Mode")?;
+                            let member = self.take_word("Mode member")?;
+                            *mode = Mode::parse(word(&member)).ok_or_else(|| {
+                                member.error(format!(
+                                    "unknown Mode member '{}'; expected Normal or Attack",
+                                    word(&member)
+                                ))
+                            })?;
+                        }
+                        _ => {}
                     }
                     self.expect(
                         &TokenKind::RightParen,
@@ -990,17 +989,15 @@ impl Parser {
                     }
                     "bind_awareness_target" => StatementKind::BindAwarenessTarget,
                     "bind_current_target" => StatementKind::BindCurrentTarget,
+                    "bind_target_ground_point" => StatementKind::BindTargetGroundPoint(
+                        self.take_byte("ground-point profile")?,
+                    ),
                     "resolve_target" => StatementKind::ResolveTarget,
                     "try_change_area" => StatementKind::TryChangeArea,
                     "bind_scanned_object" => StatementKind::BindScannedObject,
-                    "select_perception_profile" => {
-                        let (index, token) = self.take_number("perception profile index")?;
-                        StatementKind::SelectPerceptionProfile(byte(
-                            index,
-                            &token,
-                            "perception profile index",
-                        )?)
-                    }
+                    "select_perception_profile" => StatementKind::SelectPerceptionProfile(
+                        self.take_byte("perception profile index")?,
+                    ),
                     "increment_random_value" => StatementKind::IncrementRandomValue,
                     "action" => {
                         let (group, token) = self.take_number("action group")?;
@@ -1019,7 +1016,7 @@ impl Parser {
                         }));
                     }
                     _ => return Err(method.error(format!(
-                        "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, set_mode, resolve_target, try_change_area, bind_scanned_object, select_perception_profile or increment_random_value"
+                        "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, bind_target_ground_point, set_mode, resolve_target, try_change_area, bind_scanned_object, select_perception_profile or increment_random_value"
                     ))),
                 };
                 self.expect(
@@ -1099,6 +1096,11 @@ impl Parser {
         };
         self.position += 1;
         Ok((value, token))
+    }
+
+    fn take_byte(&mut self, description: &str) -> Result<u8> {
+        let (value, token) = self.take_number(description)?;
+        byte(value, &token, description)
     }
 
     fn expect(&mut self, kind: &TokenKind, description: &str) -> Result<()> {

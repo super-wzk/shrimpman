@@ -81,7 +81,7 @@
 | `0x46` | `0x10869bfd` | `0x10864500` | confirmed | named | 选择子 0 读两字节对，与选中 lane 记录的 `+20`/`+21` 比较，不等则跨过 `0x46` 标记块 |
 | `0x47` | `0x10869c0a` | `0x108645b0` | confirmed | generic: +2729 | 选择子 0 读取 `+2729`，非零时清零并进入正文，否则扫描分支；是消费式条件，不是 wait |
 | `0x48` | `0x10869c17` | `(inline)` | confirmed | named | 写自身 AI 延迟 `+3228`；逐帧递减，为正时不执行解释器，归零后续行；DSL：`wait(n)` |
-| `0x49` | `0x10869c3e` | `0x10864640` | confirmed | named | 绑定当前玩家脚下编号对应的地面点及旋转偏移，kind=11；无目标时 kind=1、index=FFFF；同步保存的命令字段。已证档案 0..3，不是普通绑定玩家坐标 |
+| `0x49` | `0x10869c3e` | `0x10864640` | confirmed | named | 绑定当前玩家脚下编号对应的地面点及旋转偏移，kind=11；无目标时 kind=1、index=FFFF；同步保存的命令字段。DSL：`self.bind_target_ground_point(profile)`，编码范围 0..255；仅 0..3 初始化原生偏移，不是普通绑定玩家坐标 |
 | `0x4a` | `0x10869c4d` | `0x108646b0` | confirmed | named | 目标非 FF 且 `+2684` 对应发现位已置时进入正文；不重做感知，也不验证目标域。DSL：`self.target_detected` |
 | `0x4b` | `0x10869c5a` | `(inline)` | confirmed | named | 有选中玩家时清 `+2788 + 4*(slot & 0xF)` 的 awareness 累积分数，不清发现／追踪标志 |
 | `0x4c` | `0x10869c7b` | `(inline)` | confirmed | named | 有选中玩家时清 `+2824 + 4*(slot & 0xF)` 的选敌仇恨分数；该字段不是计时器 |
@@ -98,7 +98,7 @@
 | `0x57` | `0x10869d38` | `0x10865910` | confirmed | named | 按 `u8 +3185` 区域移动路线配置编号有序精确分支；`00 count` 开始，`01 value:u16be` case，`02` else，`03` 结束。字段来自生成记录 `+0x18`，用于选择物种/地图的区域路线表 |
 | `0x58` | `0x10869d45` | `0x10865a10` | confirmed | named | 复制关联首领的已提交玩家目标到 `+2612` 及动作目标参数，不同步 saved 命令字段；无首领则设无目标。DSL：`EntityTarget::LeaderTarget` |
 | `0x59` | `0x10869d58` | `0x10865a60` | confirmed | generic: +3200 | 选择子 0 仅在 `+3200` 为零时扫 `0x59` 标记块 |
-| `0x5a` | `0x10869d65` | `0x10865ae0` | confirmed | named | 选择子 0 在保存的动作类型 `+3231` 为 11 或 1 且选中 lane 时，若值等于 `0x1086A530`(lane`+2040`, lane`+2008`) 则立即返回 |
+| `0x5a` | `0x10869d65` | `0x10865ae0` | confirmed | named | 保存的命令 kind `+3231` 为 1/11 且当前玩家目标非 FF 时，比较该玩家经区域规则归一化的地面编号低八位；不匹配走 else/end，无状态写入。DSL：`if self.target_ground_is(n)`，n 接受 0..255 |
 | `0x5b` | `0x10869d74` | `0x10865bc0` | confirmed | named | 选择子 0 清未设置发现位 `+2684` 的玩家之追踪保持计时 `+2688`，不立即清 `+2687`；非零选择子不写 |
 | `0x5c` | `0x10869d83` | `0x10865c20` | confirmed | named | 选择子 0 在 `+2040` 等于 `global+20` 且 `0x108CF5B0`(`+172`, …) 成功时立即返回，否则扫 `0x5c` 标记块 |
 | `0x5d` | `0x10869d92` | `0x10865cf0` | confirmed | named | 选择子 0 先解析一次当前目标，参考点 `+2852`/`+2856`/`+2860` 三个分量都非零时进入正文，否则扫到 `5D 01`/`5D 02`；分量等于 `0` 也算无效。DSL：`self.target_position_available()` |
