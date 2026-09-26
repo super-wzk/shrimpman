@@ -3587,11 +3587,11 @@ dependencies = [
  "shrimpman-domain",
  "shrimpman-lease-kv",
  "shrimpman-protocol",
+ "shrimpman-runtime",
  "shrimpman-transport",
  "thiserror",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3633,6 +3633,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "shrimpman-runtime"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "shrimpman-sign"
 version = "0.1.0"
 dependencies = [
@@ -3653,13 +3663,13 @@ dependencies = [
  "shrimpman-lease-kv",
  "shrimpman-persistence",
  "shrimpman-protocol",
+ "shrimpman-runtime",
  "shrimpman-transport",
  "thiserror",
  "toasty",
  "tokio",
  "tower",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3693,13 +3703,13 @@ dependencies = [
  "shrimpman-lease-kv",
  "shrimpman-persistence",
  "shrimpman-protocol",
+ "shrimpman-runtime",
  "shrimpman-transport",
  "thiserror",
  "toasty",
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

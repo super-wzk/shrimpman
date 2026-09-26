@@ -1,5 +1,5 @@
-//! Deterministic subscript allocation. Table choice follows the first reachable
-//! call path, not a promise that every native call will save a return cursor.
+//! 子脚本槽位按首次可达调用路径确定，保持相同输入的编译结果稳定。
+//! 槽位选择不保证原生调用保存返回游标，控制流限制仍由编译阶段校验。
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -48,8 +48,7 @@ impl Allocation {
         let mut visited = HashSet::new();
         loop {
             let Some((name, stage)) = pending.pop_front() else {
-                // Unused functions still have scripts and are checked. Source
-                // order also makes disconnected components deterministic.
+                // 未调用函数也需要编译和校验；按源码顺序补入不连通部分，保证槽位分配稳定。
                 let Some(function) = document.functions.iter().find(|function| {
                     function.name != "main" && !visited.contains(function.name.as_str())
                 }) else {
@@ -103,8 +102,7 @@ impl Allocation {
     }
 }
 
-/// Functions that can run in an event lane must retain that lane's restrictions
-/// on main-state transfers, even though calls no longer expand their bodies.
+/// 沿事件入口的调用图传递限制：间接调用的函数也不能绕过事件通道的主状态跳转约束。
 pub(super) fn event_functions(document: &Document) -> HashSet<&str> {
     let functions: HashMap<_, _> = document
         .functions

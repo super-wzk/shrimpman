@@ -47,8 +47,20 @@ fn router(service: SignService) -> Router {
         .with_state(service)
 }
 
-fn error_response(status: StatusCode, error: &'static str) -> Response {
-    (status, Json(ErrorResponse { error })).into_response()
+// 错误在 HTTP 边界才转换为响应，避免用例适配函数携带体积较大的 Response。
+struct ApiError {
+    status: StatusCode,
+    error: &'static str,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(ErrorResponse { error: self.error })).into_response()
+    }
+}
+
+fn api_error(status: StatusCode, error: &'static str) -> ApiError {
+    ApiError { status, error }
 }
 
 #[derive(Serialize)]

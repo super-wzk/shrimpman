@@ -118,6 +118,7 @@ async fn watch_prefix(
         .iter()
         .filter_map(decode_entry)
         .collect::<Vec<_>>();
+    // 从快照的下一版本订阅，覆盖读取快照与建立 watch 之间发生的变更。
     let start_revision = revision
         .checked_add(1)
         .ok_or(WatchError::RevisionOverflow)?;

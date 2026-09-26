@@ -5,7 +5,7 @@ use mhf_ui::{HostIme, InputCaptureState};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use windows::Win32::Foundation::HMODULE;
 
-/// Native text and IME state, assembled with Base's UI component.
+/// 持有原生文本和 IME 状态；宿主需显式与 UI 组件共享适配器及输入捕获状态。
 pub struct UnicodeMod {
     translation_enabled: bool,
     ime_adapter: Rc<RefCell<Option<Arc<dyn HostIme>>>>,

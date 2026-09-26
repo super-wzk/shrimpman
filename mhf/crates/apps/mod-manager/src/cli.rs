@@ -139,8 +139,7 @@ fn export_selections(
 ) -> std::collections::BTreeMap<String, Selection> {
     let mut selections = config.selections();
     if !requested.is_empty() {
-        // Explicit export roots replace other enabled roots. Pins and explicit
-        // dependency disables still constrain the combination being exported.
+        // 显式 ID 替换导出的根选择，但依赖的版本约束和明确禁用状态仍然有效。
         for selection in selections.values_mut() {
             if selection.enabled == Some(true) {
                 selection.enabled = None;

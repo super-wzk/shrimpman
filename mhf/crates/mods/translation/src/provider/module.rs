@@ -41,8 +41,8 @@ impl Module for TranslationMod {
         let service = self
             .service
             .insert(Rc::new(TranslationService::new(settings.as_ref())?));
-        // SAFETY: Rc keeps the immutable table outside lifecycle &mut borrows;
-        // the host destroys dependent consumers before dropping this provider.
+        // SAFETY: 不可变接口表由 Rc 独立持有，不受生命周期方法的 &mut 借用影响；
+        // 宿主必须先销毁依赖方，再释放此提供方，保证已借出的表指针有效。
         unsafe {
             context.register(
                 INTERFACE_ID,

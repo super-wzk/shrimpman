@@ -102,6 +102,7 @@ impl WorldServiceContext {
 
         let state = Arc::downgrade(state);
         let mut sessions = self.lock_sessions();
+        // 旧连接的清理可能晚于角色重连；只移除仍指向自身的注册项。
         if sessions
             .get(&identity.character_id)
             .is_some_and(|registered| registered.ptr_eq(&state))

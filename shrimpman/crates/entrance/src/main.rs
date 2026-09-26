@@ -6,14 +6,14 @@ use shrimpman_discovery::{
 };
 use shrimpman_entrance::{EntranceConfig, EntranceServer, EntranceService, EntranceServiceContext};
 use shrimpman_lease_kv::LeaseKvClient;
+use shrimpman_runtime::{init_tracing, load_config, shutdown_signal};
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: ServiceName = ServiceName::from_static("entrance");
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let entrance = load_config()?;
+    let entrance = EntranceConfig::try_from(&load_config("entrance")?)?;
     init_tracing(&entrance.logging.filter)?;
     info!("Starting Entrance service");
 
@@ -77,68 +77,4 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("Entrance service stopped");
 
     Ok(())
-}
-
-fn init_tracing(config_filter: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let filter = match std::env::var(EnvFilter::DEFAULT_ENV) {
-        Ok(filter) => filter,
-        Err(std::env::VarError::NotPresent) => config_filter.to_owned(),
-        Err(error) => return Err(error.into()),
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_new(filter)?)
-        .try_init()?;
-    Ok(())
-}
-
-fn load_config() -> Result<EntranceConfig, config::ConfigError> {
-    let config = config::Config::builder()
-        .add_source(
-            config::File::from(std::path::PathBuf::from(
-                std::env::var_os("PROJECT_CONFIG").unwrap_or_else(|| "config.toml".into()),
-            ))
-            .format(config::FileFormat::Toml),
-        )
-        .add_source(
-            config::Environment::with_prefix("SHRIMPMAN")
-                .prefix_separator("_")
-                .separator("__")
-                .try_parsing(true)
-                .list_separator(",")
-                .with_list_parse_key("entrance.lease_kv.endpoints"),
-        )
-        .build()?;
-
-    EntranceConfig::try_from(&config)
-}
-
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-
-        let mut terminate = match signal(SignalKind::terminate()) {
-            Ok(terminate) => terminate,
-            Err(error) => {
-                error!(%error, "Failed to listen for SIGTERM");
-                return;
-            }
-        };
-
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => {
-                match result {
-                    Ok(()) => info!("Received Ctrl-C; shutting down"),
-                    Err(error) => error!(%error, "Failed to listen for Ctrl-C"),
-                }
-            }
-            _ = terminate.recv() => info!("Received SIGTERM; shutting down"),
-        }
-    }
-
-    #[cfg(not(unix))]
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => info!("Received Ctrl-C; shutting down"),
-        Err(error) => error!(%error, "Failed to listen for Ctrl-C"),
-    }
 }

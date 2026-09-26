@@ -62,7 +62,7 @@ let output = VirtualList::new(egui::Id::new("records")).show(
 
 `VirtualList` 通过原生 `UiBuilder::sense` 提供一个键盘焦点，聚焦后即可导航和确认，鼠标点击条目会聚焦列表并报告激活项。Tab 一次离开列表，不随活动条目增加停靠点；Esc 留给页面或弹层处理。页面将 `ListOutput.response` 登记到 `FocusEngagement::show` 后，手柄可先选整个区域、按 A 进入列表，再按 B 返回；列表本身不保存手柄进入状态。
 
-布局、配置和输出直接使用 egui 类型。`ScrollPanel.scroll` 是原生 `ScrollArea`，`Window.native` / `Popup.native` 是原生容器配置；组件只补充主题和专属交互策略。0.34–0.36 的采用与保留依据见 [原生能力核查](docs/native-egui.md)。
+布局、配置和输出直接使用 egui 类型。`ScrollPanel.scroll` 是原生 `ScrollArea`，`Window.native` / `Popup.native` 是原生容器配置；组件只补充主题和专属交互策略。原生容器、组件交互与宿主输入的分工见 [集成与职责边界](docs/native-egui.md)。
 
 浮动滚动条需要避让内容时，在使用处设置 `ScrollArea::content_margin` 的右侧边距；主题保留原生浮动策略。
 
@@ -91,7 +91,7 @@ Panel::new("任务列表").show(ui, |ui| {
 });
 ```
 
-`Theme` 只负责安装预设，包含原生 `egui::Style` 和少量专用 `Tokens`。可在安装前修改 `theme.style`；安装后，原生控件和自绘控件都读取当前 `Ui`，不再持有主题引用。
+`Theme` 只负责安装预设，包含原生 `egui::Style` 和少量专用 `Tokens`。可在安装前修改 `theme.style`；安装后，原生控件和自绘控件都读取当前 `Ui`，无需额外持有主题引用。
 
 ### 界面密度
 

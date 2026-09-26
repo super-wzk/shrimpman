@@ -45,30 +45,30 @@ flowchart TD
     L --> N[填充启动数据，再加载游戏 DLL]
     N --> R[check / attach / 运行 / 退出]
     H --> B[mhf.base]
-    B --> C[Font / UI / Geometry / Quest]
+    B --> C[Font / UI / Geometry / Monster / Quest]
     H --> F[mhf.config：通用配置与 INI]
     B --> F
     H --> Q[外部 Mod]
 ```
 
-内置 Mod 的运行版本目前为 `1.0.0`，由内置清单给出；外部包版本来自 `mod.toml`。
+内置 Mod 的运行版本为 `1.0.0`，由内置清单给出；外部包版本来自 `mod.toml`。
 
 | ID | 当前职责及选择规则 |
 | --- | --- |
 | `mhf.config` | 独立配置存储与通用 INI 桥，提供 `mhf.config.v1`；不依赖配置消费者 |
-| `mhf.base` | 基础支持，按消费者声明的依赖启用；统一 Font、UI、Geometry 和 Quest，提供 `mhf.font.v1`、`mhf.ui.v1`，向配置桥注册游戏字段与 INI 映射 |
+| `mhf.base` | 基础支持，按消费者声明的依赖启用；统一 Font、UI、Geometry、Monster 和 Quest，提供 `mhf.font.v1`、`mhf.ui.v1`，向配置桥注册游戏字段与 INI 映射 |
 | `mhf.login` | 默认登录启动；依赖 Base 和 Config，提供 `mhf.launch.fallback.v1` |
 | `mhf.debug` | 调试启动、临时猎人和游戏工具；仅依赖 Base，提供 `mhf.launch.v1` 与 `mhf.debug-tools.v1` |
 | `mhf.workbench` | 资源检查与独立预览；依赖 Base 和 Config，提供普通 `mhf.launch.v1`，与 Debug 同时启用会产生启动提供方冲突 |
 | `mhf.dat-redirect` | 默认关闭，独立启用后对所有启动模式生效；将游戏 `dat` 下的只读文件打开映射到配置根目录，缺失或打开失败时回退原文件；无 Mod 依赖，配置见 [DatRedirect](../crates/mods/dat-redirect/README.md) |
 
-Font、UI、Quest、Geometry 和 DebugTools 按职责分 crate，但不独立参与运行选择。Unicode 和 Translation 的代码保留，当前不接入应用。
+Font、UI、Quest、Geometry、Monster 和 DebugTools 按职责分 crate，但不独立参与运行选择。Unicode 和 Translation 是独立 crate，不在应用运行清单中。
 Cargo feature 决定可用实现，配置决定选择。启用 Debug 时，普通启动提供方自动覆盖默认 Login 的 fallback。
 宿主优先检查普通提供方，仅在没有普通提供方时检查 fallback；有效层必须恰好有一个，否则在回调前报错。
 
 Debug 原生状态通过 Base 的 `mhf.quest.control.v3` 访问同一任务会话。一般外部 UI 使用 Debug 的命令队列；高级任务控制仅供满足游戏线程约束的调用方。
 
-`mhf_quest::MonsterSpawn`／`prepare_monster_spawn` 准备任务替换中的资源种类、出生记录和猎人起始区，具体二进制操作位于 [`quest/binary.rs`](../crates/mods/quest/src/provider/binary.rs)。它们不直接创建或操纵运行中的怪物。实时怪物控制仍位于现有 Debug 实现，没有因此新增 Monster Mod；当前任务接口也不意味着在线任务已开放调用。
+`mhf_quest::MonsterSpawn`／`prepare_monster_spawn` 准备任务替换中的资源种类、出生记录和猎人起始区，具体二进制操作位于 [`quest/binary.rs`](../crates/mods/quest/src/provider/binary.rs)。它们不直接创建或操纵运行中的怪物。实时怪物控制由 DebugTools 提供；Monster 组件负责怪物种类上限与 AI 脚本。Quest 控制接口面向本地任务会话。
 
 `mhf.debug` 的启动回调写入临时猎人字段；Login 写入认证结果。它们仅在回调期间借用
 `LaunchParams32` 和 `GlobalData32`，内存与句柄由宿主持有。Base 在 prepare 发布 Quest 快照、控制与 `mhf.quest.launch.v1`；
@@ -79,8 +79,7 @@ Debug 回调将自身预设或自定义任务字节传给 `prepare_local`，Base
 `Overlay` trait、`OverlayRegistry` 及 D3D9、窗口和 DirectInput 后端。
 Debug UI 通过共享注册表提交完整 egui 窗口，当前仍要求内置 Base。
 
-Base 内部持有 Font、UI、Geometry 和 Quest，游戏文本与任务字节保留原生编码。
-公开 C Panel 不传递完整 egui 对象；当前内置 Debug 窗口仍要求内置 Base。
+公开 C Panel 不传递完整 egui 对象；游戏文本与任务字节保留原生编码。
 
 ## 配置与组合
 
@@ -100,7 +99,7 @@ version = "^1.0"
 label = "计数器"
 ```
 
-游戏宿主和管理器的 `directory` 都默认是调用目录中的 `mods`；配置中的相对目录也以调用目录为基准，在切换到游戏工作目录前解析。`settings` 序列化为该 Mod 的配置 TOML，经 Host 表读取。原有游戏设置仍留在原配置节，不为此复制一份运行设置。
+游戏宿主和管理器的 `directory` 都默认是调用目录中的 `mods`；配置中的相对目录也以调用目录为基准，在切换到游戏工作目录前解析。`settings` 序列化为该 Mod 的配置 TOML，经 Host 表读取。游戏设置保存在各自配置节，由领域消费者解释。
 
 `enabled` 区分未设置、明确启用和明确禁用。必需依赖自动加入，但不会覆盖明确禁用。`version` 和包的 `dependencies` 都使用 `semver::VersionReq`；解析器选取满足全部约束的版本，在传递冲突和循环时回溯。同一 ID 最终只选一个候选，相同 ID／版本的重复来源报错。
 
@@ -115,7 +114,7 @@ label = "计数器"
 ZIP 导入和导出在后台执行，不加载 Mod DLL 或游戏。导入不自动启用，不覆盖已有包版本；
 GUI 导出已保存配置中明确启用的项及其完整依赖，包含所需内置版本记录，输出文件必须尚不存在。
 开关修改保留原 TOML 的其他字段与注释，在下次启动生效。
-`list`、`import`、`export`、`enable`、`disable` 子命令仍可用；CLI 导出以显式 ID 或配置中明确启用的项为根。
+`list`、`import`、`export`、`enable`、`disable` 提供命令行操作；CLI 导出以显式 ID 或配置中明确启用的项为根。
 具体选项见 [管理器用法](../crates/apps/mod-manager/README.md)。
 
 `mhf-mods` 以命令启动时的当前工作目录作为运行目录：默认读取其中的 `mhf.toml`，
@@ -135,7 +134,7 @@ GUI 导出已保存配置中明确启用的项及其完整依赖，包含所需�
 | 启动回调 | 选择普通提供方或 fallback，填充宿主借用的启动数据；取消时直接进入正常清理 |
 | 游戏加载 | `NativeGame` 加载游戏 DLL，随后设置借用的模块基址 |
 | `check` | 运行各 Mod 的独立预检，例如目标原像验证 |
-| `attach` | 安装 Hook、绑定服务、注册界面；部分现有目标检查仍留在对应安装函数内 |
+| `attach` | 安装 Hook、绑定服务、注册界面；安装函数也可执行目标检查 |
 | 运行 | 设置运行阶段并调用游戏主入口 |
 | `stop` | 先消费者后提供者，停止私有任务、UI 与原生调用入口 |
 | `detach` | 在原生调用结束后撤销功能和 Hook；依赖顺序优先，内置次序只处理无依赖关系的并列项 |
@@ -148,7 +147,7 @@ GUI 导出已保存配置中明确启用的项及其完整依赖，包含所需�
 
 普通跨 Mod 调用直接经过生成的函数表，不逐次申请许可或登记租约。宿主不持有接口注册表锁调用外部代码；Provider 实例、接口、虚拟对象和 DLL 至少存活到消费者销毁结束。
 
-清理错误保留实例、相关依赖、DLL 和原生缓冲，并返回失败阶段。不能将禁用 Hook 等同于已释放 trampoline，也不能在仍有回调时销毁状态。窗口、IME 和裸汇编入口仍遵守现有线程与停止约束，具体见 [Hook 生命周期](mod-hooks.md)。
+清理错误保留实例、相关依赖、DLL 和原生缓冲，并返回失败阶段。不能将禁用 Hook 等同于已释放 trampoline，也不能在仍有回调时销毁状态。窗口、IME 和裸汇编入口必须遵守各自线程与停止约束，具体见 [Hook 生命周期](mod-hooks.md)。
 
 ## 验证与当前范围
 
@@ -159,4 +158,4 @@ GUI 导出已保存配置中明确启用的项及其完整依赖，包含所需�
 Counter 提供方和 Hook 在各自 workspace 运行同名测试。设置 `MHF_UPDATE_HEADERS=1` 显式更新快照，
 或用 `MHF_HEADERS_EXPORT_DIR` 在检查通过后导出已构建的头文件，完整命令见 [头文件生成](dll-mods.md#头文件生成)。
 
-尚需真实 HD 客户端验证 Hook 安装、UI、任务和调试命令、退出释放及重复启动。首版没有原生 Mod 热卸载、任意 detour 链或通用内存补丁区间管理；开关与 DLL 更新在游戏退出后生效。
+真实 HD 客户端中的 Hook 安装、UI、任务、调试命令、退出释放及重复启动需要交互验证。原生 Mod 不支持热卸载或任意 detour 链；开关与 DLL 更新在游戏退出后生效。内部字节补丁区间由 `PatchReservation` 管理，公开接口及冲突检测范围见 [Hook 冲突规则](mod-hooks.md#冲突规则)。

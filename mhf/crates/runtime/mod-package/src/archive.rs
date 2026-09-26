@@ -12,7 +12,7 @@ use std::{
 };
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-/// An export receipt, not another source of runtime configuration.
+/// 导出时所选的精确版本记录；导入不会据此修改运行配置。
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Pack {
     pub schema: u32,
@@ -78,8 +78,7 @@ pub fn export_archive(path: impl AsRef<Path>, selected: &[Candidate]) -> Result<
     }
     let pack = toml::to_string_pretty(&Pack { schema: 1, mods })
         .map_err(|error| Error::new(format!("生成 pack.toml 失败：{error}")))?;
-    // Refuse an existing output, avoiding accidental replacement of a package
-    // being exported or another user archive.
+    // 仅创建新文件，避免覆盖正在打包的源文件或用户已有的归档。
     let output = File::options()
         .write(true)
         .create_new(true)
@@ -158,6 +157,24 @@ pub fn import_archive(
     fs::create_dir_all(mods_dir.as_ref())?;
     let root = mods_dir.as_ref().canonicalize()?;
     let staging = Staging::create(&root)?;
+    extract_archive(&mut archive, &staging.0)?;
+    let candidates = discover(staging.0.join("mods"))?;
+    if candidates.is_empty()
+        && pack
+            .as_ref()
+            .is_none_or(|pack| pack.mods.is_empty() || pack.mods.iter().any(|item| !item.builtin))
+    {
+        return Err(Error::new("ZIP 包中没有 Mod 包"));
+    }
+    if let Some(pack) = &pack {
+        validate_pack(pack, &candidates)?;
+    }
+    validate_destinations(&root, &candidates)?;
+    publish_packages(&root, candidates)
+}
+
+// 所有 ZIP 内容先写入同一文件系统的暂存目录，校验通过前不修改已安装包。
+fn extract_archive(archive: &mut ZipArchive<File>, staging: &Path) -> Result<()> {
     let mut names = BTreeSet::new();
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
@@ -188,7 +205,7 @@ pub fn import_archive(
             Version::parse(version)
                 .map_err(|error| Error::new(format!("Mod 包目录中的版本号无效：{error}")))?;
         }
-        let target = staging.0.join(name);
+        let target = staging.join(name);
         if file.is_dir() {
             fs::create_dir_all(target)?;
         } else {
@@ -197,20 +214,12 @@ pub fn import_archive(
             io::copy(&mut file, &mut output)?;
         }
     }
-    let candidates = discover(staging.0.join("mods"))?;
-    if candidates.is_empty()
-        && pack
-            .as_ref()
-            .is_none_or(|pack| pack.mods.is_empty() || pack.mods.iter().any(|item| !item.builtin))
-    {
-        return Err(Error::new("ZIP 包中没有 Mod 包"));
-    }
-    if let Some(pack) = &pack {
-        validate_pack(pack, &candidates)?;
-    }
-    // Check the complete destination set before moving any package. In
-    // particular, do not follow a pre-existing ID directory symlink.
-    for candidate in &candidates {
+    Ok(())
+}
+
+// 发布前检查整个目标集合，且不跟随已有 ID 目录中的符号链接。
+fn validate_destinations(root: &Path, candidates: &[Candidate]) -> Result<()> {
+    for candidate in candidates {
         let parent = root.join(&candidate.manifest.id);
         match fs::symlink_metadata(&parent) {
             Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
@@ -235,6 +244,10 @@ pub fn import_archive(
             Err(error) => return Err(error.into()),
         }
     }
+    Ok(())
+}
+
+fn publish_packages(root: &Path, candidates: Vec<Candidate>) -> Result<Vec<Candidate>> {
     let mut published = Vec::new();
     let result = (|| {
         let mut imported = Vec::new();
@@ -255,6 +268,7 @@ pub fn import_archive(
         }
         Ok(imported)
     })();
+    // 某次移动失败时仅回滚本次已发布的包；暂存目录由 Staging 的 Drop 统一清理。
     if result.is_err() {
         for path in published {
             let _ = fs::remove_dir_all(path);

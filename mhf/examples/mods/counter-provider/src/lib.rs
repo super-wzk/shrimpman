@@ -18,8 +18,7 @@ impl<'host> Mod<'host> for CounterMod<'host> {
         })
     }
     fn attach(&mut self) -> Result<()> {
-        // The published table stays outside later `&mut Mod` lifecycle borrows.
-        // Consumers borrow the allocation; only this provider owns the Rc.
+        // 函数表独立分配，后续生命周期的 &mut Mod 不独占它；消费者借用，提供方持有 Rc。
         unsafe {
             mhf_mod_sdk::host::register_interface(
                 self.host,
@@ -36,6 +35,7 @@ impl CounterApi for CounterState {
         }
     }
     fn add(&self, amount: u32) -> api::Status {
+        // 检查与写入处于同一次原子更新中；溢出返回失败且计数保持不变。
         match self
             .0
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {

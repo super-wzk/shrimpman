@@ -8,8 +8,8 @@ use toml::{Table, Value};
 
 type Result<T> = std::result::Result<T, String>;
 
-/// One TOML document and the definitions registered by its consumers.
-/// Defaults are read in memory; writes merge into the latest file on disk.
+/// 保存 TOML 文档和消费者注册的字段定义。
+/// 默认值只在内存中合并；写入前重读磁盘，保留其他组件已保存的修改。
 pub struct Store {
     path: PathBuf,
     document: Table,
@@ -41,19 +41,10 @@ impl Store {
             };
         }
         validate_registration(&registration)?;
-        let aliases = |name: &str, definition: &Registration| {
-            let mut names = vec![name.to_owned()];
-            if let Some(ini) = &definition.ini {
-                names.push(ini.name.clone());
-            }
-            names
-        };
-        let names = aliases(section, &registration);
+        // TOML 节名与 INI 别名共用大小写不敏感的命名空间，防止原生查询命中另一组件。
         for (other, definition) in &self.registrations {
-            if names.iter().any(|name| {
-                aliases(other, definition)
-                    .iter()
-                    .any(|other| name.eq_ignore_ascii_case(other))
+            if section_aliases(section, &registration).any(|name| {
+                section_aliases(other, definition).any(|other| name.eq_ignore_ascii_case(other))
             }) {
                 return Err(format!(
                     "configuration section [{section}] conflicts with [{other}]"
@@ -331,6 +322,13 @@ fn effective_section(
     Ok(values)
 }
 
+fn section_aliases<'a>(
+    section: &'a str,
+    registration: &'a Registration,
+) -> impl Iterator<Item = &'a str> {
+    std::iter::once(section).chain(registration.ini.as_ref().map(|ini| ini.name.as_str()))
+}
+
 fn validate_section_aliases(
     document: &Table,
     section: &str,
@@ -338,11 +336,7 @@ fn validate_section_aliases(
 ) -> Result<()> {
     for name in document.keys() {
         if name != section
-            && (name.eq_ignore_ascii_case(section)
-                || registration
-                    .ini
-                    .as_ref()
-                    .is_some_and(|ini| ini.name.eq_ignore_ascii_case(name)))
+            && section_aliases(section, registration).any(|alias| alias.eq_ignore_ascii_case(name))
         {
             return Err(format!(
                 "TOML section [{name}] conflicts with registered [{section}]"

@@ -28,6 +28,7 @@ pub fn bind<'host, I: Interface>(
         )
     };
     check(host, status)?;
+    // 宿主成功返回有效借用表，Interface 契约保证其布局和存活期；消费者不接管所有权。
     Ok(InterfaceRef {
         table: unsafe { &*table.cast::<I::Table>() },
     })

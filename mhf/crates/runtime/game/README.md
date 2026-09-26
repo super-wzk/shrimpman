@@ -18,8 +18,9 @@ Mod 生命周期和最终退出。它不依赖具体 Mod、配置 schema、Sign 
 | [`src/profile.rs`](src/profile.rs) | 客户端描述 |
 
 应用的 [`runtime.rs`](../../apps/launcher/src/runtime.rs) 读取配置并解析目录，
-[`builtins.rs`](../../apps/launcher/src/builtins.rs) 组装具体 Mod。内置清单和 semver 解析属于
-[`mhf-mod-package`](../mod-package/README.md)，实例、接口和阶段由 [`mhf-mod-host`](../mod-host/README.md) 管理。
+[`builtins.rs`](../../apps/launcher/src/builtins.rs) 组装具体 Mod。内置清单由
+[`mhf-launcher-catalog`](../../apps/launcher-catalog/README.md) 提供，semver 解析由
+[`mhf-mod-package`](../mod-package/README.md) 完成；实例、接口和阶段由 [`mhf-mod-host`](../mod-host/README.md) 管理。
 
 ## 启动与退出
 
@@ -36,7 +37,7 @@ prepare 完成后，宿主优先选择 `mhf.launch.v1`；没有普通提供方�
 
 配置存储与通用 INI 桥由独立 [`mhf.config`](../../mods/config/README.md) 提供。
 Base 提交游戏设置及 INI 映射，Login 自己注册并解析所属配置；内核只接收应用准备的值。
-字体、界面、Geometry 与任务字节属于 Base 内部组件；Unicode 和 Translation crate 当前保留但不接入应用。
+字体、界面、Geometry 与任务字节属于 Base 内部组件；应用使用原生文本与 CP932 任务，未启用 Unicode 和 Translation 组件。
 
 任务与调试说明见 [Debug](../../mods/debug/README.md)，登录编码与 ABI 字段规则见
 [Login](../../mods/login/README.md)，界面和输入法见 [UI](../../mods/ui/README.md)。

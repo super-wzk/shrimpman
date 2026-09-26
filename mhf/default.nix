@@ -29,14 +29,35 @@ let
     "/imsvc${windowsSdk}/sdk/include/shared"
     "/imsvc${windowsSdk}/sdk/include/um"
   ];
-  debugFeature = lib.optionalString config.development.mhf.debug.enable ",debug";
-  workbenchFeature = lib.optionalString config.development.mhf.workbench.enable ",workbench";
+  # 启动器与管理器使用同一组构建能力，避免管理器列出无法启动的内置 Mod。
+  launchFeatures = [
+    "login"
+  ]
+  ++ lib.optional config.development.mhf.debug.enable "debug"
+  ++ lib.optional config.development.mhf.workbench.enable "workbench";
   command =
     name: text:
     mkCommand {
       inherit name text;
       directory = "mhf";
     };
+  windowsBuild =
+    {
+      name,
+      package,
+      bin ? null,
+      features ? null,
+    }:
+    command name ''
+      exec cargo build -p ${lib.escapeShellArg package} \
+        ${lib.optionalString (bin != null) "--bin ${lib.escapeShellArg bin}"} --release \
+        ${
+          lib.optionalString (
+            features != null
+          ) "--no-default-features --features ${lib.escapeShellArg (lib.concatStringsSep "," features)}"
+        } \
+        --target i686-pc-windows-msvc --locked "$@"
+    '';
   windowsCommand =
     {
       name,
@@ -58,6 +79,7 @@ let
             *) gameDirectory="$PROJECT_ROOT/$gameDirectory" ;;
           esac
         ''}
+        # 在构建命令切换目录前保留调用方的配置基准；显式参数优先于环境变量。
         hasConfigArg=false
         for argument in "$@"; do
           case "$argument" in
@@ -107,7 +129,7 @@ let
             MHF_CONFIG="$(windowsPath "$MHF_CONFIG")"
           fi
           ${lib.optionalString needsGame ''gameDirectory="$(windowsPath "$gameDirectory")"''}
-          # WSL requires explicit forwarding of Linux environment variables.
+          # WSL 只转发显式登记的变量；保留调用方已经设置的转发标志。
           for variable in "''${!MHF_@}"; do
             case ":''${WSLENV:-}:" in
               *":$variable:"*|*":$variable/"*) ;;
@@ -177,36 +199,32 @@ in
       ];
     };
     development.commands = {
-      mhf-ai-decompile-build = mkDefault (
-        command "mhf-ai-decompile-build" ''
-          exec cargo build -p mhf-ai-decompile --release \
-            --target i686-pc-windows-msvc --locked "$@"
-        ''
-      );
+      mhf-ai-decompile-build = mkDefault (windowsBuild {
+        name = "mhf-ai-decompile-build";
+        package = "mhf-ai-decompile";
+      });
       mhf-ai-decompile = mkDefault (windowsCommand {
         name = "mhf-ai-decompile";
         buildCommand = config.development.commands.mhf-ai-decompile-build;
       });
-      mhf-mods-build = mkDefault (
-        command "mhf-mods-build" ''
-          exec cargo build -p mhf-mod-manager --bin mhf-mods --release \
-            --no-default-features --features gui,login${debugFeature}${workbenchFeature} \
-            --target i686-pc-windows-msvc --locked "$@"
-        ''
-      );
-      # Both runtime commands preserve the caller's directory and configuration.
+      mhf-mods-build = mkDefault (windowsBuild {
+        name = "mhf-mods-build";
+        package = "mhf-mod-manager";
+        bin = "mhf-mods";
+        features = [ "gui" ] ++ launchFeatures;
+      });
+      # 运行入口保留调用目录，避免改变配置文件与资源相对路径的含义。
       mhf-mods = mkDefault (windowsCommand {
         name = "mhf-mods";
         buildCommand = config.development.commands.mhf-mods-build;
         needsGame = false;
       });
-      mhf-build = mkDefault (
-        command "mhf-build" ''
-          exec cargo build -p mhf-launcher --bin mhf-launcher --release \
-            --no-default-features --features login${debugFeature}${workbenchFeature} \
-            --target i686-pc-windows-msvc --locked "$@"
-        ''
-      );
+      mhf-build = mkDefault (windowsBuild {
+        name = "mhf-build";
+        package = "mhf-launcher";
+        bin = "mhf-launcher";
+        features = launchFeatures;
+      });
       mhf-launcher = mkDefault (windowsCommand {
         name = "mhf-launcher";
         buildCommand = config.development.commands.mhf-build;

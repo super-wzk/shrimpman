@@ -11,7 +11,7 @@ const U16: IniKind = IniKind::Integer {
     max: u16::MAX as i64,
 };
 
-/// Register Base's sections, then validate the values the service exposes to it.
+/// 先注册默认值与原生 INI 映射，再校验服务合并后的配置，确保 Rust 和游戏读取同一组值。
 pub fn register_config(config: Config<'_>) -> Result<MhfConfig, String> {
     let mut values = Table::new();
     for (section, definition) in registrations()? {
@@ -150,6 +150,7 @@ fn registrations() -> Result<Vec<(&'static str, Registration)>, String> {
             let Some(Value::Table(defaults)) = defaults.remove(section) else {
                 return Err(format!("Base defaults for [{section}] must be a table"));
             };
+            // 原生适配针对 HD 布局；固定该选项，避免配置切换到不匹配的客户端数据布局。
             let fixed = if section == "video" {
                 Table::from_iter([(
                     "graphics_version".into(),

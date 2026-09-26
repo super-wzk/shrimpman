@@ -9,8 +9,7 @@ use shrimpman_domain::world::{
 };
 pub use shrimpman_lease_kv::LeaseKvClientConfig;
 
-const DEFAULT_LOG_FILTER: &str =
-    "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
+const DEFAULT_LOG_FILTER: &str = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info";
 const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -115,7 +114,7 @@ pub struct WorldLandConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct WorldLoggingConfig {
-    /// Comma-separated [`tracing_subscriber::EnvFilter`] directives.
+    /// Comma-separated `tracing_subscriber::EnvFilter` directives.
     pub filter: String,
 }
 

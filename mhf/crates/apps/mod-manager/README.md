@@ -41,7 +41,8 @@ Cargo 默认启用 `gui`、`login`、`debug`、`workbench`。
 
 在项目 Nix 开发环境中，`mhf-mods-build` 构建 Windows i686 release 管理器，
 `mhf-mods` 构建后打开图形界面；也可使用 `nix run --impure .#mhf-mods`。
-Nix 使用 `gui,login${debugFeature}`，与项目启动器共用调试能力设置。
+Nix 启用 `gui,login`，并按 `development.mhf.debug.enable` 和
+`development.mhf.workbench.enable` 加入 `debug`、`workbench`，与启动器共用编译能力设置。
 包装命令在源码 `mhf/` 目录的子进程中构建，运行工具时保留调用者的当前工作目录，
 使用现有 Wine／WSL 设置。与 Nix 启动器共用配置优先级：显式 `--config`、`MHF_CONFIG`、当前工作目录的 `mhf.toml`。
 配置不存在就报错，不生成副本或回退到其他目录。
@@ -51,7 +52,7 @@ Nix 使用 `gui,login${debugFeature}`，与项目启动器共用调试能力设�
 
 ## 命令行
 
-显式传入子命令时继续使用 CLI，例如 `mhf-mods list` 或 `nix run --impure .#mhf-mods -- list`：
+显式传入子命令时使用 CLI，例如 `mhf-mods list` 或 `nix run --impure .#mhf-mods -- list`：
 
 ```sh
 mhf-mods list
@@ -79,3 +80,14 @@ GUI 导出与不指定 ID 的 CLI 导出使用相同的根选择。需要包含�
 显式 `--config`、`--mods-dir` 以及 ZIP 路径使用相同规则，绝对路径直接使用；
 `--mods-dir` 只覆盖本次操作。即使 `--config` 指向其他目录，配置中的相对 Mod 目录
 仍以命令启动时的当前目录为基准。工具自身放在哪里不影响这些路径。
+
+## 代码职责
+
+- [`src/manager.rs`](src/manager.rs)：配置读取、依赖预览、保存合并及包导入导出。
+- [`src/cli.rs`](src/cli.rs)：命令行参数与输出。
+- [`src/gui.rs`](src/gui.rs) 与 [`src/gui/view.rs`](src/gui/view.rs)：界面状态、后台任务和视图。
+- [`src/dialogs.rs`](src/dialogs.rs)：文件选择交互。
+
+GUI 保存时重新读取磁盘配置，仅合并相对打开时基线实际修改的字段，保留其他配置与注释；
+合并后的组合通过依赖解析后才写入。CLI 的 enable／disable 用于逐项编辑，
+不要求每条命令执行后的中间配置都是可启动组合。

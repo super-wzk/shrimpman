@@ -1,25 +1,17 @@
-use std::{io::Cursor, num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc};
 
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use shrimpman_domain::{character::CharacterId, world::LandKey};
-use shrimpman_protocol::{
-    BinrwOutbound, CommandPacketDecoder, Dispatcher, PacketStream, PayloadDecode, PayloadDecoder,
-    outbound_channel,
-};
+use shrimpman_protocol::{BinrwOutbound, Dispatcher, PacketStream, outbound_channel};
 use shrimpman_transport::MhfConnection;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
-    ConnectionError, PacketDecodeError, WorldRepositories, WorldSession, WorldSessionContext,
-    context::WorldServiceContext,
+    ConnectionError, WorldRepositories, WorldSession, WorldSessionContext,
+    context::WorldServiceContext, packet_group::LandPacketGroupDecoder,
 };
-use crate::{
-    envelope::{LandCommandDecoder, MSG_SYS_END},
-    router::{LandInbound, LandRouter, LandRouterBuildError},
-};
+use crate::router::{LandInbound, LandRouter, LandRouterBuildError};
 
-type RoutedPacketDecoder = CommandPacketDecoder<LandCommandDecoder, LandRouter>;
 type LandPacketStream<Io> = PacketStream<MhfConnection<Io>, LandPacketGroupDecoder>;
 
 /// Coordinates the Land connections owned by one World process.
@@ -84,7 +76,7 @@ where
         let (outbound, outbound_receiver) = outbound_channel::<BinrwOutbound>(NonZeroUsize::MIN);
         let _session_guard = context.guard();
         let mut dispatcher = Dispatcher::new(NonZeroUsize::MIN);
-        // Reading must not wait behind an ordered handler: its response arrives on this stream.
+        // 读包与顺序处理器必须独立运行：处理器等待的 ACK 也由同一连接读入。
         let (handler_sender, mut handler_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         let receive_context = context.clone();
@@ -169,62 +161,10 @@ where
     }
 }
 
-/// Routes each packet in a Land group and validates its final MSG_SYS_END.
-struct LandPacketGroupDecoder {
-    routed: RoutedPacketDecoder,
-}
-
-impl LandPacketGroupDecoder {
-    fn new(router: LandRouter) -> Self {
-        Self {
-            routed: CommandPacketDecoder::new(LandCommandDecoder, router),
-        }
-    }
-}
-
-impl PayloadDecoder for LandPacketGroupDecoder {
-    type Inbound = <RoutedPacketDecoder as PayloadDecoder>::Inbound;
-    type Error = PacketDecodeError;
-
-    fn decode_next(
-        &mut self,
-        payload: &mut Cursor<Bytes>,
-    ) -> Result<PayloadDecode<Self::Inbound>, Self::Error> {
-        let payload_len = payload.get_ref().len();
-        let Some(packet_end) = payload_len.checked_sub(size_of::<u16>()) else {
-            return Err(PacketDecodeError::MissingEndMarker);
-        };
-
-        let end = &payload.get_ref()[packet_end..];
-        let actual = u16::from_be_bytes([end[0], end[1]]);
-        if actual != MSG_SYS_END {
-            return Err(PacketDecodeError::InvalidEndMarker { actual });
-        }
-
-        let decoded = match self
-            .routed
-            .decode_next(payload)
-            .map_err(PacketDecodeError::Packet)?
-        {
-            PayloadDecode::Item(decoded) => decoded,
-            PayloadDecode::Complete => return Err(PacketDecodeError::MissingEndMarker),
-        };
-
-        if *decoded.command() == MSG_SYS_END {
-            let remaining = payload_len as u64 - payload.position();
-            if remaining != 0 {
-                return Err(PacketDecodeError::EndMarkerNotFinal { remaining });
-            }
-            return Ok(PayloadDecode::Complete);
-        }
-
-        Ok(PayloadDecode::Item(decoded))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use binrw::{BinRead, BinWrite};
+    use bytes::Bytes;
     use futures_util::{SinkExt, StreamExt};
     use jiff::{SignedDuration, Timestamp};
     use shrimpman_domain::{
@@ -243,7 +183,7 @@ mod tests {
     use super::*;
     use crate::{
         application::InternalError,
-        envelope::LandPacket,
+        envelope::{LandPacket, MSG_SYS_END},
         exchange::LandExchange,
         response::{Buffered, MSG_SYS_ACK},
         router::LandRouteRegistration,
@@ -607,22 +547,5 @@ mod tests {
         assert!(client.next().await.is_none());
         server.await.unwrap().unwrap();
         assert!(service.session(fixture.character_id).is_none());
-    }
-
-    #[test]
-    fn rejects_packets_after_the_end_marker() {
-        let mut decoder = LandPacketGroupDecoder::new(LandRouter::new().unwrap());
-        let mut payload = Cursor::new(Bytes::from_static(&[
-            0x00, 0x11, 0x00, 0x10, 0x00, 0x11, 0x00, 0x10,
-        ]));
-
-        assert!(matches!(
-            decoder.decode_next(&mut payload).unwrap(),
-            PayloadDecode::Item(_)
-        ));
-        assert!(matches!(
-            decoder.decode_next(&mut payload),
-            Err(PacketDecodeError::EndMarkerNotFinal { remaining: 4 })
-        ));
     }
 }

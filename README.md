@@ -1,254 +1,58 @@
-# Shrimpman development
+# Shrimpman
 
-The repository contains two Rust workspaces:
+Monster Hunter Frontier 服务端与 HD 客户端工具。仓库包含两个独立 Rust 工作区：
 
-- [`shrimpman/`](shrimpman/README.md): Sign, Entrance, World and persistence.
-- [`mhf/`](mhf/crates/apps/launcher/README.md): the 32-bit Windows MHF launchers and overlay.
+| 工作区 | 用途 | 文档入口 |
+| --- | --- | --- |
+| `shrimpman/` | Sign 登录、Entrance 分流、World 游戏服务及持久化 | [服务端说明](shrimpman/README.md) |
+| `mhf/` | Windows x86 游戏宿主、启动器、Mod 管理器、资源工具与功能组件 | [客户端说明](mhf/README.md) |
 
-## Development environment
+客户端固定面向 `mhfo-hd.dll`，游戏运行目标为 `i686-pc-windows-msvc`。
+服务端协议、客户端原生调用及资源格式的适用范围见各模块文档。
 
-Install Nix with `nix-command` and `flakes` enabled. From the repository root:
+## 快速开始
+
+安装支持 `nix-command` 和 `flakes` 的 Nix，在仓库根目录运行：
 
 ```sh
 nix develop --impure
 shrimpman-dev up
 ```
 
-The root `flake.nix` declares inputs and supported systems. Its flake-parts module
-`development/flake.nix` assembles the following modules and exposes the runnable apps,
-packages and checks:
+开发环境提供 Rust、etcd、Protobuf、LLVM 和 Windows x86 SDK/CRT。
+服务由 Process Compose 管理，等待 etcd 健康检查与数据库迁移后启动。
+进入开发环境只加载工具与变量，服务需要显式启动。
 
-| File | Responsibility |
-| --- | --- |
-| `development/shell.nix` | Shared development options, devShell and command helpers |
-| `development/git-hooks.nix` | Git hooks, format checks and shell installation |
-| `shrimpman/default.nix` | Server tools, commands and process definitions |
-| `shrimpman/config.nix` | Server application defaults and TOML generation |
-| `mhf/default.nix` | Cross-compilation, launcher and Wine/WSL execution |
-| `mhf/config.nix` | MHF application defaults and TOML generation |
-| `local/default.nix` | Optional machine-specific overrides |
-
-Only the root is a flake; `flake.lock` pins Nixpkgs, the Rust overlay, flake-parts,
-[git-hooks.nix](https://github.com/cachix/git-hooks.nix) and
-[process-compose-flake](https://github.com/Platonic-Systems/process-compose-flake).
-flake-parts manages platform outputs through `perSystem`, with one Rust-overlay
-package set per platform. `process-compose.shrimpman-dev` imports the application
-and development modules using process-compose-flake's standard flake-parts interface.
-`rust-toolchain.toml` defines Rust components and the Windows target.
-
-The environment includes Rust, etcd, Protobuf, Cargo Xwin and LLVM tools. It
-supports Apple Silicon macOS and aarch64/x86_64 Linux. On x86_64 Linux it also
-provides Wine; on macOS, use your existing Wine installation.
-
-For automatic activation, install `direnv` outside the project shell and add
-`eval "$(direnv hook zsh)"` to `~/.zshrc` (use `bash` for Bash). Then run:
-
-```sh
-direnv allow
-```
-
-[`.envrc`](.envrc) uses a version-pinned nix-direnv, watches the toolchain and Nix
-modules, and loads the optional `local/` module with `--impure` when present.
-Entering the shell loads tools and environment variables; processes start explicitly.
-
-Entering the shell also installs the pre-commit hook through `git-hooks.nix`, using
-`prek`. Commits check Nix formatting, Rust formatting for each affected workspace,
-TOML syntax and merge conflicts. Formatting checks use the tools pinned by the
-flake; Rust uses the same toolchain as the development shell. The generated
-`.pre-commit-config.yaml` stays ignored by Git.
-
-Run all hooks with `prek run --all-files` inside the shell, or
-`nix develop --command prek run --all-files`. `nix flake check` runs the same hooks
-in the Nix build sandbox. To fix formatting, run `nixfmt` on the affected Nix files,
-or `cargo fmt --manifest-path shrimpman/Cargo.toml --all` and
-`cargo fmt --manifest-path mhf/Cargo.toml --all` from the repository root.
-
-## Commands
-
-The development `apps` enter the devShell through `nix develop`
-before running, so Nix setup hooks initialize the compiler, SDK and libraries.
-Commands inside direnv/devShell run directly. Add `--impure` to include the optional
-local module; the wrapper uses the same flake snapshot and preserves that module selection.
-The development shell exposes the same executables:
-
-`apps` contains runnable entries for `nix run`; `packages` contains buildable
-artifacts; `checks` contains checks run by `nix flake check`. The standalone
-`update-configs` app only regenerates public TOML files and does not enter a devShell.
-
-| Run from the repository | Command inside the shell | Purpose |
-| --- | --- | --- |
-| `nix run .#dev -- up` | `shrimpman-dev up` | Start the development processes |
-| `nix run .#shrimpman-build` | `shrimpman-build` | Build the server workspace |
-| `nix run .#shrimpman-db -- --help` | `shrimpman-db --help` | Run the database CLI |
-| `nix run .#shrimpman-migrate` | `shrimpman-migrate` | Apply database migrations |
-| `nix run .#mhf-build` | `mhf-build` | Build the Windows launcher |
-| `nix run .#mhf-launcher` | `mhf-launcher` | Build and launch for the current host |
-| `nix run .#mhf-mods-build` | `mhf-mods-build` | Build the standalone Mod manager |
-| `nix run .#mhf-mods` | `mhf-mods` | Build and open the Mod manager |
-
-MHF's public C headers are generated by safer-ffi through the launcher and example build scripts.
-Inside the Nix shell, run `cargo test --manifest-path mhf/Cargo.toml -p mhf-launcher --target i686-pc-windows-msvc --test headers`
-from the repository root to check the application snapshots. Set `MHF_UPDATE_HEADERS=1` to update them.
-See [header generation](mhf/docs/dll-mods.md#头文件生成) for all source definitions, outputs and example checks.
-
-```sh
-shrimpman-dev up shrimpman-sign     # Sign, etcd and migration
-shrimpman-dev up shrimpman-entrance # Entrance and etcd
-shrimpman-dev up -t=false           # run without the TUI
-shrimpman-dev process list
-```
-
-The workspace modules declare processes and dependencies. Services wait for etcd
-to be healthy; Sign and World also wait for a successful migration. A failed
-migration stops startup. Ctrl-C stops the supervisor in reverse dependency order.
-The MHF launcher is disabled by default and can be started manually in the TUI.
-
-Default ports are etcd `2379`/`2380`, Sign TCP `53000`, Sign HTTP `53001`, Entrance
-`53002`, World lands `54001`/`54002`, and the Process Compose control API `8080`.
-They are not automatically allocated. SQLite and etcd data live in `.state/`;
-direnv caches live in `.direnv/`. Set `development.stateDirectory` in the local module to use
-another data directory, then reload the shell. All three database URLs default
-to the same SQLite file.
-
-The common Nix option `development.stateDirectory` defaults to `.state` and accepts
-an absolute path or a path relative to the working tree. The shared initialization
-exports `PROJECT_ROOT` and resolves `PROJECT_STATE` at runtime, so paths never
-point into the flake's Nix-store source copy. Modules read
-`config.development.stateDirectory`; an internal helper handles runtime path resolution
-and shell quoting for Wine, SQLite and etcd.
-`PROJECT_STATE` is an exported result, not a configuration input.
-Application configuration variables such as `SHRIMPMAN_SIGN__DATABASE__URL` retain
-the names expected by the Rust services.
-
-## Local module
-
-Create `local/default.nix` for machine-specific modules. The entire `local/`
-directory is ignored by Git, and the module is loaded only when it exists:
+启动 HD 客户端前，在忽略提交的 `local/default.nix` 中设置游戏目录：
 
 ```nix
-{ pkgs, mkCommand, ... }: {
-  development.stateDirectory = ".state";
-  development.ports.signHttp = 53011;
-  shrimpman.sign.auto_sign_up = false;
-  mhf.screen.window_resolution = { width = 1280; height = 720; };
-  development.mhf = {
-    gameDirectory = "/path/to/mhf";
-    runner = "wine";
-  };
-
-  development.packages = [ pkgs.ripgrep ];
-  settings.processes.shrimpman-sign.shutdown.timeout_seconds = 20;
-  development.commands.hello = mkCommand {
-    name = "hello";
-    text = ''
-      echo "Hello from the local module"
-    '';
-  };
+{ ... }: {
+  development.mhf.gameDirectory = "/path/to/mhf";
 }
 ```
 
-`local` is a full module: it can import other modules, add packages and commands,
-set `development.environment` defaults and `development.shellHook` code, and override
-process-compose-flake's `settings`, `defaults` and `cli` options. Shared values
-use `lib.mkDefault` where appropriate; use `lib.mkForce` to replace an option
-already set at normal priority. Lists merge using the Nix module system.
-
-Direnv automatically loads the optional local module. To include it when running
-Nix commands manually, use `--impure` from the repository root:
+重新进入开发环境，在仓库根目录运行：
 
 ```sh
-nix develop --impure
-nix run --impure .#mhf-launcher
+mhf-launcher --config mhf/mhf.toml
 ```
 
-Git flakes omit ignored files. The flake therefore reads the local module from
-the absolute working-tree path (`PROJECT_ROOT`, or `PWD` when unset), available
-only with impure evaluation. Plain `nix develop` / `nix run` use shared modules;
-CI can evaluate the flake without a local module. No placeholder module or local
-input is needed, and local edits never change `flake.lock`.
+启动器直接读写指定配置；需要独立配置时，先将 `mhf/mhf.toml` 复制到自己的运行目录。
+默认启动模式为 Login，Debug 和 Workbench 通过配置启用，见[启动选择与配置](mhf/crates/apps/launcher/README.md#启动选择与配置)。
+macOS/Linux 执行 Windows 程序需要可用的 Wine；WSL 可使用 Windows 互操作。
 
-Ports are typed options under `development.ports`: `etcdClient`, `etcdPeer`,
-`signTcp`, `signHttp`, `entranceTcp`, `worldLand1` and `worldLand2`.
-The launcher uses one `mhf.sign.endpoint` URI. Its default is HTTP and follows
-`development.ports.signHttp`. Set `mhf.sign.endpoint = "tcp://127.0.0.1:53000";`
-in the local module, or `MHF_SIGN__ENDPOINT=tcp://127.0.0.1:53000` when launching,
-to use TCP. The URI scheme selects HTTP, HTTPS or TCP. The launcher README
-documents each transport.
+## 开发与维护
 
-Services, readiness probes and the launcher read these options directly; the
-old port helper environment variables are no longer used. Existing environment
-variables still take precedence over `development.environment` defaults for application inputs.
-Nix modules are copied into the Nix store; supply credentials through the runtime
-environment instead of placing them in module source.
+| 需要做什么 | 文档 |
+| --- | --- |
+| 配置 Nix、direnv、构建命令与服务进程 | [开发环境](docs/development.md) |
+| 调整端口、本地覆盖、运行路径和生成配置 | [配置说明](docs/configuration.md) |
+| 格式检查、Rust 测试、Windows 构建和 ABI 验证 | [验证指南](docs/validation.md) |
+| 理解服务端边界与协议 | [服务端文档](shrimpman/README.md) |
+| 理解游戏宿主、组件和 Mod 生命周期 | [Mod 系统](mhf/docs/mod-system.md) |
+| 编写、组合和分发 DLL Mod | [DLL Mod](mhf/docs/dll-mods.md) |
+| 管理 Hook 所有权、冲突及释放 | [Hook 契约](mhf/docs/mod-hooks.md) |
+| 解析和编辑游戏资源 | [资源格式](mhf/crates/shared/resource/README.md) |
 
-The Nix launcher and Mod manager use the same configuration precedence: explicit `--config`,
-`MHF_CONFIG`, then `mhf.toml` in the caller's directory. A missing configuration is an error;
-there is no implicit runtime copy or fallback. `MHF_CONFIG` is relative to the caller's directory; `development.mhf.gameDirectory` is absolute or
-relative to the repository root. Runner paths outside `PATH` should be absolute.
-`MHF_SIGN__ENDPOINT` overrides the complete Sign endpoint URI. For Erupe, set
-`mhf.sign.encoding = "shift_jis";` or `MHF_SIGN__ENCODING=shift_jis`; Shrimpman
-defaults to `utf8`. This encoding setting applies only to the Sign TCP connection.
-
-All supported Nix hosts use Cargo Xwin. Execution is selected separately:
-
-| Host | Build | Execution |
-| --- | --- | --- |
-| macOS / Linux | Cargo with the flake's LLVM and x86 Windows SDK/CRT | Wine |
-| WSL with Windows interoperability enabled | Cargo with the flake's LLVM and x86 Windows SDK/CRT | Direct EXE execution, with paths converted by `wslpath` |
-
-`development.mhf.runner` selects a Wine executable; an empty string skips Wine.
-With its default `null`, the launcher detects WSL interoperability and falls
-back to `wine` on other hosts. The WSL native path also forwards `MHF_*` variables
-through `WSLENV`, preserving existing forwarding rules. Wine defaults to `$PROJECT_STATE/wine` (`.state/wine` with the default state directory).
-Cargo reuses unchanged build artifacts.
-
-The devShell initializes the shared environment once. Commands only select their
-working directory and run; Process Compose inherits the shell environment.
-`mhf-launcher` and `mhf-mods` both preserve the caller's directory and use the same configuration selection.
-Both runtime commands set the default `WINEPREFIX` when one is not supplied.
-Entering the shell or building either workspace does not create MHF runtime files.
-Compiler libraries belong in `development.buildInputs`.
-
-The flake currently exposes only macOS/Linux outputs; WSL uses Linux outputs.
-Native Windows uses Cargo and the EXE directly as shown in the launcher README;
-this does not add native Windows support to Nix.
-
-## Generated application configuration
-
-Nix modules are the source of truth for both TOML files. Override
-`shrimpman` and `mhf` in `local/default.nix`; nested attributes
-merge, while default lists such as `shrimpman.world.lands` can be replaced.
-
-Run `nix run .#update-configs` after changing public defaults to refresh
-`shrimpman/config.toml` and `mhf/mhf.toml`. This command always excludes the local
-module, even with `--impure`. Review and commit those generated files with the
-module changes. `nix flake check` checks for drift and can be run in CI.
-
-Nix launches services using `PROJECT_CONFIG`, pointing to the generated TOML.
-Outside Nix, services still read `config.toml` in the current directory.
-Database URLs default to the shared state directory; create `../.state` before
-running directly from `shrimpman/`. Explicit application environment overrides
-remain supported.
-
-MHF runtime commands read and update the selected configuration directly. Their
-default is `mhf.toml` in the invocation directory; a missing file is an error.
-They do not generate runtime copies or fall back to `.state/config`. Use
-`--config` or `MHF_CONFIG` to select another file. Copy the committed MHF default
-before running if you want to preserve it unchanged.
-
-Unicode and translation are temporarily disconnected from the application. Their crates remain in
-`mhf/crates/mods/` for independent work; the launcher uses native game text and original Japanese quests.
-
-The same launcher starts debugging with this `mhf.toml` configuration:
-
-```toml
-[mods."mhf.debug"]
-enabled = true
-
-# Optional; omit this setting to use the embedded quest.
-[mods."mhf.debug".settings]
-quest = "quests/test.bin"
-```
-
-Debug automatically overrides the default Login provider. Set
-`development.mhf.debug.enable = false;` to omit Debug at build time. Quest remains an idle Base component until a local session is requested.
+只有仓库根目录是 Nix flake；两个 Rust 工作区各自维护 `Cargo.toml` 和 `Cargo.lock`。
+Mod 示例还有独立工作区，构建方式见[示例说明](mhf/examples/mods/README.md)。

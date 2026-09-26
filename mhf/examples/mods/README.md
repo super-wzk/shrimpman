@@ -2,11 +2,23 @@
 
 三个包使用同一个公开 C ABI。`example.counter` 提供计数器；Rust 消费者通过提供方的 `example-counter-sdk` 调用，C 消费者只包含 `mhf_mod.h` 和 `counter.h`。两个消费者在 `attach` 绑定已声明的依赖，分别增加 1 和 10，再输出当前快照。都启用时最终计数为 11；单个消费者日志中的数值取决于安装顺序。
 
-Counter 只有 [`src/lib.rs`](counter-sdk/src/lib.rs) 中的一套公开定义：`Snapshot` 直接
+Counter 的公开接口定义位于 [`counter-sdk/src/lib.rs`](counter-sdk/src/lib.rs)：`Snapshot` 直接
 `derive_ReprC`，`CounterApi` 生成虚表，`CounterTable` 直接是该 trait 的 `VirtualPtr`。
 Rust `Counter::snapshot()` 按值返回同一个 `Snapshot`，`add()` 将溢出失败转换为 `Result`。
 Provider 实现该 trait 并调用 `mhf_mod_sdk::host::register_interface` 发布借用表。
 Rust consumer 使用 `LogLevel::Info`；C consumer 使用生成的 [`counter.h`](counter-sdk/counter.h)。
+
+## 目录与职责
+
+| 目录 | 职责 |
+| --- | --- |
+| `counter-sdk/` | Counter 的 Rust 包装、C 表布局与头文件快照 |
+| `counter-provider/` | 计数器状态、接口发布和 DLL 生命周期 |
+| `counter-consumer/` | Rust 依赖绑定与调用 |
+| `counter-c/` | 通过生成头文件调用 Counter 的 C 消费者 |
+| [`hook/`](hook/README.md) | 宿主 Hook 分组、drain 与诊断表 |
+
+## 头文件
 
 `cargo build` 通过 Provider 的 `build.rs` 自动生成 `OUT_DIR/include/mhf_mod.h` 和
 `counter.h`，不会改写源码目录。`cargo test -p example-counter-provider --test headers`

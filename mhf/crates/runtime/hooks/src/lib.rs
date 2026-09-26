@@ -1,4 +1,4 @@
-//! Owned MinHook groups with callback draining and transactional installation.
+//! 统一管理 MinHook 分组、回调排空和安装失败回滚。
 
 #![cfg(windows)]
 
@@ -23,7 +23,7 @@ use windows::{
 pub struct HookSet<T: Send + Sync + 'static> {
     native: NativeGroup,
     slot: &'static HookSlot<T>,
-    // Reserve the slot before resolving targets or publishing native pointers.
+    // 解析目标或发布原生指针前先占用槽位，安装和清理不能并发操作同一组。
     preparation: Option<MutexGuard<'static, ()>>,
 }
 
@@ -126,7 +126,7 @@ impl<T: Send + Sync + 'static> HookGuard<T> {
         if self.hooks.native.is_empty() {
             return Ok(());
         }
-        // Failed installation already owns the lifecycle lock.
+        // 安装失败时已经持有生命周期锁；正常卸载则重新取得同一把锁。
         let _lifecycle = self.hooks.preparation.take().unwrap_or_else(|| {
             self.hooks
                 .slot
@@ -134,6 +134,7 @@ impl<T: Send + Sync + 'static> HookGuard<T> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
         });
+        // 禁用入口后排空现有回调，只有回调全部退出才能删除 trampoline。
         self.hooks.native.disable()?;
         if self.retired_state.is_none() {
             self.retired_state = self.hooks.slot.retire();
@@ -153,8 +154,7 @@ impl<T: Send + Sync + 'static> Drop for HookGuard<T> {
     fn drop(&mut self) {
         if let Err(error) = self.uninstall() {
             eprintln!("hook cleanup failed: {error}");
-            // Removal may fail after the slot has retired. Keep those native
-            // pointers valid even when an owner cannot retain the guard itself.
+            // 槽位退役后删除仍可能失败；此时保留状态，确保残留原生指针继续有效。
             if let Some(state) = self.retired_state.take() {
                 std::mem::forget(state);
             }
@@ -235,6 +235,7 @@ impl<T> HookSlot<T> {
             .callbacks
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // 先撤下可借用状态，让迟到的 detour 回退原函数，再等待已有借用结束。
         let state = callbacks.state.take();
         while callbacks.active != 0 {
             callbacks = self

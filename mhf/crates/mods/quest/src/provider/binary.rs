@@ -225,7 +225,7 @@ impl Quest {
         if id < 40000 {
             return Err("当前离线入口支持编号 40000 以上的活动任务".into());
         }
-        // The fourth pointer carries a flag in its high bit; native relocation clears it.
+        // 第四个指针的最高位携带标志，原生重定位会清除它；范围校验只比较实际偏移。
         for offset in (0..68).step_by(4) {
             let pointer = u32_at(&bytes, offset)? & 0x7fff_ffff;
             if pointer as usize >= bytes.len() {
@@ -344,6 +344,7 @@ fn decode_lz(input: &[u8], size: usize) -> Result<Vec<u8>, String> {
         if offset >= output.len() || output.len() + length > size {
             return Err("任务压缩回溯引用无效".into());
         }
+        // LZ 回溯允许源和目标重叠，必须逐字节追加，后续字节才能引用刚生成的输出。
         for _ in 0..length {
             output.push(output[output.len() - offset - 1]);
         }

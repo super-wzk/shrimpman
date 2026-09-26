@@ -13,7 +13,7 @@ pub struct Selection {
 
 #[derive(Clone, Debug)]
 pub struct Resolved {
-    /// Each provider precedes its consumers. One candidate per mod ID.
+    /// 提供方排在消费者之前，每个 Mod ID 只对应一个选定版本。
     pub mods: Vec<Candidate>,
 }
 
@@ -194,12 +194,12 @@ fn choose<'a>(
         .iter()
         .find(|(id, _)| !selected.contains_key(*id))
     else {
-        // Cycles may depend on the chosen version, so reject here while version
-        // backtracking is still possible, not only when building the final order.
+        // 循环可能只存在于某个版本组合；在回溯结束前检查，才能继续尝试其他版本。
         let mut ordered = Vec::new();
         let mut visited = BTreeSet::new();
+        let mut stack = Vec::new();
         for id in selected.keys() {
-            visit(id, &selected, &mut visited, &mut Vec::new(), &mut ordered)?;
+            visit(id, &selected, &mut visited, &mut stack, &mut ordered)?;
         }
         return Ok(ordered);
     };
@@ -217,6 +217,7 @@ fn choose<'a>(
         if !matches(candidate, requirements, selections.get(id)) {
             continue;
         }
+        // 每个候选使用独立约束，失败分支不能污染后续候选的依赖选择。
         let mut next = selected.clone();
         next.insert(id.clone(), *candidate);
         let mut constraints = constraints.clone();

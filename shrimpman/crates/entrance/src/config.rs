@@ -5,8 +5,7 @@ pub use shrimpman_lease_kv::LeaseKvClientConfig;
 
 const DEFAULT_PORT: u16 = 53_310;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_LOG_FILTER: &str =
-    "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
+const DEFAULT_LOG_FILTER: &str = "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info";
 
 /// Configuration for the Entrance service.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -38,7 +37,7 @@ impl Default for EntranceConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct EntranceLoggingConfig {
-    /// Comma-separated [`tracing_subscriber::EnvFilter`] directives.
+    /// Comma-separated `tracing_subscriber::EnvFilter` directives.
     pub filter: String,
 }
 
@@ -95,7 +94,7 @@ mod tests {
             .unwrap()
             .set_override(
                 "entrance.logging.filter",
-                "warn,shrimpman_entrance=debug,shrimpman_discovery=info,shrimpman_lease_kv=info",
+                "warn,shrimpman_entrance=debug,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info",
             )
             .unwrap()
             .set_override("entrance.server.listen_addr", "127.0.0.1:60000")
@@ -117,7 +116,7 @@ mod tests {
                 },
                 logging: EntranceLoggingConfig {
                     filter:
-                        "warn,shrimpman_entrance=debug,shrimpman_discovery=info,shrimpman_lease_kv=info"
+                        "warn,shrimpman_entrance=debug,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info"
                             .to_owned(),
                 },
                 server: EntranceServerConfig {

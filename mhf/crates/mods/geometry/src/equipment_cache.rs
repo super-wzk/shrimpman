@@ -26,8 +26,7 @@ pub(crate) fn capacity(file_size: usize, path_length: usize) -> Result<usize, St
 
 #[derive(Default)]
 pub(crate) struct Buffer {
-    // Grow geometrically and retain earlier addresses until native callers stop.
-    // Queued I/O may still hold an address even after its load has completed.
+    // 扩容时保留旧分配，直到原生调用方停止；异步 I/O 即使完成读取，也可能仍持有旧地址。
     allocations: Vec<Vec<u8>>,
 }
 

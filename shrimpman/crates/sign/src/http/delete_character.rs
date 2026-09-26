@@ -9,27 +9,27 @@ use axum::{
 use serde::Deserialize;
 use shrimpman_domain::{character::CharacterId, session::SignSessionId};
 
-use super::error_response;
+use super::{ApiError, api_error};
 use crate::{SignService, application::use_cases::delete_character::model};
 
 pub(super) async fn handle(
     character_id: Result<Path<u32>, PathRejection>,
     State(service): State<SignService>,
     request: Result<Json<RequestBody>, JsonRejection>,
-) -> Result<StatusCode, axum::response::Response> {
+) -> Result<StatusCode, ApiError> {
     let Path(character_id) = character_id.map_err(|error| {
         tracing::info!(%error, "Rejected malformed HTTP character deletion path");
-        error_response(StatusCode::BAD_REQUEST, "invalid_request")
+        api_error(StatusCode::BAD_REQUEST, "invalid_request")
     })?;
     let Json(request) = request.map_err(|error| {
         tracing::info!(%error, "Rejected malformed HTTP character deletion request");
-        error_response(StatusCode::BAD_REQUEST, "invalid_request")
+        api_error(StatusCode::BAD_REQUEST, "invalid_request")
     })?;
     let session_token = request
         .session_token
         .into_bytes()
         .try_into()
-        .map_err(|_| error_response(StatusCode::BAD_REQUEST, "invalid_request"))?;
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_request"))?;
     let outcome = service
         .delete_character(model::Request {
             session_token,
@@ -39,17 +39,15 @@ pub(super) async fn handle(
         .await
         .map_err(|error| {
             tracing::error!(%error, "HTTP character deletion failed");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         })?;
 
     match outcome {
         model::Outcome::Deleted => Ok(StatusCode::NO_CONTENT),
         model::Outcome::InvalidSession => {
-            Err(error_response(StatusCode::UNAUTHORIZED, "invalid_session"))
+            Err(api_error(StatusCode::UNAUTHORIZED, "invalid_session"))
         }
-        model::Outcome::NotFound => {
-            Err(error_response(StatusCode::NOT_FOUND, "character_not_found"))
-        }
+        model::Outcome::NotFound => Err(api_error(StatusCode::NOT_FOUND, "character_not_found")),
     }
 }
 

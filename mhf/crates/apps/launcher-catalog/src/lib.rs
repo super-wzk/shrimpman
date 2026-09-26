@@ -51,9 +51,8 @@ pub const WORKBENCH: Builtin = Builtin {
     default_enabled: false,
 };
 
-/// Select entries using the calling application's Cargo features. Keeping the
-/// cfg attributes at the call site avoids feature unification between apps
-/// changing which Mods either application advertises.
+/// 根据调用应用的 Cargo features 选择条目。
+/// cfg 在调用处展开，避免两个应用的依赖特性合并后相互污染各自公布的 Mod 清单。
 #[macro_export]
 macro_rules! builtin_catalog {
     () => {

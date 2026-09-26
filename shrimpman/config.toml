@@ -8,7 +8,7 @@ lease_ttl = "15s"
 reconnect_delay = "1s"
 
 [entrance.logging]
-filter = "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_transport=debug"
+filter = "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info,shrimpman_transport=debug"
 
 [entrance.server]
 advertise_addr = "127.0.0.1:53002"
@@ -33,7 +33,7 @@ lease_ttl = "15s"
 reconnect_delay = "1s"
 
 [sign.logging]
-filter = "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info"
+filter = "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info"
 
 [sign.server]
 advertise_addr = "127.0.0.1:53000"
@@ -74,4 +74,4 @@ lease_ttl = "15s"
 reconnect_delay = "1s"
 
 [world.logging]
-filter = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_transport=debug"
+filter = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info,shrimpman_transport=debug"

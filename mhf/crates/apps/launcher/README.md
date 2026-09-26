@@ -45,7 +45,7 @@ Cargo features 决定编译进应用的内置实现，`[mods]` 决定实际选�
 `base` feature 启用 `mhf-base` 和用于组装共享注册表的 `mhf-ui`；`login`、`debug`、`workbench` 均显式依赖 `base`。
 `--no-default-features` 不编译内置 Base，也不列出它；可用 `--features base` 单独加入。
 无 Base 构建不解析 Base 的游戏设置，使用零初始化的启动参数，由外部启动提供方填充；Config 和 DatRedirect 仍可用。
-当前保留原生文本与 CP932 任务，Unicode／Translation crate 暂未接入应用。
+应用使用原生文本与 CP932 任务，未启用 Unicode／Translation 组件。
 共享游戏字段、字体、INI 和 Mod 配置语义见 [游戏库](../../runtime/game/README.md#共享配置与资源)。
 
 ## 代码结构

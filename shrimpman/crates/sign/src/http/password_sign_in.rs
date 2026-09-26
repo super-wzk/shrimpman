@@ -7,16 +7,16 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use shrimpman_domain::mezeporta::{MezeportaFesta, MezeportaStall};
 
-use super::{character, error_response};
+use super::{ApiError, api_error, character};
 use crate::{SignService, application::use_cases::password_sign_in::model};
 
 pub(super) async fn handle(
     State(service): State<SignService>,
     request: Result<Json<RequestBody>, JsonRejection>,
-) -> Result<Json<ResponseBody>, axum::response::Response> {
+) -> Result<Json<ResponseBody>, ApiError> {
     let Json(request) = request.map_err(|error| {
         tracing::info!(%error, "Rejected malformed HTTP sign-in request");
-        error_response(StatusCode::BAD_REQUEST, "invalid_request")
+        api_error(StatusCode::BAD_REQUEST, "invalid_request")
     })?;
     let outcome = service
         .password_sign_in(model::Request {
@@ -26,17 +26,13 @@ pub(super) async fn handle(
         .await
         .map_err(|error| {
             tracing::error!(%error, "HTTP sign-in failed");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         })?;
 
     match outcome {
         model::Outcome::Success(success) => Ok(Json(ResponseBody::from(*success))),
-        model::Outcome::IllegalInput => {
-            Err(error_response(StatusCode::BAD_REQUEST, "illegal_input"))
-        }
-        model::Outcome::WrongPassword => {
-            Err(error_response(StatusCode::UNAUTHORIZED, "wrong_password"))
-        }
+        model::Outcome::IllegalInput => Err(api_error(StatusCode::BAD_REQUEST, "illegal_input")),
+        model::Outcome::WrongPassword => Err(api_error(StatusCode::UNAUTHORIZED, "wrong_password")),
     }
 }
 

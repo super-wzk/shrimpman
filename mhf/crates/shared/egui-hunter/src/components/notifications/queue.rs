@@ -13,9 +13,8 @@ pub struct Notification {
     shown_at: Option<f64>,
 }
 
-/// A bounded FIFO of compact toasts, with one visible at a time.
-/// A queued item's lifetime starts when it is first displayed. Uses egui
-/// time/repaint, with no background timer. Use a dialog for actions needing input.
+/// 有容量上限的通知队列，每次仅显示一条。
+/// 等待中的通知不计时，首次显示时才开始有效期；使用 egui 时间与重绘调度，无后台定时器。
 #[derive(Debug)]
 pub struct Notifications {
     pub(super) id: Id,
@@ -106,6 +105,7 @@ impl Notifications {
         let now = ctx.input(|i| i.time);
         let until = loop {
             let notice = self.queue.front_mut()?;
+            // 下一条通知以本次显示时间起算，前一条的延迟重绘不会消耗它的有效期。
             let since = *notice.shown_at.get_or_insert(now);
             let duration = notice.duration.as_secs_f64();
             if now - since < duration {

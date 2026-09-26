@@ -1,4 +1,4 @@
-//! One game lifecycle, independent of the selected startup provider.
+//! 统一游戏会话生命周期，具体启动方式由已选 Mod 提供。
 
 mod native;
 
@@ -84,6 +84,7 @@ fn run_session(
         mods.running();
         entry(&mut session.native).map(Some)
     })();
+    // 无论启动取消、运行失败还是正常退出，都先执行会话清理，再合并两侧错误。
     let cleanup = session.finish();
     match (result, cleanup) {
         (Ok(code), Ok(mods)) => Ok(GameExit { code, mods }),
@@ -101,12 +102,12 @@ impl GameSession {
             .and_then(|()| unsafe { mods.detach(&[]) })
             .and_then(|()| unsafe { mods.prepare_release() });
         if let Err(error) = cleanup {
+            // 清理失败意味着原生代码仍可能引用状态；保留整场会话，避免提前释放内存或 DLL。
             mods.retain();
             std::mem::forget(self);
             return Err(error);
         }
-        // All additional game references have been returned. Retired states and
-        // launch ABI storage remain alive while the game's DllMain runs.
+        // 额外 DLL 引用已归还；游戏 DllMain 卸载期间仍须保活退役状态和启动 ABI 内存。
         self.native.unload();
         mods.set_game(std::ptr::null_mut());
         let statuses = mods.statuses();

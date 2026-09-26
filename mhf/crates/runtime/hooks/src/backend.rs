@@ -140,9 +140,7 @@ impl NativeGroup {
                     owner.description
                 ));
             }
-            // MinHook does not expose its rewritten span. Record the exact
-            // entry, not a guessed patch length; explicit byte patches do carry
-            // their complete ranges.
+            // MinHook 不公开重写字节长度，因此只登记入口地址；显式字节补丁登记完整范围。
             targets.insert(
                 target as usize,
                 Owner {
@@ -224,7 +222,7 @@ impl NativeGroup {
 
 impl Drop for NativeGroup {
     fn drop(&mut self) {
-        // An enabled group's owner must perform explicit disable/drain/remove.
+        // 启用过的组必须由所有者按 disable、drain、remove 的顺序显式清理。
         if !self.enabled
             && let Err(error) = unsafe { self.remove() }
         {

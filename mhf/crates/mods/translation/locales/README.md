@@ -50,27 +50,27 @@ section/record 规范化为四位大写十六进制。TLK 记录按确认结果�
 
 DAT 中已确认用途的名称和描述使用业务 ID：
 
-| 原 group | 当前 group | 索引含义 |
-| --- | --- | --- |
-| `table_000` | `head_armor_names` | 头部防具 ID |
-| `table_001` | `body_armor_names` | 身体防具 ID |
-| `table_002` | `arm_armor_names` | 手臂防具 ID |
-| `table_003` | `waist_armor_names` | 腰部防具 ID |
-| `table_004` | `leg_armor_names` | 腿部防具 ID |
-| `table_005` | `armor_descriptions` | 五部位共用说明表索引，三行说明 |
-| `table_006` | `ranged_weapon_names` | 远程武器 ID（轻弩、重弩、弓） |
-| `table_007` | `melee_weapon_names` | 近战武器 ID |
-| `table_008` | `melee_weapon_descriptions` | 同一近战武器 ID，三行说明 |
-| `table_009` | `ranged_weapon_descriptions` | 同一远程武器 ID，三行说明 |
-| `table_010` | `item_names` | 物品 ID |
-| `table_011:0..23` | `item_messages:0..23` | 物品操作提示序号 |
-| `table_011:24..16724` | `item_descriptions:0..16700` | 物品 ID，旧索引减去 24 |
-| `table_016` | `item_acquisition_hints` | 同一物品 ID |
+| 表 ID | 索引含义 |
+| --- | --- |
+| `head_armor_names` | 头部防具 ID |
+| `body_armor_names` | 身体防具 ID |
+| `arm_armor_names` | 手臂防具 ID |
+| `waist_armor_names` | 腰部防具 ID |
+| `leg_armor_names` | 腿部防具 ID |
+| `armor_descriptions` | 五部位共用说明表索引，三行说明 |
+| `ranged_weapon_names` | 远程武器 ID（轻弩、重弩、弓） |
+| `melee_weapon_names` | 近战武器 ID |
+| `melee_weapon_descriptions` | 同一近战武器 ID，三行说明 |
+| `ranged_weapon_descriptions` | 同一远程武器 ID，三行说明 |
+| `item_names` | 物品 ID |
+| `item_messages` | 物品操作提示序号，范围 `0..23` |
+| `item_descriptions` | 物品 ID，范围 `0..16700`；物理表记录从偏移 24 开始 |
+| `item_acquisition_hints` | 同一物品 ID |
 
 例如同一物品使用 `mhfdat:item_names:15032`、`mhfdat:item_descriptions:15032` 和
 `mhfdat:item_acquisition_hints:15032`。物品描述只在布局中声明 `first_record: 24`，
-不修改游戏中的物理表和原生下标。外部旧词典按上表迁移 key，原文和译文保持原值。
-防具说明沿用共享表索引；当前头／身／腕／腰／脚说明的起点分别为
+不修改游戏中的物理表和原生下标。
+防具说明使用共享表索引；头／身／腕／腰／脚说明的起点分别为
 `0 / 14594 / 28056 / 41508 / 55216`，不应将它误当作部位内装备 ID。
 
 ## Dictionary rows
@@ -90,8 +90,8 @@ DAT 中已确认用途的名称和描述使用业务 ID：
 - `key` 必填，并在构建期根据 layout 校验表 ID、固定记录表的索引范围、quest ID 类型和
   part 数量。
 - `translation` 可以是字符串、数组、显式空字符串或 `null`。只有非 `null` 的翻译会
-  编译进启动器内嵌的二进制字典。
-- `source`、`context` 和 `note` 是翻译辅助信息，不会嵌入启动器。
+  编译进启用 provider 的宿主所嵌入的二进制字典。
+- `source`、`context` 和 `note` 是翻译辅助信息，不会嵌入宿主。
 - 每个 locale 都可以只保留已经翻译的稀疏行；空文件会编译成没有覆盖的 locale。
 
 构建期由 layout 计算合法的主资源 key；运行时按相同 layout 遍历实际存在的非空字符串
@@ -111,16 +111,16 @@ JSON 转义完全由 JSON 解析器处理；解析后的 ASCII 字符会直接�
 `\n` 为 `0x0A`、`\u001A` 为 `0x1A`。若需要字面量反斜杠则写 `\\n`；`\u0000`
 会生成 NUL，游戏会把它视为字符串结束符。
 
-`build.rs` 为每条 UTF-8 译文追加 NUL，通过 `include_bytes!` 直接编入 EXE。运行时只查找
+`build.rs` 为每条 UTF-8 译文追加 NUL，通过 `include_bytes!` 编入 provider。运行时只查找
 所选 locale 的静态记录，不分配虚拟字形编号，不复制译文，也不解析外部 JSON。
 统一文字后端读取 UTF-8 并调用宽字符 GDI；游戏原有的 ASCII 格式控制保持原样。
 
 ## Generating a locale template
 
-从已解密、已解压的资源 image 生成对应 locale 的翻译模板：
+在仓库根目录从已解密、已解压的资源 image 生成对应 locale 的翻译模板：
 
 ```text
-python3 tools/generate_translation_dictionary.py \
+python3 mhf/crates/mods/translation/tools/generate_translation_dictionary.py \
   --locale zh-CN \
   --dat /path/to/mhfdat.bin \
   --inf /path/to/mhfinf.bin \
@@ -134,7 +134,7 @@ python3 tools/generate_translation_dictionary.py \
 
 八个资源参数均可选，但至少提供一个；只刷新传入的资源，保留其他资源和已有译文。
 
-`--locale zh-CN` 默认生成 `locales/zh-CN.jsonl`；也可以使用 `zh`、`chs` 或
+`--locale zh-CN` 默认生成本 crate 的 `locales/zh-CN.jsonl`；也可以使用 `zh`、`chs` 或
 `my_translation` 等自定义 ID。原始日文写入 `source`；目标文件中已有的翻译字段和未由
 主资源生成的记录会保留，因此可以再次运行生成器刷新原文。通过 `--output-dir` 可以指定
 其他输出目录。游戏资源只在执行生成器时需要；Unicode provider 的 `build.rs` 只需读取

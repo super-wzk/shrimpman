@@ -12,8 +12,7 @@ use shrimpman_domain::{
 };
 use std::{io::Cursor, net::SocketAddrV4};
 
-// Lengths count raw bytes, including any C-string terminators. Erupe 9.2's
-// shorter festival tail is read below.
+// 协议长度按原始字节计数，包含 C 字符串终止符；节庆尾部单独处理 Erupe 9.2 的短格式。
 #[binread]
 struct Response {
     #[br(temp)]
@@ -232,8 +231,8 @@ impl Character {
 
 impl Festa {
     fn read_details(self, reader: &mut Cursor<&[u8]>) -> Result<Option<MezeportaFesta>, Error> {
-        // Erupe 9.2 ends a disabled festival after two zero timestamps, even
-        // though it supplies a nonzero ID. Only that exact short tail is valid.
+        // Erupe 9.2 即使给出非零 ID，关闭的节庆也可能在两个零时间戳后结束。
+        // 仅接受这一精确尾部形态，避免把截断的正常响应误判为关闭节庆。
         if Timestamp::from(self.starts_at) == Timestamp::UNIX_EPOCH
             && Timestamp::from(self.expires_at) == Timestamp::UNIX_EPOCH
             && reader.position() == reader.get_ref().len() as u64

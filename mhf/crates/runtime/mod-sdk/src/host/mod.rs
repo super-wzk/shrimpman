@@ -209,6 +209,7 @@ fn read_text(
     host: &api::HostV2,
     read: api::ReadTextFn,
 ) -> std::result::Result<String, api::Status> {
+    // 先查询 UTF-8 字节数，再由调用方分配缓冲区；内存始终在分配它的 DLL 内释放。
     let mut required = 0;
     let status = unsafe { read(host.context, std::ptr::null_mut(), 0, &mut required) };
     if status != api::OK && status != api::BUFFER_TOO_SMALL {

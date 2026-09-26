@@ -36,7 +36,7 @@ in
         shutdown_timeout = "5s";
         lease_kv = leaseKv;
         logging = {
-          filter = "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_transport=debug";
+          filter = "warn,shrimpman_entrance=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info,shrimpman_transport=debug";
         };
         server = {
           listen_addr = "0.0.0.0:${ports.entranceTcp}";
@@ -54,7 +54,7 @@ in
         };
         lease_kv = leaseKv;
         logging = {
-          filter = "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
+          filter = "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info";
         };
         session = {
           ttl = "5m";
@@ -79,7 +79,7 @@ in
         };
         lease_kv = leaseKv;
         logging = {
-          filter = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_transport=debug";
+          filter = "warn,shrimpman_world=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info,shrimpman_transport=debug";
         };
         lands = [
           {

@@ -1,9 +1,7 @@
 use std::{future::Future, io, net::SocketAddr, sync::Arc};
 
-use tokio::{
-    net::TcpListener,
-    task::{JoinError, JoinSet},
-};
+use shrimpman_runtime::serve_tcp;
+use tokio::net::TcpListener;
 use tracing::Instrument;
 
 use crate::{EntranceServerConfig, EntranceService};
@@ -38,77 +36,21 @@ impl EntranceServer {
         Shutdown: Future<Output = ()>,
     {
         let Self { listener, service } = self;
-        let mut sessions = JoinSet::new();
-        tokio::pin!(shutdown);
-
-        let result = loop {
-            tokio::select! {
-                biased;
-
-                _ = &mut shutdown => {
-                    tracing::info!(
-                        active_connections = sessions.len(),
-                        "Stopping Entrance server"
-                    );
-                    break Ok(());
-                }
-                Some(result) = sessions.join_next(), if !sessions.is_empty() => {
-                    report_join_error(result);
-                }
-                accepted = listener.accept() => {
-                    let (io, peer_addr) = match accepted {
-                        Ok(connection) => connection,
-                        Err(error) => break Err(error),
-                    };
-                    let service = Arc::clone(&service);
-                    let span = tracing::info_span!("entrance_connection", %peer_addr);
-
-                    sessions.spawn(
-                        async move {
-                            tracing::debug!("Accepted Entrance connection");
-                            match service.serve_connection(io).await {
-                                Ok(()) => tracing::debug!("Closed Entrance connection"),
-                                Err(error) => {
-                                    tracing::warn!(%error, "Entrance connection failed")
-                                }
-                            }
-                        }
-                        .instrument(span),
-                    );
+        serve_tcp(listener, shutdown, move |io, peer_addr| {
+            let service = Arc::clone(&service);
+            let span = tracing::info_span!("entrance_connection", %peer_addr);
+            async move {
+                tracing::debug!("Accepted Entrance connection");
+                match service.serve_connection(io).await {
+                    Ok(()) => tracing::debug!("Closed Entrance connection"),
+                    Err(error) => tracing::warn!(%error, "Entrance connection failed"),
                 }
             }
-        };
-
-        drop(listener);
-        if let Err(error) = result {
-            sessions.shutdown().await;
-            return Err(error);
-        }
-        drain_sessions(sessions).await;
-
-        Ok(())
+            .instrument(span)
+        })
+        .instrument(tracing::info_span!("entrance_server"))
+        .await
     }
-}
-
-fn report_join_error(result: Result<(), JoinError>) {
-    if let Err(error) = result {
-        tracing::error!(%error, "Entrance connection task terminated unexpectedly");
-    }
-}
-
-async fn drain_sessions(mut sessions: JoinSet<()>) {
-    if sessions.is_empty() {
-        return;
-    }
-
-    tracing::info!(
-        active_connections = sessions.len(),
-        "Waiting for active Entrance connections"
-    );
-    while let Some(result) = sessions.join_next().await {
-        report_join_error(result);
-    }
-    tracing::info!("All active Entrance connections completed");
 }
 
 #[cfg(test)]

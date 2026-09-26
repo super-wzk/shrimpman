@@ -28,6 +28,7 @@ impl Handler<SignSessionContext, BinrwOutboundSender> for PasswordSignInHandler 
         inbound: Self::Inbound,
         outbound: BinrwOutboundSender,
     ) -> Result<(), Self::Error> {
+        // TCP 协议用用户名末尾的 '+' 请求预建角色；该标记不属于账户名。
         let (username, character_requested) = match inbound.username.strip_suffix('+') {
             Some(username) => (username.to_owned(), true),
             None => (inbound.username, false),
@@ -194,6 +195,7 @@ async fn ensure_character(
 }
 
 async fn hash_password(password: String) -> Result<String, InternalError> {
+    // Argon2 是 CPU 密集计算，放到阻塞线程池，避免占用异步连接调度线程。
     Ok(tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(OsRng);
         Argon2::default()

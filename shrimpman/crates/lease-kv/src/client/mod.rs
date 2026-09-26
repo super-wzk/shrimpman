@@ -187,8 +187,10 @@ async fn serve_connection(
             }
             command = commands.recv() => match command {
                 Some(ClientCommand::Put(key, value)) => {
-                    values.insert(key.clone(), value.clone());
-                    put_value(client, lease_id, &key, &value).await?;
+                    // 先更新待发布状态，写入失败后重连仍会恢复最新值。
+                    // 直接借用已保存的载荷，避免为每次发布复制整个 Vec。
+                    values.insert(key.clone(), value);
+                    put_value(client, lease_id, &key, &values[&key]).await?;
                     debug!(%key, "Published leased key-value entry");
                 }
                 Some(ClientCommand::Delete(key)) => {

@@ -1,6 +1,6 @@
 # Translation Mod
 
-当前暂未接入 launcher、Base、Quest 或管理器的运行清单。代码与资源保留供独立开发，以下内容描述本 crate 自身实现。
+本 crate 提供可独立使用的接口与可选 `provider`。启动器、Base、Quest 和管理器的运行清单均不包含该 provider；启用 Cargo feature 本身不会把组件注册到宿主。
 
 默认层提供公共 `api`、稳定字符串 `Key`、`Translation` 借用接口，以及
 `TranslationConfig` / `MissingTranslation`。`offline_quest` 的样例文本也在默认层，
@@ -18,7 +18,7 @@
 - `locales/`：UTF-8 JSONL 字典源。
 - `tools/`：保留已有译文的模板生成器。
 
-build.rs 只在 `provider` 启用时读取 locale，并复用 Unicode 的唯一资源 catalog
+build.rs 只在 `provider` 启用时读取 locale，并复用 `mhf-resource` 的共享资源 catalog
 解析源。产物是各自 `OUT_DIR` 下的 `translations.rs` 和 `translations.bin`，不会
 复制资源布局或再生成 Unicode 的 resources.rs。缺失译文与显式空译文保持不同语义，
 公共接口输出不带 NUL，原生资源层负责追加终止符并持有稳定内存。

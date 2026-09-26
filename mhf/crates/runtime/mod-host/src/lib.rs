@@ -1,4 +1,4 @@
-//! Runtime ownership and public C bindings for built-in and DLL Mods.
+//! 内置 Mod 与 DLL Mod 的会话所有权、生命周期和公开 C 接口绑定。
 
 mod context;
 pub mod data;
@@ -50,6 +50,18 @@ pub struct ModStatus {
     pub version: String,
     pub phase: &'static str,
     pub error: Option<String>,
+}
+
+impl ModStatus {
+    fn succeeded(&mut self, phase: &'static str) {
+        self.phase = phase;
+        self.error = None;
+    }
+
+    fn failed(&mut self, phase: &'static str, error: &str) {
+        self.phase = phase;
+        self.error = Some(error.to_owned());
+    }
 }
 
 struct Entry {
@@ -192,9 +204,9 @@ impl ModHost {
             return Err(format!("cannot {name} in the current Mod lifecycle state"));
         }
         self.shared.set_phase(phase);
+        let publishes = matches!(phase, api::PHASE_PREPARE | api::PHASE_ATTACH);
         for entry in &mut self.entries {
             entry.participated = true;
-            let publishes = matches!(phase, api::PHASE_PREPARE | api::PHASE_ATTACH);
             if publishes {
                 entry.context.begin_registration();
             }
@@ -206,8 +218,7 @@ impl ModHost {
             entry.context.end_registration();
             if let Err(error) = result {
                 entry.context.discard_interfaces();
-                entry.status.error = Some(error.clone());
-                entry.status.phase = "failed";
+                entry.status.failed("failed", &error);
                 self.startup_failed = true;
                 return Err(format!("{}: {name}: {error}", entry.status.id));
             }
@@ -220,9 +231,8 @@ impl ModHost {
         Ok(())
     }
 
-    /// Stop consumers before providers. A failed consumer keeps its providers
-    /// operational; unrelated modules can still stop. Successful calls are not
-    /// repeated if the caller retries cleanup.
+    /// 先停止消费者，再停止提供方；消费者失败时保留其依赖链，其他 Mod 仍可清理。
+    /// 重试只处理尚未成功的调用，避免重复执行已完成的清理。
     pub fn stop(&mut self) -> Result<()> {
         if self.stopped {
             return Ok(());
@@ -243,12 +253,10 @@ impl ModHost {
             match with_owner(&entry.status.id, || module.stop(&entry.context)) {
                 Ok(()) => {
                     entry.stopped = true;
-                    entry.status.phase = "stopped";
-                    entry.status.error = None;
+                    entry.status.succeeded("stopped");
                 }
                 Err(error) => {
-                    entry.status.error = Some(error.clone());
-                    entry.status.phase = "stop_failed";
+                    entry.status.failed("stop_failed", &error);
                     errors.push(format!("{}: stop: {error}", entry.status.id));
                     retained.extend(self.dependencies_of(index));
                 }
@@ -304,12 +312,10 @@ impl ModHost {
             match result {
                 Ok(()) => {
                     entry.detached = true;
-                    entry.status.phase = "detached";
-                    entry.status.error = None;
+                    entry.status.succeeded("detached");
                 }
                 Err(error) => {
-                    entry.status.error = Some(error.clone());
-                    entry.status.phase = "detach_failed";
+                    entry.status.failed("detach_failed", &error);
                     errors.push(format!("{}: detach: {error}", entry.status.id));
                     retained.extend(self.dependencies_of(index));
                 }
@@ -349,12 +355,10 @@ impl ModHost {
             match with_owner(&entry.status.id, || module.prepare_release(&entry.context)) {
                 Ok(()) => {
                     entry.release_prepared = true;
-                    entry.status.phase = "release_prepared";
-                    entry.status.error = None;
+                    entry.status.succeeded("release_prepared");
                 }
                 Err(error) => {
-                    entry.status.error = Some(error.clone());
-                    entry.status.phase = "release_failed";
+                    entry.status.failed("release_failed", &error);
                     errors.push(format!("{}: prepare release: {error}", entry.status.id));
                     retained.extend(self.dependencies_of(index));
                 }
@@ -403,7 +407,7 @@ impl ModHost {
         Ok(order)
     }
 
-    /// Keep every module/context/library alive when native shutdown fails.
+    /// 原生调用未安全结束时保留全部实例、上下文和 DLL，避免悬空回调。
     pub fn retain(self) {
         std::mem::forget(self);
     }
@@ -432,8 +436,7 @@ impl Drop for ModHost {
             return;
         }
         self.shared.set_phase(api::PHASE_DESTROY);
-        // All contexts remain alive while consumers destroy themselves and may
-        // still call provider interfaces. Each provider is destroyed afterwards.
+        // 消费者析构时仍可能调用提供方，因此逆依赖顺序销毁实例，并保持全部上下文存活。
         for entry in self.entries.iter_mut().rev() {
             with_owner(&entry.status.id, || drop(entry.module.take()));
         }

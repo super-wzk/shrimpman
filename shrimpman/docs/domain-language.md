@@ -1,10 +1,8 @@
-# Domain Language
+# 领域术语
 
-This document defines Shrimpman's ubiquitous language. Domain and application
-code should use these terms even when a reference implementation uses different
-names. Infrastructure terms are called out separately.
+领域模型和应用用例使用下列术语，协议字段名或参考实现名称只在适配层保留。
 
-## Server-selection hierarchy
+## 服务器选择层级
 
 ```text
 Sign Service
@@ -14,26 +12,29 @@ Sign Service
             └── Land Server
 ```
 
-The hierarchy describes responsibility, not process ownership. A Land is the
-client-visible destination; a Land Server is the process that serves it.
+此层级表达选择路径与职责。一个 World 进程可以同时监听多个 Land；Land 是客户端可见的目的地，Land Server 是为其提供连接的服务端。
 
-## Domain terms
+## 领域概念
 
-| Term | Meaning |
+| 术语 | 含义 |
 | --- | --- |
-| **World** | A client-visible group of Lands returned by the Entrance Service. |
-| **World type** | The purpose of a World: Free, Dundorma Town, Beginner, Public Tavern, Returning Hunter, or Mezeporta Festa. |
-| **World season** | The current Breeding, Warm, or Cold season of a World, inherited from Monster Hunter 2 (dos). |
-| **World content** | The quest range or minigame content offered to characters entering a World. |
-| **Land** | A client-visible destination within a World. It has connection and occupancy information and is backed by a Land Server. |
-| **Character presence** | The known active World and Land for a requested character. An absent location means no active location is known. |
+| World | Entrance 返回的 Land 分组 |
+| World type | World 用途分类：Free、Dundorma Town、Beginner、Public Tavern、Returning Hunter、Mezeporta Festa |
+| World season | 繁殖期、温暖期或寒冷期，对应 Breeding、Warm、Cold |
+| World content | World 提供的任务范围或小游戏内容 |
+| Land | World 内可连接的目的地，包含端口、容量和在线人数信息 |
+| Character presence | 指定角色已知的活动 World / Land；未知位置表示没有可用的位置记录 |
+| Sign session | Sign 签发的、有期限的账户凭证，用于后续角色操作与 World 登录 |
+| World session | 角色绑定到 Land 连接后的进程内活动会话 |
 
-## Service terms
+## 服务职责
 
-| Term | Responsibility |
+| 术语 | 职责 |
 | --- | --- |
-| **Sign Service** | Authenticates accounts, issues sign sessions, and supplies an Entrance Service endpoint. |
-| **Entrance Service** | Returns the available Worlds and Lands and, when requested, character presence. It does not host gameplay sessions. |
-| **Land Server** | Accepts gameplay connections for a Land. |
+| Sign Service | 认证账户、签发 Sign session、管理角色并提供 Entrance 地址 |
+| Entrance Service | 提供 World / Land 列表与角色位置响应 |
+| World | 管理该 World 下的 Land 监听与活动角色会话 |
+| Land Server | 接受对应 Land 的连接 |
+| Discovery | 按服务名发布、订阅和选择服务实例的基础设施 |
 
-Avoid the unqualified term `Server` when the specific service is known.
+已知具体服务时应直接使用其名称，避免用不带限定词的 `Server` 混指业务服务、World、Land 和 TCP 监听器。角色位置、在线人数等数据的实际提供范围见[架构文档](architecture.md#功能边界)。

@@ -2,6 +2,8 @@
 
 平台无关的 Mod 清单、发现、依赖解析与 ZIP 包读写。扫描和解析不加载 DLL。
 
+## 包清单与目录
+
 ```toml
 schema = 1
 id = "example.observer"
@@ -16,6 +18,8 @@ entry = "observer.dll"
 
 数据包使用 `kind = "data"`，不设 `entry`。包安装目录为
 `<mods_dir>/<id>/<version>/mod.toml`，目录身份必须与清单一致。
+
+## 依赖解析
 
 宿主将 `discover(mods_dir)` 返回的目录候选与
 `Candidate::builtin(manifest)` 构造的内置候选合并，再调用：
@@ -40,6 +44,8 @@ for candidate in selected.mods {
 具体应用提供候选清单、默认项和必需项。本 crate 不识别 Base、Debug 等功能，也不按候选来源附加依赖约束。
 Launcher 的内建清单位于应用层 [`mhf-launcher-catalog`](../../apps/launcher-catalog/README.md)，由启动器与管理器共用。
 `Source` 记录加载或打包位置，宿主据此调用应用工厂或加载 DLL；依赖解析统一使用清单里的 ID 和版本范围。
+
+## ZIP 导入与导出
 
 `export_archive(path, &selected.mods)` 导出传入的精确版本与全部包资源，
 不会重新挑选版本。ZIP 内布局为 `mods/<id>/<version>/*`；`pack.toml`
@@ -67,10 +73,25 @@ version = "^1.0"
 label = "计数器"
 ```
 
-`directory` 默认是 `mods`，相对路径的基准由调用方决定：游戏启动器使用其可执行文件目录，
-并在切换游戏工作目录前解析；`mhf-mods` 使用命令启动时的当前工作目录。
+`directory` 默认是 `mods`，相对路径的基准由调用方决定。游戏启动器与 `mhf-mods`
+都使用命令启动时的当前工作目录；启动器在切换到游戏目录前完成解析。
+即使配置文件位于其他目录，相对 Mod 路径也不以配置文件目录为基准。
 `enabled` 未设置时由宿主默认选择或依赖关系决定；
 明确禁用的必需依赖会使组合解析失败。状态和参数修改在下次游戏启动时生效。
 
 可执行工具由 [`mhf-mod-manager`](../../apps/mod-manager/README.md) 提供，二进制名称为 `mhf-mods`。
 不指定子命令时打开独立管理界面；包库本身不包含应用入口。
+
+## 实现与验证
+
+| 模块 | 职责 |
+| --- | --- |
+| [`manifest.rs`](src/manifest.rs) | 清单、包身份和包内相对路径校验 |
+| [`resolve.rs`](src/resolve.rs) | 版本回溯与依赖拓扑顺序 |
+| [`diagnostics.rs`](src/diagnostics.rs) | 面向管理界面的依赖问题诊断 |
+| [`archive.rs`](src/archive.rs) | ZIP 暂存、校验、发布与失败回滚 |
+| [`runtime_config.rs`](src/runtime_config.rs) | 运行配置与选择项提取 |
+
+在 `mhf/` 目录执行 `cargo test -p mhf-mod-package --target <宿主目标>`，
+验证版本约束、循环回溯、路径校验、ZIP 往返及导入冲突。该库可在宿主平台测试，
+无需 Windows DLL 或游戏文件。

@@ -15,7 +15,7 @@ MinHook 实现由宿主统一持有。内置组和经 Host C 表创建的 DLL �
 
 游戏目标、状态和内置 Module 适配位于各 `crates/mods/*` 的 provider 实现；
 `runtime/game` 负责装配与最终会话释放，`runtime/hooks` 提供共享后端。
-两个 launcher bin 只调用游戏宿主入口。
+`mhf-launcher` 通过游戏宿主入口启动已选 Mod。
 
 Mod 负责目标位置、原像、detour 调用约定和业务状态。管理 C API 使用 `extern "C"`，不改变目标可能具有的 `thiscall`、`stdcall` 或裸汇编约定。SDK 不将任意地址 Hook 声称为安全操作。
 
@@ -32,10 +32,10 @@ Mod 负责目标位置、原像、detour 调用约定和业务状态。管理 C 
 
 准备、创建和启用只允许在 `prepare`／`attach` 阶段执行。Mod 必须先保存 trampoline 和全部回调状态，再启用；启用可能部分成功，因此错误回滚也需要禁用和排空。
 
-Host、Hook 与示例的诊断表均从 Rust 定义生成。游戏库的 `build.rs` 生成包含 Host／Hook 表的
+Host、Hook 与示例的诊断表均从 Rust 定义生成。启动器的 [`build.rs`](../crates/apps/launcher/build.rs) 生成包含 Host／Hook 表的
 `mhf_mod.h`；Hook 示例的 [`build.rs`](../examples/mods/hook/build.rs) 复用
 [`src/probe.rs`](../examples/mods/hook/src/probe.rs)，生成 `mhf_mod.h` 和 `probe.h` 到 `OUT_DIR/include`。
-库和构建脚本使用同一份诊断表定义。各 package 的 `cargo test --test headers` 检查仓库快照，
+示例库和构建脚本使用同一份诊断表定义。各 package 的 `cargo test --test headers` 检查仓库快照，
 更新与打包导出命令见 [头文件生成](dll-mods.md#头文件生成)。
 
 ```rust,ignore
@@ -48,7 +48,7 @@ let trampoline = unsafe { group.create_hook(target, detour)? };
 group.enable()?;
 ```
 
-这是基础 API 用法示意，不表示仓库已经实现伤害观察接口。完整 detour 必须匹配真实目标的 ABI。字体、文本等现有内置实现继续复用其已知地址和目标检查，不增加通用特征扫描器。
+这是基础 API 用法示意，不表示仓库已经实现伤害观察接口。完整 detour 必须匹配真实目标的 ABI。内置实现使用固定 HD 客户端地址和目标检查，不提供通用特征扫描器。
 
 组由宿主持有。丢弃 Rust `HookGroup` 包装本身不会卸载已启用 Hook；未启用组可调用 `discard`，其余由生命周期清理。DLL 自己提供排空机制，基础 SDK 不自动替任意 detour 管理回调计数。通过 Host 查询到的诊断或功能接口也只是借用；对含 `VirtualPtr` 的功能表，不得复制虚拟对象取得所有权或调用 `release_vptr`。
 
@@ -64,7 +64,7 @@ MinHook 记录目标入口；显式字节补丁使用 `PatchReservation` 记录�
 
 **当前没有对外的字节补丁 C 接口，也未检测两个不同 MinHook 入口实际改写区间的重叠。** 后者需要后端给出真实机器码改写范围，不能用固定字节数估计。绕过宿主直接写内存或私自使用另一套 Hook 后端的 DLL，也不受这张表约束。
 
-同一入口应由一个功能 Mod 拥有。需要共同观察时，由拥有者提供快照或明确的订阅接口；其他 Mod 通过 `dependencies` 和提供方 SDK 调用。多个修改者的合并语义由具体功能规定；首版没有任意 detour 链。
+同一入口应由一个功能 Mod 拥有。需要共同观察时，由拥有者提供快照或明确的订阅接口；其他 Mod 通过 `dependencies` 和提供方 SDK 调用。多个修改者的合并语义由具体功能规定；不支持任意 detour 链。
 
 ## 停止与释放
 
@@ -84,8 +84,8 @@ DLL 组的清理顺序为：
 DLL 的 `mhf_mod_sdk::Mod` 与 C 生命周期没有该阶段，必须在 detach 完成前结束自己的原生引用。
 领域 crate 不自动定义 DLL 入口，也不会因启用 provider 就改变这两种生命周期契约。
 
-UI 的 D3D9、窗口和 DirectInput Hook、Font Hook 与 Geometry 由 Base 的组件管理；
-Quest 也归 Base，但只在 Debug 请求本地会话后安装任务 Hook。当前未接入 Unicode 原生 IME Hook。
+UI 的 D3D9、窗口和 DirectInput Hook、Font Hook、Geometry 与 Monster 由 Base 的组件管理；
+Quest 也归 Base，在启动提供方请求本地会话后安装任务 Hook。应用不包含 Unicode 原生 IME Hook。
 
 detour 内不能安装或卸载 Hook。Invocation 覆盖状态读取和原函数调用；裸汇编中直接使用 trampoline 的入口，仍需先停止原生调用来源，不能只依赖 Rust 计数。
 
@@ -103,4 +103,4 @@ detour 内不能安装或卸载 Hook。Invocation 覆盖状态读取和原函数
 
 [`example.hook`](../examples/mods/hook/README.md) 通过 Host C 表 Hook 自己 DLL 内的函数，并公开验证快照。[ModHost smoke](../crates/runtime/mod-host/examples/smoke.rs) 已有 Windows/Wine 覆盖：检查目标结果从 11 变为 111、退出后恢复为 11，进入／完成计数相等、活动数归零、drain 执行一次，并在同进程重复运行。
 
-此外，[HD 会话测试](../crates/runtime/game/src/game/tests.rs) 检查最小启动提供方注入和游戏 DLL 加载／卸载；具体 Hook 由各组件测试覆盖。它调用 DllMain，不执行 `mhDLL_Main`；游戏运行中的迟到回调、窗口／IME 和实玩退出仍是交互验收项。首版不支持原生 Mod 热卸载。
+此外，[HD 会话测试](../crates/runtime/game/src/game/tests.rs) 检查最小启动提供方注入和游戏 DLL 加载／卸载；具体 Hook 由各组件测试覆盖。它调用 DllMain，不执行 `mhDLL_Main`；游戏运行中的迟到回调、窗口／IME 和实玩退出仍是交互验收项。不支持原生 Mod 热卸载。

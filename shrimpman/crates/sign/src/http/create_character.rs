@@ -6,22 +6,22 @@ use axum::{
 use serde::Deserialize;
 use shrimpman_domain::session::SignSessionId;
 
-use super::{character, error_response};
+use super::{ApiError, api_error, character};
 use crate::{SignService, application::use_cases::create_character::model};
 
 pub(super) async fn handle(
     State(service): State<SignService>,
     request: Result<Json<RequestBody>, JsonRejection>,
-) -> Result<(StatusCode, Json<character::ResponseBody>), axum::response::Response> {
+) -> Result<(StatusCode, Json<character::ResponseBody>), ApiError> {
     let Json(request) = request.map_err(|error| {
         tracing::info!(%error, "Rejected malformed HTTP character creation request");
-        error_response(StatusCode::BAD_REQUEST, "invalid_request")
+        api_error(StatusCode::BAD_REQUEST, "invalid_request")
     })?;
     let session_token = request
         .session_token
         .into_bytes()
         .try_into()
-        .map_err(|_| error_response(StatusCode::BAD_REQUEST, "invalid_request"))?;
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_request"))?;
     let outcome = service
         .create_character(model::Request {
             session_token,
@@ -30,7 +30,7 @@ pub(super) async fn handle(
         .await
         .map_err(|error| {
             tracing::error!(%error, "HTTP character creation failed");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         })?;
 
     match outcome {
@@ -39,12 +39,11 @@ pub(super) async fn handle(
             Json(character::ResponseBody::from(character)),
         )),
         model::Outcome::InvalidSession => {
-            Err(error_response(StatusCode::UNAUTHORIZED, "invalid_session"))
+            Err(api_error(StatusCode::UNAUTHORIZED, "invalid_session"))
         }
-        model::Outcome::PendingCharacterExists(_) => Err(error_response(
-            StatusCode::CONFLICT,
-            "pending_character_exists",
-        )),
+        model::Outcome::PendingCharacterExists(_) => {
+            Err(api_error(StatusCode::CONFLICT, "pending_character_exists"))
+        }
     }
 }
 

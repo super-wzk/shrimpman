@@ -42,8 +42,7 @@ impl Decoder for MhfTransportCodec {
         let mut body = source.split_to(consumed);
         body.advance(CryptHeader::ENCODED_LEN);
 
-        // A checksum error is terminal for the frame, but cipher state remains
-        // unchanged because decrypt_in_place commits it only after validation.
+        // 校验失败会丢弃当前帧；解密状态只在校验成功后提交，不能提前推进。
         self.inbound.decrypt_in_place(header, body.as_mut())?;
         debug!(payload = ?body.hex_dump(), "Received");
         Ok(Some(body.freeze()))
@@ -61,8 +60,7 @@ impl Encoder<Bytes> for MhfTransportCodec {
         destination.reserve(CryptHeader::ENCODED_LEN + body_len);
         destination.resize(frame_start + CryptHeader::ENCODED_LEN, 0);
 
-        // Encrypt directly in the final transport buffer. Both destination and
-        // cipher state are rolled back if header construction ever fails.
+        // 直接写入最终缓冲区；帧头构造失败时同时回滚缓冲区与加密状态。
         let mut next_outbound = self.outbound;
         let encoded = (|| {
             let encrypted = next_outbound.encrypt_into(payload.as_ref(), destination);

@@ -1,4 +1,4 @@
-//! Disk-backed PE32 VA reader. Never maps executable code or invents BSS bytes.
+//! 按虚拟地址读取 PE32 文件中的实际字节，不加载可执行代码，也不补造 BSS 内容。
 use mhf_monster::ai::{Error, Result, decompile::Memory};
 
 struct Section {
@@ -119,6 +119,7 @@ impl Memory for Image {
             .iter()
             .find(|s| rva >= s.rva && rva < s.rva + s.size)
             .ok_or_else(unavailable)?;
+        // 虚拟节长度可以大于文件数据长度；运行时填充区无法从磁盘还原，必须拒绝读取。
         let offset = (rva - section.rva) as usize;
         if end > section.rva + section.size
             || offset

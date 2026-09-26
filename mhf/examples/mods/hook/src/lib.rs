@@ -1,4 +1,4 @@
-//! A DLL-owned target hooked only through the host's public C Hook API.
+//! 通过宿主的公开 C Hook API 挂接本 DLL 内部目标函数。
 
 #[path = "probe.rs"]
 mod probe;
@@ -75,8 +75,7 @@ impl<'host> Mod<'host> for HookMod<'host> {
             return Err(Error::new("the example target is already modified"));
         }
         let callbacks = Arc::as_ptr(&self.callbacks).cast_mut().cast();
-        // The instance owns callback storage through successful disable/drain;
-        // no new probe calls are issued between stop and completed detach.
+        // 状态由实例持有直到 disable/drain 完成；stop 至 detach 结束期间不再调用 probe。
         let mut group = unsafe {
             mhf_mod_sdk::hooks::hooks(self.host).prepare_group(
                 "example target",
@@ -105,7 +104,7 @@ impl<'host> Mod<'host> for HookMod<'host> {
 
 impl Drop for HookMod<'_> {
     fn drop(&mut self) {
-        // The host never destroys a Mod until all owned hooks have drained.
+        // 宿主在本 Mod 所有 Hook 排空后才销毁实例，此时才能撤下回调状态。
         CALLBACKS.store(std::ptr::null_mut(), Ordering::Release);
     }
 }
@@ -116,12 +115,13 @@ unsafe extern "C" fn target(value: u32) -> u32 {
 }
 
 unsafe extern "C" fn invoke(value: u32) -> u32 {
-    // Keep an actual indirect call through the patched entry even with LTO.
+    // 保留真实的间接调用，使启用 LTO 后仍经过被修改的函数入口。
     unsafe { black_box(target as Target)(value) }
 }
 
 unsafe extern "C" fn detour(value: u32) -> u32 {
     let callbacks = unsafe { &*CALLBACKS.load(Ordering::Acquire) };
+    // 租约覆盖状态和 trampoline 的整个使用区间，drain 必须等到该租约析构。
     let _invocation = callbacks.enter();
     let original: Target =
         unsafe { std::mem::transmute(callbacks.original.load(Ordering::Acquire)) };

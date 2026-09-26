@@ -38,6 +38,7 @@ impl ExchangeState {
             None => return Err(InternalError::RequestSlotsExhausted),
         };
         let slot = &mut slots[index];
+        // 复用槽位时更新代数，避免超时请求的迟到 ACK 命中新请求。
         slot.generation = slot.generation.wrapping_add(1).max(1);
         let handle = RequestHandle::from_slot(index as u16, slot.generation);
         let (sender, receiver) = oneshot::channel();

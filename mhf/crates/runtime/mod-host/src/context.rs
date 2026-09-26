@@ -45,7 +45,7 @@ impl Shared {
     }
 }
 
-/// Stable per-Mod C context. Registry locks are never held over a Mod callback.
+/// 每个 Mod 的 C 上下文具有稳定地址；调用 Mod 回调时不持有接口注册表锁。
 pub struct Context {
     api: api::HostV2,
     id: String,
@@ -55,8 +55,7 @@ pub struct Context {
     shared: Arc<Shared>,
     registering: Cell<bool>,
     pending: RefCell<BTreeMap<String, usize>>,
-    // A safe built-in registration keeps its callback alive even if the caller
-    // releases its LaunchProvider handle before this context is destroyed.
+    // 注册表持有启动回调；调用方提前释放 LaunchProvider 也不会使已发布接口失效。
     pub(crate) launch_providers: RefCell<Vec<Rc<crate::launch::State>>>,
     error: Mutex<String>,
     #[cfg(windows)]
@@ -106,6 +105,7 @@ impl Context {
             #[cfg(windows)]
             groups: RefCell::new(Vec::new()),
         });
+        // 完成 Box 分配后再回填 C 上下文指针，后续移动 Box 不会改变所指对象地址。
         context.api.context = (&mut *context as *mut Self).cast();
         context
     }
@@ -176,6 +176,7 @@ impl Context {
             .ok_or_else(|| format!("{provider} has not published interface {interface}"))
     }
 
+    // 本阶段成功后一次性发布；失败时丢弃 pending，消费者不会看到半初始化接口。
     pub(crate) fn publish_interfaces(&self) {
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         let mut registry = self
@@ -359,6 +360,7 @@ impl Group {
         if self.native.is_empty() {
             return Ok(());
         }
+        // 先阻止新调用，再等待已进入的 detour 退出，最后才能释放 trampoline。
         self.native.disable()?;
         if self.enabled
             && let Some(drain) = self.drain
@@ -463,7 +465,7 @@ unsafe extern "C" fn enable_group(pointer: *mut c_void, handle: api::HookGroup) 
         if group.enabled {
             return context.fail("Hook group is already enabled");
         }
-        // Even a partially enabled group needs disable/drain on rollback.
+        // enable 可能只完成部分目标；先标记为启用，确保失败回滚也执行 disable 和 drain。
         group.enabled = true;
         match unsafe { group.native.enable() } {
             Ok(()) => api::OK,

@@ -39,8 +39,7 @@ impl Handler<EntranceSessionContext, BinrwOutboundSender> for ListWorldsPresence
 }
 
 fn unknown_character_presences(character_ids: Vec<CharacterId>) -> CharacterPresenceList {
-    // Entrance has no distributed live-session snapshot yet. Preserve the
-    // request order and report each location as unknown.
+    // Entrance 不持有跨进程在线位置快照，按请求顺序返回未知位置占位。
     CharacterPresenceList(
         character_ids
             .into_iter()

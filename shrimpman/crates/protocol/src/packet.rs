@@ -113,6 +113,7 @@ where
                 };
                 let after = payload.position();
 
+                // 每次产出都必须推进游标且不越界，防止错误解码器造成死循环或吞包。
                 if after > payload_len {
                     this.terminated = true;
                     return Poll::Ready(Some(Err(PacketError::CursorOutOfBounds {

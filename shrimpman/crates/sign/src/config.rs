@@ -9,8 +9,7 @@ const DEFAULT_PORT: u16 = 53_312;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_DATABASE_URL: &str = "sqlite://shrimpman.sqlite3";
-const DEFAULT_LOG_FILTER: &str =
-    "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info";
+const DEFAULT_LOG_FILTER: &str = "warn,shrimpman_sign=info,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info";
 
 /// Configuration for the Sign service.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -70,7 +69,7 @@ impl Default for SignDatabaseConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SignLoggingConfig {
-    /// Comma-separated [`tracing_subscriber::EnvFilter`] directives.
+    /// Comma-separated `tracing_subscriber::EnvFilter` directives.
     pub filter: String,
 }
 
@@ -145,7 +144,7 @@ mod tests {
             .unwrap()
             .set_override(
                 "sign.logging.filter",
-                "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_lease_kv=info",
+                "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info",
             )
             .unwrap()
             .set_override("sign.server.listen_addr", "127.0.0.1:60000")
@@ -174,7 +173,7 @@ mod tests {
                 },
                 logging: SignLoggingConfig {
                     filter:
-                        "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_lease_kv=info"
+                        "warn,shrimpman_sign=debug,shrimpman_discovery=info,shrimpman_lease_kv=info,shrimpman_runtime=info"
                             .to_owned(),
                 },
                 session: SignSessionConfig {

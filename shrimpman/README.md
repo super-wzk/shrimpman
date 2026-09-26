@@ -1,64 +1,53 @@
-# Shrimpman
+# Shrimpman 服务端
 
-## Documentation
+Shrimpman 是 Rust 服务端工作区，提供账户登录与角色管理、服务器列表以及 Land 连接的登录和心跳处理。服务间通过 etcd 发现实例，Sign 与 World 使用 SQLite 持久化数据。
 
-- [Domain language](docs/domain-language.md)
+## 文档导航
 
-## Text encoding
+- [架构与模块职责](docs/architecture.md)：crate 分层、连接生命周期与功能边界。
+- [配置与运行](docs/configuration.md)：配置优先级、服务端口、环境变量与数据库。
+- [协议与接口](docs/protocol.md)：TCP 命令、HTTP API、文本编码与字节限制。
+- [领域术语](docs/domain-language.md)：World、Land、角色位置等概念。
+- [仓库开发环境](../docs/development.md)：Nix 环境、构建与开发进程。
+- [仓库验证说明](../docs/validation.md)：检查命令与平台要求。
 
-Sign and Entrance exchange text as UTF-8. Sign rejects invalid UTF-8 credentials;
-outbound strings preserve the domain text without replacement or truncation.
-Use the matching UTF-8 client: legacy code-page conversion is no longer part of
-these services.
+## 启动
 
-The binary layouts and byte limits remain unchanged:
-
-| Field | UTF-8 payload limit |
-| --- | --- |
-| Sign character name | 15 bytes, followed by NUL in a 16-byte field |
-| Sign character description | 31 bytes, followed by NUL in a 32-byte field |
-| Sign login notice | 65,534 bytes; its u16 length includes the trailing NUL |
-| Sign server address or relation name | 254 bytes; its u8 length includes the trailing NUL |
-| Entrance world name and description | 63 bytes combined, plus two NUL bytes in a 65-byte field |
-
-These are byte limits, so multibyte characters consume more than one byte.
-HTTP JSON, configuration, database text and password hashing already use Unicode
-strings and need no data migration. Existing `savedata` blobs remain opaque and
-are not transcoded; World currently handles login and ping, not chat or save-data
-text. The matching launcher converts legacy resource text at load time. Existing
-legacy savedata still requires a format-aware migration when its text is exposed;
-opaque binary blobs must not be decoded or rewritten as whole UTF-8 strings.
-
-## Development
-
-The root [flake environment](../README.md) provides Rust, the Protocol Buffers
-compiler and the other tools needed by both workspaces. This workspace's
-[`default.nix`](default.nix) defines server commands and the process graph.
-
-From the repository root:
+在仓库根目录进入开发环境并启动进程组：
 
 ```sh
 nix develop --impure
 shrimpman-dev up
 ```
 
-Sign and World wait for a successful database migration, and all services wait
-for etcd to become healthy. Selected services include their dependencies:
+进程组会启动 etcd、执行数据库迁移，再启动服务。Sign 和 World 等待迁移成功，所有服务等待 etcd 健康检查通过。单独选择服务时也会包含其依赖：
 
 ```sh
 shrimpman-dev up shrimpman-entrance
 shrimpman-dev up shrimpman-sign
 shrimpman-dev up shrimpman-world
+```
+
+构建与数据库命令：
+
+```sh
 shrimpman-build
 shrimpman-migrate
 shrimpman-db --help
-```
-
-The same commands work directly through Nix, without entering the shell:
-
-```sh
 nix run .#dev -- up
 nix run .#shrimpman-db -- migration status
 ```
 
-See the root README for the `local` module, environment overrides and data paths.
+开发进程与命令由 [default.nix](default.nix) 定义，生成的服务配置来自 [config.nix](config.nix)。
+
+## 验证
+
+在仓库根目录执行；需具备 Rust 工具链与 Protocol Buffers 编译器：
+
+```sh
+cargo fmt --manifest-path shrimpman/Cargo.toml --all --check
+cargo clippy --manifest-path shrimpman/Cargo.toml --workspace --all-targets --locked -- -D warnings
+cargo test --manifest-path shrimpman/Cargo.toml --workspace --locked
+```
+
+单元测试使用内存数据库与本机临时 TCP 端口，不要求运行中的 etcd。真实服务发现和完整客户端交互需在开发进程组中另行验证。

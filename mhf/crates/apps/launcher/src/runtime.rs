@@ -1,4 +1,4 @@
-//! Configuration and paths shared by the game host and application assembly.
+//! 读取应用配置并准备游戏启动参数，在切换游戏工作目录前固定相对路径。
 
 #[cfg(feature = "base")]
 use mhf_base::MhfConfig;
@@ -40,18 +40,19 @@ pub fn prepare(
         .read("mods")?
         .try_into()
         .map_err(|error| format!("invalid Mod configuration: {error}"))?;
+    // 配置与 Mod 路径都相对调用目录解析，不能受后续游戏工作目录切换影响。
     let mods_dir = invocation_dir.join(&mods.directory);
     let store = Arc::new(Mutex::new(store));
     #[cfg(feature = "base")]
     let mhf = {
         let service = mhf_config::ConfigService::new(store.clone());
-        // This temporary view borrows the service while producing owned settings.
+        // 此视图仅在读取期间借用服务，返回的配置拥有独立数据。
         let config = unsafe { mhf_config::bind(service.api()) };
         mhf_base::register_config(config)?
     };
     #[cfg(feature = "base")]
     let params = launch_params(&mhf)?;
-    // Without built-in Base, the external startup provider supplies game settings.
+    // 未编译内置 Base 时，由外部启动提供方填入游戏设置。
     #[cfg(not(feature = "base"))]
     let params = MhfLaunchParams32::default();
     if !game_dir.is_dir() {

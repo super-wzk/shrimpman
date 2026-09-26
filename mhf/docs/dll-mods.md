@@ -45,7 +45,7 @@ entry = "mod.dll"
 - Rust 基础包装：[`mhf-mod-sdk`](../crates/runtime/mod-sdk/src/lib.rs)。
 
 DLL 导出名称 `mhf_mod_query_v2`，返回 `ModV2` 表；Host 使用 `HostV2`，`GameInfoV2` 只包含游戏模块和生命周期阶段。
-基础生命周期、Host、Hook、Data 和 Hook 诊断结构使用 `safer_ffi::derive_ReprC` 描述 C 布局并生成头文件。函数及回调采用 Windows x86 C 调用约定；C 示例通过 `.def` 确保入口名称可直接查询。领域能力接口保持各自现有的 v1 标识。
+基础生命周期、Host、Hook、Data 和 Hook 诊断结构使用 `safer_ffi::derive_ReprC` 描述 C 布局并生成头文件。函数及回调采用 Windows x86 C 调用约定；C 示例通过 `.def` 确保入口名称可直接查询。领域能力接口使用各自声明的版本标识，例如 `mhf.ui.v1` 和 `mhf.quest.control.v3`。
 
 游戏功能和 Counter 用一份公开数据类型及 `#[derive_ReprC(dyn)]` trait 定义接口，由 safer-ffi 生成 C vtable。`*Table` 只是 `VirtualPtr` 的类型别名，没有额外对象外壳。提供方以 `Rc` 持有独立分配的 Service 或接口表，保持发布地址与后续 `&mut Mod` 生命周期借用分离。C 调用通过 `vtable` 和 `ptr` 完成，Rust 直接使用相同强类型及必要便利方法。
 
@@ -121,7 +121,7 @@ Counter 和 Hook 的基础 `mhf_mod.h` 与启动应用使用同一定义。这�
 回调在游戏加载前借用 `LaunchTargetV1` 中的 `LaunchParams32`／`GlobalData32`，不得保留指针；
 返回 `CANCELLED` 正常取消启动。Login 使用 fallback，因此启用 Debug 会自动接管启动。
 
-退出先停止消费者，再停止提供者。原生入口停止、Hook 禁用／排空／移除和退役状态释放分阶段进行；清理失败保留实例、依赖、DLL 和缓冲。宿主内部还有 `prepare_release` 用于现有内置适配器，不增加一套 DLL 回调。完整顺序见 [生命周期](mod-system.md#生命周期)。
+退出先停止消费者，再停止提供者。原生入口停止、Hook 禁用／排空／移除和退役状态释放分阶段进行；清理失败保留实例、依赖、DLL 和缓冲。宿主内部还有 `prepare_release` 用于内置适配器，外部 DLL 生命周期不包含该阶段。完整顺序见 [生命周期](mod-system.md#生命周期)。
 
 ## Rust Mod 与提供方 SDK
 
@@ -155,7 +155,7 @@ export_mod!(ExampleMod);
 基础 `Host::game_info` 返回 `GameInfo`，阶段和可选模块分别为 `Phase`
 与 `Option<GameModule>`；日志用 `LogLevel`，错误用 `ErrorKind`。基础 SDK 不理解业务表语义。
 原始接口注册、Hook 指针与 `host_from_raw` 分别在 `host` 和 `hooks` 模块中公开。
-基础生命周期 C 协议由独立 `mhf-mod-api` crate 定义；业务接口不再拆分 API／ABI 镜像。
+基础生命周期 C 协议由独立 `mhf-mod-api` crate 定义；业务 API 与 C ABI 共用领域类型定义。
 
 领域 crate 默认提供 API，`provider` feature 增加同一领域的 Service、内置 Module 和具体实现。
 应用 [`builtins.rs`](../crates/apps/launcher/src/builtins.rs) 组装内置 Factory。
@@ -213,9 +213,9 @@ Quest 作为 Base 组件在 prepare 发布快照、控制与本地启动接口�
 Debug 原生状态通过 Base 的公开 Quest 控制接口访问任务会话。控制接口的游戏变更方法保留为 `unsafe`；外部 UI 通常使用 Debug 命令队列，成功仅表示入队，执行结果通过快照或游戏消息观察。快照中的怪物使用可导出的 `TaggedOption<u8>`，Rust 的 `monster()` 访问方法返回普通 `Option<u8>`。
 
 `mhf_ui::UiHost` 从 `mhf.base` 的 `mhf.ui.v1` 注册面板，回调中的 `UiTable` 只在该次调用内有效；`Panel::close` 成功后已排空回调，失败应在 `Mod::stop` 中传播，让宿主保留消费者 DLL。回调不能同步注销自身。当前完整 egui 调试窗口要求内置 Base，不跨 DLL 传递 egui 对象。
-Base 内部包含 Font、UI、Geometry 和 Quest；各组件保留自己的代码边界，游戏文本保持原生处理。
+Base 内部包含 Font、UI、Geometry、Monster 和 Quest；各组件保留自己的代码边界，游戏文本保持原生处理。
 
-Unicode 和 Translation crate 暂未接入应用，当前运行清单与应用头文件聚合不包含它们。
+应用运行清单与头文件聚合不包含 Unicode 和 Translation crate。
 
 数据 Mod 的 [`mhf.data.v1`](../crates/runtime/mod-host/include/mhf_data.h) 提供资源根路径及相对文件读取。它是通用资源入口。
 
@@ -242,7 +242,8 @@ label = "计数器"
 游戏启动器与管理器均将配置中的相对 `directory` 按调用目录解析，并在切换游戏工作目录前确定路径。DLL 使用规范化绝对入口路径加载，私有依赖搜索包括包目录和 Windows 默认安全搜索目录。
 
 独立管理器由 [`mhf-mod-manager`](../crates/apps/mod-manager/README.md) package 提供，使用
-[`mhf-mod-package`](../crates/runtime/mod-package/README.md) 的共用内置元数据和 semver 解析器，
+[`mhf-launcher-catalog`](../crates/apps/launcher-catalog/README.md) 的内置元数据和
+[`mhf-mod-package`](../crates/runtime/mod-package/README.md) 的 semver 解析器，
 检查配置中明确启用项及其声明依赖。工具可放在 PATH 中任意位置，
 在要管理的运行目录执行 `mhf-mods` 打开图形界面；显式子命令继续使用 CLI：
 
@@ -280,4 +281,4 @@ mhf-launcher --config mhf.toml --game-dir GAME --export-modpack selected.zip
 测试覆盖游戏库、启动器、SDK、元数据、ZIP、配置编辑、Overlay、Geometry 和 Hook；头文件一致性由上述 Cargo 集成测试检查。
 通用 HD DLL 测试检查最小启动提供方注入及游戏 DLL 加载／卸载，调用真实 DllMain，不调用游戏主入口；具体 Mod 安装由各组件测试覆盖。
 
-启动器的 `--list-mods`、`--export-modpack` 与管理器读取同一配置具有已有验证覆盖。游戏内 Panel 操作、输入／IME、开图、游戏线程命令及实玩退出仍待交互验收。首版没有原生 Mod 热卸载、自动组合任意内存补丁或通用 detour 链，实际边界见 [Hook 冲突规则](mod-hooks.md#冲突规则)。
+启动器的 `--list-mods`、`--export-modpack` 与管理器读取同一配置具有已有验证覆盖。游戏内 Panel 操作、输入／IME、开图、游戏线程命令及实玩退出仍待交互验收。不支持原生 Mod 热卸载、自动组合任意内存补丁或通用 detour 链，实际边界见 [Hook 冲突规则](mod-hooks.md#冲突规则)。

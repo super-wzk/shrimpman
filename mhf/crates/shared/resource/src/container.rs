@@ -1,5 +1,5 @@
-//! Resource envelopes and offset directories. BIN/TXB/PAC are filename
-//! conventions, not signatures: use the complete directory to validate them.
+//! 资源外层与偏移目录。BIN/TXB/PAC 只是文件命名约定，
+//! 必须验证完整目录及成员范围，不能仅凭后缀认定格式。
 
 use std::{collections::BTreeMap, ops::Deref};
 
@@ -51,9 +51,8 @@ impl Deref for OpenedResource<'_> {
     }
 }
 
-/// Open only signatures at the beginning of each payload. This does not scan
-/// for embedded signatures. The byte budget is cumulative across retained
-/// decoded layers; max_layers bounds nested wrappers, including no-op JKR.
+/// 只解开每层起点的签名，不扫描内部魔数。
+/// 字节预算按所有保留的解码层累计扣减；深度预算也包含不压缩的 JKR，防止嵌套耗尽内存。
 pub fn open_layers(
     source: &[u8],
     max_output_bytes: usize,
@@ -386,9 +385,8 @@ impl<'a> MhaArchive<'a> {
         let names = source
             .get(header.names_offset as usize..names_end)
             .ok_or_else(|| Error::new(12, "MHA name block outside resource"))?;
-        // Resolve sorted name offsets in one forward pass. Duplicate and
-        // suffix-sharing names are legal; scanning each alias independently
-        // could otherwise do count * names_size work on an untrusted archive.
+        // 按偏移排序后只向前扫描一次名称块。重复名称和共享后缀合法，
+        // 若逐项重新寻找终止符，恶意别名会把扫描成本放大到记录数乘名称块长度。
         let mut name_ends = BTreeMap::new();
         let records = source[header.entries_offset as usize..entries_end]
             .as_chunks::<20>()

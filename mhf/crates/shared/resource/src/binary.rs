@@ -1,4 +1,4 @@
-//! Typed binary reads retain their original bytes and writable buffer locations.
+//! 类型化读取同时保留原始字节与完整缓冲区位置，供检查器展示和精确写回。
 
 use crate::{Error, Result};
 use std::ops::Range;
@@ -64,8 +64,7 @@ fn check_size(bytes: &[u8], expected: usize) -> Result<()> {
     Ok(())
 }
 
-// Every primitive has the same safe byte-array conversion; floating-point
-// conversions preserve NaN payloads and signed zero without numeric coercion.
+// 所有标量共用按端序转换的字节数组；浮点值按位读写，保留 NaN 载荷和带符号零。
 macro_rules! numbers {
     ($($ty:ty => $kind:ident),* $(,)?) => { $(
         impl BinaryValue for $ty {
@@ -155,8 +154,8 @@ impl<'a, T: BinaryValue> Field<'a, T> {
         self.original
     }
 
-    /// Write into the COMPLETE backing buffer, not the Reader's subslice.
-    /// Unrelated bytes and the immutable source snapshot remain untouched.
+    /// 写入完整缓冲区：range 已包含子资源基址，不能再次传入 Reader 的局部切片。
+    /// 仅修改目标字段，保留其他字节及只读来源快照。
     pub fn write(&self, buffer: &mut [u8], value: T) -> Result<()> {
         let target = buffer.get_mut(self.range.clone()).ok_or_else(|| {
             Error::new(self.range.start, "binary field exceeds destination buffer")
@@ -180,8 +179,8 @@ impl<'a> Reader<'a> {
         Self::with_base(bytes, 0)
     }
 
-    /// `bytes` is a borrowed resource slice. `base` locates its first byte in
-    /// the complete buffer; all returned ranges and errors include this base.
+    /// `bytes` 是借用的子资源；`base` 是其在完整缓冲区中的起点。
+    /// 返回字段范围和错误位置均包含该基址，游标仍相对子资源计数。
     pub fn with_base(bytes: &'a [u8], base: usize) -> Self {
         Self {
             bytes,
@@ -215,7 +214,7 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Advance only after a successful read, so a failed read is retryable.
+    /// 只在解码成功后移动游标，使失败读取仍可重试或交由其他布局解释。
     pub fn read<T: BinaryValue>(&mut self) -> Result<Field<'a, T>> {
         let value = self.read_at(self.position)?;
         self.position += T::SIZE;

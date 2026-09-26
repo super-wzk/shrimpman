@@ -77,15 +77,16 @@ impl Manager {
         snapshot: &Snapshot,
         edits: &BTreeMap<String, Selection>,
     ) -> Result<Resolved> {
-        let mut config = snapshot.config.clone();
-        for (id, selection) in edits {
-            let settings = config.modules.entry(id.clone()).or_default();
-            settings.enabled = selection.enabled;
-            settings.version = selection.version.clone();
-        }
+        // 依赖解析只需要开关和版本，避免复制各 Mod 的完整业务设置。
+        let mut selections = snapshot.config.selections();
+        selections.extend(
+            edits
+                .iter()
+                .map(|(id, selection)| (id.clone(), selection.clone())),
+        );
         mhf_mod_package::resolve(
             &snapshot.candidates,
-            &config.selections(),
+            &selections,
             &BTreeSet::new(),
             &BTreeSet::new(),
         )
@@ -100,6 +101,7 @@ impl Manager {
     ) -> Result<Snapshot> {
         let source = self.source()?;
         let snapshot = self.snapshot(&source)?;
+        // 以打开界面时的配置为基线，仅覆盖实际改动的字段，保留其他写入者的新值。
         let merged: BTreeMap<_, _> = edits
             .iter()
             .map(|(id, edited)| {
@@ -172,72 +174,6 @@ impl Manager {
     }
 }
 
-#[cfg(all(test, feature = "gui"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn saving_deltas_preserves_fresh_configuration_and_rejects_invalid_combinations() {
-        let root = std::env::temp_dir().join(format!("mhf-mods-save-{}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
-        let path = root.join("mhf.toml");
-        let initial = "# user configuration\n[video]\nvolume = 12\n[mods.\"mhf.base\"]\nenabled = false\nversion = '^1'\n[mods.\"mhf.base\".settings]\ncustom = 7 # preserve\n";
-        fs::write(&path, initial).unwrap();
-        let manager = Manager::new(path.clone(), Some(root.join("mods"))).unwrap();
-        let baseline = manager.load().unwrap().config;
-        // Another writer changes a game setting and the same Mod's untouched version.
-        fs::write(
-            &path,
-            initial
-                .replace("volume = 12", "volume = 42")
-                .replace("'^1'", "'=1.0.0'"),
-        )
-        .unwrap();
-        let changed = manager
-            .save(
-                &baseline,
-                &BTreeMap::from([(
-                    "mhf.base".into(),
-                    Selection {
-                        enabled: None,
-                        version: Some("^1".parse().unwrap()),
-                    },
-                )]),
-            )
-            .unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("volume = 42"));
-        assert!(text.contains("# user configuration"));
-        assert!(text.contains("custom = 7 # preserve"));
-        assert_eq!(changed.config.modules.len(), 1);
-        let base = &changed.config.modules["mhf.base"];
-        assert_eq!(base.enabled, None);
-        assert_eq!(base.version, Some("=1.0.0".parse().unwrap()));
-        assert!(
-            manager
-                .save(
-                    &changed.config,
-                    &BTreeMap::from([(
-                        "missing.mod".into(),
-                        Selection {
-                            enabled: Some(true),
-                            version: None,
-                        }
-                    )])
-                )
-                .is_err()
-        );
-        assert_eq!(fs::read_to_string(path).unwrap(), text);
-    }
-}
-
 pub(crate) fn edit_selection(
     source: &str,
     id: &str,
@@ -295,3 +231,7 @@ pub(crate) fn validate_id(id: &str) -> std::result::Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(all(test, feature = "gui"))]
+#[path = "tests_manager.rs"]
+mod tests;

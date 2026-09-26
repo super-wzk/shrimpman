@@ -1,5 +1,4 @@
-//! The only lifetime erasure. The host owns the opaque instance and guarantees
-//! its borrowed host/dependencies outlive destruction of this box.
+//! 在 C 边界擦除实例生命周期；宿主持有实例，并保证 Host 与依赖存活到实例析构完成。
 
 use crate::{Host, LogLevel, Result};
 use crate::{abi as api, error::error_status, host::host_from_raw};
@@ -30,12 +29,14 @@ pub trait Mod<'host>: Sized {
     }
 }
 
+// 此处的 static 仅用于 C ABI 存储；export_mod! 仍要求实现接受任意宿主生命周期。
 struct Instance<M> {
     host: Host<'static>,
     module: M,
 }
 
 fn guard(host: Host<'_>, operation: impl FnOnce() -> Result<()>) -> api::Status {
+    // Rust panic 不得跨越 C 回调边界；业务错误与 panic 都转换为宿主状态码。
     match catch_unwind(AssertUnwindSafe(operation)) {
         Ok(Ok(())) => api::OK,
         Ok(Err(error)) => {
