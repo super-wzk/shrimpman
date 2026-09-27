@@ -11,6 +11,7 @@ use crate::field::{
     Binding, Endian, FieldType, FieldValue, IntoFieldValue, ScalarType, TextEncoding, formatted,
     typed,
 };
+pub use labels::field_label;
 
 #[cfg(test)]
 mod archive_tests;
@@ -18,6 +19,7 @@ mod dat;
 mod effect_bank;
 mod emd;
 mod inf;
+mod labels;
 mod legacy_stage;
 mod mha;
 #[cfg(test)]
@@ -57,9 +59,14 @@ pub enum Kind {
     DatTable(usize),
     DatRecord(usize),
     Emd,
-    EmdSpecies,
+    EmdGroup,
+    EmdSpecies(u8),
     EmdTable(usize, Option<usize>),
+    EmdGlobalTable(usize),
     EmdRecord(mhf_resource::emd::RecordKind),
+    EmdSpeciesTable(u8, mhf_resource::emd::SpeciesTable),
+    EmdAiScript(usize),
+    EmdAiInstruction,
     Inf,
     InfCategory(usize),
     InfQuest,
@@ -136,12 +143,16 @@ impl Kind {
             Self::DatTable(_) => "DAT 数据表",
             Self::DatRecord(_) => "DAT 记录",
             Self::Emd => "EMD 物种资源",
-            Self::EmdSpecies => "EMD 物种记录",
-            Self::EmdTable(..) => "EMD 数据表",
+            Self::EmdGroup => "EMD 分组",
+            Self::EmdSpecies(_) => "EMD 物种记录",
+            Self::EmdTable(..) | Self::EmdGlobalTable(_) => "EMD 数据表",
             Self::EmdRecord(_) => "EMD 记录",
+            Self::EmdSpeciesTable(..) => "EMD 物种参数表",
+            Self::EmdAiScript(_) => "EMD AI 脚本",
+            Self::EmdAiInstruction => "AI 指令",
             Self::Inf => "INF 任务资料",
             Self::InfCategory(_) => "INF 任务分类",
-            Self::InfQuest => "INF 任务记录前缀",
+            Self::InfQuest => "INF 任务记录",
             Self::Sdt => "SDT 战斗参数",
             Self::SdtEntry(_) => "SDT 类别目录项",
             Self::SdtAttackTable => "SDT 攻击参数表",
@@ -360,11 +371,14 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
         Kind::InfCategory(index) => builder.inf_category_records(node, index)?,
         Kind::InfQuest => builder.inf_quest_fields(node)?,
-        Kind::EmdSpecies => {
-            builder.emd_record_fields(node, mhf_resource::emd::RecordKind::Species)?
-        }
+        Kind::EmdSpecies(species) => builder.emd_species_contents(node, species)?,
         Kind::EmdTable(slot, index) => builder.emd_table_records(node, slot, index)?,
+        Kind::EmdGlobalTable(slot) => builder.emd_global_records(node, slot)?,
         Kind::EmdRecord(kind) => builder.emd_record_fields(node, kind)?,
+        Kind::EmdSpeciesTable(species, table) => {
+            builder.emd_species_table_records(node, species, table)?;
+        }
+        Kind::EmdAiScript(_) => builder.emd_ai_script(node)?,
         Kind::SdtEntry(index) => builder.sdt_entry_tables(node, index)?,
         Kind::SdtAttackTable | Kind::SdtAuxiliaryTable | Kind::SdtExtraTable => {
             builder.sdt_table_records(node)?;
@@ -1067,26 +1081,16 @@ impl Builder {
                     self.document.nodes[node].kind = Kind::MotionArchive;
                     self.field(
                         node,
-                        "目录记录数（结构识别）",
+                        "目录记录数",
                         observed.record_count(),
                         base,
                         observed.record_count() * 8,
-                    );
-                    self.field(
-                        node,
-                        "原生消费组数",
-                        "未存储在该文件中，由调用方指定",
-                        base,
-                        0,
                     );
                     self.motion_archive(node, &observed.directory, base);
                     return;
                 }
                 Err(error) => {
-                    hinted_error = Some((
-                        Kind::Unknown,
-                        format!("MOT 目录记录无法完整验证：{error}；文件没有原生消费组数字段"),
-                    ));
+                    hinted_error = Some((Kind::Unknown, format!("无法解析 MOT 目录：{error}")));
                 }
             }
         }
@@ -1720,21 +1724,21 @@ impl Builder {
         match component {
             Component::Positions(value) | Component::Normals(value) => self.field(
                 node,
-                "f32[3]",
+                name,
                 typed(summary(&value.values), FieldType::Array(ScalarType::F32)),
                 at,
                 value.values.len() * 12,
             ),
             Component::Uvs(value) => self.field(
                 node,
-                "f32[2]",
+                "纹理坐标",
                 typed(summary(&value.values), FieldType::Array(ScalarType::F32)),
                 at,
                 value.values.len() * 8,
             ),
             Component::Colors(value) | Component::Attribute12(value) => self.field(
                 node,
-                "f32[4]",
+                name,
                 typed(summary(&value.values), FieldType::Array(ScalarType::F32)),
                 at,
                 value.values.len() * 16,
@@ -1743,7 +1747,7 @@ impl Builder {
             | Component::MaterialMap(value)
             | Component::BoneMap(value) => self.field(
                 node,
-                "u32 索引",
+                name,
                 typed(summary(&value.values), FieldType::Array(ScalarType::U32)),
                 at,
                 value.values.len() * 4,

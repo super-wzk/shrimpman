@@ -118,19 +118,6 @@ fn deferred_sdt_records_bind_nonzero_container_offsets_and_preserve_every_byte()
         assert!(document.nodes[table].deferred);
         assert!(document.nodes[table].children.is_empty());
     }
-    let auxiliary = &document.nodes[tables[1]];
-    assert!(
-        auxiliary
-            .fields
-            .iter()
-            .any(|field| field.name == "原生索引上限")
-    );
-    assert!(
-        auxiliary
-            .fields
-            .iter()
-            .any(|field| field.value.contains("可能共享"))
-    );
     let mut document = document;
     for table in tables {
         document = inspect::expand(&document, table).unwrap();

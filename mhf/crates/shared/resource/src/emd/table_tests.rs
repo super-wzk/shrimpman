@@ -51,6 +51,7 @@ fn fixed_and_header_counted_tables_have_exact_extents() {
         (7, Some(12), 2, 12),
         (9, Some(16), 2, 4),
         (11, None, 1, 18),
+        (12, None, 1, 36),
         (13, Some(18), 2, 28),
         (14, Some(20), 2, 12),
         (15, Some(22), 2, 2),
@@ -129,6 +130,116 @@ fn sentinel_directory_is_bounded_and_terminator_is_preserved() {
 }
 
 #[test]
+fn weighted_directories_preserve_signed_pairs_aliases_and_single_byte_sentinel() {
+    let mut bytes = fixture();
+    put32(&mut bytes, 6 * 4, 400);
+    put32(&mut bytes, 400, 800);
+    put32(&mut bytes, 404, 800);
+    put32(&mut bytes, 408, 2047);
+    bytes[800..805].copy_from_slice(&[0x80, 0xff, 127, 0x80, 0xff]);
+    bytes[2047] = 0xff;
+    let file = Emd::parse(&bytes).unwrap();
+    let table = file.directory_table(6, 0).unwrap().unwrap();
+    assert_eq!(table.kind, RecordKind::WeightedPair);
+    assert_eq!((table.count, table.stride), (2, 2));
+    assert_eq!(table.range, 800..804);
+    assert_eq!(table.terminator, Some(804..805));
+    assert_eq!(table.record(0).unwrap().1, [0x80, 0xff]);
+    assert_eq!(
+        file.directory_table(6, 1).unwrap().unwrap().range,
+        table.range
+    );
+    let empty = file.directory_table(6, 2).unwrap().unwrap();
+    assert_eq!(empty.count, 0);
+    assert_eq!(empty.terminator, Some(2047..2048));
+    assert!(file.directory_table(6, 3).is_err());
+
+    // A value byte of FF is data; a missing value or sentinel is an error.
+    bytes[2047] = 1;
+    assert!(Emd::parse(&bytes).unwrap().directory_table(6, 2).is_err());
+    bytes[800..].fill(1);
+    assert!(Emd::parse(&bytes).unwrap().directory_table(6, 0).is_err());
+    put32(&mut bytes, 400, 96);
+    assert!(Emd::parse(&bytes).unwrap().directory_table(6, 0).is_err());
+    put32(&mut bytes, 400, 0);
+    assert!(Emd::parse(&bytes).unwrap().directory_table(6, 0).is_err());
+}
+
+#[test]
+fn weighted_list_terminator_cannot_overlap_a_relocated_header() {
+    let mut bytes = fixture();
+    put32(&mut bytes, 0, 400);
+    bytes[404] = 1;
+    put32(&mut bytes, 12, 448);
+    put32(&mut bytes, 6 * 4, 120);
+    put32(&mut bytes, 120, 398);
+    bytes[398..401].copy_from_slice(&[1, 2, 0xff]);
+    let file = Emd::parse(&bytes).unwrap();
+    assert!(file.root_table(6).is_ok());
+    assert!(file.directory_table(6, 0).is_err());
+
+    // A sentinel ending exactly at the header boundary remains valid.
+    put32(&mut bytes, 120, 397);
+    bytes[397..400].copy_from_slice(&[1, 2, 0xff]);
+    let table = Emd::parse(&bytes)
+        .unwrap()
+        .directory_table(6, 0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(table.range, 397..399);
+    assert_eq!(table.terminator, Some(399..400));
+}
+
+#[test]
+fn species_probability_links_have_five_four_byte_rows() {
+    let mut bytes = fixture();
+    bytes[96 + 12] = 2;
+    put32(&mut bytes, 7 * 4, 400);
+    put32(&mut bytes, 404, 800);
+    put32(&mut bytes, 416, 800);
+    bytes[800..820].fill(255);
+    let file = Emd::parse(&bytes).unwrap();
+    let table = file.directory_table(7, 0).unwrap().unwrap();
+    assert_eq!(table.kind, RecordKind::ProbabilityRow);
+    assert_eq!((table.count, table.stride), (5, 4));
+    assert_eq!(table.range, 800..820);
+    assert_eq!(table.record(4).unwrap().1, [255; 4]);
+    assert_eq!(
+        file.directory_table(7, 1).unwrap().unwrap().range,
+        table.range
+    );
+    assert!(file.directory_table(7, 2).is_err());
+    bytes.truncate(819);
+    assert!(Emd::parse(&bytes).unwrap().directory_table(7, 0).is_err());
+    put32(&mut bytes, 404, 0);
+    assert!(Emd::parse(&bytes).unwrap().directory_table(7, 0).is_err());
+}
+
+#[test]
+fn newly_typed_fields_fit_their_records_without_covering_unknown_bytes() {
+    for (kind, stride) in [
+        (RecordKind::Parameters80, 80),
+        (RecordKind::Parameters90, 90),
+        (RecordKind::WeightedPair, 2),
+        (RecordKind::ProbabilityRow, 4),
+        (RecordKind::PartHealthRatios, 36),
+        (RecordKind::SpeciesParameter, 40),
+        (RecordKind::AngerProfile, 60),
+    ] {
+        let mut covered = vec![false; stride];
+        for field in kind.fields() {
+            let end = field.offset + field.scalar.size();
+            assert!(end <= stride);
+            assert!(covered[field.offset..end].iter().all(|byte| !byte));
+            covered[field.offset..end].fill(true);
+        }
+        if kind == RecordKind::Parameters90 {
+            assert!(covered[36..72].iter().all(|byte| !byte));
+        }
+    }
+}
+
+#[test]
 fn parallel_group_counts_control_the_target_extent() {
     let mut bytes = fixture();
     bytes[96 + 22] = 2;
@@ -190,7 +301,7 @@ fn association_links_are_inactive_when_either_gate_is_zero() {
 #[test]
 fn unknown_layouts_are_not_sized_from_neighboring_roots() {
     let mut bytes = fixture();
-    for slot in [8, 12, 20, 23] {
+    for slot in [8, 20, 23] {
         put32(&mut bytes, slot * 4, 500);
         let file = Emd::parse(&bytes).unwrap();
         assert_eq!(file.root_offset(slot).unwrap(), 500);

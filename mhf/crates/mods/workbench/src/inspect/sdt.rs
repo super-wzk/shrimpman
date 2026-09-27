@@ -23,20 +23,6 @@ impl Builder {
     fn sdt_contents(&mut self, node: usize, bytes: &[u8], base: usize) -> Result<(), String> {
         let file = Sdt::parse(bytes).map_err(|error| error.to_string())?;
         self.field(node, "目录项数", file.entries().len(), base, 0);
-        self.field(
-            node,
-            "目录顺序",
-            "保留文件顺序；原生加载后会另行排序",
-            base,
-            0,
-        );
-        self.field(
-            node,
-            "参数范围",
-            "攻击参数、辅助参数、分组判定与附加参数；未知字段保留原值",
-            base,
-            0,
-        );
         let buffer = self.document.nodes[node].buffer;
         for entry in file.entries() {
             let at = base + entry.offset;
@@ -94,13 +80,6 @@ impl Builder {
             buffer,
             base..base + bytes.len(),
         ) {
-            self.field(
-                child,
-                "范围说明",
-                "展开后列出未被有效目录、表及终止记录覆盖的字节；不推断记录含义",
-                base,
-                0,
-            );
             self.document.nodes[child].deferred = true;
         }
         Ok(())
@@ -175,7 +154,7 @@ impl Builder {
                     self.field(
                         child,
                         if table_kind == TableKind::Auxiliary {
-                            "原生索引上限"
+                            "索引上限"
                         } else {
                             "记录数"
                         },
@@ -187,8 +166,8 @@ impl Builder {
                     if table_kind == TableKind::Auxiliary {
                         self.field(
                             child,
-                            "浏览范围",
-                            "按原生读取上限展示；引用可能共享或与其他区域重叠",
+                            "编辑提示",
+                            "修改共用数据会同时影响引用它的条目",
                             base + range.start,
                             0,
                         );

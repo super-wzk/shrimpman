@@ -28,15 +28,63 @@ mod tests;
 /// Child ordinals in the ownership tree, independent of buffer allocation and
 /// lazy expansion order. Validated reference edges do not create new owners.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct NodeKey(Vec<usize>);
+pub struct NodeKey {
+    path: Vec<usize>,
+    emd: Option<EmdIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct EmdIdentity {
+    kind: Kind,
+    name: String,
+    range: Range<usize>,
+}
+
+impl EmdIdentity {
+    fn new(node: &inspect::Node, root: &inspect::Node) -> Option<Self> {
+        let range = Self::relative_range(node, root)?;
+        Some(Self {
+            kind: node.kind,
+            name: node.name.clone(),
+            range,
+        })
+    }
+
+    fn relative_range(node: &inspect::Node, root: &inspect::Node) -> Option<Range<usize>> {
+        if node.buffer != root.buffer {
+            return None;
+        }
+        Some(
+            node.range.start.checked_sub(root.range.start)?
+                ..node.range.end.checked_sub(root.range.start)?,
+        )
+    }
+}
+
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+impl NodeKey {
+    /// EMD association lists can change membership after an edit. Their child
+    /// ordinals alone must not redirect a selection or draft to another record.
+    pub(crate) fn matches_emd_identity(&self, document: &Document, node: usize) -> bool {
+        self.emd.as_ref().is_none_or(|identity| {
+            node_key(document, node).is_some_and(|key| key.emd.as_ref() == Some(identity))
+        })
+    }
+}
 
 pub fn node_key(document: &Document, mut node: usize) -> Option<NodeKey> {
     let parents = parents(document);
+    let target = document.nodes.get(node)?;
     let mut path = Vec::new();
+    let mut emd = None;
     for _ in 0..document.nodes.len() {
+        let current = document.nodes.get(node)?;
+        if current.kind == Kind::Emd && emd.is_none() {
+            emd = Some(EmdIdentity::new(target, current)?);
+        }
         if node == document.root {
             path.reverse();
-            return Some(NodeKey(path));
+            return Some(NodeKey { path, emd });
         }
         let (parent, ordinal) = *parents.get(node)?.as_ref()?;
         path.push(ordinal);
@@ -47,8 +95,18 @@ pub fn node_key(document: &Document, mut node: usize) -> Option<NodeKey> {
 
 pub fn locate(document: &Document, key: &NodeKey) -> Option<usize> {
     let mut node = document.root;
-    for &ordinal in &key.0 {
+    let mut emd = (document.nodes.get(node)?.kind == Kind::Emd).then_some(node);
+    for &ordinal in &key.path {
         node = *document.nodes.get(node)?.children.get(ordinal)?;
+        if document.nodes.get(node)?.kind == Kind::Emd {
+            emd = Some(node);
+        }
+    }
+    if let Some(identity) = &key.emd {
+        let current = EmdIdentity::new(document.nodes.get(node)?, document.nodes.get(emd?)?)?;
+        if &current != identity {
+            return None;
+        }
     }
     document.nodes.get(node).map(|_| node)
 }
@@ -216,9 +274,9 @@ fn splice(source: &[u8], range: Range<usize>, replacement: &[u8]) -> Result<Vec<
 }
 
 fn restore_expanded(previous: &Document, mut updated: Document) -> Document {
-    let mut pending = vec![(previous.root, updated.root)];
+    let mut pending = vec![(previous.root, updated.root, None)];
     let mut visited = vec![false; previous.nodes.len()];
-    while let Some((old_index, new_index)) = pending.pop() {
+    while let Some((old_index, new_index, mut emd)) = pending.pop() {
         if visited[old_index] {
             continue;
         }
@@ -226,6 +284,23 @@ fn restore_expanded(previous: &Document, mut updated: Document) -> Document {
         let old = &previous.nodes[old_index];
         if old.kind != updated.nodes[new_index].kind {
             continue;
+        }
+        if old.kind == Kind::Emd {
+            emd = Some((old_index, new_index));
+        }
+        if let Some((old_root, new_root)) = emd {
+            let new = &updated.nodes[new_index];
+            let old_range = EmdIdentity::relative_range(old, &previous.nodes[old_root]);
+            let new_range = EmdIdentity::relative_range(new, &updated.nodes[new_root]);
+            // A lazy script initially spans one byte; expansion determines its
+            // end. Check its source first, then let locate check the full range.
+            if old.name != new.name
+                || !old_range
+                    .zip(new_range)
+                    .is_some_and(|(old, new)| old.start == new.start)
+            {
+                continue;
+            }
         }
         if !old.deferred && updated.nodes[new_index].deferred {
             match inspect::expand(&updated, new_index) {
@@ -269,9 +344,117 @@ fn restore_expanded(previous: &Document, mut updated: Document) -> Document {
                 old.children
                     .iter()
                     .copied()
-                    .zip(updated.nodes[new_index].children.iter().copied()),
+                    .zip(updated.nodes[new_index].children.iter().copied())
+                    .map(|(old, new)| (old, new, emd)),
             );
         }
     }
     updated
+}
+
+#[cfg(test)]
+mod emd_identity_tests {
+    use super::*;
+    use crate::preview::ResourceRef;
+    use mhf_resource::emd::RecordKind;
+    use std::sync::Arc;
+
+    fn fixture(base: usize) -> Document {
+        fn node(
+            name: &str,
+            kind: Kind,
+            range: Range<usize>,
+            children: Vec<usize>,
+            deferred: bool,
+        ) -> inspect::Node {
+            inspect::Node {
+                name: name.into(),
+                kind,
+                buffer: 0,
+                range,
+                fields: Vec::new(),
+                metadata: Default::default(),
+                children,
+                action: None,
+                deferred,
+                error: None,
+            }
+        }
+        Document {
+            nodes: vec![
+                node("archive.bin", Kind::Archive, 0..base + 512, vec![1], false),
+                node("mhfemd.bin", Kind::Emd, base..base + 512, vec![2], false),
+                node("条件记录", Kind::EmdGroup, base..base, vec![3, 4], false),
+                node(
+                    "记录 000",
+                    Kind::EmdRecord(RecordKind::Modifiers),
+                    base + 128..base + 156,
+                    vec![],
+                    true,
+                ),
+                node(
+                    "记录 001",
+                    Kind::EmdRecord(RecordKind::Modifiers),
+                    base + 156..base + 184,
+                    vec![],
+                    true,
+                ),
+            ],
+            buffers: vec![vec![0; base + 512].into()],
+            root: 0,
+        }
+    }
+
+    #[test]
+    fn removed_emd_relation_cannot_redirect_keys_or_selection_to_next_row() {
+        let previous = Arc::new(inspect::expand(&fixture(32), 3).unwrap());
+        let removed = node_key(&previous, 3).unwrap();
+        let shifted = node_key(&previous, 4).unwrap();
+        let selected = ResourceRef::new(previous.clone(), 3);
+        let mut updated = fixture(32);
+        updated.nodes[2].children.remove(0);
+        let updated = Arc::new(restore_expanded(&previous, updated));
+        assert!(locate(&updated, &removed).is_none());
+        assert!(locate(&updated, &shifted).is_none());
+        assert!(selected.remap_path(updated.clone()).is_err());
+        assert!(updated.nodes[4].deferred);
+        assert!(updated.nodes[4].fields.is_empty());
+    }
+
+    #[test]
+    fn emd_identity_survives_outer_relocation_and_buffer_reallocation() {
+        let previous = Arc::new(inspect::expand(&fixture(32), 3).unwrap());
+        let key = node_key(&previous, 3).unwrap();
+        let selected = ResourceRef::new(previous.clone(), 3);
+        let mut updated = fixture(96);
+        updated.buffers.push(updated.buffers[0].clone());
+        for node in &mut updated.nodes[1..] {
+            node.buffer = 1;
+        }
+        let updated = Arc::new(restore_expanded(&previous, updated));
+        assert_eq!(locate(&updated, &key), Some(3));
+        assert_eq!(selected.remap_path(updated.clone()).unwrap().node, 3);
+        assert!(!updated.nodes[3].deferred);
+        assert!(
+            updated.nodes[3].fields.iter().all(|field| {
+                field.binding.buffer == 1 && field.binding.range.start >= 96 + 128
+            })
+        );
+    }
+
+    #[test]
+    fn emd_identity_checks_source_range_kind_and_empty_group_name() {
+        let previous = fixture(32);
+        let key = node_key(&previous, 3).unwrap();
+        let group = node_key(&previous, 2).unwrap();
+        let mut updated = previous.clone();
+        updated.nodes[3].range = updated.nodes[4].range.clone();
+        assert!(locate(&updated, &key).is_none());
+        updated = previous.clone();
+        updated.nodes[3].kind = Kind::EmdRecord(RecordKind::SpeciesModifiers);
+        assert!(locate(&updated, &key).is_none());
+        updated = previous;
+        updated.nodes[2].name = "另一组条件".into();
+        assert!(locate(&updated, &group).is_none());
+    }
 }

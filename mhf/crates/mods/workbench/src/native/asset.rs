@@ -219,8 +219,8 @@ fn validate_files(
                 dds.surfaces(dds.pixel_data().len())
                     .map_err(|e| e.to_string())?;
             }
-            Image::Empty => return Err("此原生贴图分配流程不支持空槽位".into()),
-            Image::Unknown(_) => return Err("此资源含尚未确认可由原生加载的贴图格式".into()),
+            Image::Empty => return Err("当前无法预览包含空贴图槽的资源".into()),
+            Image::Unknown(_) => return Err("资源包含当前不支持预览的贴图格式".into()),
         }
     }
     for texture in &images.records {
@@ -313,7 +313,7 @@ fn validate_files(
             .iter()
             .any(|g| matches!(g, FaceGroup::Unknown(_)))
         {
-            return Err("原生预览尚不支持此面组类型".into());
+            return Err("当前不支持预览此面组类型".into());
         }
         let strip_count = faces.strips().count();
         if strip_count == 0

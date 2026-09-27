@@ -58,20 +58,14 @@ fn paths(args: &Args, cwd: &Path, game_dir: Option<OsString>) -> Result<Paths> {
     })
 }
 
-fn extract(image: &pe::Image, root: u32, args: &Args) -> Result<Project> {
+fn extract(image: &pe::Image, root: u32, args: &Args) -> Result<(Project, Vec<String>)> {
     let output = decompile::decompile(image, root, args.species, 0, Some(args.map))?;
-    if !output.warnings.is_empty() {
-        return Err(Error::new(format!(
-            "offline extraction could not recover all reached entries:\n{}\nNo output written.",
-            output.warnings.join("\n")
-        )));
-    }
     let project = Project::single(Some(args.map), args.species, output.source);
     // Never publish source that the same toolchain cannot compile.
     project
         .compile()
         .map_err(|e| Error::new(format!("exported project failed validation: {e}")))?;
-    Ok(project)
+    Ok((project, output.warnings))
 }
 
 fn write_project(out: &Path, project: &Project, report: &str, overwrite: bool) -> Result<PathBuf> {
@@ -126,16 +120,25 @@ fn export(args: &Args, paths: &Paths) -> Result<PathBuf> {
         .collect();
     let image = pe::Image::parse(bytes)?;
     let root = profile::descriptor(&image, args.species, args.map)?;
-    let project = extract(&image, root, args)?;
-    let report = format!(
-        "DLL: {}\nSHA-256: {hash}\nProfile: {}\nSpecies: {}\nMap: {}\nDescriptor VA: 0x{root:08X}\nEntry: {}\nScope: state 0 and reachable states, event entries and explicit subscript references only; base native remains required.\nExtraction warnings: 0\n",
+    let (project, warnings) = extract(&image, root, args)?;
+    let mut report = format!(
+        "DLL: {}\nSHA-256: {hash}\nProfile: {}\nSpecies: {}\nMap: {}\nDescriptor VA: 0x{root:08X}\nEntry: {}\nScope: state 0 and reachable states, event entries and explicit subscript references only; base native remains required.\nMemory: PE image initial contents, including zero-filled section tails; runtime writes are not reproduced.\nExtraction warnings: {}\n",
         paths.dll.display(),
         profile::NAME,
         args.species,
         args.map,
         project.entry,
+        warnings.len(),
     );
-    write_project(&paths.out, &project, &report, args.overwrite)
+    for warning in &warnings {
+        report.push_str(warning);
+        report.push('\n');
+    }
+    let entry = write_project(&paths.out, &project, &report, args.overwrite)?;
+    for warning in warnings {
+        eprintln!("mhf-ai-decompile: warning: {warning}");
+    }
+    Ok(entry)
 }
 
 fn run(args: &Args) -> Result<PathBuf> {
@@ -224,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_pe_exports_and_refuses_unbacked_event_data() {
+    fn synthetic_pe_exports_without_zero_filled_events() {
         let mut data = pe::tests::fixture();
         data[0x200..0x204].copy_from_slice(&0x10001060u32.to_le_bytes());
         data[0x260..0x264].copy_from_slice(&0x10001080u32.to_le_bytes());
@@ -234,16 +237,51 @@ mod tests {
             map: 31,
             ..Args::default()
         };
-        let project = extract(&pe::Image::parse(data.clone()).unwrap(), 0x10001000, &args).unwrap();
+        let (project, warnings) =
+            extract(&pe::Image::parse(data.clone()).unwrap(), 0x10001000, &args).unwrap();
         assert_eq!(project.entry, "maps/31/1/main.mhai");
-        // A BSS event pointer must not be mistaken for a null event.
-        data[0x238..0x23c].copy_from_slice(&0x10001100u32.to_le_bytes());
-        assert!(
-            extract(&pe::Image::parse(data).unwrap(), 0x10001000, &args)
-                .unwrap_err()
-                .to_string()
-                .contains("not backed by file")
-        );
+        assert!(warnings.is_empty());
+        // A nonzero bait-event cell address can still contain a null script pointer.
+        data[0x220..0x224].copy_from_slice(&0x10001100u32.to_le_bytes());
+        let (without_event, warnings) =
+            extract(&pe::Image::parse(data.clone()).unwrap(), 0x10001000, &args).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(without_event.files, project.files);
+
+        // An address beyond the section remains a warning, never an invented event.
+        data[0x220..0x224].copy_from_slice(&0x10001200u32.to_le_bytes());
+        let (partial, warnings) =
+            extract(&pe::Image::parse(data.clone()).unwrap(), 0x10001000, &args).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("事件 6 沿用原生："));
+        assert!(!partial.files[0].source.contains("bait_detected =>"));
+        assert!(partial.files[0].source.contains(&warnings[0]));
+
+        // With no recoverable main script or event, extraction still fails.
+        data[0x260..0x264].fill(0);
+        assert!(extract(&pe::Image::parse(data).unwrap(), 0x10001000, &args).is_err());
+    }
+
+    #[test]
+    fn null_subscript_keeps_native_call_and_warning() {
+        let mut data = pe::tests::fixture();
+        data[0x200..0x204].copy_from_slice(&0x10001060u32.to_le_bytes());
+        data[0x204..0x208].copy_from_slice(&0x10001070u32.to_le_bytes());
+        data[0x260..0x264].copy_from_slice(&0x10001080u32.to_le_bytes());
+        data[0x280..0x284].copy_from_slice(&[0x81, 1, 0xff, 0]);
+        let args = Args {
+            species: 146,
+            map: 31,
+            ..Args::default()
+        };
+        let (project, warnings) =
+            extract(&pe::Image::parse(data).unwrap(), 0x10001000, &args).unwrap();
+        assert_eq!(warnings, ["表 1 项 1 沿用原生：null script"]);
+        let source = &project.files[0].source;
+        assert!(source.contains("base native;"));
+        assert!(source.contains("native(0x81, 0x01);"));
+        assert!(source.contains(&warnings[0]));
+        assert!(!source.contains("fn sub_1_1"));
     }
 
     #[test]
@@ -311,10 +349,11 @@ mod tests {
             (100, 31),
             (141, 31),
             (141, 50),
+            (146, 31),
             (146, 55),
         ] {
             let root = profile::descriptor(&image, species, map).unwrap();
-            let result = extract(
+            let (project, warnings) = extract(
                 &image,
                 root,
                 &Args {
@@ -322,16 +361,16 @@ mod tests {
                     map,
                     ..Args::default()
                 },
-            );
-            if matches!(species, 141 | 146) {
+            )
+            .unwrap_or_else(|e| panic!("species {species}, map {map}: {e}"));
+            if species == 146 {
+                assert!(!project.files[0].source.contains("bait_detected =>"));
+                assert_eq!(warnings, ["表 1 项 1 沿用原生：null script"]);
+            } else if matches!(species, 1 | 11 | 100) {
                 assert!(
-                    result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("not backed by file")
+                    warnings.is_empty(),
+                    "species {species}, map {map}: {warnings:?}"
                 );
-            } else {
-                result.unwrap_or_else(|e| panic!("species {species}, map {map}: {e}"));
             }
         }
     }

@@ -78,7 +78,7 @@ impl MotionPlan {
     fn read(motion: &Motion<'_>) -> Result<Self, String> {
         // 100018B0 tests the first byte, not the entire kind DWORD.
         if !matches!(motion.header.kind as u8, 1 | 2) {
-            return Err("此 MOT 轨道类型尚未确认可由原生编译器处理".into());
+            return Err("当前无法预览此 MOT 轨道类型".into());
         }
         if motion.tracks.is_empty() || motion.tracks.len() > i16::MAX as usize {
             return Err("MOT 轨道数量超出原生有符号 WORD 范围".into());
@@ -116,7 +116,7 @@ impl MotionPlan {
                     KeyEncoding::Disabled => continue,
                     KeyEncoding::Unknown(_) => {
                         return Err(format!(
-                            "轨道 {track_index} 通道 {channel_index} 的关键帧编码尚未支持原生预览"
+                            "轨道 {track_index} 通道 {channel_index} 的关键帧编码不支持预览"
                         ));
                     }
                     _ => {}
@@ -143,7 +143,7 @@ impl MotionPlan {
                     }
                     if !supported_key_values(key) {
                         return Err(format!(
-                            "轨道 {track_index} 通道 {channel_index} 包含非有限值或尚未确认的插值类型"
+                            "轨道 {track_index} 通道 {channel_index} 包含非有限数值或不支持的插值类型，无法预览"
                         ));
                     }
                     previous_frame = Some(frame);
@@ -331,7 +331,7 @@ impl BindingPlan {
 
     unsafe fn bind(&self, compiled: usize, offsets: &[u32]) -> Result<(), String> {
         if compiled == 0 || offsets.len() != self.targets.len() {
-            return Err("MOT 编译结果不能精确对应已验证的骨架节点".into());
+            return Err("MOT 编译结果无法对应目标骨架节点".into());
         }
         // 10008CC0 writes only these two fields for each matching tag. The plan
         // already checked every tag, link, node and track; no native recursion
@@ -379,7 +379,7 @@ fn compiled_offsets(
     plan: &MotionPlan,
 ) -> Result<Vec<u32>, String> {
     if bytes.len() != plan.compiled_bytes || bytes.len() < 32 {
-        return Err("原生 MOT 编译长度与已验证的输入布局不一致".into());
+        return Err("MOT 编译结果长度与预期不一致".into());
     }
     let count = u16::from_le_bytes(bytes[2..4].try_into().unwrap()) as usize;
     let first = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
@@ -598,7 +598,7 @@ impl NativeMotion {
                 if unsafe { get::<usize>(target.address + NODE_MOTION) } != compiled
                     || unsafe { get::<u32>(target.address + NODE_TRACK_OFFSET) } != offset
                 {
-                    return Err("MOT 未按已验证的节点顺序完成绑定".into());
+                    return Err("MOT 动画绑定结果与目标骨架节点不一致".into());
                 }
             }
             Ok(offsets)

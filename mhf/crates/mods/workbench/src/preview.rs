@@ -197,6 +197,11 @@ impl ResourceRef {
                 .payload(replacement.node)
                 .unwrap_or(replacement.node);
         }
+        if crate::edit::node_key(&self.document, self.node)
+            .is_some_and(|key| !key.matches_emd_identity(&document, replacement.node))
+        {
+            return Err("编辑后 EMD 关联条目已变化，请重新选择。".into());
+        }
         Ok(replacement)
     }
 

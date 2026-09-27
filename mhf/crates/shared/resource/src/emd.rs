@@ -12,10 +12,12 @@ pub const HEADER_SIZE: usize = 36;
 pub const SPECIES_STRIDE: usize = 192;
 
 mod fields;
+mod species_tables;
 #[cfg(test)]
 mod table_tests;
 mod tables;
 pub use fields::FieldLayout;
+pub use species_tables::SpeciesTable;
 pub use tables::{ROOT_LABELS, RecordKind, Table};
 
 #[derive(Clone, Debug)]

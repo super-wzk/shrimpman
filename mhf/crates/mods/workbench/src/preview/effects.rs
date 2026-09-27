@@ -594,7 +594,7 @@ impl Effects {
                     match definition {
                         Definition::Attachment(value) if value.attachment_mode != 0 => {
                             format!(
-                                "附着模式 {} 依赖游戏实例，尚不能定位",
+                                "附着模式 {} 需要游戏实例，无法在当前预览中定位",
                                 value.attachment_mode
                             )
                         }
@@ -603,7 +603,7 @@ impl Effects {
                             sample
                                 .attachments
                                 .push((binding_index, entry_index, node, position));
-                            format!("附着点预览 · 资源 {} 尚未接入注册表", value.resource_id)
+                            format!("附着点预览 · 未显示特效资源 {}", value.resource_id)
                         }
                         Definition::Model(value) => {
                             let step = (frame - due).floor() as u32;
@@ -662,7 +662,7 @@ impl Effects {
                                     Some([u, v]) => format!(" · UV ({u:.3}, {v:.3})"),
                                     None if value.uv.repetitions != 0 && value.uv.mode != 0 =>
                                         format!(
-                                            " · UV 模式 {} 依赖装备状态，尚未预览",
+                                            " · UV 模式 {} 需要装备状态，当前未显示 UV 动画",
                                             value.uv.mode
                                         ),
                                     None => String::new(),

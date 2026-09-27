@@ -26,23 +26,6 @@ impl Builder {
             };
             self.read::<u32>(node, name, base + offset)?;
         }
-        self.field(
-            node,
-            "静态任务查找",
-            "首个任务 ID ≤ 上界或上界 0 的分类；槽 = ID % 100；40000 起使用其他资源",
-            base,
-            0,
-        );
-        self.field(
-            node,
-            "任务记录范围",
-            format!(
-                "仅解析已知的 {} 字节前缀；其余数据保留在完整 INF 原文中",
-                QUEST_LAYOUT.quest_prefix_size()
-            ),
-            base,
-            0,
-        );
         if let Some(offset) = file
             .pointer(QUEST_LAYOUT.count_root_field as usize)
             .map_err(|error| error.to_string())?
@@ -109,7 +92,7 @@ impl Builder {
             let quest = (slot.offset != 0).then(|| file.quest(slot.offset));
             let (name, kind, range) = match &quest {
                 Some(Ok(quest)) => (
-                    format!("槽 {index:03} · 任务 {} · 已知前缀", quest.quest_id),
+                    format!("槽 {index:03} · 任务 {}", quest.quest_id),
                     Kind::InfQuest,
                     quest.offset..quest.offset + quest.prefix().len(),
                 ),
@@ -176,16 +159,6 @@ impl Builder {
             self.read_scalar(node, name, base + offset + field, scalar)?;
             end = field + scalar.size();
         }
-        self.field(
-            node,
-            "记录范围",
-            format!(
-                "{} 字节最小已知前缀，不代表完整任务记录",
-                quest.prefix().len()
-            ),
-            base + offset,
-            0,
-        );
         let lookup = match file.lookup(quest.quest_id) {
             Ok(Some(selected)) if selected.offset == quest.offset => "当前 ID 命中本记录".into(),
             Ok(Some(selected)) => format!("当前 ID 指向 {:#X}", selected.offset),

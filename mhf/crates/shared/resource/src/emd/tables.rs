@@ -11,18 +11,18 @@ pub const ROOT_LABELS: [&str; 24] = [
     "物种记录",
     "80 字节参数配置目录",
     "物种显示分类",
-    "三项指针目录",
+    "生成参数权重目录",
     "物种检索记录",
     "table_08",
-    "参数指针目录",
+    "AI 脚本目录",
     "90 字节参数配置目录",
     "部位索引映射",
-    "table_12",
+    "部位生命倍率",
     "物种与配置修正",
     "三键倍率记录",
     "32 字节记录组计数",
     "32 字节记录组目录",
-    "带指针记录",
+    "物种条件脚本链接",
     "物种八项数值记录",
     "物种关联记录",
     "table_20",
@@ -42,6 +42,11 @@ pub enum RecordKind {
     Classification,
     SpeciesLookup,
     Parameters90,
+    WeightedPair,
+    ProbabilityRow,
+    PartHealthRatios,
+    SpeciesParameter,
+    AngerProfile,
     PartMap,
     Modifiers,
     SpeciesModifiers,
@@ -62,7 +67,7 @@ pub struct Table<'a> {
     pub count: usize,
     pub stride: usize,
     pub kind: RecordKind,
-    /// Present only for the zero-terminated root-10 directory.
+    /// Preserved sentinel bytes, excluded from the editable records.
     pub terminator: Option<Range<usize>>,
     source: &'a [u8],
 }
@@ -98,7 +103,7 @@ impl<'a> Emd<'a> {
             .value as usize)
     }
 
-    fn table(
+    pub(super) fn table(
         &self,
         offset: usize,
         count: usize,
@@ -162,6 +167,7 @@ impl<'a> Emd<'a> {
                 return Ok(Some(table));
             }
             11 => (species, 18, PartMap),
+            12 => (species, 36, PartHealthRatios),
             13 => (self.header_count(18)?, 28, Modifiers),
             14 => (self.header_count(20)?, 12, KeyedMultiplier),
             15 => (self.header_count(22)?, 2, Count),
@@ -176,7 +182,7 @@ impl<'a> Emd<'a> {
             21 => (species, 2, Category),
             22 => (self.header_count(34)?, 28, SpeciesModifiers),
             // Relocated by the loader, but no complete extent has been proved.
-            8 | 12 | 20 | 23 => return Ok(None),
+            8 | 20 | 23 => return Ok(None),
             _ => unreachable!("root_offset checked the slot"),
         };
         self.table(offset, count, stride, kind).map(Some)
@@ -202,6 +208,14 @@ impl<'a> Emd<'a> {
                 return self.table(offset, 200, 8, ParameterLink).map(Some);
             }
             4 => (usize::from(self.count), 80, Parameters80),
+            6 => (0, 2, WeightedPair),
+            7 => {
+                let records = self.root_table(7)?.expect("root 7 has a known layout");
+                let (at, _) = records.record(index)?;
+                let offset = Reader::new(self.bytes).read_at::<u32>(at + 4)?.value as usize;
+                // 10AA2090 selects one of five four-byte rows, then a byte column.
+                return self.table(offset, 5, 4, ProbabilityRow).map(Some);
+            }
             10 => (usize::from(self.count), 90, Parameters90),
             19 => {
                 let records = self
@@ -240,6 +254,23 @@ impl<'a> Emd<'a> {
             .ok_or_else(|| Error::new(slot * 4, "EMD directory is absent"))?;
         let (at, _) = directory.record(index)?;
         let offset = Reader::new(self.bytes).read_at::<u32>(at)?.value as usize;
+        if slot == 6 {
+            // 10AB1A60 scans signed weight/value pairs until weight == -1.
+            // The sentinel only owns its first byte, including for an empty list.
+            self.table(offset, 1, 1, WeightedPair)?;
+            let reader = Reader::new(self.bytes);
+            let mut end = offset;
+            while reader.read_at::<i8>(end)?.value != -1 {
+                reader.read_at::<i8>(end + 1)?;
+                end = end
+                    .checked_add(2)
+                    .ok_or_else(|| Error::new(end, "EMD weighted list overflow"))?;
+            }
+            self.table(end, 1, 1, WeightedPair)?;
+            let mut table = self.table(offset, (end - offset) / 2, 2, WeightedPair)?;
+            table.terminator = Some(end..end + 1);
+            return Ok(Some(table));
+        }
         // These directories are relocated unconditionally, unlike nullable
         // species links. A zero offset with nonzero count is malformed, not null.
         self.table(offset, count, stride, kind).map(Some)

@@ -46,6 +46,11 @@ impl RecordKind {
                         format!("anger_profile_{index:02}_offset"),
                         U32,
                     );
+                    add(
+                        120 + 4 * index,
+                        format!("health_threshold_ratio_profile_{index:02}"),
+                        F32,
+                    );
                 }
                 for index in 0..4 {
                     add(168 + 2 * index, format!("health_base_{index}"), I16);
@@ -73,6 +78,40 @@ impl RecordKind {
                 add(0, "species_id".into(), U8);
                 add(4, "probability_rows_offset".into(), U32);
                 add(8, "health_multiplier".into(), F32);
+            }
+            Self::WeightedPair => {
+                add(0, "weight".into(), I8);
+                add(1, "value".into(), I8);
+            }
+            Self::ProbabilityRow => {
+                for column in 0..4 {
+                    add(column, format!("threshold_{column}"), U8);
+                }
+            }
+            Self::PartHealthRatios => {
+                for index in 0..9 {
+                    add(index * 4, format!("part_{index}_health_ratio"), F32);
+                }
+            }
+            Self::SpeciesParameter => {
+                for offset in [16, 20, 24, 28] {
+                    add(offset, format!("value_{offset:02x}"), F32);
+                }
+                add(32, "value_20".into(), I16);
+            }
+            Self::AngerProfile => {
+                add(0, "anger_threshold".into(), I16);
+                add(2, "anger_duration".into(), I16);
+                add(4, "actor_2848_value".into(), F32);
+                add(8, "actor_2200_multiplier".into(), F32);
+                add(12, "actor_2204_multiplier".into(), F32);
+                for index in 0..11 {
+                    add(
+                        16 + index * 4,
+                        format!("anger_gain_health_bucket_{index}"),
+                        F32,
+                    );
+                }
             }
             Self::PartMap => {
                 for index in 0..9 {
@@ -132,7 +171,38 @@ impl RecordKind {
                 add(14, "value_0e".into(), U16);
                 add(16, "species_id".into(), I16);
             }
-            Self::Parameters80 | Self::Parameters90 => {}
+            Self::Parameters80 => {
+                // 10856B80 copies these words into the actor's initial values.
+                for (offset, actor_offset) in [
+                    (0, 2184),
+                    (14, 2176),
+                    (24, 2676),
+                    (34, 2154),
+                    (44, 2168),
+                    (54, 3400),
+                    (60, 3414),
+                ] {
+                    add(offset, format!("initial_actor_{actor_offset}"), I16);
+                }
+                add(40, "actor_8_value".into(), I16); // 10841650
+                add(42, "actor_2154_increment".into(), I16); // 108572C0
+                add(62, "value_3e".into(), I16); // 101BC490
+                add(68, "actor_2228_limit".into(), U8); // 108572C0
+                add(76, "flags".into(), U32); // 10844BC0
+            }
+            Self::Parameters90 => {
+                for index in 0..9 {
+                    // 1086FB50 / 1087D010: base + capped exponential increment.
+                    add(index * 2, format!("part_{index}_threshold"), U16);
+                    add(
+                        18 + index * 2,
+                        format!("part_{index}_threshold_increment"),
+                        U16,
+                    );
+                    // 108705C0 dispatches the response selected by this word.
+                    add(72 + index * 2, format!("part_{index}_response_kind"), U16);
+                }
+            }
         }
         fields.sort_by_key(|field| field.offset);
         fields

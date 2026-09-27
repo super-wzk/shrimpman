@@ -1,4 +1,7 @@
-use mhf_resource::{container::open_layers, emd::Emd};
+use mhf_resource::{
+    container::open_layers,
+    emd::{Emd, SpeciesTable},
+};
 
 /// Run with MHF_EMD_PATH pointing at a local, unmodified game resource.
 #[test]
@@ -26,7 +29,7 @@ fn real_emd_tables_and_nested_directories() {
                     "root {slot}: {:?}, {} x {} {:?}",
                     table.range, table.count, table.stride, table.kind
                 );
-                if matches!(slot, 1 | 3 | 4 | 10 | 16 | 19) {
+                if matches!(slot, 1 | 3 | 4 | 6 | 7 | 10 | 16 | 19) {
                     for index in 0..table.count {
                         if let Err(error) = file.directory_table(slot, index) {
                             failures.push(format!("root {slot}[{index}]: {error}"));
@@ -46,7 +49,27 @@ fn real_emd_tables_and_nested_directories() {
     }
     let mut directories = std::collections::BTreeSet::new();
     let mut active_links = 0;
+    let mut parameter_banks = 0;
+    let mut anger_profiles = 0;
     for species in file.species() {
+        for kind in (0..2)
+            .map(SpeciesTable::ParameterBank)
+            .chain((0..12).map(SpeciesTable::AngerProfile))
+        {
+            match file.species_table(species.id, kind) {
+                Ok(Some(table)) => {
+                    for field in table.kind.fields() {
+                        assert!(field.offset + field.scalar.size() <= table.stride);
+                    }
+                    match kind {
+                        SpeciesTable::ParameterBank(_) => parameter_banks += 1,
+                        SpeciesTable::AngerProfile(_) => anger_profiles += 1,
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => failures.push(format!("species {} {kind:?}: {error}", species.id)),
+            }
+        }
         let Some(table) = file.directory_table(3, usize::from(species.id)).unwrap() else {
             continue;
         };
@@ -63,6 +86,9 @@ fn real_emd_tables_and_nested_directories() {
     eprintln!(
         "species +184: {} distinct directories, {active_links} active links",
         directories.len()
+    );
+    eprintln!(
+        "species windows: {parameter_banks} parameter banks, {anger_profiles} anger profiles"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

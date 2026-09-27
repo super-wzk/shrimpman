@@ -1,4 +1,4 @@
-//! 按虚拟地址读取 PE32 文件中的实际字节，不加载可执行代码，也不补造 BSS 内容。
+//! 按 PE32 装载语义读取文件字节和节内零填充尾区，不执行代码或重建运行时修改。
 use mhf_monster::ai::{Error, Result, decompile::Memory};
 
 struct Section {
@@ -104,7 +104,7 @@ impl Memory for Image {
     fn bytes(&self, address: u32, length: usize) -> Result<Vec<u8>> {
         let unavailable = || {
             Error::new(format!(
-                "VA 0x{address:08X} ({length} bytes) is not backed by file data; runtime memory cannot be recovered offline"
+                "VA 0x{address:08X} ({length} bytes) is outside the PE headers or section extent"
             ))
         };
         let rva = address.checked_sub(self.base).ok_or_else(unavailable)?;
@@ -119,16 +119,18 @@ impl Memory for Image {
             .iter()
             .find(|s| rva >= s.rva && rva < s.rva + s.size)
             .ok_or_else(unavailable)?;
-        // 虚拟节长度可以大于文件数据长度；运行时填充区无法从磁盘还原，必须拒绝读取。
-        let offset = (rva - section.rva) as usize;
-        if end > section.rva + section.size
-            || offset
-                .checked_add(length)
-                .is_none_or(|end| end > section.raw_size)
-        {
+        if end > section.rva + section.size {
             return Err(unavailable());
         }
-        Ok(self.data[section.offset + offset..section.offset + offset + length].to_vec())
+        // 文件原始范围已在解析时校验；超出它的合法节尾由装载器初始化为零。
+        let offset = (rva - section.rva) as usize;
+        let raw_length = section.raw_size.saturating_sub(offset).min(length);
+        let mut bytes = vec![0; length];
+        if raw_length != 0 {
+            let start = section.offset + offset;
+            bytes[..raw_length].copy_from_slice(&self.data[start..start + raw_length]);
+        }
+        Ok(bytes)
     }
 }
 
@@ -160,14 +162,43 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reads_raw_sections_but_never_bss_or_gaps() {
-        let image = Image::parse(fixture()).unwrap();
+    fn reads_raw_data_and_zero_filled_section_tails() {
+        let mut data = fixture();
+        data[0x2fe..].copy_from_slice(&[0xa5, 0x5a]);
+        let image = Image::parse(data).unwrap();
+        assert_eq!(image.bytes(0x10000000, 2).unwrap(), b"MZ");
         assert_eq!(image.bytes(0x10001000, 1).unwrap(), [0x42]);
-        assert!(image.bytes(0x10001100, 1).is_err());
-        assert!(image.bytes(0x100010ff, 2).is_err());
+        assert_eq!(image.bytes(0x100010fe, 4).unwrap(), [0xa5, 0x5a, 0, 0]);
+        assert_eq!(image.bytes(0x10001100, 0x100).unwrap(), [0; 0x100]);
+    }
+
+    #[test]
+    fn reads_pure_bss_without_file_data() {
+        let mut data = fixture();
+        data[0x188..0x190].fill(0); // No raw data or file offset.
+        data.truncate(0x200);
+        let image = Image::parse(data).unwrap();
+        assert_eq!(image.bytes(0x10001000, 0x200).unwrap(), [0; 0x200]);
+    }
+
+    #[test]
+    fn rejects_gaps_section_boundaries_and_address_overflow() {
+        let image = Image::parse(fixture()).unwrap();
+        assert!(image.bytes(0x100001ff, 2).is_err());
         assert!(image.bytes(0x10000400, 4).is_err());
+        assert!(image.bytes(0x100011ff, 2).is_err());
+        assert!(image.bytes(0x10001200, 1).is_err());
         assert!(image.bytes(0, 4).is_err());
         assert!(image.bytes(u32::MAX, 4).is_err());
+    }
+
+    #[test]
+    fn rejects_raw_extents_beyond_the_file() {
+        for (offset, value) in [(0x188, 0x101u32), (0x18c, 0x201)] {
+            let mut data = fixture();
+            data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            assert!(Image::parse(data).is_err());
+        }
     }
 
     #[test]

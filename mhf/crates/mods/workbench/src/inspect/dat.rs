@@ -69,7 +69,7 @@ impl Builder {
                 let range = table.as_ref().map_or(0..0, |table| table.range.clone());
                 let Some(child) = self.child(
                     group,
-                    layout.label,
+                    super::labels::table_label(layout.label),
                     Kind::DatTable(first_index + index),
                     buffer,
                     base + range.start..base + range.end,
@@ -174,7 +174,7 @@ impl Builder {
                     let end = boundaries[boundaries.partition_point(|&offset| offset <= start)];
                     let Some(target) = self.child(
                         child,
-                        format!("引用数据 {start:#X}"),
+                        format!("原始数据区间 {start:#X}"),
                         Kind::Block,
                         buffer,
                         base + start..base + end,
@@ -182,13 +182,6 @@ impl Builder {
                         return;
                     };
                     self.field(target, "来源根字段", format!("{field:#X}"), base + field, 0);
-                    self.field(
-                        target,
-                        "浏览范围",
-                        "从此偏移至下一根引用；不代表完整表长或记录布局",
-                        base + start,
-                        0,
-                    );
                 }
                 Ok(None) => self.field(child, "引用", "空", base + field, 4),
                 Err(error) => self.fail(child, error.to_string()),

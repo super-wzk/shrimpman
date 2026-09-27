@@ -229,7 +229,7 @@ fn replace_one(
         .find(|member| member.payload() == range)
         .ok_or("替换范围不是目录中的完整成员")?;
     if range.is_empty() && member.allocation().is_empty() {
-        return Err("空目录槽没有已确认的分配范围，不能插入资源".into());
+        return Err("当前不支持向空目录槽插入资源".into());
     }
     let plan = layout.replacement(directory, source, member, payload.len())?;
     directory.check_span(member, &plan.range)?;

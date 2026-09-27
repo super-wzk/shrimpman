@@ -173,16 +173,20 @@ impl Builder {
             if axis == 2 {
                 self.read::<f32>(node, format!("{name} · 状态速度倍率"), offset + 8)?;
             } else {
-                self.read::<u32>(node, format!("{name} · 未确认参数"), offset + 8)?;
+                self.read::<u32>(
+                    node,
+                    format!("unknown_{:02X}", 0x44 + axis * 20),
+                    offset + 8,
+                )?;
             }
             self.read::<i16>(node, format!("{name} · 重复次数"), offset + 12)?;
             self.read::<u16>(node, format!("{name} · 周期步数"), offset + 14)?;
             let mode = if axis == 2 {
-                "状态插值模式"
+                format!("{name} · 状态插值模式")
             } else {
-                "未确认模式"
+                format!("unknown_{:02X}", 0x4c + axis * 20)
             };
-            self.read::<u8>(node, format!("{name} · {mode}"), offset + 16)?;
+            self.read::<u8>(node, mode, offset + 16)?;
             self.read::<u8>(node, format!("{name} · 往返标志"), offset + 17)?;
             self.read_as::<[u8; 2]>(
                 node,

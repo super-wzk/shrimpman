@@ -109,7 +109,7 @@ pub fn decompile(
                 ),
             };
             let address = memory.word(indexed(table, usize::from(index))?)?;
-            script_in(memory, address, slot)
+            extract_script(memory, address, slot)
         })();
         match result {
             Ok(body) => {
@@ -315,10 +315,21 @@ fn references(bytes: &[u8], pending: &mut BTreeSet<ScriptRef>) {
 }
 
 fn script(memory: &impl Memory, address: u32) -> Result<Vec<u8>> {
-    script_in(memory, address, None)
+    extract_script(memory, address, None)
 }
 
-fn script_in(memory: &impl Memory, address: u32, slot: Option<NativeSlot>) -> Result<Vec<u8>> {
+/// Extract one script through a proven terminal outside native marker blocks.
+///
+/// Reads use the shared bytecode codec and structure checks, with the same
+/// 64 KiB search budget as project decompilation. The reader owns the accessible
+/// address range. Calls are retained without following their target pointers.
+/// Pass a slot only when the caller knows its native execution level; without
+/// that context, 81/82 calls do not establish a same-level tail-call boundary.
+pub fn extract_script(
+    memory: &impl Memory,
+    address: u32,
+    slot: Option<NativeSlot>,
+) -> Result<Vec<u8>> {
     if address == 0 {
         return Err(Error::new("null script"));
     }
@@ -3439,5 +3450,36 @@ mod tests {
             image.put(0x100, &bytes);
             assert!(script(&image, 0x100).is_err());
         }
+    }
+
+    #[test]
+    fn public_extraction_uses_tail_calls_only_with_a_known_level() {
+        for (table, call, ending) in [(1, vec![0x81, 7], 1), (18, vec![0x82, 3, 9], 2)] {
+            let mut bytes = call.clone();
+            bytes.extend_from_slice(&[0xff, ending]);
+            let mut image = Image::default();
+            image.put(0x100, &bytes);
+            assert_eq!(extract_script(&image, 0x100, None).unwrap(), bytes);
+            assert_eq!(
+                extract_script(&image, 0x100, Some(NativeSlot { table, index: 0 })).unwrap(),
+                call
+            );
+        }
+    }
+
+    #[test]
+    fn public_extraction_keeps_nested_returns_and_enforces_the_search_budget() {
+        let mut image = Image::default();
+        let bytes = [0x35, 0, 0xff, 1, 0x35, 2, 0xff, 2];
+        image.put(0x100, &bytes);
+        assert_eq!(extract_script(&image, 0x100, None).unwrap(), bytes);
+
+        image.put(0x100, &vec![0x92; MAX_SCRIPT_BYTES]);
+        assert!(
+            extract_script(&image, 0x100, None)
+                .unwrap_err()
+                .to_string()
+                .contains("64 KiB")
+        );
     }
 }
