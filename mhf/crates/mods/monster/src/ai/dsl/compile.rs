@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::allocation::{Allocation, event_functions};
+use super::condition::Degrees;
 use super::parser::{Callee, Document, Function, Statement, StatementKind, check_document};
 use super::slot::NativeSlot;
 use crate::ai::control::EVENT_SLOTS;
@@ -35,6 +36,7 @@ fn reserved_command(name: &str) -> Option<Command> {
     let (opcode, args): (&[u8], usize) = match name {
         "stop" => (&[0x68], 0),
         "clear_requests" => (&[0x1e], 0),
+        "mark_unhandled" => (&[0x0d, 0x04], 0),
         "nop" => (&[0x92], 0),
         "wait" => (&[0x48], 1),
         "area_end" => (&[0xff, 0xfb], 0),
@@ -292,6 +294,7 @@ impl Compiler<'_> {
             StatementKind::If { .. }
                 | StatementKind::Random(_)
                 | StatementKind::TargetDistanceGroups(_)
+                | StatementKind::TargetAngle { .. }
                 | StatementKind::ContextQuery { .. }
                 | StatementKind::AreaRouteProfile { .. }
                 | StatementKind::Area { .. }
@@ -404,6 +407,36 @@ impl Compiler<'_> {
                 )?;
                 out.extend_from_slice(&[opcode, 3]);
             }
+            StatementKind::TargetAngle { branches, fallback } => {
+                if !(1..=255).contains(&branches.len()) {
+                    return Err(statement.error("target angle match requires 1..255 cases"));
+                }
+                out.extend_from_slice(&[0x20, 0, branches.len() as u8]);
+                for (degrees, body) in branches {
+                    let threshold = degrees.native();
+                    let actual = Degrees::from_native(threshold).value();
+                    if degrees.value() != actual {
+                        self.warnings.push(Diagnostic::at(statement.line, statement.column, format!(
+                            "target_angle case {} quantized/clamped to {actual} degrees; native maximum is 358.59375",
+                            degrees.value()
+                        )));
+                    }
+                    out.extend_from_slice(&[0x20, 1, threshold]);
+                    self.encode_branch(statement, "target angle", body, continuation, scope, out)?;
+                }
+                if fallback.is_some() || !continuation.is_empty() {
+                    out.extend_from_slice(&[0x20, 2]);
+                    self.encode_branch(
+                        statement,
+                        "target angle else",
+                        fallback.as_deref().unwrap_or_default(),
+                        continuation,
+                        scope,
+                        out,
+                    )?;
+                }
+                out.extend_from_slice(&[0x20, 3]);
+            }
             StatementKind::Area { branches, fallback }
             | StatementKind::SpeciesGroup { branches, fallback }
             | StatementKind::Request { branches, fallback }
@@ -416,6 +449,13 @@ impl Compiler<'_> {
                     StatementKind::Request { .. } => 0x1d,
                     _ => 0x2c,
                 };
+                // Request values below a case bypass even the native fallback,
+                // so moving an entry's continuation into its branches loses that path.
+                if opcode == 0x1d && !continuation.is_empty() {
+                    return Err(statement.error(
+                        "request match with an entry return cannot preserve the following statements; use a helper function",
+                    ));
+                }
                 if matches!(opcode, 0x1d | 0x70 | 0x94)
                     && branches.windows(2).any(|pair| pair[0].0 >= pair[1].0)
                 {
@@ -470,20 +510,29 @@ impl Compiler<'_> {
             }
             StatementKind::SelectTargetPlayerArea => out.extend_from_slice(&[0x06, 10, 0, 0]),
             StatementKind::SelectPlayerSlot(slot) => out.extend_from_slice(&[0x06, 1, 0, *slot]),
-            StatementKind::SelectDefaultPoint => out.extend_from_slice(&[0x06, 2, 0, 0]),
-            StatementKind::SelectWaypoint(index) => out.extend_from_slice(&[0x06, 2, 1, *index]),
-            StatementKind::SelectRelativePoint(direction) => {
-                out.extend_from_slice(&[0x06, 6, *direction as u8, 0]);
-            }
+            StatementKind::SelectTargetPoint(target) => out.extend_from_slice(&target.encode()),
             StatementKind::BindAwarenessTarget => out.push(0x11),
             StatementKind::BindCurrentTarget => out.push(0x13),
+            StatementKind::BindTargetArea(area) => {
+                out.push(0x1a);
+                out.extend_from_slice(&area.to_be_bytes());
+            }
             StatementKind::BindTargetGroundPoint(profile) => {
                 out.extend_from_slice(&[0x49, *profile])
             }
             StatementKind::SetMode(mode) => out.extend_from_slice(&[0x40, *mode as u8]),
             StatementKind::ResolveTarget => out.push(0x4d),
+            StatementKind::ReplenishRecoveryMeter => out.extend_from_slice(&[0x4e, 0]),
+            StatementKind::ReplenishForagingMeter => out.extend_from_slice(&[0x4f, 0]),
+            StatementKind::InitAreaChange {
+                list,
+                count,
+                handler,
+                end_policy,
+            } => out.extend_from_slice(&[0x17, *list, *count, *handler, *end_policy]),
             StatementKind::TryChangeArea => out.push(0x18),
             StatementKind::BindScannedObject => out.push(0x2d),
+            StatementKind::ClearUndetectedPlayerTrackingTimers => out.extend_from_slice(&[0x5b, 0]),
             StatementKind::SelectPerceptionProfile(index) => out.extend_from_slice(&[0x2e, *index]),
             StatementKind::IncrementRandomValue => out.push(0x84),
             StatementKind::If {
@@ -493,8 +542,8 @@ impl Compiler<'_> {
             } => {
                 let encoding = condition.encoding();
                 if let super::condition::Condition::TargetAngleIn { min, max } = condition {
-                    let actual_min = super::condition::Degrees::from_native(min.native()).value();
-                    let actual_max = super::condition::Degrees::from_native(max.native()).value();
+                    let actual_min = Degrees::from_native(min.native()).value();
+                    let actual_max = Degrees::from_native(max.native()).value();
                     if min.value() != actual_min || max.value() != actual_max {
                         self.warnings.push(Diagnostic::at(statement.line, statement.column, format!(
                             "target_angle_in({}, {}) quantized/clamped to [{actual_min}, {actual_max}] degrees; native maximum is 358.59375",
@@ -715,6 +764,14 @@ fn validate_handlers(document: &Document) -> Result<()> {
                         validate_body(body, inside_handler, tail_here, functions)?;
                     }
                 }
+                StatementKind::TargetAngle { branches, fallback } => {
+                    for (_, body) in branches {
+                        validate_body(body, inside_handler, tail_here, functions)?;
+                    }
+                    if let Some(fallback) = fallback {
+                        validate_body(fallback, inside_handler, tail_here, functions)?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -763,6 +820,10 @@ fn validate_handlers(document: &Document) -> Result<()> {
             }
             StatementKind::TargetDistanceGroups(branches) => {
                 branches.iter().any(|body| contains_handle(body))
+            }
+            StatementKind::TargetAngle { branches, fallback } => {
+                branches.iter().any(|(_, body)| contains_handle(body))
+                    || fallback.as_deref().is_some_and(contains_handle)
             }
             _ => false,
         })
@@ -848,6 +909,14 @@ pub(super) fn called_functions(body: &[Statement]) -> Vec<&str> {
                     names.extend(called_functions(body));
                 }
             }
+            StatementKind::TargetAngle { branches, fallback } => {
+                for (_, body) in branches {
+                    names.extend(called_functions(body));
+                }
+                if let Some(fallback) = fallback {
+                    names.extend(called_functions(fallback));
+                }
+            }
             _ => {}
         }
     }
@@ -879,6 +948,7 @@ fn contains_exit(statement: &Statement) -> bool {
             .chain(fallback)
             .any(contains_exit),
         StatementKind::SpeciesGroup { branches, fallback }
+        | StatementKind::Request { branches, fallback }
         | StatementKind::DebugMode { branches, fallback }
         | StatementKind::Species { branches, fallback }
         | StatementKind::Area { branches, fallback } => branches
@@ -889,6 +959,11 @@ fn contains_exit(statement: &Statement) -> bool {
         StatementKind::TargetDistanceGroups(branches) => {
             branches.iter().any(|body| body.iter().any(contains_exit))
         }
+        StatementKind::TargetAngle { branches, fallback } => branches
+            .iter()
+            .flat_map(|(_, body)| body)
+            .chain(fallback.iter().flatten())
+            .any(contains_exit),
         _ => false,
     }
 }

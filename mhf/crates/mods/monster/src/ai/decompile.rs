@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use super::dsl::{
-    condition::{ConditionMarker, Mode},
+    condition::{ConditionMarker, Degrees, Mode},
     slot::NativeSlot,
-    target::{Direction, EntityTarget},
+    target::{EntityTarget, PointTarget},
 };
 use super::{Error, Result, bytecode, control::EVENT_SLOTS};
 
@@ -156,7 +156,7 @@ pub fn decompile(
         states: Some(&states),
         subs: &subs,
         handlers: &handlers,
-        scope: None,
+        allow_implicit_pass: false,
         return_ending: None,
     };
     // Entries already own a script. Named functions always make native calls,
@@ -220,7 +220,7 @@ pub fn decompile(
                 states: None,
                 subs: &subs,
                 handlers: &handlers,
-                scope: Some(*slot),
+                allow_implicit_pass: handler,
                 return_ending: Some(slot.ending()),
             },
         )?;
@@ -377,7 +377,7 @@ fn format_test_body(
             states,
             subs: &BTreeMap::new(),
             handlers: &BTreeSet::new(),
-            scope: None,
+            allow_implicit_pass: false,
             return_ending: None,
         },
     )
@@ -468,7 +468,7 @@ fn collect_handle_targets(bytes: &[u8], targets: &mut BTreeSet<NativeSlot>) {
 ///
 /// The compiler enters a handler only from `handle` or from the tail of another
 /// handler, so a candidate must have no ordinary call sites, must keep its own
-/// clears at the end of a return path, and must not reach a second dispatch.
+/// return paths lossless when rendered as `pass`, and must not reach a second dispatch.
 fn handler_slots(
     states: &BTreeMap<u8, Vec<u8>>,
     events: &BTreeMap<usize, Vec<u8>>,
@@ -564,7 +564,7 @@ fn distance_branches(instructions: &[bytecode::Instruction]) -> Option<(usize, B
     None
 }
 
-struct RecoveredByteMatch {
+struct RecoveredMatch {
     instruction_count: usize,
     selector: String,
     branches: Vec<(u16, Vec<u8>)>,
@@ -572,9 +572,10 @@ struct RecoveredByteMatch {
 }
 
 /// Only recover complete numeric matches that re-encode losslessly.
-fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<RecoveredByteMatch> {
+fn recover_match(instructions: &[bytecode::Instruction]) -> Option<RecoveredMatch> {
     let (opcode, count, selector) = match instructions.first()?.bytes.as_slice() {
         [0x15, 0, count] => (0x15, count, "self.area".to_owned()),
+        [0x20, 0, count] => (0x20, count, "self.target_angle()".to_owned()),
         [0x2c, 0, count] => (0x2c, count, "self.species_group".to_owned()),
         [0x94, 0, count] => (0x94, count, "context.debug_mode".to_owned()),
         [0x1d, 0, count] => (0x1d, count, "self.request".to_owned()),
@@ -584,7 +585,7 @@ fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<Recovere
         _ => return None,
     };
     let case_value = |bytes: &[u8]| match bytes {
-        [op @ (0x1d | 0x2c | 0x70 | 0x79 | 0x94), 1, value] if *op == opcode => {
+        [op @ (0x1d | 0x20 | 0x2c | 0x70 | 0x79 | 0x94), 1, value] if *op == opcode => {
             Some(u16::from(*value))
         }
         [0x57, 1, 0, value] if opcode == 0x57 => Some(u16::from(*value)),
@@ -601,12 +602,11 @@ fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<Recovere
     for (index, instruction) in instructions.iter().enumerate().skip(2) {
         if structure.is_closed() {
             match instruction.bytes.as_slice() {
-                bytes if case_value(bytes).is_some() => {
-                    let value = case_value(bytes)?;
-                    // Area and species-group matches keep source order; every
-                    // other selector re-encodes only when its cases ascend.
+                bytes if let Some(value) = case_value(bytes) => {
+                    // Area, angle, and species-group matches keep source order;
+                    // every other selector requires ascending cases.
                     if fallback.is_some()
-                        || (!matches!(opcode, 0x15 | 0x2c) && value <= branches.last()?.0)
+                        || (!matches!(opcode, 0x15 | 0x20 | 0x2c) && value <= branches.last()?.0)
                     {
                         return None;
                     }
@@ -628,7 +628,7 @@ fn recover_byte_match(instructions: &[bytecode::Instruction]) -> Option<Recovere
                     if matches!(opcode, 0x57 | 0x79) && fallback.is_none() {
                         return None;
                     }
-                    return Some(RecoveredByteMatch {
+                    return Some(RecoveredMatch {
                         instruction_count: index + 1,
                         selector,
                         branches,
@@ -690,8 +690,8 @@ fn recover_request(instructions: &[bytecode::Instruction]) -> Option<RecoveredRe
     None
 }
 
-/// `pass` clears the takeover byte and then leaves the handler, so every clear
-/// inside a handler body must sit at the end of its own return path.
+/// A clear can continue as `mark_unhandled()`. Clears recovered as `pass` must
+/// finish their return path with only closing markers to preserve the bytes.
 fn handler_body_ok(bytes: &[u8], ending: u8) -> bool {
     let Ok(instructions) = bytecode::decode(bytes) else {
         return false;
@@ -702,7 +702,7 @@ fn handler_body_ok(bytes: &[u8], ending: u8) -> bool {
         }
         let start = match instructions.get(index + 1) {
             Some(next) if next.bytes == [0xff, ending] => index + 2,
-            Some(_) => return false,
+            Some(_) => continue,
             None => index + 1,
         };
         let mut structure = bytecode::ScriptStructure::default();
@@ -789,18 +789,12 @@ fn random_branches(instructions: &[bytecode::Instruction]) -> Option<(usize, Bra
 struct BodyContext<'a> {
     states: Option<&'a BTreeMap<u8, Vec<u8>>>,
     subs: &'a BTreeMap<NativeSlot, Vec<u8>>,
-    /// Subscripts entered only through `handle`, so they carry the request
-    /// handler contract and may render `pass;` and their own return.
+    /// Subscripts entered only through `handle`, used to recover the protocol.
     handlers: &'a BTreeSet<NativeSlot>,
-    scope: Option<NativeSlot>,
+    /// A whole handler body may recover its stripped trailing return as `pass`.
+    allow_implicit_pass: bool,
     /// Native return shared by all nested bodies in this function or event.
     return_ending: Option<u8>,
-}
-
-impl BodyContext<'_> {
-    fn is_handler(&self) -> bool {
-        self.scope.is_some_and(|slot| self.handlers.contains(&slot))
-    }
 }
 
 /// Whether `bytes` is the enclosing slot's own return instruction.
@@ -868,6 +862,11 @@ fn can_structure_body(
 fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<()> {
     let instructions = bytecode::decode(bytes)?;
     let structured = can_structure_body(&instructions, context.handlers);
+    // Nested blocks share explicit returns, but not the stripped function tail.
+    let nested_context = BodyContext {
+        allow_implicit_pass: false,
+        ..*context
+    };
     let mut indent = 1;
     let mut skip_until = 0;
     // Validate native markers even when a block cannot be recovered structurally.
@@ -888,16 +887,12 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             )
             .unwrap();
             // `then` is the caller's own code, so it is not a handler body.
-            let then_context = BodyContext {
-                scope: None,
-                ..*context
-            };
-            append_indented_body(out, &recovered.then_body, indent, &then_context)?;
+            append_indented_body(out, &recovered.then_body, indent, &nested_context)?;
             writeln!(out, "{}}}", "    ".repeat(indent)).unwrap();
             skip_until = index + recovered.instruction_count;
             continue;
         }
-        if structured && let Some(recovered) = recover_byte_match(&instructions[index..]) {
+        if structured && let Some(recovered) = recover_match(&instructions[index..]) {
             writeln!(
                 out,
                 "{}match {} {{",
@@ -906,13 +901,18 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             )
             .unwrap();
             for (value, body) in &recovered.branches {
+                let value = if instruction.opcode == 0x20 {
+                    Degrees::from_native(*value as u8).value().to_string()
+                } else {
+                    value.to_string()
+                };
                 writeln!(out, "{}{value} => {{", "    ".repeat(indent + 1)).unwrap();
-                append_indented_body(out, body, indent + 1, context)?;
+                append_indented_body(out, body, indent + 1, &nested_context)?;
                 writeln!(out, "{}}}", "    ".repeat(indent + 1)).unwrap();
             }
             if let Some(fallback) = &recovered.fallback {
                 writeln!(out, "{}else => {{", "    ".repeat(indent + 1)).unwrap();
-                append_indented_body(out, fallback, indent + 1, context)?;
+                append_indented_body(out, fallback, indent + 1, &nested_context)?;
                 writeln!(out, "{}}}", "    ".repeat(indent + 1)).unwrap();
             }
             writeln!(out, "{}}}", "    ".repeat(indent)).unwrap();
@@ -944,7 +944,7 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
                     weight.to_string()
                 };
                 let mut rendered = String::new();
-                format_body(&mut rendered, &body, context)?;
+                format_body(&mut rendered, &body, &nested_context)?;
                 let mut lines = rendered.lines();
                 let single_statement = lines
                     .next()
@@ -993,7 +993,7 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             let followed_by_return = instructions
                 .get(index + 1)
                 .is_some_and(|next| is_own_return(&next.bytes, context));
-            let handler_tail = context.is_handler() && index + 1 == instructions.len();
+            let handler_tail = context.allow_implicit_pass && index + 1 == instructions.len();
             if followed_by_return || handler_tail {
                 writeln!(out, "{}pass;", "    ".repeat(indent)).unwrap();
                 skip_until = if followed_by_return {
@@ -1015,13 +1015,20 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             bytes if is_own_return(bytes, context) => "return;".into(),
             [0x11] => "self.bind_awareness_target();".into(),
             [0x13] => "self.bind_current_target();".into(),
+            [0x1a, hi, lo] => format!("self.bind_target_area({});", u16::from_be_bytes([*hi, *lo])),
             [0x49, profile] => format!("self.bind_target_ground_point({profile});"),
             [0x40, value] if let Some(mode) = Mode::from_native(*value) => {
                 format!("self.set_mode({});", mode.name())
             }
             [0x4d] => "self.resolve_target();".into(),
+            [0x4e, 0] => "self.replenish_recovery_meter(0x50);".into(),
+            [0x4f, 0] => "self.replenish_foraging_meter();".into(),
+            [0x17, list, count, handler, end_policy] => {
+                format!("self.init_area_change({list}, {count}, {handler}, {end_policy});")
+            }
             [0x18] => "self.try_change_area();".into(),
             [0x2d] => "self.bind_scanned_object();".into(),
+            [0x5b, 0] => "self.clear_undetected_player_tracking_timers();".into(),
             [0x2e, index] => format!("self.select_perception_profile({index});"),
             [0x7b] | [0x84] => "self.increment_random_value();".into(),
             bytes if let Some(strategy) = EntityTarget::decode(bytes) => {
@@ -1037,10 +1044,8 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             ),
             [0x06, 10, 0, 0] => "self.select_target_area(AreaTarget::TargetPlayer);".into(),
             [0x06, 1, 0, slot] => format!("self.select_target_entity({slot});"),
-            [0x06, 2, 0, 0] => "self.select_target_point(PointTarget::Default);".into(),
-            [0x06, 2, 1, index] => format!("self.select_target_point({index});"),
-            [0x06, 6, value, 0] if let Some(direction) = Direction::from_native(*value) => {
-                format!("self.select_target_point(Direction::{});", direction.name())
+            bytes if let Some(target) = PointTarget::decode(bytes) => {
+                format!("self.select_target_point({});", target.arguments())
             }
             [0x07, index]
                 if *index != 0
@@ -1055,6 +1060,7 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             [0xff, 0x00] => "end;".into(),
             [0xff, 0xf7] => "end forget_target;".into(),
             [0x1e] => "clear_requests();".into(),
+            [0x0d, 0x04] => "mark_unhandled();".into(),
             [0x92] => "nop();".into(),
             [0x48, ticks] => format!("wait({ticks});"),
             [0xff, 0xfb] => "area_end();".into(),
@@ -1234,6 +1240,7 @@ mod tests {
             let rendered = match opcode {
                 0x15 => "match self.area".to_owned(),
                 0x1d => "match self.request".to_owned(),
+                0x20 => "match self.target_angle()".to_owned(),
                 0x2c => "match self.species_group".to_owned(),
                 0x70 => "match self.species".to_owned(),
                 0x94 => "match context.debug_mode".to_owned(),
@@ -1330,6 +1337,110 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn area_change_initialization_round_trips_each_u8_operand() {
+        for operand in 0..4 {
+            let mut bytes = Vec::new();
+            for value in 0..=u8::MAX {
+                let mut args = [3, 5, 7, 9];
+                args[operand] = value;
+                bytes.push(0x17);
+                bytes.extend_from_slice(&args);
+            }
+            let source = round_trip_body(&bytes);
+            for value in 0..=u8::MAX {
+                let mut args = [3, 5, 7, 9];
+                args[operand] = value;
+                assert!(
+                    source.contains(&format!(
+                        "self.init_area_change({}, {}, {}, {});",
+                        args[0], args[1], args[2], args[3]
+                    )),
+                    "operand {operand}, value {value}"
+                );
+            }
+        }
+
+        let source = round_trip_body(&[
+            0x14, 0, 45, 0x17, 3, 128, 5, 255, 0x14, 1, 0x17, 7, 127, 9, 2, 0x14, 2, 0x18,
+        ]);
+        assert!(source.contains("if self.target_angle_at_least(45) {"));
+        assert!(source.contains("self.init_area_change(3, 128, 5, 255);"));
+        assert!(source.contains("self.init_area_change(7, 127, 9, 2);"));
+        assert!(source.contains("self.try_change_area();"));
+
+        for length in 1..5 {
+            let truncated = &[0x17, 0, 2, 1, 0][..length];
+            assert!(
+                format_test_body(&mut String::new(), truncated, None).is_err(),
+                "{truncated:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn meter_replenishment_round_trips_without_normalizing_native_operands() {
+        for (opcode, statement) in [
+            (0x4e, "self.replenish_recovery_meter(0x50);"),
+            (0x4f, "self.replenish_foraging_meter();"),
+        ] {
+            let bytes: Vec<u8> = (0..=u8::MAX)
+                .flat_map(|operand| [opcode, operand])
+                .chain([0x50, 0])
+                .collect();
+            let source = round_trip_body(&bytes);
+            assert_eq!(source.matches(statement).count(), 1);
+            assert!(!source.contains(&format!("native(0x{opcode:02x}, 0x00);")));
+            for operand in 1..=u8::MAX {
+                assert!(
+                    source.contains(&format!("native(0x{opcode:02x}, 0x{operand:02x});")),
+                    "opcode {opcode:02x}, operand {operand}"
+                );
+            }
+            assert!(source.contains("native(0x50, 0x00);"));
+            assert!(format_test_body(&mut String::new(), &[opcode], None).is_err());
+        }
+
+        let source = round_trip_body(&[
+            0x35, 0, 0x4e, 0, 0x4f, 0, 0x35, 1, 0x4e, 255, 0x4f, 255, 0x35, 2,
+        ]);
+        assert!(source.contains("if self.enraged {"));
+        assert!(source.contains("self.replenish_recovery_meter(0x50);"));
+        assert!(source.contains("self.replenish_foraging_meter();"));
+        assert!(source.contains("native(0x4e, 0xff);"));
+        assert!(source.contains("native(0x4f, 0xff);"));
+    }
+
+    #[test]
+    fn tracking_timer_clear_round_trips_without_normalizing_nonzero_selectors() {
+        let bytes: Vec<u8> = (0..=u8::MAX)
+            .flat_map(|selector| [0x5b, selector])
+            .collect();
+        let source = round_trip_body(&bytes);
+        assert_eq!(
+            source
+                .matches("self.clear_undetected_player_tracking_timers();")
+                .count(),
+            1
+        );
+        assert!(!source.contains("native(0x5b, 0x00);"));
+        for selector in 1..=u8::MAX {
+            assert!(
+                source.contains(&format!("native(0x5b, 0x{selector:02x});")),
+                "selector {selector}"
+            );
+        }
+
+        let source = round_trip_body(&[
+            0x03, 0, 0x5b, 0, 0x03, 1, 0x5b, 255, 0x03, 2, 0x02, 0, 0x92, 0x02, 2,
+        ]);
+        assert!(source.contains("if self.check_pending_area() {"));
+        assert!(source.contains("self.clear_undetected_player_tracking_timers();"));
+        assert!(source.contains("native(0x5b, 0xff);"));
+        assert!(source.contains("if self.check_tracked_players() {"));
+        assert!(format_test_body(&mut String::new(), &[0x5b], None).is_err());
     }
 
     #[test]
@@ -1444,6 +1555,33 @@ mod tests {
     }
 
     #[test]
+    fn area_binding_round_trips_the_full_u16_range() {
+        // Keep each native script below its size limit while covering every ID.
+        for hi in 0..=u8::MAX {
+            let bytes: Vec<_> = (0..=u8::MAX).flat_map(|lo| [0x1a, hi, lo]).collect();
+            let source = round_trip_body(&bytes);
+            assert_eq!(source.matches("self.bind_target_area(").count(), 256);
+            for lo in [0, 1, 0x2c, 0xff] {
+                let area = u16::from_be_bytes([hi, lo]);
+                assert!(source.contains(&format!("self.bind_target_area({area});")));
+            }
+            assert!(!source.contains("native(0x1a"));
+        }
+
+        let source = round_trip_body(&[
+            0x09, 0, 0x1a, 1, 0x2c, 0x09, 1, 0x06, 3, 0, 1, 0x2c, 0x09, 2, 0x19,
+        ]);
+        assert!(source.contains("if self.airborne {"));
+        assert!(source.contains("self.bind_target_area(300);"));
+        assert!(source.contains("self.select_target_area(300);"));
+        assert!(source.contains("native(0x19);"));
+
+        for bytes in [&[0x1a][..], &[0x1a, 1]] {
+            assert!(format_test_body(&mut String::new(), bytes, None).is_err());
+        }
+    }
+
+    #[test]
     fn area_and_monster_targets_round_trip() {
         let mut image = Image::default();
         image.put(0x100, &[0; 60]);
@@ -1512,6 +1650,57 @@ mod tests {
         assert!(result.source.contains("self.select_target_point(0);"));
         assert!(result.source.contains("self.select_target_point(255);"));
         assert!(result.source.contains("native(0x06, 0x02, 0x02, 0x00);"));
+    }
+
+    #[test]
+    fn preparation_points_round_trip_all_indices_and_preserve_other_groups() {
+        let kinds = [(3, "Landing"), (4, "Departure")];
+        let mut bytes = Vec::new();
+        for (group, _) in kinds {
+            for index in 0..=u8::MAX {
+                bytes.extend_from_slice(&[0x06, 2, group, index]);
+            }
+        }
+        for group in [0, 2, 5, 6, 7, 255] {
+            bytes.extend_from_slice(&[0x06, 2, group, 255]);
+        }
+        let source = round_trip_body(&bytes);
+        for (group, name) in kinds {
+            assert_eq!(
+                source.matches(&format!("PointTarget::{name},")).count(),
+                256
+            );
+            for index in 0..=u8::MAX {
+                assert!(source.contains(&format!(
+                    "self.select_target_point(PointTarget::{name}, {index});"
+                )));
+            }
+            assert!(format_test_body(&mut String::new(), &[0x06, 2, group], None).is_err());
+        }
+        for group in [0, 2, 5, 6, 7, 255] {
+            assert!(source.contains(&format!("native(0x06, 0x02, 0x{group:02x}, 0xff);")));
+        }
+
+        // The native airborne sequence still selects, flies and lands separately.
+        let source = round_trip_body(&[
+            0x09, 0, 0x06, 2, 3, 0, 0x05, 2, 7, 0, 0x05, 2, 1, 0, 0x09, 2,
+        ]);
+        assert!(source.contains("if self.airborne {"));
+        assert!(source.contains("self.select_target_point(PointTarget::Landing, 0);"));
+        assert!(source.contains("self.action(2:7, 0);"));
+        assert!(source.contains("self.action(2:1, 0);"));
+
+        // Departure selection, approach, destination and flight remain separate.
+        let source = round_trip_body(&[
+            0x06, 2, 4, 0, 0x05, 1, 3, 0, 0x05, 1, 0, 0, 0x1a, 1, 0x2c, 0x05, 2, 0, 0, 0x05, 2, 8,
+            0,
+        ]);
+        assert!(source.contains("self.select_target_point(PointTarget::Departure, 0);"));
+        assert!(source.contains("self.action(1:3, 0);"));
+        assert!(source.contains("self.action(1:0, 0);"));
+        assert!(source.contains("self.bind_target_area(300);"));
+        assert!(source.contains("self.action(2:0, 0);"));
+        assert!(source.contains("self.action(2:8, 0);"));
     }
 
     #[test]
@@ -1613,6 +1802,67 @@ mod tests {
         image.put(0x300, &[0x78, 0, 200, 20, 0x92, 0x78, 2, 0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(result.source.contains("native(0x78, 0x00, 0xc8, 0x14)"));
+    }
+
+    #[test]
+    fn target_angle_thresholds_round_trip_all_u8_degrees() {
+        for degrees in 0..=u8::MAX {
+            for with_else in [false, true] {
+                let mut bytes = vec![0x14, 0, degrees, 0x92];
+                if with_else {
+                    bytes.extend_from_slice(&[0x14, 1, 0x48, 1]);
+                }
+                bytes.extend_from_slice(&[0x14, 2]);
+                let source = round_trip_body(&bytes);
+                assert!(
+                    source.contains(&format!("if self.target_angle_at_least({degrees}) {{")),
+                    "{source}"
+                );
+                assert_eq!(source.contains("} else {"), with_else, "{source}");
+                assert!(!source.contains("native(0x14"), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn target_angle_thresholds_preserve_nested_and_irregular_layouts() {
+        let source = round_trip_body(&[
+            0x14, 0, 45, 0x14, 0, 255, 0x92, 0x14, 1, 0x78, 0, 32, 96, 0x92, 0x78, 2, 0x14, 2,
+            0x14, 1, 0x5a, 0, 1, 0x92, 0x5a, 2, 0x14, 2,
+        ]);
+        assert!(source.contains("if self.target_angle_at_least(45) {"));
+        assert!(source.contains("if self.target_angle_at_least(255) {"));
+        assert!(source.contains("if self.target_angle_in(45, 135) {"));
+        assert!(source.contains("if self.target_ground_is(1) {"));
+        assert!(!source.contains("native("));
+
+        let source = round_trip_body(&[0x14, 0, 255, 0x92, 0x14, 1, 0x14, 1, 0x14, 2]);
+        assert!(!source.contains("self.target_angle_at_least("));
+        assert!(source.contains("native(0x14, 0x00, 0xff);"));
+        assert_eq!(source.matches("native(0x14, 0x01);").count(), 2);
+
+        // A partial body stays raw; the enclosing compiler rejects its missing end.
+        let mut source = String::new();
+        format_test_body(&mut source, &[0x14, 0, 45, 0x92], None).unwrap();
+        assert!(source.contains("native(0x14, 0x00, 0x2d);"));
+        assert!(
+            super::super::dsl::parse(&format!("mhf_ai 1; species 6; fn main() {{ {source} }}"))
+                .unwrap()
+                .compile()
+                .is_err()
+        );
+
+        for bytes in [
+            &[0x14, 0][..],
+            &[0x14, 1, 0x92, 0x14, 2],
+            &[0x14, 0, 45, 0x5a, 2],
+            &[0x14, 3],
+        ] {
+            assert!(
+                format_test_body(&mut String::new(), bytes, None).is_err(),
+                "{bytes:02x?}"
+            );
+        }
     }
 
     #[test]
@@ -1733,6 +1983,45 @@ mod tests {
     }
 
     #[test]
+    fn pending_area_checks_round_trip_optional_else_and_nested_blocks() {
+        for bytes in [
+            vec![0x03, 0, 0x03, 2],
+            vec![0x03, 0, 0x03, 1, 0x03, 2],
+            vec![0x03, 0, 0x92, 0x03, 1, 0x48, 1, 0x03, 2],
+            vec![0x03, 0, 0x03, 0, 0x92, 0x03, 2, 0x03, 1, 0x92, 0x03, 2],
+            vec![
+                0x17, 1, 3, 5, 7, 0x03, 0, 0x14, 0, 45, 0x92, 0x14, 2, 0x03, 1, 0x02, 0, 0x92,
+                0x02, 2, 0x03, 2,
+            ],
+        ] {
+            let source = round_trip_body(&bytes);
+            assert!(
+                source.contains("if self.check_pending_area() {"),
+                "{source}"
+            );
+            assert!(!source.contains("native(0x03"), "{source}");
+        }
+
+        // Repeated else markers remain raw instead of acquiring structured semantics.
+        let source = round_trip_body(&[0x03, 0, 0x92, 0x03, 1, 0x03, 1, 0x03, 2]);
+        assert!(!source.contains("self.check_pending_area()"));
+        assert!(source.contains("native(0x03, 0x00);"));
+        assert_eq!(source.matches("native(0x03, 0x01);").count(), 2);
+
+        for bytes in [
+            &[0x03][..],
+            &[0x03, 1, 0x92, 0x03, 2],
+            &[0x03, 0, 0x14, 2],
+            &[0x03, 3],
+        ] {
+            assert!(
+                format_test_body(&mut String::new(), bytes, None).is_err(),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn tracked_players_method_round_trips_with_optional_else() {
         let mut image = Image::default();
         image.put(0x100, &[0; 60]);
@@ -1753,7 +2042,7 @@ mod tests {
                 .count(),
             2
         );
-        assert!(result.source.contains("if self.target.available {"));
+        assert!(result.source.contains("if self.target_available() {"));
         assert!(!result.source.contains("native(0x02"));
     }
 
@@ -1777,7 +2066,10 @@ mod tests {
         );
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert_eq!(
-            result.source.matches("if self.target.available {").count(),
+            result
+                .source
+                .matches("if self.target_available() {")
+                .count(),
             2
         );
         assert!(result.source.contains("if self.flashed {"));
@@ -1815,15 +2107,15 @@ mod tests {
         ] {
             let source = round_trip_body(&bytes);
             assert_eq!(
-                source.contains("if context.any_player_carrying {"),
+                source.contains("if context.any_player_carrying() {"),
                 structured,
                 "{source}"
             );
         }
         for condition in [
-            "self.any_player_carrying",
+            "self.any_player_carrying()",
             "context.active",
-            "context.any_player_carrying()",
+            "context.any_player_carrying",
         ] {
             assert!(
                 dsl::parse(&format!(
@@ -1874,7 +2166,97 @@ mod tests {
     }
 
     #[test]
-    fn has_player_in_area_conditions_round_trip() {
+    fn target_angle_matches_round_trip_every_native_threshold_as_degrees() {
+        for threshold in 0..=u8::MAX {
+            for with_else in [false, true] {
+                let mut bytes = vec![0x20, 0, 1, 0x20, 1, threshold, 0x92];
+                if with_else {
+                    bytes.extend_from_slice(&[0x20, 2, 0x48, 1]);
+                }
+                bytes.extend_from_slice(&[0x20, 3]);
+                let source = round_trip_body(&bytes);
+                assert!(source.contains("match self.target_angle() {"), "{source}");
+                assert!(
+                    source.contains(&format!(
+                        "{} => {{",
+                        Degrees::from_native(threshold).value()
+                    )),
+                    "{source}"
+                );
+                assert_eq!(source.contains("else => {"), with_else, "{source}");
+                assert!(!source.contains("native(0x20"), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn target_angle_matches_preserve_duplicate_and_unsorted_thresholds() {
+        let mut bytes = vec![0x20, 0, 255];
+        for index in 0..255 {
+            bytes.extend_from_slice(&[0x20, 1, 2 - index % 3, 0x92]);
+        }
+        bytes.extend_from_slice(&[0x20, 3]);
+        let source = round_trip_body(&bytes);
+        assert_eq!(source.matches(" => {").count(), 255);
+        assert_eq!(source.matches("2.8125 => {").count(), 85);
+        assert!(!source.contains("native(0x20"), "{source}");
+    }
+
+    #[test]
+    fn target_angle_matches_nest_with_other_angle_encodings() {
+        let source = round_trip_body(&[
+            0x20, 0, 2, 0x20, 1, 32, 0x14, 0, 45, 0x20, 0, 1, 0x20, 1, 1, 0x78, 0, 32, 96, 0x92,
+            0x78, 2, 0x20, 2, 0x48, 1, 0x20, 3, 0x14, 2, 0x20, 1, 0, 0x92, 0x20, 2, 0x92, 0x20, 3,
+        ]);
+        assert_eq!(source.matches("match self.target_angle() {").count(), 2);
+        assert!(source.contains("45 => {"), "{source}");
+        assert!(source.contains("1.40625 => {"), "{source}");
+        assert!(source.contains("if self.target_angle_in(45, 135) {"));
+        assert!(source.contains("if self.target_angle_at_least(45) {"));
+        assert!(!source.contains("native("), "{source}");
+    }
+
+    #[test]
+    fn target_angle_matches_keep_noncanonical_layouts_native() {
+        for bytes in [
+            vec![0x20, 0, 0, 0x20, 1, 32, 0x92, 0x20, 3],
+            vec![0x20, 0, 2, 0x20, 1, 32, 0x92, 0x20, 3],
+            vec![0x20, 0, 1, 0x20, 1, 32, 0x20, 2, 0x20, 2, 0x20, 3],
+            vec![0x20, 0, 2, 0x20, 1, 32, 0x20, 2, 0x20, 1, 64, 0x20, 3],
+        ] {
+            let source = round_trip_body(&bytes);
+            assert!(!source.contains("match self.target_angle()"), "{source}");
+            assert!(source.contains("native(0x20"), "{source}");
+        }
+
+        // A fragment stays raw while the complete-script compiler rejects its
+        // missing end marker; the renderer does not invent a closing match.
+        let mut source = String::new();
+        format_test_body(&mut source, &[0x20, 0, 1, 0x20, 1, 32, 0x92], None).unwrap();
+        assert!(!source.contains("match self.target_angle()"), "{source}");
+        assert!(
+            dsl::parse(&format!("mhf_ai 1; species 6; fn main() {{ {source} }}"))
+                .unwrap()
+                .compile()
+                .is_err()
+        );
+
+        for bytes in [
+            &[0x20, 0][..],
+            &[0x20, 0, 1, 0x20, 1],
+            &[0x20, 0, 1, 0x92, 0x20, 3],
+            &[0x20, 0, 1, 0x20, 1, 32, 0x20, 4],
+            &[0x20, 0, 1, 0x20, 1, 32, 0x14, 2],
+        ] {
+            assert!(
+                format_test_body(&mut String::new(), bytes, None).is_err(),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn has_player_in_same_area_conditions_round_trip() {
         for (bytes, structured) in [
             (vec![0x28, 0, 0x92, 0x28, 2], true),
             (vec![0x28, 0, 0x07, 4, 0x28, 1, 0x07, 9, 0x28, 2], true),
@@ -1883,7 +2265,7 @@ mod tests {
         ] {
             let source = round_trip_body(&bytes);
             assert_eq!(
-                source.contains("if self.has_player_in_area {"),
+                source.contains("if self.has_player_in_same_area() {"),
                 structured,
                 "{source}"
             );
@@ -2450,6 +2832,7 @@ mod tests {
         assert!(result.source.contains("handler fn sub_1_3()"));
         assert!(result.source.contains("clear_requests();"));
         assert!(result.source.contains("pass;"));
+        assert!(!result.source.contains("mark_unhandled();"));
         assert!(!result.source.contains("native(0x1b"));
         assert!(!result.source.contains("native(0x0c"));
 
@@ -2467,8 +2850,8 @@ mod tests {
             assert!(source.contains("native(0x1b"), "{source}");
         }
 
-        // A final automatic return has already been removed; retain the raw
-        // clear rather than infer pass from a nested body boundary.
+        // A final automatic return has already been removed; retain the clear
+        // as a statement rather than infer pass from a nested body boundary.
         image.put(0x300, &[0x81, 3, 0xff, 0]);
         image.pointer(0x80c, 0x400);
         image.pointer(0x808, 0x600);
@@ -2476,7 +2859,107 @@ mod tests {
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(!result.source.contains("handle "));
         assert!(!result.source.contains("handler fn"));
-        assert!(result.source.contains("native(0x0d, 0x04)"));
+        assert!(result.source.contains("mark_unhandled();"));
+    }
+
+    #[test]
+    fn target_angle_matches_preserve_shared_subscripts_and_event_returns() {
+        let event = &EVENT_SLOTS[3];
+        let mut image = Image::default();
+        image.put(0x100, &[0; 64]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x104, 0x800);
+        image.pointer(0x200, 0x300);
+        image.pointer(0x80c, 0x400);
+        image.pointer(0x100 + event.root_index as u32 * 4, 0x500);
+        image.pointer(0x500, 0x600);
+        image.put(0x300, &[0x20, 0, 1, 0x20, 1, 1, 0x81, 3, 0x20, 3, 0xff, 0]);
+        image.put(
+            0x400,
+            &[0x20, 0, 1, 0x20, 1, 32, 0xff, 1, 0x20, 3, 0x92, 0xff, 1],
+        );
+        image.put(
+            0x600,
+            &[
+                0x20,
+                0,
+                1,
+                0x20,
+                1,
+                255,
+                0xff,
+                event.ending,
+                0x20,
+                2,
+                0x81,
+                3,
+                0x20,
+                3,
+                0xff,
+                event.ending,
+            ],
+        );
+        // Decompilation recompiles every state, event, and shared subscript.
+        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            result.source.matches("match self.target_angle() {").count(),
+            3
+        );
+        assert_eq!(result.source.matches("sub_1_3();").count(), 2);
+        assert_eq!(result.source.matches("return;").count(), 2);
+        assert!(!result.source.contains("native("), "{}", result.source);
+    }
+
+    #[test]
+    fn target_angle_matches_preserve_nested_request_handlers_and_pass() {
+        let mut image = Image::default();
+        image.put(0x100, &[0; 64]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x104, 0x800);
+        image.pointer(0x200, 0x300);
+        image.pointer(0x80c, 0x400);
+        image.put(
+            0x300,
+            &[
+                0x20, 0, 1, 0x20, 1, 32, 0x1b, 0, 1, 0x0c, 4, 1, 0x81, 3, 0x2b, 0, 4, 1, 0xff, 0,
+                0x2b, 2, 0x1b, 2, 0x20, 3, 0xff, 0,
+            ],
+        );
+        image.put(
+            0x400,
+            &[0x20, 0, 1, 0x20, 1, 1, 0x92, 0x20, 3, 0x0d, 4, 0xff, 1],
+        );
+        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            result.source.matches("match self.target_angle() {").count(),
+            2
+        );
+        assert!(result.source.contains("handle sub_1_3() then {"));
+        assert!(result.source.contains("handler fn sub_1_3()"));
+        assert!(result.source.contains("pass;"));
+        assert!(!result.source.contains("native("), "{}", result.source);
+
+        // Handler recovery requires a clear's return path to finish with only
+        // closing markers. The extra outer return keeps this callee ordinary
+        // and its caller's request protocol raw, preserving both blocks' bytes.
+        image.put(
+            0x400,
+            &[0x20, 0, 1, 0x20, 1, 1, 0x0d, 4, 0xff, 1, 0x20, 3, 0xff, 1],
+        );
+        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            result.source.matches("match self.target_angle() {").count(),
+            1
+        );
+        assert!(result.source.contains("native(0x20, 0x00, 0x01);"));
+        assert!(result.source.contains("native(0x1b, 0x00, 0x01);"));
+        assert!(result.source.contains("sub_1_3();"));
+        assert!(result.source.contains("pass;"));
+        assert!(!result.source.contains("handle "));
+        assert!(!result.source.contains("handler fn"));
     }
 
     #[test]
@@ -2502,7 +2985,7 @@ mod tests {
         assert!(!result.source.contains("handler fn"));
         assert!(!result.source.contains("handle "));
         assert!(result.source.contains("sub_1_3();"));
-        assert!(result.source.contains("native(0x0d, 0x04)"));
+        assert!(result.source.contains("mark_unhandled();"));
     }
 
     #[test]
@@ -2559,7 +3042,57 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_clear_without_immediate_return_stays_native() {
+    fn request_handlers_preserve_unhandled_marking_in_nested_blocks() {
+        let mut image = Image::default();
+        image.put(0x100, &[0; 64]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x104, 0x800);
+        image.pointer(0x200, 0x300);
+        image.pointer(0x80c, 0x400);
+        image.put(
+            0x300,
+            &[
+                0x1b, 0, 1, 0x0c, 4, 1, 0x81, 3, 0x2b, 0, 4, 1, 0x92, 0x2b, 2, 0x1b, 2, 0xff, 0,
+            ],
+        );
+        for body in [
+            vec![0x0d, 4, 0x48, 7, 0xff, 1],
+            vec![0x35, 0, 0x0d, 4, 0x35, 2, 0x92, 0xff, 1],
+            vec![0x20, 0, 1, 0x20, 1, 1, 0x0d, 4, 0x20, 3, 0x92, 0xff, 1],
+            vec![
+                0x20, 0, 1, 0x20, 1, 1, 0x92, 0x20, 2, 0x0d, 4, 0x20, 3, 0x92, 0xff, 1,
+            ],
+            vec![0x80, 0, 1, 0x80, 1, 32, 0x0d, 4, 0x80, 0xff, 0x92, 0xff, 1],
+            vec![
+                0x83, 0, 1, 0x83, 1, 0x0d, 4, 0x83, 2, 0x0d, 4, 0x83, 0xff, 0x92, 0xff, 1,
+            ],
+            vec![0x0d, 4, 0x0c, 4, 1, 0x92, 0xff, 1],
+        ] {
+            image.put(0x400, &body);
+            // decompile recompiles every script and compares its bytes.
+            let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+            assert!(result.warnings.is_empty());
+            assert!(
+                result.source.contains("handle sub_1_3() then {"),
+                "{}",
+                result.source
+            );
+            assert!(
+                result.source.contains("handler fn sub_1_3()"),
+                "{}",
+                result.source
+            );
+            assert!(
+                result.source.contains("mark_unhandled();"),
+                "{}",
+                result.source
+            );
+            assert!(!result.source.contains("pass;"), "{}", result.source);
+        }
+    }
+
+    #[test]
+    fn ordinary_unhandled_marking_preserves_continuation() {
         for body in [
             vec![0x0d, 4, 0x92, 0xff, 1],
             vec![0x35, 0, 0x0d, 4, 0x35, 2, 0xff, 1],
@@ -2573,9 +3106,24 @@ mod tests {
             image.pointer(0x80c, 0x400);
             image.put(0x400, &body);
             let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-            assert!(result.source.contains("native(0x0d, 0x04);"));
+            assert!(result.source.contains("mark_unhandled();"));
             assert!(!result.source.contains("pass;"));
         }
+    }
+
+    #[test]
+    fn unhandled_marking_preserves_other_clear_selectors() {
+        let bytes: Vec<u8> = (0..=u8::MAX)
+            .flat_map(|selector| [0x0d, selector])
+            .collect();
+        let source = round_trip_body(&bytes);
+        assert_eq!(source.matches("mark_unhandled();").count(), 1);
+        assert!(!source.contains("pass;"));
+        assert!(!source.contains("native(0x0d, 0x04);"));
+        for selector in (0..=u8::MAX).filter(|selector| *selector != 4) {
+            assert!(source.contains(&format!("native(0x0d, 0x{selector:02x});")));
+        }
+        assert!(format_test_body(&mut String::new(), &[0x0d], None).is_err());
     }
 
     #[test]
@@ -2644,18 +3192,31 @@ mod tests {
             "dung_reaction => {\n        if self.flashed {\n            return;\n        }\n        nop();\n    }"
         ));
 
-        // An early exit inside an open raw block still keeps `return;` while the
-        // enclosing markers keep their own bytes.
-        image.put(
-            0x300,
-            &[
-                0x14, 0, 0x20, 0x39, 0, 0xff, 0xf5, 0x39, 2, 0x14, 2, 0xff, 0xf5,
-            ],
-        );
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert!(result.source.contains(
-            "native(0x14, 0x00, 0x20);\n        if self.flashed {\n            return;\n        }\n        native(0x14, 0x02);"
-        ));
+        // Both structured and raw outer blocks retain the event's early return
+        // and preserve all enclosing markers.
+        for (opcode, expected) in [
+            (
+                0x03,
+                "if self.check_pending_area() {\n            if self.flashed {\n                return;\n            }\n        }",
+            ),
+            (
+                0x14,
+                "if self.target_angle_at_least(32) {\n            if self.flashed {\n                return;\n            }\n        }",
+            ),
+            (
+                0x42,
+                "native(0x42, 0x00, 0x20);\n        if self.flashed {\n            return;\n        }\n        native(0x42, 0x02);",
+            ),
+        ] {
+            let mut bytes = vec![opcode, 0];
+            if opcode != 0x03 {
+                bytes.push(0x20);
+            }
+            bytes.extend_from_slice(&[0x39, 0, 0xff, 0xf5, 0x39, 2, opcode, 2, 0xff, 0xf5]);
+            image.put(0x300, &bytes);
+            let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+            assert!(result.source.contains(expected), "{}", result.source);
+        }
 
         image.put(0x300, &[0xff, 0xf5]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
@@ -2723,18 +3284,24 @@ mod tests {
     }
 
     #[test]
-    fn returns_inside_raw_subscript_blocks_preserve_closing_markers() {
+    fn returns_inside_subscript_blocks_preserve_closing_markers() {
         for table in [1, 9, 15] {
             let slot = NativeSlot { table, index: 1 };
             let ending = slot.ending();
             for body in [
-                // This condition has no structured DSL equivalent.
+                // The 03 condition must stay distinct from a table-9 FF 03 return.
+                vec![0x03, 0, 0xff, ending, 0x03, 2, 0xff, ending],
+                // Structured angle checks retain the slot-specific early return.
                 vec![0x14, 0, 45, 0xff, ending, 0x14, 2, 0xff, ending],
+                // Recovered angle-match bodies keep the same return scope.
+                vec![0x20, 0, 1, 0x20, 1, 32, 0xff, ending, 0x20, 3, 0xff, ending],
+                // This condition has no structured DSL equivalent.
+                vec![0x42, 0, 45, 0xff, ending, 0x42, 2, 0xff, ending],
                 // Noncanonical weights keep this random block as native bytes.
                 vec![
                     0x80, 0, 1, 0x80, 1, 1, 0xff, ending, 0x80, 0xff, 0xff, ending,
                 ],
-                // A structured condition inside an open raw block.
+                // Nested conditions preserve the early return and subsequent bytes.
                 vec![
                     0x5d, 0, 0x09, 0, 0xff, ending, 0x09, 2, 0x92, 0x5d, 2, 0xff, ending,
                 ],

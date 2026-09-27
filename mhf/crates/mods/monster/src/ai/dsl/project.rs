@@ -367,6 +367,14 @@ fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) 
                     rewrite(body, path, imports)?;
                 }
             }
+            StatementKind::TargetAngle { branches, fallback } => {
+                for (_, body) in branches {
+                    rewrite(body, path, imports)?;
+                }
+                if let Some(fallback) = fallback {
+                    rewrite(fallback, path, imports)?;
+                }
+            }
             StatementKind::If {
                 then_body,
                 else_body,

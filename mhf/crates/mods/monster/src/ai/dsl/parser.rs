@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::compile::is_reserved_command;
 use super::condition::{Condition, Degrees, Mode};
 use super::lexer::{Lexer, Token, TokenKind};
-use super::target::{Direction, EntityTarget};
+use super::target::{Direction, EntityTarget, PointTarget};
 use super::{EVENT_SLOT_COUNT, VERSION};
 use crate::ai::control::EVENT_SLOTS;
 use crate::ai::{Base, Error, Result};
@@ -104,6 +104,11 @@ pub enum StatementKind {
     Random(Vec<(u32, Vec<Statement>)>),
     /// Ordered distance groups followed by the required fallback body.
     TargetDistanceGroups(Vec<Vec<Statement>>),
+    /// Select the first inclusive angle upper bound in source order.
+    TargetAngle {
+        branches: Vec<(Degrees, Vec<Statement>)>,
+        fallback: Option<Vec<Statement>>,
+    },
     /// Evaluate the native context callback once, then select a byte-valued case.
     ContextQuery {
         argument: u8,
@@ -142,18 +147,28 @@ pub enum StatementKind {
     },
     SelectTargetEntity(EntityTarget),
     SelectPlayerSlot(u8),
-    SelectWaypoint(u8),
-    SelectDefaultPoint,
+    SelectTargetPoint(PointTarget),
     SelectTargetArea(u16),
     SelectTargetPlayerArea,
-    SelectRelativePoint(Direction),
     BindAwarenessTarget,
     BindCurrentTarget,
+    BindTargetArea(u16),
     BindTargetGroundPoint(u8),
     SetMode(Mode),
     ResolveTarget,
+    /// Replenish the recovery meter associated with priority 0x50 (4E 00).
+    ReplenishRecoveryMeter,
+    /// Replenish the foraging meter, including native same-species effects (4F 00).
+    ReplenishForagingMeter,
+    InitAreaChange {
+        list: u8,
+        count: u8,
+        handler: u8,
+        end_policy: u8,
+    },
     TryChangeArea,
     BindScannedObject,
+    ClearUndetectedPlayerTrackingTimers,
     SelectPerceptionProfile(u8),
     IncrementRandomValue,
     If {
@@ -603,12 +618,15 @@ impl Parser {
                 };
                 let mut condition = parsed.ok_or_else(|| {
                     property.error(format!(
-                        "unknown condition {}.{property_name}; expected a supported self condition or context.any_player_carrying / context.is_daytime", word(&namespace)
+                        "unknown condition {}.{property_name}; expected a supported self condition or context.any_player_carrying() / context.is_daytime", word(&namespace)
                     ))
                 })?;
                 if condition.is_method() {
                     self.expect(&TokenKind::LeftParen, "'(' after condition method")?;
                     match &mut condition {
+                        Condition::TargetAngleAtLeast(degrees) => {
+                            *degrees = self.take_byte("angle threshold in degrees")?;
+                        }
                         Condition::TargetAngleIn { min, max } => {
                             *min = self.take_degrees()?;
                             self.expect(&TokenKind::Comma, "',' between angle bounds")?;
@@ -629,9 +647,7 @@ impl Parser {
                             *value = self.take_byte("target ground number")?;
                         }
                         Condition::InArea(area) => {
-                            let (value, token) = self.take_number("area ID")?;
-                            *area = u16::try_from(value)
-                                .map_err(|_| token.error("area ID must be 0..65535"))?;
+                            *area = self.take_area_id("area ID")?;
                         }
                         Condition::ModeIs(mode) => {
                             self.expect_keyword("Mode")?;
@@ -752,6 +768,39 @@ impl Parser {
                 } else {
                     self.expect_keyword("self")?;
                     self.expect(&TokenKind::Dot, "'.' after self")?;
+                }
+                if !context_match && self.current_word() == Some("target_angle") {
+                    self.advance();
+                    self.expect(&TokenKind::LeftParen, "'(' after target_angle")?;
+                    self.expect(
+                        &TokenKind::RightParen,
+                        "')' (target_angle takes no arguments)",
+                    )?;
+                    self.expect(&TokenKind::LeftBrace, "'{' after target_angle()")?;
+                    let mut branches = Vec::new();
+                    let fallback = loop {
+                        if self.consume(&TokenKind::RightBrace) {
+                            break None;
+                        }
+                        if self.current_word() == Some("else") {
+                            self.advance();
+                            self.expect(&TokenKind::FatArrow, "'=>' after else")?;
+                            let body = self.parse_branch_body()?;
+                            self.expect(&TokenKind::RightBrace, "'}' after final else branch")?;
+                            break Some(body);
+                        }
+                        if branches.len() == 255 {
+                            return Err(token.error("target angle match requires 1..255 cases"));
+                        }
+                        let degrees = self.take_degrees()?;
+                        self.expect(&TokenKind::FatArrow, "'=>' after angle upper bound")?;
+                        branches.push((degrees, self.parse_branch_body()?));
+                    };
+                    if branches.is_empty() {
+                        return Err(token.error("target angle match requires 1..255 cases"));
+                    }
+                    self.body_depth -= 1;
+                    return Ok(position(StatementKind::TargetAngle { branches, fallback }));
                 }
                 let area_route =
                     !context_match && self.current_word() == Some("area_route_profile");
@@ -933,11 +982,24 @@ impl Parser {
                 self.expect(&TokenKind::LeftParen, &format!("'(' after {name}"))?;
                 let kind = match name {
                     "select_target_point" => {
-                        if self.current_word() == Some("PointTarget") {
+                        let target = if self.current_word() == Some("PointTarget") {
                             self.advance();
                             self.expect(&TokenKind::DoubleColon, "'::' after PointTarget")?;
-                            self.expect_keyword("Default")?;
-                            StatementKind::SelectDefaultPoint
+                            let member = self.take_word("PointTarget member")?;
+                            match word(&member) {
+                                "Default" => PointTarget::Default,
+                                "Landing" => {
+                                    self.expect(&TokenKind::Comma, "',' before landing point index")?;
+                                    PointTarget::Landing(self.take_byte("landing point index")?)
+                                }
+                                "Departure" => {
+                                    self.expect(&TokenKind::Comma, "',' before departure point index")?;
+                                    PointTarget::Departure(self.take_byte("departure point index")?)
+                                }
+                                _ => return Err(member.error(
+                                    "unknown PointTarget member; expected Default, Landing or Departure"
+                                )),
+                            }
                         } else if self.current_word() == Some("Direction") {
                             self.advance();
                             self.expect(&TokenKind::DoubleColon, "'::' after Direction")?;
@@ -945,12 +1007,13 @@ impl Parser {
                             let direction = Direction::parse(word(&member)).ok_or_else(|| {
                                 member.error("unknown Direction member; expected Forward500, Left500, Right500, Backward500, Forward1000, Left1000, Right1000 or Backward1000")
                             })?;
-                            StatementKind::SelectRelativePoint(direction)
+                            PointTarget::Relative(direction)
                         } else {
                             let (index, token) =
-                                self.take_number("waypoint index, Direction member or PointTarget::Default")?;
-                            StatementKind::SelectWaypoint(byte(index, &token, "waypoint index")?)
-                        }
+                                self.take_number("waypoint index, Direction member or PointTarget member")?;
+                            PointTarget::Waypoint(byte(index, &token, "waypoint index")?)
+                        };
+                        StatementKind::SelectTargetPoint(target)
                     }
                     "select_target_entity" => {
                         if self.current_word() == Some("EntityTarget") {
@@ -974,8 +1037,9 @@ impl Parser {
                             self.expect_keyword("TargetPlayer")?;
                             StatementKind::SelectTargetPlayerArea
                         } else {
-                            let (area, token) = self.take_number("area ID or AreaTarget::TargetPlayer")?;
-                            StatementKind::SelectTargetArea(u16::try_from(area).map_err(|_| token.error("area ID must be 0..65535"))?)
+                            StatementKind::SelectTargetArea(
+                                self.take_area_id("area ID or AreaTarget::TargetPlayer")?,
+                            )
                         }
                     }
                     "set_mode" => {
@@ -989,12 +1053,44 @@ impl Parser {
                     }
                     "bind_awareness_target" => StatementKind::BindAwarenessTarget,
                     "bind_current_target" => StatementKind::BindCurrentTarget,
+                    "bind_target_area" => {
+                        StatementKind::BindTargetArea(self.take_area_id("area ID")?)
+                    }
                     "bind_target_ground_point" => StatementKind::BindTargetGroundPoint(
                         self.take_byte("ground-point profile")?,
                     ),
                     "resolve_target" => StatementKind::ResolveTarget,
+                    "replenish_recovery_meter" => {
+                        let token = self.current().clone();
+                        let priority = self.take_byte("recovery meter priority")?;
+                        if priority != 0x50 {
+                            return Err(token.error(format!(
+                                "unsupported recovery meter priority 0x{priority:02x}; expected 0x50"
+                            )));
+                        }
+                        StatementKind::ReplenishRecoveryMeter
+                    }
+                    "replenish_foraging_meter" => StatementKind::ReplenishForagingMeter,
+                    "init_area_change" => {
+                        let list = self.take_byte("area list index")?;
+                        self.expect(&TokenKind::Comma, "',' before area list count")?;
+                        let count = self.take_byte("area list count")?;
+                        self.expect(&TokenKind::Comma, "',' before area handler index")?;
+                        let handler = self.take_byte("area handler index")?;
+                        self.expect(&TokenKind::Comma, "',' before area end policy")?;
+                        let end_policy = self.take_byte("area end policy")?;
+                        StatementKind::InitAreaChange {
+                            list,
+                            count,
+                            handler,
+                            end_policy,
+                        }
+                    }
                     "try_change_area" => StatementKind::TryChangeArea,
                     "bind_scanned_object" => StatementKind::BindScannedObject,
+                    "clear_undetected_player_tracking_timers" => {
+                        StatementKind::ClearUndetectedPlayerTrackingTimers
+                    }
                     "select_perception_profile" => StatementKind::SelectPerceptionProfile(
                         self.take_byte("perception profile index")?,
                     ),
@@ -1016,7 +1112,7 @@ impl Parser {
                         }));
                     }
                     _ => return Err(method.error(format!(
-                        "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, bind_target_ground_point, set_mode, resolve_target, try_change_area, bind_scanned_object, select_perception_profile or increment_random_value"
+                        "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, bind_target_area, bind_target_ground_point, set_mode, resolve_target, replenish_recovery_meter, replenish_foraging_meter, init_area_change, try_change_area, bind_scanned_object, clear_undetected_player_tracking_timers, select_perception_profile or increment_random_value"
                     ))),
                 };
                 self.expect(
@@ -1101,6 +1197,11 @@ impl Parser {
     fn take_byte(&mut self, description: &str) -> Result<u8> {
         let (value, token) = self.take_number(description)?;
         byte(value, &token, description)
+    }
+
+    fn take_area_id(&mut self, description: &str) -> Result<u16> {
+        let (value, token) = self.take_number(description)?;
+        u16::try_from(value).map_err(|_| token.error("area ID must be 0..65535"))
     }
 
     fn expect(&mut self, kind: &TokenKind, description: &str) -> Result<()> {

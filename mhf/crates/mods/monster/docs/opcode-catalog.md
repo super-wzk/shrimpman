@@ -19,9 +19,15 @@ SHA-256 `95c580195f4080d2e9582c8c9df36abeb280476e088b6366583c5f138da8f301`）
 | 走 switch default 的字节（`0x00`、`0x43`、`0x6a..0x6f`、`0x87..0x8f`、`0x95..0x98`、`0x9d..0xfe`） | 119 |
 | 操作已确证的记录（`confirmed`） | 101 |
 | 操作已确证、但选择子集合是推断出来的记录（`operation_confirmed`） | 36 |
-| 每个操作数角色都已确证的记录（`domain: named`） | 100 |
-| 至少一个操作数仍只有地址的记录（`domain: generic`） | 37 |
-| 仍未确证的操作数引用 | 61 |
+| 每个操作数角色都已确证的记录（`domain: named`） | 101 |
+| 至少一个操作数仍只有地址的记录（`domain: generic`） | 36 |
+| 仍未确证的操作数引用 | 60 |
+
+DSL 普通控制覆盖为 31 个已接入、3 个部分接入、22 个未接入（共 56 个），
+详见 [`opcode-matrix.md`](opcode-matrix.md) 第 7 节。
+`4E 00` 使用 `self.replenish_recovery_meter(0x50)`，`4F 00` 使用
+`self.replenish_foraging_meter()`。二者补充会受消耗、动作和状态重置影响的计量，
+不表示固定时长冷却；`recovery/foraging` 是中性用途名，其 generic 记录与统计不变。
 
 ## 信度分级
 
@@ -187,7 +193,7 @@ Rathian `11854D88` 的 `13 94 00 02 94 01 00 70 ...` 中，`11854D8E` 的
 
 数据角色与控制 API 的缺口分别记录：覆盖表统计 JSON 中的 `generic` 条目和
 `domain_unresolved` 引用；[`runtime-fields.md`](runtime-fields.md) 说明已证明的
-字段机制及尚未确定的游戏含义。已知计时运算仍不等于已知请求业务名，物种私有字段
+字段机制及尚未确定的游戏含义。已知计量运算与觅食关联仍不等于所有物种具有相同的游戏业务含义，物种私有字段
 也不能只凭写入方式命名。进一步定名需要追踪产生方与消费方。
 
 语义 DSL 的缺口见矩阵第 7 节。即使原生 handler 已经识别，`24/62` 的执行／扫描

@@ -1,4 +1,4 @@
-//! Native entity-selection strategies and relative target-point directions.
+//! Native entity-selection strategies and target-point forms.
 
 /// Entity-selection strategies. The upper variants are single-byte selector
 /// opcodes; the four `0..=3` values are `0x06` mode-13 subtypes.
@@ -80,6 +80,49 @@ impl EntityTarget {
         Self::ALL
             .into_iter()
             .find(|strategy| strategy.name() == name)
+    }
+}
+
+/// Supported arguments to `self.select_target_point` and their native encodings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointTarget {
+    Default,
+    Waypoint(u8),
+    Landing(u8),
+    Departure(u8),
+    Relative(Direction),
+}
+
+impl PointTarget {
+    pub fn encode(self) -> [u8; 4] {
+        match self {
+            Self::Default => [0x06, 2, 0, 0],
+            Self::Waypoint(index) => [0x06, 2, 1, index],
+            Self::Landing(index) => [0x06, 2, 3, index],
+            Self::Departure(index) => [0x06, 2, 4, index],
+            Self::Relative(direction) => [0x06, 6, direction as u8, 0],
+        }
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        match bytes {
+            [0x06, 2, 0, 0] => Some(Self::Default),
+            [0x06, 2, 1, index] => Some(Self::Waypoint(*index)),
+            [0x06, 2, 3, index] => Some(Self::Landing(*index)),
+            [0x06, 2, 4, index] => Some(Self::Departure(*index)),
+            [0x06, 6, direction, 0] => Direction::from_native(*direction).map(Self::Relative),
+            _ => None,
+        }
+    }
+
+    pub fn arguments(self) -> String {
+        match self {
+            Self::Default => "PointTarget::Default".into(),
+            Self::Waypoint(index) => index.to_string(),
+            Self::Landing(index) => format!("PointTarget::Landing, {index}"),
+            Self::Departure(index) => format!("PointTarget::Departure, {index}"),
+            Self::Relative(direction) => format!("Direction::{}", direction.name()),
+        }
     }
 }
 

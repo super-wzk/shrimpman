@@ -61,7 +61,7 @@ fn target_strategies_encode_in_imported_conditions_and_events() {
         ("PlayerOrMonster", 0x7e),
     ] {
         let helper = format!(
-            "fn choose() {{ if self.target.available {{ self.select_target_entity(EntityTarget::{name}); }} }}"
+            "fn choose() {{ if self.target_available() {{ self.select_target_entity(EntityTarget::{name}); }} }}"
         );
         let p = project(
             "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.choose(); } events { awareness => h.choose; }",
@@ -103,7 +103,7 @@ fn player_slot_selection_encodes_without_implicit_binding_or_refresh() {
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.choose(); } events { awareness => h.choose; }",
         &[(
             "maps/31/6/helper.mhai",
-            "fn choose() { if self.target.available { self.select_target_entity(3); self.resolve_target(); } }",
+            "fn choose() { if self.target_available() { self.select_target_entity(3); self.resolve_target(); } }",
         )],
     );
     let compiled = p.compile().unwrap();
@@ -144,6 +144,291 @@ fn mode_target_and_random_methods_encode_and_validate() {
         "self.increment_random_value(1);",
         "self.increment_random_value;",
         "if self.resolve_target() {}",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn recovery_meter_replenishment_encodes_without_implicit_request_changes() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { self.replenish_recovery_meter(80); h.replenish(); }
+         events { awareness => { self.replenish_recovery_meter(0x50); h.replenish(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn replenish() { self.replenish_recovery_meter(0x50); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert!(compiled.warnings.is_empty());
+    assert_eq!(script(&compiled.program, 0, 0), [0x4e, 0, 0x81, 0, 0xff, 0]);
+    assert_eq!(script(&compiled.program, 1, 0), [0x4e, 0, 0xff, 1]);
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [0x4e, 0, 0x81, 0, 0xff, event.ending]
+    );
+}
+
+#[test]
+fn recovery_meter_replenishment_requires_the_supported_u8_priority() {
+    for body in [
+        "self.replenish_recovery_meter();",
+        "self.replenish_recovery_meter(0x50, 0x50);",
+        "self.replenish_recovery_meter(-1);",
+        "self.replenish_recovery_meter(80.5);",
+        "self.replenish_recovery_meter(true);",
+        "self.replenish_recovery_meter;",
+        "if self.replenish_recovery_meter(0x50) {}",
+        "context.replenish_recovery_meter(0x50);",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+    for priority in ["0", "0x4e", "0x40", "0x60", "255"] {
+        let error = parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ self.replenish_recovery_meter({priority}); }}"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unsupported recovery meter priority"),
+            "{error}"
+        );
+        assert!(error.contains("0x50"), "{error}");
+    }
+    for priority in ["256", "0x100"] {
+        let error = parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ self.replenish_recovery_meter({priority}); }}"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("must be a number from 0 to 255"), "{error}");
+        assert!(
+            !error.contains("unsupported recovery meter priority"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn recovery_cooldown_method_name_is_rejected() {
+    for priority in ["80", "0x50"] {
+        let source = format!(
+            "mhf_ai 1; species 6; fn main() {{ self.extend_recovery_cooldown({priority}); }}"
+        );
+        assert!(parse(&source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn foraging_meter_replenishment_encodes_in_entries_and_nested_imports() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { self.replenish_foraging_meter(); h.replenish(); }
+         states { patrol = 1 => {
+             self.replenish_recovery_meter(80);
+             h.replenish();
+             self.replenish_foraging_meter();
+         } }
+         events { bait_detected => { self.replenish_foraging_meter(); h.replenish(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn replenish() {
+                if self.target_detected {
+                    self.replenish_recovery_meter(0x50);
+                    if self.target_available() { self.replenish_foraging_meter(); }
+                } else { self.replenish_foraging_meter(); }
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert!(compiled.warnings.is_empty());
+    assert_eq!(script(&compiled.program, 0, 0), [0x4f, 0, 0x81, 0, 0xff, 0]);
+    assert_eq!(
+        script(&compiled.program, 0, 1),
+        [0x4e, 0, 0x81, 0, 0x4f, 0, 0xff, 0]
+    );
+    let event = &EVENT_SLOTS[6];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [0x4f, 0, 0x81, 0, 0xff, event.ending]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x4a, 0, 0x4e, 0, 0x54, 0, 0x4f, 0, 0x54, 2, 0x4a, 1, 0x4f, 0, 0x4a, 2, 0xff, 1,
+        ]
+    );
+}
+
+#[test]
+fn foraging_meter_replenishment_requires_an_argumentless_self_statement() {
+    for body in [
+        "self.replenish_foraging_meter(0);",
+        "self.replenish_foraging_meter(0x60);",
+        "self.replenish_foraging_meter(0, 1);",
+        "self.replenish_foraging_meter(-1);",
+        "self.replenish_foraging_meter(1.5);",
+        "self.replenish_foraging_meter(true);",
+        "self.replenish_foraging_meter;",
+        "self.replenish_foraging_meter = 0;",
+        "context.replenish_foraging_meter();",
+        "if self.replenish_foraging_meter() {}",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn tracking_timer_clear_encodes_in_entries_and_imported_conditionals() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { self.clear_undetected_player_tracking_timers(); h.clear(); }
+         states { patrol = 1 => {
+             self.clear_undetected_player_tracking_timers();
+             self.clear_undetected_player_tracking_timers();
+         } }
+         events { awareness => { self.clear_undetected_player_tracking_timers(); h.clear(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn clear() {
+                if self.target_detected { wait(1); }
+                else { self.clear_undetected_player_tracking_timers(); }
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_eq!(script(&compiled.program, 0, 0), [0x5b, 0, 0x81, 0, 0xff, 0]);
+    assert_eq!(script(&compiled.program, 0, 1), [0x5b, 0, 0x5b, 0, 0xff, 0]);
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [0x4a, 0, 0x48, 1, 0x4a, 1, 0x5b, 0, 0x4a, 2, 0xff, 1]
+    );
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [0x5b, 0, 0x81, 0, 0xff, event.ending]
+    );
+}
+
+#[test]
+fn tracking_timer_clear_requires_an_argumentless_statement() {
+    for body in [
+        "self.clear_undetected_player_tracking_timers(0);",
+        "self.clear_undetected_player_tracking_timers(1);",
+        "self.clear_undetected_player_tracking_timers(0, 1);",
+        "self.clear_undetected_player_tracking_timers;",
+        "self.clear_undetected_player_tracking_timers = 0;",
+        "if self.clear_undetected_player_tracking_timers() {}",
+        "context.clear_undetected_player_tracking_timers();",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn area_change_initialization_preserves_parameters_without_implicit_commands() {
+    for count in [0, 1, 2, 127, 128, 255] {
+        let source = format!(
+            "mhf_ai 1; species 6; fn main() {{ self.init_area_change(3, {count}, 5, 255); }}"
+        );
+        let compiled = parse(&source).unwrap().compile().unwrap();
+        assert_eq!(
+            script(&compiled.program, 0, 0),
+            [0x17, 3, count, 5, 255, 0xff, 0],
+            "count {count}"
+        );
+        assert!(compiled.warnings.is_empty(), "count {count}");
+    }
+
+    let compiled = parse(
+        "mhf_ai 1; species 6; fn main() {
+            self.init_area_change(0xff, 0x80, 0, 2);
+            self.init_area_change(0, 0x7f, 0xff, 0);
+        }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [0x17, 255, 128, 0, 2, 0x17, 0, 127, 255, 0, 0xff, 0]
+    );
+}
+
+#[test]
+fn area_change_initialization_works_in_entries_and_imported_conditionals() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { self.init_area_change(1, 3, 5, 7); h.configure(); }
+         states { patrol = 1 => { self.init_area_change(255, 128, 0, 255); h.configure(); } }
+         events { awareness => { self.init_area_change(0, 127, 255, 2); h.configure(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn configure() {
+                if self.target_angle_at_least(45) { self.init_area_change(2, 3, 4, 5); }
+                else { self.init_area_change(6, 7, 8, 9); }
+                self.try_change_area();
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x14, 0, 45, 0x17, 2, 3, 4, 5, 0x14, 1, 0x17, 6, 7, 8, 9, 0x14, 2, 0x18, 0xff, 1,
+        ]
+    );
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [0x17, 1, 3, 5, 7, 0x81, 0, 0xff, 0]
+    );
+    assert_eq!(
+        script(&compiled.program, 0, 1),
+        [0x17, 255, 128, 0, 255, 0x81, 0, 0xff, 0]
+    );
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [0x17, 0, 127, 255, 2, 0x81, 0, 0xff, event.ending]
+    );
+}
+
+#[test]
+fn area_change_initialization_requires_four_u8_arguments_and_statement_context() {
+    for args in ["", "0", "0, 2", "0, 2, 1", "0, 2, 1, 0, 0", "0 2, 1, 0"] {
+        let source = format!("mhf_ai 1; species 6; fn main() {{ self.init_area_change({args}); }}");
+        assert!(parse(&source).is_err(), "{source}");
+    }
+    for index in 0..4 {
+        for invalid in ["-1", "256", "1.5", "true"] {
+            let mut args = ["0", "2", "1", "0"];
+            args[index] = invalid;
+            let source = format!(
+                "mhf_ai 1; species 6; fn main() {{ self.init_area_change({}); }}",
+                args.join(", ")
+            );
+            assert!(parse(&source).is_err(), "{source}");
+        }
+    }
+    for body in [
+        "if self.init_area_change(0, 2, 1, 0) {}",
+        "self.init_area_change;",
+        "self.init_area_change = 1;",
+        "context.init_area_change(0, 2, 1, 0);",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
@@ -283,6 +568,79 @@ fn target_binding_methods_encode_without_arguments() {
         "self.bind_awareness_target(1);",
         "self.bind_current_target;",
         "self.bind_current_target(1);",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn target_area_binding_encodes_in_entries_and_nested_imports() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { self.bind_target_area(0); h.bind(); }
+         states { patrol = 1 => { self.bind_target_area(300); h.bind(); } }
+         events { awareness => { self.bind_target_area(65535); h.bind(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn bind() {
+                self.select_target_area(300);
+                self.bind_target_area(255);
+                self.select_target_point(PointTarget::Departure, 255);
+                if self.target_detected {
+                    self.bind_target_area(0x100);
+                } else {
+                    self.select_target_area(AreaTarget::TargetPlayer);
+                    self.bind_target_area(0xffff);
+                }
+                self.resolve_target();
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert!(compiled.warnings.is_empty());
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [0x1a, 0, 0, 0x81, 0, 0xff, 0]
+    );
+    assert_eq!(
+        script(&compiled.program, 0, 1),
+        [0x1a, 1, 44, 0x81, 0, 0xff, 0]
+    );
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [0x1a, 255, 255, 0x81, 0, 0xff, event.ending]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x06, 3, 0, 1, 44, 0x1a, 0, 255, 0x06, 2, 4, 255, 0x4a, 0, 0x1a, 1, 0, 0x4a, 1, 0x06,
+            10, 0, 0, 0x1a, 255, 255, 0x4a, 2, 0x4d, 0xff, 1,
+        ]
+    );
+}
+
+#[test]
+fn target_area_binding_requires_one_u16_argument_and_statement_context() {
+    for body in [
+        "self.bind_target_area();",
+        "self.bind_target_area(0, 1);",
+        "self.bind_target_area(-1);",
+        "self.bind_target_area(65536);",
+        "self.bind_target_area(0x10000);",
+        "self.bind_target_area(1.5);",
+        "self.bind_target_area(true);",
+        "self.bind_target_area(\"300\");",
+        "self.bind_target_area(AreaTarget::TargetPlayer);",
+        "self.bind_target_area;",
+        "self.bind_target_area = 300;",
+        "context.bind_target_area(300);",
+        "if self.bind_target_area(300) {}",
+        "self.set_destination_area(300);",
+        "self.set_next_area(300);",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
@@ -611,12 +969,43 @@ fn mode_is_encodes_enum_arguments_and_rejects_invalid_calls() {
 }
 
 #[test]
-fn has_player_in_area_is_a_property_condition_with_optional_else() {
+fn query_conditions_require_empty_parentheses_and_keep_native_encoding() {
+    for (name, opcode) in [
+        ("self.has_player_in_same_area", 0x28),
+        ("context.any_player_carrying", 0x2f),
+        ("self.target_available", 0x54),
+    ] {
+        let compiled = parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ if {name}() {{ nop(); }} else {{ wait(1); }} }}"
+        ))
+        .unwrap()
+        .compile()
+        .unwrap();
+        assert_eq!(
+            script(&compiled.program, 0, 0),
+            [opcode, 0, 0x92, opcode, 1, 0x48, 1, opcode, 2, 0xff, 0],
+            "{name}"
+        );
+        for body in [
+            format!("if {name} {{}}"),
+            format!("if {name}(1) {{}}"),
+            format!("{name}();"),
+        ] {
+            assert!(
+                parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+                "{body}"
+            );
+        }
+    }
+}
+
+#[test]
+fn has_player_in_same_area_is_a_method_condition_with_optional_else() {
     let p = project(
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.check(); } events { awareness => h.check; }",
         &[(
             "maps/31/6/helper.mhai",
-            "fn check() { if self.has_player_in_area { if self.airborne { nop(); } } else { end; } if self.has_player_in_area {} }",
+            "fn check() { if self.has_player_in_same_area() { if self.airborne { nop(); } } else { end; } if self.has_player_in_same_area() {} }",
         )],
     );
     let compiled = p.compile().unwrap();
@@ -629,9 +1018,10 @@ fn has_player_in_area_is_a_property_condition_with_optional_else() {
         &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
     );
     for body in [
-        "if context.has_player_in_area {}",
         "if self.has_player_in_area() {}",
-        "self.has_player_in_area;",
+        "if context.has_player_in_same_area() {}",
+        "if context.has_player_in_same_area {}",
+        "self.has_player_in_same_area;",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
@@ -777,12 +1167,81 @@ fn target_ground_condition_requires_one_u8_argument_and_condition_context() {
 }
 
 #[test]
+fn pending_area_check_keeps_empty_and_repeated_evaluations() {
+    let compiled = parse(
+        "mhf_ai 1; species 6; fn main() {
+            if self.check_pending_area() {}
+            if self.check_pending_area() {} else {}
+            if self.check_pending_area() { nop(); } else { wait(1); }
+        }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x03, 0, 0x03, 2, 0x03, 0, 0x03, 1, 0x03, 2, 0x03, 0, 0x92, 0x03, 1, 0x48, 1, 0x03, 2,
+            0xff, 0,
+        ]
+    );
+}
+
+#[test]
+fn pending_area_check_nests_in_shared_imported_helpers() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { h.check(); }
+         states { patrol = 1 => h.check; }
+         events { awareness => h.check; }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn check() {
+                if self.check_pending_area() {
+                    if self.target_angle_at_least(45) { nop(); }
+                } else {
+                    if self.check_pending_area() { wait(1); }
+                }
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_shared_helper(
+        &compiled.program,
+        &[
+            0x03, 0, 0x14, 0, 45, 0x92, 0x14, 2, 0x03, 1, 0x03, 0, 0x48, 1, 0x03, 2, 0x03, 2,
+        ],
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
+    );
+    assert_eq!(script(&compiled.program, 0, 1), [0x81, 0, 0xff, 0]);
+}
+
+#[test]
+fn pending_area_check_requires_an_argumentless_condition_method() {
+    for body in [
+        "if self.check_pending_area {}",
+        "if self.check_pending_area(1) {}",
+        "if self.check_pending_area(0, 1) {}",
+        "if context.check_pending_area() {}",
+        "if self.target.check_pending_area() {}",
+        "self.check_pending_area();",
+        "self.check_pending_area;",
+        "self.check_pending_area = 1;",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn tracked_players_check_is_a_condition_method_with_native_side_effects() {
     let p = project(
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.check(); } events { awareness => h.check; }",
         &[(
             "maps/31/6/helper.mhai",
-            "fn check() { if self.check_tracked_players() { if self.target.available { nop(); } } else { end; } if self.check_tracked_players() {} }",
+            "fn check() { if self.check_tracked_players() { if self.target_available() { nop(); } } else { end; } if self.check_tracked_players() {} }",
         )],
     );
     let compiled = p.compile().unwrap();
@@ -809,12 +1268,12 @@ fn tracked_players_check_is_a_condition_method_with_native_side_effects() {
 }
 
 #[test]
-fn target_available_resolves_in_imported_helpers_and_events() {
+fn target_available_compiles_in_imported_helpers_and_events() {
     let p = project(
         "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h; fn main() { h.check(); } events { awareness => h.check; }",
         &[(
             "maps/31/6/helper.mhai",
-            "fn check() { if self.target.available { if self.enraged { nop(); } } else { end; } }",
+            "fn check() { if self.target_available() { if self.enraged { nop(); } } else { end; } }",
         )],
     );
     let compiled = p.compile().unwrap();
@@ -827,6 +1286,7 @@ fn target_available_resolves_in_imported_helpers_and_events() {
     for body in [
         "if self.target {}",
         "if self.target.unknown {}",
+        "if self.target.available {}",
         "if self.target.available() {}",
         "self.target.available = 1;",
         "if self.target.available.extra {}",
@@ -906,6 +1366,100 @@ fn waypoint_selection_preserves_explicit_refresh_and_checks_index_width() {
         "self.select_target_point(1.5);",
         "self.select_target_point(0, 1);",
         "if self.select_target_point(0) {}",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn landing_and_departure_points_encode_in_entries_and_nested_imports() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() {
+             self.select_target_point(PointTarget::Landing, 0);
+             self.select_target_point(PointTarget::Departure, 0);
+             h.choose();
+         }
+         states { patrol = 1 => {
+             self.select_target_point(PointTarget::Landing, 255);
+             self.select_target_point(PointTarget::Departure, 255);
+             h.choose();
+         } }
+         events { awareness => {
+             self.select_target_point(PointTarget::Landing, 0x7f);
+             self.select_target_point(PointTarget::Departure, 0x7f);
+             h.choose();
+         } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn choose() {
+                self.select_target_point(PointTarget::Landing, 0xff);
+                self.select_target_point(0);
+                self.select_target_point(PointTarget::Default);
+                self.select_target_point(Direction::Forward500);
+                if self.target_detected {
+                    self.select_target_point(PointTarget::Departure, 0xff);
+                }
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert!(compiled.warnings.is_empty());
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [0x06, 2, 3, 0, 0x06, 2, 4, 0, 0x81, 0, 0xff, 0]
+    );
+    assert_eq!(
+        script(&compiled.program, 0, 1),
+        [0x06, 2, 3, 255, 0x06, 2, 4, 255, 0x81, 0, 0xff, 0]
+    );
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [
+            0x06,
+            2,
+            3,
+            127,
+            0x06,
+            2,
+            4,
+            127,
+            0x81,
+            0,
+            0xff,
+            event.ending
+        ]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x06, 2, 3, 255, 0x06, 2, 1, 0, 0x06, 2, 0, 0, 0x06, 6, 0, 0, 0x4a, 0, 0x06, 2, 4, 255,
+            0x4a, 2, 0xff, 1,
+        ]
+    );
+}
+
+#[test]
+fn landing_and_departure_points_require_one_u8_index_after_the_point_kind() {
+    for kind in ["Landing", "Departure"] {
+        for arguments in ["", ",", ", 256", ", -1", ", 1.5", ", true", ", 0, 1"] {
+            let source = format!(
+                "mhf_ai 1; species 6; fn main() {{ self.select_target_point(PointTarget::{kind}{arguments}); }}"
+            );
+            assert!(parse(&source).is_err(), "{source}");
+        }
+        let source = format!(
+            "mhf_ai 1; species 6; fn main() {{ if self.select_target_point(PointTarget::{kind}, 0) {{}} }}"
+        );
+        assert!(parse(&source).is_err(), "{source}");
+    }
+    for body in [
+        "self.select_target_point(PointTarget::Unknown, 0);",
+        "self.select_target_point(PointTarget::Default, 0);",
     ] {
         assert!(
             parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
@@ -1282,6 +1836,22 @@ fn entry_returns_restructure_but_function_returns_use_their_slot() {
             "if self.check_tracked_players() {} else { wait(1); }",
         ),
         (
+            "if self.check_pending_area() { return; } wait(1);",
+            "if self.check_pending_area() {} else { wait(1); }",
+        ),
+        (
+            "if self.check_pending_area() { return; } else { return; } wait(9);",
+            "if self.check_pending_area() {} else {}",
+        ),
+        (
+            "match self.target_angle() { 90 => return; } wait(1);",
+            "match self.target_angle() { 90 => {} else => wait(1); }",
+        ),
+        (
+            "match self.target_angle() { 90 => wait(1); else => return; } wait(2);",
+            "match self.target_angle() { 90 => { wait(1); wait(2); } else => {} }",
+        ),
+        (
             "random { 1 => { return; } 1 => wait(1); } wait(2);",
             "random { 1 => {} 1 => { wait(1); wait(2); } }",
         ),
@@ -1499,6 +2069,278 @@ fn anonymous_entries_share_named_entry_compilation_and_imports() {
         script(&compiled.program, EVENT_SLOTS[3].root_index, 0),
         [0xff, 0xf7]
     );
+}
+
+#[test]
+fn target_angle_threshold_preserves_integer_degrees_without_implicit_target_operations() {
+    for (literal, value) in [
+        ("0", 0),
+        ("45", 45),
+        ("180", 180),
+        ("181", 181),
+        ("255", 255),
+        ("0xff", 255),
+    ] {
+        let source = format!(
+            "mhf_ai 1; species 6; fn main() {{ if self.target_angle_at_least({literal}) {{ nop(); }} }}"
+        );
+        let compiled = parse(&source).unwrap().compile().unwrap();
+        assert_eq!(
+            script(&compiled.program, 0, 0),
+            [0x14, 0, value, 0x92, 0x14, 2, 0xff, 0],
+            "degrees {literal}"
+        );
+        assert!(compiled.warnings.is_empty(), "degrees {literal}");
+    }
+}
+
+#[test]
+fn target_angle_threshold_nests_with_angle_bounds_in_shared_imported_helpers() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { h.check(); }
+         states { patrol = 1 => h.check; }
+         events { awareness => h.check; }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn check() {
+                if self.target_angle_at_least(45) {
+                    if self.target_angle_at_least(180) { nop(); }
+                    else { if self.target_angle_in(45, 135) { wait(1); } }
+                }
+            }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert_shared_helper(
+        &compiled.program,
+        &[
+            0x14, 0, 45, 0x14, 0, 180, 0x92, 0x14, 1, 0x78, 0, 32, 96, 0x48, 1, 0x78, 2, 0x14, 2,
+            0x14, 2,
+        ],
+        &[(0, 0), (EVENT_SLOTS[3].root_index, EVENT_SLOTS[3].ending)],
+    );
+    assert_eq!(script(&compiled.program, 0, 1), [0x81, 0, 0xff, 0]);
+}
+
+#[test]
+fn target_angle_threshold_keeps_entry_event_and_helper_return_semantics() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { if self.target_angle_at_least(0) { return; } h.check(); }
+         states { patrol = 1 => { if self.target_angle_at_least(181) { return; } h.check(); } }
+         events { awareness => { if self.target_angle_at_least(0xff) { return; } h.check(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn check() { if self.target_angle_at_least(45) { return; } nop(); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    for (index, value) in [(0, 0), (1, 181)] {
+        assert_eq!(
+            script(&compiled.program, 0, index),
+            [0x14, 0, value, 0x14, 1, 0x81, 0, 0x14, 2, 0xff, 0]
+        );
+    }
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [
+            0x14,
+            0,
+            255,
+            0xff,
+            event.ending,
+            0x14,
+            2,
+            0x81,
+            0,
+            0xff,
+            event.ending,
+        ]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [0x14, 0, 45, 0xff, 1, 0x14, 2, 0x92, 0xff, 1]
+    );
+}
+
+#[test]
+fn target_angle_threshold_requires_one_u8_argument_and_condition_context() {
+    for body in [
+        "if self.target_angle_at_least() {}",
+        "if self.target_angle_at_least(0, 1) {}",
+        "if self.target_angle_at_least(-1) {}",
+        "if self.target_angle_at_least(256) {}",
+        "if self.target_angle_at_least(1.5) {}",
+        "if context.target_angle_at_least(45) {}",
+        "if self.target_angle_at_least {}",
+        "self.target_angle_at_least(45);",
+        "self.target_angle_at_least;",
+        "self.target_angle_at_least = 45;",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn target_angle_match_quantizes_degree_upper_bounds() {
+    for (literal, threshold, warned) in [
+        ("0", 0, false),
+        ("0.7", 0, true),
+        ("0.703125", 1, true),
+        ("1.40625", 1, false),
+        ("90", 64, false),
+        ("270", 192, false),
+        ("358.59375", 255, false),
+        ("360", 255, true),
+    ] {
+        let compiled = parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ match self.target_angle() {{ {literal} => nop(); }} }}"
+        ))
+        .unwrap()
+        .compile()
+        .unwrap();
+        assert_eq!(
+            script(&compiled.program, 0, 0),
+            [0x20, 0, 1, 0x20, 1, threshold, 0x92, 0x20, 3, 0xff, 0],
+            "{literal}"
+        );
+        assert_eq!(!compiled.warnings.is_empty(), warned, "{literal}");
+        if warned {
+            let actual = super::condition::Degrees::from_native(threshold).value();
+            assert!(
+                compiled.warnings[0]
+                    .message
+                    .contains(&format!("to {actual} degrees"))
+            );
+        }
+    }
+}
+
+#[test]
+fn target_angle_match_preserves_source_order_and_duplicate_thresholds() {
+    let compiled = parse(
+        "mhf_ai 1; species 6; fn main() {
+            match self.target_angle() {
+                180 => nop();
+                90 => wait(1);
+                90.1 => wait(2);
+                180 => {}
+                else => {}
+            }
+        }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x20, 0, 4, 0x20, 1, 128, 0x92, 0x20, 1, 64, 0x48, 1, 0x20, 1, 64, 0x48, 2, 0x20, 1,
+            128, 0x20, 2, 0x20, 3, 0xff, 0,
+        ]
+    );
+}
+
+#[test]
+fn target_angle_match_resolves_imports_in_each_entry_and_helper_branch() {
+    let body = "match self.target_angle() { 90 => h.work(); else => h.hit(1); }";
+    let p = project(
+        &format!(
+            "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+             fn main() {{ {body} }}
+             states {{ patrol = 1 => {{ {body} }} }}
+             events {{ awareness => {{ {body} }} }}"
+        ),
+        &[(
+            "maps/31/6/helper.mhai",
+            "actions { hit = [3:6]; }
+             fn work() {
+                 match self.target_angle() { 180 => return; else => hit(2); }
+                 wait(1);
+             }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    let bytes = [
+        0x20, 0, 1, 0x20, 1, 64, 0x81, 0, 0x20, 2, 5, 3, 6, 1, 0x20, 3,
+    ];
+    for index in [0, 1] {
+        assert_eq!(
+            script(&compiled.program, 0, index),
+            [bytes.as_slice(), &[0xff, 0]].concat()
+        );
+    }
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [bytes.as_slice(), &[0xff, event.ending]].concat()
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [
+            0x20, 0, 1, 0x20, 1, 128, 0xff, 1, 0x20, 2, 5, 3, 6, 2, 0x20, 3, 0x48, 1, 0xff, 1
+        ]
+    );
+}
+
+#[test]
+fn target_angle_match_validates_structure_without_requiring_sorted_cases() {
+    for body in [
+        "match self.target_angle() {}",
+        "match self.target_angle() { else => {} }",
+        "match self.target_angle() { -1 => {} }",
+        "match self.target_angle() { 360.1 => {} }",
+        "match self.target_angle() { 90 => {} else => {} 180 => {} }",
+        "match self.target_angle() { 90 => {} else => {} else => {} }",
+        "match self.target_angle { 90 => {} }",
+        "match self.target_angle(1) { 90 => {} }",
+        "match context.target_angle { 90 => {} }",
+        "match self.target_angle() { <= 90 => {} }",
+        "if self.target_angle {}",
+        "if self.target_angle() {}",
+        "self.target_angle();",
+    ] {
+        assert!(
+            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
+            "{body}"
+        );
+    }
+    let cases = "90 => {} ".repeat(255);
+    assert!(
+        parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ match self.target_angle() {{ {cases} }} }}"
+        ))
+        .unwrap()
+        .compile()
+        .is_ok()
+    );
+    assert!(
+        parse(&format!(
+            "mhf_ai 1; species 6; fn main() {{ match self.target_angle() {{ {cases} 90 => {{}} }} }}"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn target_angle_match_preserves_handler_and_native_branch_checks() {
+    for source in [
+        "mhf_ai 1; species 6; fn main() { match self.target_angle() { 90 => h(); } } handler fn h() { pass; }",
+        "mhf_ai 1; species 6; fn main() { match self.target_angle() { 90 => {} else => h(); } } handler fn h() { pass; }",
+        "mhf_ai 1; species 6; fn main() { handle h() then { match self.target_angle() { 90 => return; } } } handler fn h() { pass; }",
+        "mhf_ai 1; species 6; fn main() { handle h() then {} } handler fn h() { helper(); pass; } fn helper() { match self.target_angle() { 90 => { handle g() then {} } } } handler fn g() { pass; }",
+        "mhf_ai 1; species 6; fn main() { match self.target_angle() { 90 => native(0x39, 0); } }",
+        "mhf_ai 1; species 6; fn main() { native(0x42, 0, 45); match self.target_angle() { 90 => return; } native(0x42, 2); }",
+        "mhf_ai 1; species 6; fn main() { match self.request { 1 => { match self.target_angle() { 90 => return; } } } wait(1); }",
+        "mhf_ai 1; species 6; fn main() { handle h() then { match self.request { 1 => { match self.target_angle() { 90 => return; } } } } } handler fn h() { pass; }",
+    ] {
+        assert!(parse(source).unwrap().compile().is_err(), "{source}");
+    }
 }
 
 #[test]
@@ -2122,6 +2964,11 @@ fn handle_dispatches_to_a_handler_and_keeps_every_outcome_separate() {
         script(&compiled.program, 1, 0),
         [0x39, 0, 0x0d, 4, 0xff, 1, 0x39, 2, 0x1e, 0xff, 1]
     );
+    let explicit = parse(&source.replace("pass;", "mark_unhandled(); return;"))
+        .unwrap()
+        .compile()
+        .unwrap();
+    assert_eq!(compiled.program, explicit.program);
 }
 
 #[test]
@@ -2240,7 +3087,84 @@ fn request_handlers_reject_uses_outside_the_protocol() {
 }
 
 #[test]
-fn ordinary_pass_matches_clear_and_return() {
+fn mark_unhandled_continues_in_entries_and_imported_helpers() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31; import \"helper.mhai\" as h;
+         fn main() { mark_unhandled(); wait(1); h.mark(); }
+         states { patrol = 1 => { mark_unhandled(); wait(2); h.mark(); } }
+         events { awareness => { mark_unhandled(); wait(3); h.mark(); } }",
+        &[(
+            "maps/31/6/helper.mhai",
+            "fn mark() { if self.enraged { mark_unhandled(); wait(4); } wait(5); }",
+        )],
+    );
+    let compiled = p.compile().unwrap();
+    assert!(compiled.warnings.is_empty());
+    for (index, delay) in [(0, 1), (1, 2)] {
+        assert_eq!(
+            script(&compiled.program, 0, index),
+            [0x0d, 4, 0x48, delay, 0x81, 0, 0xff, 0]
+        );
+    }
+    let event = &EVENT_SLOTS[3];
+    assert_eq!(
+        script(&compiled.program, event.root_index, 0),
+        [0x0d, 4, 0x48, 3, 0x81, 0, 0xff, event.ending]
+    );
+    assert_eq!(
+        script(&compiled.program, 1, 0),
+        [0x35, 0, 0x0d, 4, 0x48, 4, 0x35, 2, 0x48, 5, 0xff, 1]
+    );
+}
+
+#[test]
+fn mark_unhandled_continues_in_handlers_and_then_blocks() {
+    let compiled = parse(
+        "mhf_ai 1; species 6;
+         fn main() {
+             handle dispatch() then { mark_unhandled(); wait(2); }
+             wait(3);
+         }
+         handler fn dispatch() { mark_unhandled(); wait(1); }",
+    )
+    .unwrap()
+    .compile()
+    .unwrap();
+    assert!(compiled.warnings.is_empty());
+    assert_eq!(
+        script(&compiled.program, 0, 0),
+        [
+            0x1b, 0, 1, 0x0c, 4, 1, 0x81, 0, 0x2b, 0, 4, 1, 0x0d, 4, 0x48, 2, 0x2b, 2, 0x1b, 2,
+            0x48, 3, 0xff, 0,
+        ]
+    );
+    assert_eq!(script(&compiled.program, 1, 0), [0x0d, 4, 0x48, 1, 0xff, 1]);
+}
+
+#[test]
+fn mark_unhandled_requires_an_argumentless_bare_call() {
+    for body in [
+        "mark_unhandled(0);",
+        "mark_unhandled(0, 1);",
+        "mark_unhandled;",
+        "mark_unhandled = 0;",
+        "self.mark_unhandled();",
+        "context.mark_unhandled();",
+        "if mark_unhandled() {}",
+        "clear_takeover();",
+    ] {
+        let source = format!("mhf_ai 1; species 6; fn main() {{ {body} }}");
+        assert!(
+            parse(&source)
+                .and_then(|document| document.compile())
+                .is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_pass_matches_mark_unhandled_and_return() {
     for body in [
         "if self.enraged { EXIT } wait(3);",
         "random { 1 => { EXIT } 1 => wait(2); } wait(3);",
@@ -2255,7 +3179,8 @@ fn ordinary_pass_matches_clear_and_return() {
                 )).unwrap().compile().unwrap()
             };
             let passing = compile("pass;");
-            let explicit = compile("native(0x0d, 0x04); return;");
+            let explicit = compile("mark_unhandled(); return;");
+            assert!(explicit.warnings.is_empty());
             assert_eq!(
                 script(&passing.program, 0, 0),
                 script(&explicit.program, 0, 0)

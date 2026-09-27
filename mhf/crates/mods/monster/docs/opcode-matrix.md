@@ -20,9 +20,9 @@
 | 走 switch default 的字节 | 119 |
 | 操作链已确证（`confirmed`） | 101 |
 | 操作链已确证、选择子集合为推断（`operation_confirmed`） | 36 |
-| 全部操作数角色已确证（`named`） | 100 |
-| 至少一个操作数只按地址记录（`generic`） | 37 |
-| 仍未命名的操作数引用 | 61 |
+| 全部操作数角色已确证（`named`） | 101 |
+| 至少一个操作数只按地址记录（`generic`） | 36 |
+| 仍未命名的操作数引用 | 60 |
 
 两条信度轴：
 
@@ -69,51 +69,51 @@
 | --- | --- | --- | --- | --- | --- |
 | `0x01` | mask-gated marker scan | 选择子 | 用 actor 的 lane 掩码对照配置的 lane 数量做门控，不通过则扫到下一个 `0x01` 标记；选择子 1/2 是识别标记的续行形式 | named | confirmed |
 | `0x02` | tracked-player check | 选择子 | 0：`+2687` 非零执行正文；为零清当前目标 `+2612=FF` 并跳至 else/end；1：else；2：end | named | confirmed |
-| `0x03` | current-pending-area gate | 选择子 | 选择子 0 比较当前区域 `+2040` 与待定区域 `+2046`，区域目标不被接受时重置动作上下文并扫描 else/end | named | confirmed |
+| `0x03` | check_pending_area | 选择子，无额外参数 | `self.check_pending_area()`：待定区域 `+2046` 与当前区域不同、非 FFFF 且通过物种／地图允许表时进入正文；否则清当前与保存命令元组并跳至 else/end，仅允许表拒绝时将待定区域写回当前区域；不清 `+2612/+3208` | named | confirmed |
 | `0x04` | reset-main-cursor | 无 | 把 `+2576`（主表下标）清 0，再装入 `main[0][0]`；不清 lane 掩码/delay/触发锁存 | named | confirmed |
 | `0x05` | dispatch-action | 组、动作 id、参数（3 字节） | 读三字节动作元组，必要时调用动作分派器，并按续行标志保存续行游标 | named | confirmed |
-| `0x06` | select-script-target | 模式 + 模式载荷 | 配置动作目标 kind、组和下标；可选择玩家、区域、路线点、物种固定点、缓存物件点、路径步及其他怪物；后续由目标解析器消费，DSL 仅覆盖规范子集 | named | confirmed |
+| `0x06` | select-script-target | 模式 + 模式载荷 | 配置动作目标 kind、组和下标；`self.select_target_point(PointTarget::Landing, index)`／`self.select_target_point(PointTarget::Departure, index)` 分别编码 `06 02 03 index`／`06 02 04 index`；索引必填、完整 u8，仅配置、不隐式解析或移动，保留原生后备规则；DSL 仍只覆盖部分形式 | named | confirmed |
 | `0x07` | main-index-jump | `u8` 下标 | 写 `+2576 = 下标`、清 `+2580`，把当前游标切到 `main[0][下标]`（状态表项） | named | confirmed |
 | `0x08` | flag-0 marker gate | 选择子 | 选择子 0 在 `+1040`（实体状态字节）为 0 时直接返回，否则扫到 `0x08` 标记 | named | confirmed |
 | `0x09` | flag-2 marker gate | 选择子 | 选择子 0 在 `+1040` 等于 2 时直接返回，否则扫到 `0x09` 标记 | named | confirmed |
 | `0x0A` | write-reaction-state-byte | u8 | 整字节写 `+2088`，影响模式转换、感知和异常状态；不是 Mode 字段 `+2680`，完整取值语义未定 | generic | confirmed |
 | `0x0B` | mode comparison | 选择子 + u8 | 选择子 0 保存模式 `+2680` 到快照 `+2600` 后与参数比较，不等则跳过正文；DSL：`self.mode_is(Mode::Normal/Attack)` | named | confirmed |
 | `0x0C` | write-selected-runtime-byte | 字段选择子 + u8 值 | 按选择子整字节赋值；0 遍历 1..10，1..4 为公共字段，5..9 带物种及本地命令门控，10 无写入；不是位掩码操作。DSL 的 handle 仅使用 `0C 04 01` | generic | confirmed |
-| `0x0D` | clear-selected-runtime-field | 字段选择子 | 清零对应字段；选择子 10 将保存的区域／路线上下文 ID `+2846` 置 FFFF；0 批量处理。`0D 04` 仅清接管，紧接本函数返回才可恢复为 pass | generic | confirmed |
+| `0x0D` | clear-selected-runtime-field | 字段选择子 | 清零对应字段；选择子 10 将保存的区域／路线上下文 ID `+2846` 置 FFFF；0 批量处理。`0D 04` 对应 `mark_unhandled();`，清共享处理结果后继续；紧接本函数返回时优先恢复为 `pass;` | generic | confirmed |
 | `0x0E` | in_area | 选择子；0 带 u16 大端区域 ID | 参数经原生地图／昼夜适配后与当前区域 `+2040` 比较，相等进入正文；DSL：`self.in_area(id)` | named | confirmed |
 | `0x0F` | start-route-context | 模式、次数、源脚本、入口脚本、动作脚本（5 字节） | 建立路线移动上下文，保存活动 lane 续行并启用基 lane；查当前区域点表、记录次数／范围，跳入 `root[2][payload[3]]`，不是单纯写配置 | named | confirmed |
 | `0x10` | bind-route-waypoint | 无 | 路线模式 0..2 下递增 `+3250`，仅在当前路线点无效／越界时重选；模式 0 用 `+1096 % 点数`，1 读 `root[2][+2593]` 首字节，2 选 0；最后绑定 kind 2/group 1 的路线点，不是每次推进一点 | named | confirmed |
 | `0x11` | pick-highest-mask-lane | 无 | 扫 `+2821` 的置位，存最高 lane 下标，并设当前动作模式 1/组 0 | named | confirmed |
 | `0x12` | pick-mask-lane-and-bind | 无 | 扫 `+2687`（已追踪玩家掩码），把最高 lane 同时存为当前下标与 `+2612`（cmd_pl_target），并清两个续行标志 | named | confirmed |
 | `0x13` | bind-current-lane | 无 | 设动作模式 1/组 0，把 `+2612`（cmd_pl_target）当当前下标（非 -1 时掩到 4 位） | named | confirmed |
-| `0x14` | angle-threshold gate | 选择子 + `u8` | 把载荷字节换算成角度阈值，算到所选目标上下文的相对角，超阈值则扫到 `0x14` 体标记 | named | confirmed |
+| `0x14` | angle-threshold gate | 选择子；0 带 `u8` 整数度数 | 当前目标 kind 为 1/13、arg1 为 0、下标非 FFFF 时，最短绝对水平夹角 ≥ 阈值进入正文，否则扫至 else/end；DSL：`self.target_angle_at_least(degrees)`，接受完整 0..255 | named | confirmed |
 | `0x15` | area_match | 选择子 + 计数 / u16 大端 case | 按地图适配后的区域 ID 匹配 actor+2040；按源码顺序首次匹配；DSL 为 `match self.area`，else 可省略 | named | confirmed |
 | `0x16` | call_table9_subscript | `u8` | 调用 `root[9][index]`；无条件把续行保存到 `+2608`，由 `FF 03` 返回；不改变 stage，再次调用会覆盖续行；DSL 使用 table 9 函数 | named | confirmed |
-| `0x17` | initialize-area-route | 区域列表、次数、换区脚本、上下文字节（4 字节） | 仅在 `+2844 == FF` 时初始化 root[5] 区域列表及 root[6] 处理脚本等字段，清选择下标 `+2845=FF`；次数 <=1 恢复未初始化标记；不开始换区 | generic | confirmed |
+| `0x17` | init_area_change | 区域列表下标、项数、换区脚本下标、收尾策略（4 个 u8） | `self.init_area_change(list,count,handler,end_policy)`：仅在 `+2844 == FF` 时写 root[5] 列表、项数、root[6] 处理脚本及收尾策略，清已选下标 `+2845=FF`；有符号项数 >1 才保留（原始 2..127），其余恢复 FF；不开始换区 | named | confirmed |
 | `0x18` | try_change_area | 无 | 路线条目数大于 1 且全局门允许时，选择目的区域、保存续行并转入 root[6] 配置脚本；DSL 为 self.try_change_area()，不保证立即完成换区 | named | confirmed |
 | `0x19` | bind-next-area | 无 | 将已选择的下一地区 `+3208`（maji_next_stage_no）拷入 kind 3 的区域动作目标并调用空钩子，不选择新区域、不换区 | named | confirmed |
-| `0x1A` | set-next-area | u16 大端区域 ID | 适配区域 ID，写待定区域 `+2046`、下一地区 `+3208` 及 kind 3 目标；不写当前区域 `+2040`、`+2038` 或位置 | named | confirmed |
+| `0x1A` | bind-target-area | u16 大端区域 ID | `self.bind_target_area(area)`：完整 u16，经原生适配后写 `+2046/+3208` 及 kind 3 当前目标参数；不解析、移动、换区或写保存命令；与 `06` 区域形式清 `+3208` 不同，后续仍可选择中间区域 | named | confirmed |
 | `0x1B` | accepted-request flag equality | 选择子；0 带 u8 | 比较已接受请求标志 `+2681` 与参数，不等则扫描 else/end；handle 使用值 1 的形式，不是独立 mind 状态测试 | named | confirmed |
 | `0x1C` | deterministic-ratio branch | 选择子 + 计数 + 阈值/体 | 选择子 0 用两个原生哈希式函数算确定性比值，与阈值列表比较，再走嵌套 `0x1C` 体 | named | confirmed |
 | `0x1D` | request-dispatch | 选择子 + 计数 + 有序表 | 选择子 0 按当前已被接受的请求编号 `+2682` 做有序分支：等于则进正文，小于 case 值则放弃整块，大于则跳到下一个 case。DSL：`match self.request` | named | confirmed |
-| `0x1E` | clear-behavior-requests | 无 | 清除已接受的行为请求、优先级、五类待处理标志及三类计时请求的已触发标志 | named | operation_confirmed |
+| `0x1E` | clear-behavior-requests | 无 | 清除已接受的行为请求、优先级、五类待处理标志及三类归零请求的已触发标志 | named | operation_confirmed |
 | `0x1F` | flag-not-one gate | 选择子 | 选择子 0 仅在 `+1040` 不等于 1 时继续，否则扫到 `0x1F` 标记 | named | confirmed |
-| `0x20` | relative-angle threshold branch | 选择子 + 阈值/列表 | 选择子 0 取目标位置，算相对 `+164`（朝向）的归一化相对角，与阈值表比较后走嵌套 `0x20` 体 | named | confirmed |
-| `0x21` | counter-threshold gate | 选择子 | 选择子 0 仅在 `+2696` 大于 `+2708` 乘全局系数时继续，否则扫标记 | generic | confirmed |
+| `0x20` | target_angle_match | 选择子；0 带 u8 数量，1 带 u8 上界，2 为 else，3 结束 | `match self.target_angle()`：当前绑定玩家 kind 1、arg1=0、下标非 FFFF 时计算一次 XZ 有向角，按源码顺序命中首个角度 ≤ `upper << 8` 的分支；数字 case 为度数上界，允许重复／乱序；无效目标或全未命中走可选 else，否则续行；无状态写入 | named | confirmed |
+| `0x21` | counter-threshold gate | 选择子 | 选择子 0 在有符号 `+2696 <= trunc(float(+2708) × 0.3)` 时进入正文，大于时扫至 else/end；0.3 来自 `0x1182F56C` 的 f32 常量；DSL 仍为 native | generic | confirmed |
 | `0x22` | near-target-2d-gate | 选择子 + `u8` | 选择子 0 用**水平**（x/z）距离比较 actor `+172`/`+180` 与参考点 `+2852`/`+2860`，阈值取 `max(n×100, 体型×缩放+60)`；不超过则进入正文（忽略高度）。DSL：`self.near_target_2d(n)` | named | operation_confirmed |
 | `0x23` | actor-kind list gate | 选择子 + 计数 + 类型表 | 选择子 0 用最多 40 条 actor 记录比类型列表（含 `0xB1` 特例），无匹配则走嵌套 `0x23` 体 | named | confirmed |
 | `0x24` | repeat-body-counter | 选择子；0 带 i8 次数 | 唯一的 `+2623/+2632` 保存重复次数／体游标；尾部先减计数，为正才回跳，非正初值走特殊扫描；执行／扫描宽度不一致，当前含 native 在内均拒绝安装 | named | confirmed |
 | `0x25` | reset-repeat-counter | 无 | 清重复计数 `+2623`，不跳出正文；随后 `24 01` 将 0 减为 FF 并不再循环，不等于 break | named | confirmed |
 | `0x26` | write-automatic-response-gate | u8 | 整字节写 `+2738`；部分自动事件要求等于 0，感知／自动切攻击路径要求不等于 1，不能将全部取值归为布尔 | generic | confirmed |
 | `0x27` | ordered-runtime-byte branch | 选择子 + 计数 + 有序表 | 比较未定角色的运行字节 `+27` 与有序列表，决定跨过哪些嵌套分支；不把该字节命名为关联 actor 指针 | generic | operation_confirmed |
-| `0x28` | player-in-area gate | 选择子 | 扫活动玩家记录，找与自身 `+2040`（当前区域 id）相同的记录；找到则进入条件体，否则走 else 或结束。不做地图／昼夜映射，也不检查追踪或距离 | named | confirmed |
+| `0x28` | has_player_in_same_area | 选择子 | `self.has_player_in_same_area()`：无参数，扫描活动玩家记录，找到与自身 `+2040`（当前区域 id）相同的记录则进入条件体，否则走 else/end；不做地图／昼夜映射，不检查追踪或距离，无状态写入 | named | confirmed |
 | `0x29` | area_timer_expired | 选择子 | signed i16 `+2910 <= 0` 进入正文，正值跳至 else 或结束；只检查区域相关倒计时，不等待或触发换区；DSL 为 `self.area_timer_expired` | named | confirmed |
 | `0x2A` | attack_timer_active | 选择子 | signed i16 `+2912 > 0` 进入正文，否则跳至 else 或结束；DSL 为 `self.attack_timer_active`，不检查当前模式 | named | confirmed |
 | `0x2B` | field-equality branch | 选择子；0 带字段选择子和值 | 选择字段、按物种条件比较载荷字节，不相等则扫描 else/end；部分字段与 0C/0D 共用，包括 `+1364/+1365`；handle 使用接管字段形式 | generic | confirmed |
 | `0x2C` | species-group branch | 选择子 + 计数 + 物种 ID | 按顺序把当前物种与各 case 物种经 `0x11A4E9C0` 归组后比较；首个同组 case 进入正文，无匹配则进入可选 else 或结束 | named | confirmed |
 | `0x2D` | bind-scanned-object | 无 | 把本帧物件扫描记录的全局 32 槽地面物件提交为动作目标（`+2581=7`，`+2582/+2584` 取 `+2922/+2923`）；本身不筛选、不移动、不执行动作 | named | confirmed |
 | `0x2E` | select-perception-profile | `u8` | 把 `actor+1968` 指向该物种感知参数表的第 `n` 条 32 字节记录（最大/最小距离、高度带、半视角、两个阈值）；下标为物种私有索引，无范围检查，且可被物种条件改写 | named | confirmed |
-| `0x2F` | any_player_carrying | 选择子 | 任一配置玩家的搬运状态低四位非零时进入正文，否则跳至 else 或结束；DSL 为 `context.any_player_carrying` | named | confirmed |
+| `0x2F` | any_player_carrying | 选择子 | `context.any_player_carrying()`：无参数，任一配置玩家的搬运状态低四位非零时进入正文，否则走 else/end；不检查同区、距离或当前目标，无状态写入 | named | confirmed |
 | `0x30` | request-player-carry-response | 无 | 任一配置玩家的搬运状态低四位非零则置待处理请求 `+3190=1`，随后由调度器按优先级 0x70 处理；不选目标、不查同区／距离、不立即执行响应 | named | confirmed |
 | `0x31` | bind-cached-object-point | 无 | 只设目标 kind `+2581=8`，后续解析使用物件扫描缓存点 `+2864/+2868/+2872`；不是出生点／归巢点 | named | confirmed |
 | `0x32` | selection-byte equality gate | 选择子 + `u8` | 选择子 0 比较 `+2088` 与载荷字节，不等则走嵌套 `0x32` 体 | generic | confirmed |
@@ -143,20 +143,20 @@
 | `0x4b` | clear_selected_player_awareness_score | 无 | 有选中玩家时清 `+2788 + 4*(slot & 0xF)` 的 awareness 累积分数，不清发现／追踪标志 | named | confirmed |
 | `0x4c` | clear_selected_player_hate_score | 无 | 有选中玩家时清 `+2824 + 4*(slot & 0xF)` 的选敌仇恨分数；该字段不是计时器 | named | confirmed |
 | `0x4d` | refresh_runtime_vectors | 无 | 按当前动作目标配置解析实体、位置或区域下一跳；DSL：`self.resolve_target()`，不执行移动 | named | confirmed |
-| `0x4e` | extend_request_countdown_2696 | 选择子 | 选择子 0 给请求计时值 `+2696` 增加配置值 `+2708` 的一半并封顶；非零选择子不写；不是玩家仇恨分数 | generic | confirmed |
-| `0x4f` | extend_request_countdown_2700 | 选择子 | 选择子 0 给请求计时值 `+2700` 补充 `+2712` 的一半并封顶；物种 104/112 还遍历活动同种 em 做同样补充并清其事件位 0x02；非零选择子不写 | generic | confirmed |
+| `0x4e` | replenish_recovery_meter | 选择子 | `self.replenish_recovery_meter(0x50)` 生成 `4E 00`：给恢复计量 `+2696` 增加 `+2708` 有符号除二的结果并封顶；只支持优先级 0x50，不清 `+3192/+2736`、不发动作或回血；非零选择子保留 native | generic | confirmed |
+| `0x4f` | replenish_foraging_meter | 选择子 | `self.replenish_foraging_meter()` 生成 `4F 00`：给觅食相关计量 `+2700` 补 `+2712` 有符号半量并封顶；104/112 还按各自上限补其他活动同种记录、清其 +2823 位 0x02，无区域／距离／HP 筛选；不清请求／闩，非零选择子 native | generic | confirmed |
 | `0x50` | extend_request_countdown_2704 | 选择子 | 选择子 0 给请求计时值 `+2704` 增加配置值 `+2716` 的一半并封顶；非零选择子不写 | generic | confirmed |
 | `0x51` | runtime_phase_gate | 选择子 | 选择子 0 在 `+1040` 等于 4 时跳过体，否则扫 `0x51` 标记块 | named | confirmed |
 | `0x52` | select_player_same_or_allowed_area | 无 | 从已追踪玩家中按原生优先级选敌，可接受同区域及物种配置允许的其他区域；保留原生目标保留规则。DSL：`EntityTarget::SameOrAllowedArea` | named | operation_confirmed |
 | `0x53` | select_player_same_area | 无 | 同区域原生复合选敌，综合仇恨分数、距离、当前随机值及物种专用规则；DSL：`EntityTarget::SameArea` | generic | operation_confirmed |
-| `0x54` | lane_record_gate | 选择子 | 选择子 0 在选中 lane 记录有效、其 `+2042` 为零且 `0x10A94CE0` 返回非零时直接返回，否则扫 `0x54` 标记块 | named | confirmed |
+| `0x54` | lane_record_gate | 选择子 | `self.target_available()`：无参数，选中玩家目标非 FF、记录有效、`+2042 == 0` 且与自身同区域时进入正文，否则走 else/end；不检查存活、视线或攻击距离，无状态写入 | named | confirmed |
 | `0x55` | selected_player_hate_threshold_branch | 选择子 | 选择子 0 在无选中玩家或该槽选敌仇恨分数 `+2824` 小于 30000 时跳过正文；不是计时器门 | named | confirmed |
 | `0x56` | global_word_gate | 选择子 + 大端 `u16` | 选择子 0 读大端 `u16`，与全局 `0x1E8001EC`+8 的字不等时扫 `0x56` 标记块 | generic | operation_confirmed |
 | `0x57` | area_route_profile_selection | 选择子 + 载荷 | 按 `u8 +3185` 区域移动路线配置编号有序精确分支；`00 count` 开始，`01 value:u16be` case，`02` else，`03` 结束。字段来自生成记录 `+0x18`，用于选择物种/地图的区域路线表 | named | confirmed |
 | `0x58` | bind_leader_player_target | 无 | 复制关联首领的已提交玩家目标到 `+2612` 及动作目标参数，不同步 saved 命令字段；无首领则设无目标。DSL：`EntityTarget::LeaderTarget` | named | operation_confirmed |
 | `0x59` | runtime_flag_gate_3200 | 选择子 | 选择子 0 仅在 `+3200` 为零时扫 `0x59` 标记块 | generic | operation_confirmed |
 | `0x5a` | target_ground_number_gate | 选择子；仅 0 带 u8 比较值 | 保存的命令 kind `+3231` 为 1/11 且当前玩家目标非 FF 时，比较该玩家经区域规则归一化的地面编号低八位；不匹配走 else/end，无状态写入。DSL：`if self.target_ground_is(n)`，n 接受 0..255 | named | confirmed |
-| `0x5b` | clear_undetected_player_tracking_timers | 选择子 | 选择子 0 清未设置发现位 `+2684` 的玩家之追踪保持计时 `+2688`，不立即清 `+2687`；非零选择子不写 | named | confirmed |
+| `0x5b` | clear_undetected_player_tracking_timers | 选择子 | 选择子 0 清未设置发现位 `+2684` 的玩家之追踪保持计时 `+2688`，不立即清 `+2687`；非零选择子不写。DSL：`self.clear_undetected_player_tracking_timers()` 仅生成 `5B 00`；非零选择子保留 native | named | confirmed |
 | `0x5c` | world_position_gate | 选择子 | 选择子 0 在 `+2040` 等于 `global+20` 且 `0x108CF5B0`(`+172`, …) 成功时立即返回，否则扫 `0x5c` 标记块 | named | confirmed |
 | `0x5d` | target-reference-point-gate | 选择子 | 选择子 0 先解析一次当前目标，参考点 `+2852`/`+2856`/`+2860` 三个分量都非零时进入正文，否则扫到 `5D 01`/`5D 02`；分量等于 `0` 也算无效。DSL：`self.target_position_available()` | named | confirmed |
 | `0x5e` | species_value_gate | `u8` | 选择子 0 拿载荷字节与 `0x1086A530`(`+2040`, `+2008`) 比较，并对表值 365/367/369 有特殊处理 | generic | operation_confirmed |
@@ -200,7 +200,7 @@
 | `0x93` | consume_only | 无 | 与 `0x92` 相同的空实现 | named | confirmed |
 | `0x94` | global_value_ordered_scan | 选择子；0 带计数，1 带 u8 case | 有序精确匹配全局 i32 `0x11C6A7E8`；更大的 case 不会命中，而是跳至默认分支或结束。原生脚本在常规 AI 与 root[18][4] 之间选择；非零值来源未确认 | generic | operation_confirmed |
 | `0x99` | set_heading_u8 | u8 角度刻度 | 将参数左移 8 位写到 dword `+164`，直接设置绝对朝向；256 刻度一圈，不等待渐进转身 | named | confirmed |
-| `0x9a` | scaled_runtime_threshold_gate | 选择子 + `u8` | 选择子 0 把载荷字节按全局浮点 `0x119B5EF0` 与 `+2712` 缩放，与 `+2700` 比较后条件性跳过嵌套 `0x9a` 块 | generic | operation_confirmed |
+| `0x9a` | scaled_runtime_threshold_gate | 选择子 + `u8` | 选择子 0 在 `float(+2700) <= float(n × f32(0.01) × float(+2712))` 时进入正文；使用 `0x119B5EF0` 浮点常量，不截断成整数；读取觅食相关计量，仍为 native | generic | operation_confirmed |
 | `0x9b` | selected_record_gate | 选择子 | 选择子 0 用原始记录标志、辅助函数与记录偏移 `+1040` 检查 `+1826`（玩家域下标，解析到 `0x1DC6B750 + 4176*slot`）处的选中记录，全部通过则立即返回 | named | confirmed |
 | `0x9c` | action_context_distance_gate | 选择子 + `u8` | 选择子 0 把载荷字节放大 100 倍，仅当动作字段 `+2581`/`+2582`/`+2584` 与 `+2856`/`+1800` 距离满足观察到的谓词时才穿过嵌套体 | named | operation_confirmed |
 | `0xff` | control_prefix | `u8` 选择子 | 控制前缀：后一字节是选择子；`0x00..0x06` 与 `0xf5..0xff` 是命令，其余选择子交回解释器按普通 opcode 执行（此时 `0xff` 只消耗自身） | named | confirmed |
@@ -257,7 +257,7 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 | --- | --- |
 | 游标转移、动作分派与调用 | `04/05/07/0F/16/18/3F/81/82`、`FF` 家族 |
 | 原生循环及计数 | `24/25`、`FF FF`；`25` 只清计数，不跳出正文 |
-| 条件与多分支 | `02/08/09/0E/15/1D/22/28/29/2A/2C/35/36/39/4A/54/57/5A/70/77/78/79/80/83/94` |
+| 条件与多分支 | `02/03/08/09/0E/14/15/1D/20/22/28/29/2A/2C/35/36/39/4A/54/57/5A/70/77/78/79/80/83/94` |
 | 目标配置与绑定 | `06/10/11/12/13/19/1A/2D/31/49/52/53/58/5F/7E` |
 | 感知、追踪与请求簿记 | `1E/2E/30/4B/4C/4E/4F/50/5B/61/65` |
 | 位置解析、放置与朝向 | `4D/90/91/99`；`4D` 解析目标，`90` 直接改位置 |
@@ -273,14 +273,26 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 
 | 范围 | 已有具名表达 | 部分接入 | 尚无具名表达 |
 | --- | ---: | ---: | ---: |
-| 普通控制 opcode，56 个 | 26 | 3（`06/0C/0D`） | 27 |
+| 普通控制 opcode，56 个 | 31 | 3（`06/0C/0D`） | 22 |
 | `FF` 有效选择子，18 个 | 14 | — | 4（`04/05/06/FF`） |
 
-26 个已有表达的普通 opcode 是
-`04/05/07/11/12/13/16/18/1E/2D/2E/40/48/49/4D/52/53/58/5F/68/7B/7E/81/82/84/92`。
+31 个已有表达的普通 opcode 是
+`04/05/07/11/12/13/16/17/18/1A/1E/2D/2E/40/48/49/4D/4E/4F/52/53/58/5B/5F/68/7B/7E/81/82/84/92`。
 其中 `2E` 已有 `self.select_perception_profile(n)`；`7B/84` 已有
 `self.increment_random_value()`，编译统一生成 `84`。
 `07 00`、`40` 的非标准非零参数等为保真而保留 native，不代表缺少新的行为。
+
+`17` 已有 `self.init_area_change(list, count, handler, end_policy)`，四个位置参数
+均接受完整 u8 范围并原样往返，只引用现有 `root[5]` 列表及 `root[6]` 脚本下标。
+原生仅在数量字段为 FF 时初始化；`count` 只有 2..127 会保留，其余值仍写入其他
+配置并把数量恢复 FF。`FF FB` 在有符号数量不大于已选下标时按 `end_policy`
+收尾：0 将数量和下标清为 FF，非零保留数量、下标归零，不将参数归一化为布尔值。
+初始化立即续行；换区由显式 `self.try_change_area()` 尝试，不附加绑定或移动。
+
+`1A` 已有 `self.bind_target_area(area)`，区域 ID 必填、仅接受数字、完整 u16（含 FFFF），
+所有编码均具名往返。它经原生适配后立即写入 `+2046/+3208` 及 kind 3 当前目标参数；
+`select_target_area(area)` 则将 `+3208` 清为 FFFF。后续解析可能收敛，并仍可选择中间区域，
+不能据此承诺强制直达。方法不解析、移动或换区；`19` 继续 native。
 
 `49` 已有 `self.bind_target_ground_point(profile)`，接受完整 u8 编码范围 0..255，
 所有 `49 xx` 均具名反编译并原样往返。它绑定当前玩家地面编号对应的配置点及
@@ -290,16 +302,27 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 这些偏移旋转后加到地面配置点上，不是直接偏移玩家坐标；接口保留数字档位。
 `06` 的 kind 11 形式不改写为此方法。
 
-### 7.1 尚无具名表达的 27 个普通控制 opcode
+`4E 00` 已有 `self.replenish_recovery_meter(0x50)`，参数是请求优先级类别，
+当前仅支持 `0x50`。`4F 00` 已有无参数的 `self.replenish_foraging_meter()`。
+两者分别补充 `+2696/+2700` 计量，固定增加各自配置上限的一半并封顶，采用有符号除二；
+不清待处理请求和已触发闩。`4F` 对物种 104/112 还补充其他活动同种记录，
+使用各自上限并清其 `+2823` 位 `0x02`，没有区域、距离或生命值筛选。
+`recovery/foraging` 是中性用途名，不把所有物种统一解释成睡眠或饱食度；
+计量也受换区、动作和状态重置影响，不是固定时长的冷却。两个记录的 domain 保持 generic。
+非零 `4E/4F` 选择子仍为 native；`50` 继续保留 native。
+
+`5B 00` 已有 `self.clear_undetected_player_tracking_timers()`，只清没有发现位的
+玩家槽位之追踪保持计时，不直接清追踪位、当前目标或察觉／仇恨分数。
+非零选择子无状态写入，保留 native 以维持字节往返，不计为缺少语义操作。
+
+### 7.1 尚无具名表达的 22 个普通控制 opcode
 
 | opcode | 原生行为与接入边界 | 推荐形式／决定 |
 | --- | --- | --- |
 | `0A` | 写 `+2088`，影响模式转换、感知和异常状态；完整取值语义未定，不是 `+2680` 的 Mode | 保留 native，不命名为 `set_mode`、sleep 或 stun |
 | `0F` | 建立路线移动上下文，保存续行并转入 `root[2]`；不是单纯配置字段 | 后续与路线资源成套设计 `self.start_route_move(...)` |
 | `10` | 绑定当前路线点，仅在点无效／越界时重选，另增加 `+3250` | 暂定 `self.bind_route_waypoint()`，不能叫 `next_waypoint()` |
-| `17` | 仅在 `+2844 == FF` 时初始化 `root[5]` 区域列表及 `root[6]` 处理脚本等上下文；`18` 才尝试换区 | 暂定 `self.init_area_route(...)`，保留已有上下文时不重配的行为 |
 | `19` | 将已经选出的下一地区 `+3208` 绑定为区域动作目标，不换区 | 优先候选 `self.bind_next_area()` |
-| `1A` | 适配区域 ID，同时写 `+2046/+3208` 及区域动作目标；不写当前区域、不位移 | 优先候选 `self.set_next_area(area)`；区别于会清目的地缓存的 `select_target_area(area)` |
 | `24` | 唯一的 i8 重复计数与体游标，执行／扫描宽度不一致 | 暂不接入；未来 `repeat(n) { ... }` 须先解决边界、嵌套／重入及 `n <= 0` 路径，不能把 128～255 当正次数 |
 | `25` | 只清重复计数，继续执行剩余正文；后续 `24 01` 再减计数 | 将来可用 `stop_repeating()`，不能直接映射为 `break` |
 | `26` | 写 `+2738`，消费者分别检查 `==0` 和 `!=1`，不是完整 u8 域上的布尔开关 | 保留 native，待自动响应控制的取值域明确 |
@@ -309,8 +332,7 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 | `41` | 特定物种及状态下计算数值并调用专用更新函数 | 保留 native，不视作通用转向 |
 | `4B` | 清当前目标玩家的 awareness 累积分数；无目标不写 | 候选 `self.clear_target_awareness_score()` |
 | `4C` | 清当前目标玩家的选敌仇恨分数；无目标不写 | 候选 `self.clear_target_hate_score()` |
-| `4E/4F/50` | 三类请求计时值补充各自配置值的一半并封顶；`4F` 对物种 104/112 还传播到活动同种怪物并清相应事件位 | 暂留 native，待请求业务名与联动契约明确；不能叫 add_hate、heal 或纯自身 setter |
-| `5B 00` | 清未被发现玩家的追踪保持计时，不立即清追踪位 | 优先候选 `self.clear_undetected_player_tracking_timers()`，不能叫 forget players |
+| `50` | 给 `+2704` 计时值补充配置上限 `+2716` 的一半并封顶；具体业务类别未定 | 暂留 native，不映射到 recovery/foraging meter 方法，不能叫 add_hate 或 heal |
 | `61` | 按物种及当前区域的配置重装攻击模式计时器 `+2912`，不等待、不切模式 | 优先候选 `self.reload_attack_timer()` |
 | `65` | 清四个玩家槽的选敌仇恨分数，保留其他感知／追踪数据 | 候选 `self.clear_player_hate_scores()`，不是清全部实体的全部仇恨状态 |
 | `85/86` | 置／清状态位 `0x40`；只有 `85` 另有依赖目标对象的空间处理调用 | 保留 native，不能假设为对称 bool setter 或碰撞开关 |
@@ -325,11 +347,11 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 
 | 家族 | 已接入 | 仍未接入与推荐方向 |
 | --- | --- | --- |
-| `06` | mode 1 玩家槽；mode 2 Default／路线点；mode 3 区域；mode 6 八个固定方向；mode 10 目标玩家区域；mode 13 subtype 0..3 | mode 2 的其他点表来源及 mode 5/7/8/9/11 等应按目标用途分别接入。可先考虑物种点 `select_species_point(index)`；原始上下文 mode 0/4/12、未知 mode 和非规范占位参数仍 native |
+| `06` | mode 1 玩家槽；mode 2 Default／group 1 路线点／group 3 Landing／group 4 Departure（Landing／Departure 的索引必填，完整 u8）；mode 3 区域；mode 6 八个固定方向；mode 10 目标玩家区域；mode 13 subtype 0..3 | mode 2 的其他点表来源及 mode 5/7/8/9/11 等应按目标用途分别接入。可先考虑物种点 `select_species_point(index)`；原始上下文 mode 0/4/12、未知 mode 和非规范占位参数仍 native |
 | `0C/0D` selector 1 | 无独立写法 | 感知／闪光抑制计数；候选 `set_perception_suppression(n)` 及独立清除方法，说明逐帧递减与闪光联动 |
-| `0C/0D` selector 2 | 无独立写法 | `+2696` 计时请求的一次性已触发锁存 `+2736`，不是计时值；待请求业务名确定再提供 rearm/suppress |
+| `0C/0D` selector 2 | 无独立写法 | `+2696` 恢复计量归零请求的一次性已触发锁存 `+2736`，不是计量本身；待请求业务名确定再提供 rearm/suppress |
 | `0C/0D` selector 3 | 无独立写法 | 感知更新抑制计数，Attack 模式先清零，也门控缓存物件点扫描；候选 `set_awareness_delay(n)`，不是暂停整个 AI |
-| `0C/0D` selector 4 | `handle` 内部发 `0C 04 01`；`pass` 发 `0D 04` 加本函数返回 | 单纯清接管后继续仍 native；可另加 `clear_takeover()`，不能把裸 `0D 04` 恢复为 `pass` |
+| `0C/0D` selector 4 | `handle` 内部发 `0C 04 01`；`mark_unhandled();` 仅发 `0D 04` 并继续；`pass;` 发 `0D 04` 加本函数返回 | 裸 `0D 04` 已具名；紧接本函数返回仍优先恢复为 `pass;`。`0C 04` 的其他值及尚未接入的选择子仍 native，不将 `0C 04 00` 归一化为 `0D 04` |
 | `0C/0D` selector 5..9 | 无 | 物种私有字段保持 native |
 | selector 0、`0D 10` | 无 | 前者批量操作异质字段，后者清保存的区域／路线上下文 ID；继续 native |
 
@@ -356,18 +378,18 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 
 ### 7.4 带副作用的条件与验证边界
 
-以下仍属于分支结构，未计入 27 个尚无具名表达的普通控制 opcode：
+以下仍属于分支结构，未计入 22 个尚无具名表达的普通控制 opcode：
 
-| opcode | 分支副作用 | 推荐方向 |
+| opcode | 分支副作用 | 当前状态／推荐方向 |
 | --- | --- | --- |
-| `03` | 区域目标接受检查可能重置动作上下文 | 有副作用的条件方法，不作为纯属性 |
+| `03` | 待定区域不同、非 FFFF 且通过允许表才为真；假路径清当前与保存命令元组，允许表拒绝还将待定区域写回当前区域 | 已接入 `if self.check_pending_area()`；无参数、必须空括号，支持可选 else／嵌套；空分支也保留原生副作用，不附加 `17/18` |
 | `45` | 筛选玩家、写 `+2612` 并按成败分支 | 将来 `if self.try_select_...() { ... }`，筛选业务名未定前 native |
 | `47` | 读取并消费 `+2729` 一次性标志 | 将来消费式条件方法，不是 wait |
 | `73` | 匹配 `+2920 & 0x7F` 后清低位、保留高位 | 消费式 match，不能省略清除副作用 |
 | `7F` | 条件失败路径及 else 标记会清状态位 `0x40` | 保留 native，不拆成会改变求值顺序的纯 if 加 setter |
 | `62` | 混合 `62/98` 扫描且执行／跳过宽度不一致 | 与 `24` 一样，当前包括 native 在内均拒绝安装 |
 
-优先顺序建议为 `5B/19/1A/61` 与分数清理，然后是缓存点及位置／朝向操作；
+优先顺序建议为 `19/61` 与分数清理，然后是缓存点及位置／朝向操作；
 路线家族成套设计，循环与物种私有控制后置。这是设计建议，不是已承诺的实现。
 
 覆盖核对依据：`src/ai/dsl/compile.rs` 的命令与语句编码、`dsl/target.rs`、
@@ -384,6 +406,6 @@ default 不是错误也不是未实现：在 `+2739`（命令模式标志）与 
 
 数据角色的剩余数量见第 1 节，逐项清单以 JSON 的 `domain_unresolved` 和
 [`runtime-fields.md`](runtime-fields.md) 为准。字段写入已确认不代表私有值的游戏含义
-已确认，尤其是物种私有控制、三类计时请求的业务名及状态位 `0x40`。
+已确认，尤其是物种私有控制、三类归零请求的完整业务语义及状态位 `0x40`。
 原生字节识别、语义 DSL 覆盖和安装边界是三件不同的事；第 7 节分别记录，
 不能从 256 字节都有记录推导出全部可独立安装或全部可具名编写。
