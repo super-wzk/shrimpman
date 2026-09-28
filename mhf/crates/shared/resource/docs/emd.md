@@ -74,7 +74,8 @@ associated records:
 | Links in the species record | +176 parameter banks, +72 anger profiles, and the +184 parameter-link directory |
 | Explicit species field | Roots 7/13/17/18/19/22, retaining conditions and original record indices |
 | Grouped species field | Root-16 records with their root-15 group count, group index, original record index and actor+2394 key |
-| Native script selection | Root-9 candidates whose species binding is established, including the Zinogre selections below |
+| Shared script offset | Root-9 entries pointing to the same valid script offset as species-keyed root-17 records, retaining every referencing species and condition |
+| Native script selection | Root-9 candidates selected by the data-driven DLL binding rules below, retaining selection parameters and destination slots |
 
 Root-17 records expose their linked AI scripts within the species view.
 Root 19 distinguishes explicit species matches from the first-record fallback;
@@ -283,18 +284,71 @@ EMD root 9 is an offset directory, relocated by `10AFA180` at
 installed into one of those tables and call other scripts that the EMD payload
 does not identify through a complete descriptor.
 
-For Zinogre (species 146), vtable entry +2740 (`10E61520`) chooses an EMD
-root-9 entry from a u8 parameter `p`:
+The workbench uses a common script-association index with three sources:
 
-| Native branch | EMD root-9 index |
-| --- | --- |
-| `1087CDE0(actor.species) == 0` | `185 + p` |
-| Other ordinary branch | `188 + p` |
-| Special species-146 branch: `101CE630() == 0` and `1087CB30(146, 11) == 1` | `p == 0` returns without writing; otherwise `272 + (p - 1)` |
+- Root 17 supplies an explicit species key, actor+3389 key and selector for
+  its script pointer at +4. These conditions remain attached to the reference.
+- A reverse index of valid payload-relative script offsets joins root-9
+  entries to root-17 references. All matching directory entries, species and
+  conditions are retained, including aliases and scripts shared by multiple
+  species. Equal pointers establish that both entries reference the same
+  script; they do not establish the conditions under which native code selects
+  the root-9 entry. Equal byte contents at different offsets are not used to
+  infer an association.
+- DLL binding rules describe native root-9 selection as data: species,
+  selection parameters, candidate entries and destination descriptor slots.
+  The same association and display path consumes every rule; no species needs
+  a dedicated UI branch. The rules enumerate static candidates rather than
+  evaluating the current actor state.
 
-Observed call sites pass 0, 1 or 2; this is not a general bound on the u8 input.
-The selected pointer is read at `10E615A9..10E615B2`, then passed to vtable entry
-+2684 (`111A88A0`) with slot 1. Its write at `111A88B6` replaces DLL
+The association API receives its native binding rules explicitly as a slice.
+Generic parsing and same-offset association do not depend on that catalog.
+The workbench adapter supplies `ZZ_HD_BINDINGS` for its supported ZZ HD client
+context. It does not identify the DLL version from EMD counts or table shape,
+and these rules are not claimed to describe arbitrary client versions.
+
+The index keeps the original directory and record identity for each reference;
+it does not copy or exclusively assign the script bytes to one species.
+Unassigned entries remain in global data. A damaged root-9 or root-17 target
+has its own diagnostic and does not discard associations from the other
+directory or other valid records. Script decoding is shared by all entries
+and is independent of whether their species association is known.
+
+The native catalog below is based on DLL SHA-256
+`95c580195f4080d2e9582c8c9df36abeb280476e088b6366583c5f138da8f301`.
+It describes 28 distinct root-9 candidates across seven species. Same-offset
+references are indexed separately and can associate scripts with additional
+species without adding native rules.
+
+| Species | Native selector | Selection condition | EMD root-9 entries | DLL descriptor destination |
+| --- | --- | --- | --- | --- |
+| 146 雷狼龙 | `10E61520` | Ordinary branch, `1087CDE0(actor.species) == 0`, observed `p = 0/1/2` | `185 + p` → 185..187 | `[1][1]` |
+| 146 雷狼龙 | `10E61520` | Other ordinary branch, observed `p = 0/1/2` | `188 + p` → 188..190 | `[1][1]` |
+| 146 雷狼龙 | `10E61520` | `actor.species == 146`, `101CE630() == 0`, `1087CB30(146, 11) == 1`; `p = 0` does not write | `272 + (p - 1)` → 272/273 for observed `p = 1/2` | `[1][1]` |
+| 147 恐暴龙 | `10E7AED0` | `1087CDE0(actor.species) == 0` | 191 / 192 / 193 | `[1][2]` / `[1][3]` / `[1][4]`, respectively |
+| 147 恐暴龙 | `10E7AED0` | `1087CDE0(actor.species) != 0`, bit `0x04` of actor+3268 is clear | 194 / 195 / 196 | `[1][2]` / `[1][3]` / `[1][4]`, respectively |
+| 147 恐暴龙 | `10E7AED0` | `1087CDE0(actor.species) != 0`, bit `0x04` of actor+3268 is set | 197 / 198 / 199 | `[1][2]` / `[1][3]` / `[1][4]`, respectively |
+| 153 狱狼龙 | `100B2500` | `1087CDE0(actor.species) == 0`, observed `p = 0/1/2` | `307 + p` → 307..309 | `[1][1]` |
+| 153 狱狼龙 | `100B2500` | `1087CDE0(actor.species) != 0`, observed `p = 0/1/2` | `310 + p` → 310..312 | `[1][1]` |
+| 160 焰岳龙 | `100FB1D0` at `100FB285` | Direct binding | 362 | `[1][3]` |
+| 167 皇冰龙（无双袭击） | `1015E310` at `1015E334` | Override after base initializer `10E574B0` | 435 | `[1][3]` |
+| 172 极袭爆雾龙 | `10188B90` at `10188BAC` | Direct binding | 479 | `[1][3]` |
+| 175 拉比 | `101939C0` at `10193A9D` / `10193ABD` | Two direct bindings | 477 / 478 | `[1][0]` / `[1][1]`, respectively |
+
+All seven species resolve vtable entry +2684 to `111A88A0`, which writes the
+selected script into DLL `descriptor[1][slot]`. Branch labels retain the code
+conditions instead of assigning unproved monster-form names.
+Species 147 tests the `1087CDE0` result against zero at `10E7AEE9`, before
+checking actor+3268 for the other two groups.
+
+For species 146 and 153, `p` is a u8 input; observed call values 0, 1 and 2
+are not a general bound on that input. Species 153's `p = 0` and `p = 1`
+calls are at `100B218B` and `100B330F`. Its vtable `1198207C` inherits the
+entry at +36 from `10E62F90`; the call at `10E62FC0` passes 2 through the
+object's entry at +2740, which resolves to `100B2500`.
+
+For species 146, the selected pointer is read at `10E615A9..10E615B2` and
+bound through `111A88A0` with slot 1. The write at `111A88B6` replaces DLL
 `descriptor[1][1]`; actor+3270 retains the adjusted parameter (the special
 branch uses `p - 1`). Calls into DLL table 18 from the selected script are
 downstream references, not its direct binding destination.
@@ -304,11 +358,11 @@ actor+3389 and selector keys and returns the +4 pointer. `10E00920` with
 selector 3 installs that pointer into DLL `root[1][3]`.
 
 The workbench displays root-9 and root-17 targets as bounded instruction lists,
-reachable from species associations or the unassigned global records, with
-opcode, operand bytes and the original instruction bytes. Known root-9
-associations show candidates and their selection parameters; they do not assert
-which candidate is active in a running game. The workbench provides no DSL
-text view or complete project export. It reuses
+reachable from the common species-association index or the unassigned global
+records, with opcode, operand bytes and the original instruction bytes. Native
+binding associations show candidates and their selection parameters; they do
+not assert which candidate is active in a running game. The workbench provides
+no DSL text view or complete project export. It reuses
 `mhf_monster::ai::decompile::extract_script` and the shared bytecode codec:
 native conditional markers must close before a return or other proven terminal
 ends the view; the reader is bounded by the payload and its 64 KiB search
@@ -417,10 +471,17 @@ Both samples have 505 root-9 entries: the shared codec extracts 470 and reports
 boundary or structure diagnostics for 35. For example, entry 274 has an
 unmatched `80/02` marker. Unsupported selectors or missing execution context
 remain per-entry diagnostics with raw previews; these are not claims that the
-original native scripts are invalid. The eight observed Zinogre selections,
-185..190 and 272..273, pass extraction. All 85 root-17 entries in each sample
+original native scripts are invalid. All 47 root-9 entries associated by the
+current index pass extraction. All 85 root-17 entries in each sample
 pass the same checks and end in `FF 01`. These counts describe the checked
-resources, not hard-coded parser limits or game execution validation.
+scripts' extraction results, not species-association coverage, hard-coded
+parser limits or game execution validation.
+
+With the explicitly selected ZZ HD catalog, both samples associate 47 root-9
+entries: 19 through root-17 offsets and 28 through native rules. Together with
+the 85 explicit root-17 records, the index covers 23 species; 458 root-9 entries
+remain in global data. These resource checks do not establish compatibility
+with the different executable accompanying sample B.
 
 Both contain 83 species with nonnull +184 links, referencing 82 distinct
 200-entry directories. Species 58 and 144 share an all-zero directory; species

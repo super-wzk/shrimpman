@@ -6,7 +6,9 @@ use mhf_resource::{
 
 mod ai;
 mod global_view;
+mod native_script_bindings;
 mod relations;
+mod script_links;
 mod species_view;
 
 use relations::RecordRef;

@@ -826,6 +826,100 @@ fn keyed_scripts_belong_to_species_and_unknown_keys_stay_global() {
     );
 }
 
+#[test]
+fn shared_script_links_follow_conditions_and_keep_edits_on_the_original_bytes() {
+    let mut bytes = sample();
+    let directory = bytes.len();
+    let conditions = directory + 12;
+    let scripts = conditions + 24;
+    bytes.resize(scripts + 8, 0);
+    put32(&mut bytes, 9 * 4, directory);
+    put32(&mut bytes, 17 * 4, conditions);
+    bytes[112..114].copy_from_slice(&3u16.to_le_bytes());
+    bytes[120..122].copy_from_slice(&3u16.to_le_bytes());
+    for (index, target) in [scripts, scripts, scripts + 4].into_iter().enumerate() {
+        put32(&mut bytes, directory + index * 4, target);
+    }
+    for (index, species) in [1, 2, 250].into_iter().enumerate() {
+        let at = conditions + index * 8;
+        bytes[at..at + 3].copy_from_slice(&[species, 7 + index as u8, 9 + index as u8]);
+        put32(
+            &mut bytes,
+            at + 4,
+            if index == 2 { scripts + 4 } else { scripts },
+        );
+    }
+    for at in [scripts, scripts + 4] {
+        bytes[at..at + 4].copy_from_slice(&[0x16, 7, 0xff, 2]);
+    }
+    let document = inspect("mhfemd.bin", bytes.clone().into());
+    let document = expand_species(&expand_species(&document, 1), 2);
+    for species in [1, 2] {
+        for index in 0..2 {
+            let record = record_node(
+                &document,
+                species_node(&document, species),
+                RecordKind::Pointers,
+                directory + index * 4..directory + (index + 1) * 4,
+            );
+            let script = document.nodes[record].children[0];
+            assert_eq!(document.nodes[script].range.start, scripts);
+            assert_eq!(document.nodes[record].fields.len(), 1);
+        }
+    }
+    let global = global_table_node(&document, 9);
+    let document = expand(&document, global).unwrap();
+    assert_eq!(document.nodes[global].children.len(), 1);
+    assert_eq!(
+        document.nodes[document.nodes[global].children[0]].range,
+        directory + 8..directory + 12
+    );
+    let record = record_node(
+        &document,
+        species_node(&document, 1),
+        RecordKind::Pointers,
+        directory..directory + 4,
+    );
+    let script = document.nodes[record].children[0];
+    let document = expand(&document, script).unwrap();
+    let key = crate::edit::node_key(&document, script).unwrap();
+    let edited = crate::edit::apply(&document, 0, scripts + 1..scripts + 2, &[8]).unwrap();
+    bytes[scripts + 1] = 8;
+    assert_eq!(edited.buffers[0].as_ref(), bytes);
+    let shared = record_node(
+        &edited,
+        species_node(&edited, 2),
+        RecordKind::Pointers,
+        directory + 4..directory + 8,
+    );
+    let script = edited.nodes[shared].children[0];
+    let edited = expand(&edited, script).unwrap();
+    assert_eq!(edited.bytes(script).unwrap(), [0x16, 8, 0xff, 2]);
+
+    // Changing a condition's species moves both directory aliases; an old
+    // selection must not jump to a different record at the same tree ordinal.
+    let edited = crate::edit::apply(&edited, 0, conditions..conditions + 1, &[3]).unwrap();
+    bytes[conditions] = 3;
+    assert_eq!(edited.buffers[0].as_ref(), bytes);
+    assert!(crate::edit::locate(&edited, &key).is_none());
+    assert!(
+        !descendants(&edited, species_node(&edited, 1))
+            .into_iter()
+            .any(|node| edited.nodes[node].kind == Kind::EmdRecord(RecordKind::Pointers))
+    );
+    let edited = expand_species(&edited, 3);
+    for species in [2, 3] {
+        for index in 0..2 {
+            record_node(
+                &edited,
+                species_node(&edited, species),
+                RecordKind::Pointers,
+                directory + index * 4..directory + (index + 1) * 4,
+            );
+        }
+    }
+}
+
 fn assert_script_matches_table(document: &Document, script: usize, slot: usize, index: usize) {
     let root = &document.nodes[emd_root(document)];
     let file = Emd::parse(&document.buffers[root.buffer][root.range.clone()]).unwrap();
@@ -937,6 +1031,84 @@ fn real_emd_species_ai_links_match_source_tables() {
             document.nodes[node].kind == Kind::EmdRecord(RecordKind::PointerRecord)
                 && document.nodes[node].range == range
         }));
+    }
+}
+
+#[test]
+#[ignore = "requires local game resource via MHF_EMD_PATH"]
+fn real_emd_script_index_covers_shared_conditions_and_native_bindings() {
+    use super::script_links::ScriptSource;
+    use std::collections::BTreeSet;
+
+    let path = std::env::var_os("MHF_EMD_PATH").expect("set MHF_EMD_PATH");
+    let mut document = inspect("mhfemd.bin", std::fs::read(path).unwrap().into());
+    let root = &document.nodes[emd_root(&document)];
+    let file = Emd::parse(&document.buffers[root.buffer][root.range.clone()]).unwrap();
+    let index = relations::script_links(&file);
+    assert!(index.errors.is_empty());
+    let root9 = file.root_table(9).unwrap().unwrap();
+    let root17 = file.root_table(17).unwrap().unwrap();
+    let mut assigned = BTreeSet::new();
+    let mut condition_aliases = BTreeSet::new();
+    let mut species = BTreeSet::new();
+    for row in &index.records {
+        for link in &row.links {
+            species.insert(link.species);
+            if row.reference.slot != 9 {
+                continue;
+            }
+            assigned.insert(row.reference.record);
+            let (_, record) = root9.record(row.reference.record).unwrap();
+            let expected_pointer = match link.source {
+                ScriptSource::Condition {
+                    record,
+                    key,
+                    selector,
+                } => {
+                    condition_aliases.insert(row.reference.record);
+                    let (_, source) = root17.record(record).unwrap();
+                    assert_eq!(&source[..3], &[link.species, key, selector]);
+                    &source[4..8]
+                }
+                ScriptSource::Native(binding) => root9.record(binding.record).unwrap().1,
+            };
+            assert_eq!(record, expected_pointer);
+        }
+    }
+    assert_eq!(condition_aliases.len(), 19);
+    assert_eq!(species.len(), 23);
+    eprintln!(
+        "EMD AI associations: {} root9 entries, {} condition aliases, {} species",
+        assigned.len(),
+        condition_aliases.len(),
+        species.len()
+    );
+    assert_eq!(
+        relations::global_records(&file, 9).records.len() + assigned.len(),
+        root9.count
+    );
+
+    for (species, expected) in [
+        (146, &[185, 186, 187, 188, 189, 190, 272, 273][..]),
+        (147, &[191, 192, 193, 194, 195, 196, 197, 198, 199]),
+        (153, &[307, 308, 309, 310, 311, 312]),
+        (160, &[362]),
+        (167, &[435]),
+        (172, &[479]),
+        (175, &[477, 478]),
+    ] {
+        document = expand_species(&document, species);
+        let candidates: BTreeSet<_> = descendants(&document, species_node(&document, species))
+            .into_iter()
+            .filter_map(|node| match document.nodes[node].kind {
+                Kind::EmdAiScript(index) => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            expected.iter().all(|index| candidates.contains(index)),
+            "missing species {species} script: {candidates:?}"
+        );
     }
 }
 

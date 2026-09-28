@@ -2,21 +2,11 @@
 //! Additional profile/actor selectors remain visible to the caller; this is
 //! an inventory of associated records, not a runtime selector evaluation.
 
+use super::{native_script_bindings, script_links::ScriptLinks};
 use mhf_resource::{
     binary::Reader,
     emd::{Emd, Table},
 };
-use std::ops::Range;
-
-pub(super) const ZINOGRE_SPECIES: u8 = 146;
-
-/// Label, first root-9 record, and observed native call parameters. In the
-/// special branch parameter zero does not bind a script (10E61520).
-pub(super) const ZINOGRE_AI_GROUPS: [(&str, usize, Range<u8>); 3] = [
-    ("常规候选组 0", 185, 0..3),
-    ("常规候选组 1", 188, 0..3),
-    ("特殊候选组", 272, 1..3),
-];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct RecordRef {
@@ -89,7 +79,8 @@ pub(super) fn records_for_species(file: &Emd<'_>, species: u8, slot: usize) -> R
                 }
             }
         }
-        7 | 13 | 17 | 18 | 19 | 22 => {
+        9 | 17 => return script_records(file, Some(species), slot),
+        7 | 13 | 18 | 19 | 22 => {
             if let Some(table) = read_table(file, slot, None, &mut result) {
                 add_matching_records(&table, species, slot, None, &mut result);
                 if slot == 19
@@ -117,16 +108,8 @@ pub(super) fn records_for_species(file: &Emd<'_>, species: u8, slot: usize) -> R
 pub(super) fn global_records(file: &Emd<'_>, slot: usize) -> Relations {
     let mut result = Relations::default();
     match slot {
-        9 => {
-            if let Some(table) = read_table(file, slot, None, &mut result) {
-                for record in 0..table.count {
-                    if !ai_record_is_assigned(file.species_count(), record) {
-                        add_indexed_record(&table, slot, None, record, &mut result);
-                    }
-                }
-            }
-        }
-        7 | 13 | 16 | 17 | 18 | 19 | 22 => {
+        9 | 17 => return script_records(file, None, slot),
+        7 | 13 | 16 | 18 | 19 | 22 => {
             let Some(table) = read_table(file, slot, None, &mut result) else {
                 return result;
             };
@@ -154,17 +137,29 @@ pub(super) fn global_records(file: &Emd<'_>, slot: usize) -> Relations {
     result
 }
 
-fn ai_record_is_assigned(species_count: u8, record: usize) -> bool {
-    species_count > ZINOGRE_SPECIES
-        && ZINOGRE_AI_GROUPS.iter().any(|(_, first, parameters)| {
-            (*first..*first + usize::from(parameters.end - parameters.start)).contains(&record)
-        })
+pub(super) fn script_links(file: &Emd<'_>) -> ScriptLinks {
+    ScriptLinks::new(file, native_script_bindings::ZZ_HD_BINDINGS)
+}
+
+fn script_records(file: &Emd<'_>, species: Option<u8>, slot: usize) -> Relations {
+    let index = script_links(file);
+    Relations {
+        records: index
+            .records_for(slot, species)
+            .map(|record| record.reference)
+            .collect(),
+        errors: index
+            .errors
+            .into_iter()
+            .filter(|error| error.slot == slot)
+            .collect(),
+    }
 }
 
 fn species_key(slot: usize, bytes: &[u8]) -> mhf_resource::Result<i32> {
     let reader = Reader::new(bytes);
     Ok(match slot {
-        7 | 17 => i32::from(reader.read_at::<u8>(0)?.value),
+        7 => i32::from(reader.read_at::<u8>(0)?.value),
         13 | 22 => i32::from(reader.read_at::<u16>(0)?.value),
         16 => i32::from(reader.read_at::<i16>(16)?.value),
         18 => i32::from(reader.read_at::<u8>(16)?.value),
@@ -561,16 +556,6 @@ mod tests {
         put32(&mut bytes, 9 * 4, 50_000);
         put16(&mut bytes, 96 + 16, 300);
         let assigned = [185, 186, 187, 188, 189, 190, 272, 273];
-        let mapped: Vec<_> = ZINOGRE_AI_GROUPS
-            .iter()
-            .flat_map(|(_, first, parameters)| {
-                parameters
-                    .clone()
-                    .enumerate()
-                    .map(move |(index, _)| first + index)
-            })
-            .collect();
-        assert_eq!(mapped, assigned);
         for count in [0, 3, 146, 147] {
             bytes[100] = count;
             let file = Emd::parse(&bytes).unwrap();
@@ -579,7 +564,7 @@ mod tests {
             assert_eq!(
                 global.records,
                 (0..300)
-                    .filter(|index| count <= ZINOGRE_SPECIES || !assigned.contains(index))
+                    .filter(|index| count <= 146 || !assigned.contains(index))
                     .map(|index| record(9, None, index))
                     .collect::<Vec<_>>()
             );

@@ -1,4 +1,7 @@
-use super::{Builder, Emd, Kind, ROOT_LABELS, RecordKind, RecordRef, SpeciesTable, relations};
+use super::{
+    Builder, Emd, Kind, ROOT_LABELS, RecordKind, SpeciesTable, relations,
+    script_links::ScriptSource,
+};
 
 impl Builder {
     pub(in crate::inspect) fn emd_species_contents(
@@ -12,9 +15,14 @@ impl Builder {
         let buffer = self.document.buffers[root.buffer].clone();
         let file = Emd::parse(&buffer[root.range.clone()]).map_err(|error| error.to_string())?;
 
+        if let Some(group) = self.emd_group(node, "AI 脚本") {
+            self.emd_species_ai(group, &file, base, species);
+            if self.document.nodes[group].children.is_empty() {
+                self.field(group, "脚本", "无可显示的关联脚本", base, 0);
+            }
+        }
         for (name, slots) in [
-            ("AI 脚本", &[9, 17][..]),
-            ("基本参数", &[2, 5, 21]),
+            ("基本参数", &[2, 5, 21][..]),
             ("部位参数", &[11, 12]),
             ("参数配置", &[1, 4, 10]),
             ("条件与修正", &[7, 13, 16, 18, 19, 22]),
@@ -23,14 +31,7 @@ impl Builder {
                 break;
             };
             for &slot in slots {
-                if slot == 9 {
-                    self.emd_species_ai(group, &file, base, species);
-                } else {
-                    self.emd_species_relations(group, &file, base, species, slot);
-                }
-            }
-            if slots == [9, 17] && self.document.nodes[group].children.is_empty() {
-                self.field(group, "脚本", "无可显示的关联脚本", base, 0);
+                self.emd_species_relations(group, &file, base, species, slot);
             }
         }
 
@@ -147,33 +148,68 @@ impl Builder {
     }
 
     fn emd_species_ai(&mut self, parent: usize, file: &Emd<'_>, base: usize, species: u8) {
-        if species != relations::ZINOGRE_SPECIES {
-            return;
-        }
-        // 10E61520 selects these root-9 entries and 111A88A0 installs them in
-        // descriptor[1][1]. These are candidates, not a simulated actor state.
-        // See resource/docs/emd.md for the native predicates and call sites.
-        for (name, first, parameters) in relations::ZINOGRE_AI_GROUPS {
-            let Some(group) = self.emd_group(parent, name) else {
+        let index = relations::script_links(file);
+        for slot in [9, 17] {
+            let mut records = index.records_for(slot, Some(species)).peekable();
+            let mut errors = index
+                .errors
+                .iter()
+                .filter(|error| error.slot == slot)
+                .peekable();
+            if records.peek().is_none() && errors.peek().is_none() {
+                continue;
+            }
+            let Some(group) = self.emd_group(parent, ROOT_LABELS[slot]) else {
                 return;
             };
-            for (index, parameter) in parameters.enumerate() {
-                let record = first + index;
-                let label = format!("脚本 {record:03} · 参数 {parameter}");
-                let reference = RecordRef {
-                    slot: 9,
-                    directory: None,
-                    record,
-                    fallback: false,
+            for record in records {
+                let reference = record.reference;
+                let label = if slot == 9 {
+                    format!("脚本 {:03}", reference.record)
+                } else {
+                    format!("记录 {:03}", reference.record)
                 };
-                match self.emd_record_node(group, file, base, reference, &label) {
-                    Ok(node) => {
-                        self.field(node, "调用参数", parameter, base, 0);
-                        self.field(node, "绑定位置", "DLL 子表 1 · 槽 1", base, 0);
+                let node = match self.emd_record_node(group, file, base, reference, &label) {
+                    Ok(node) => node,
+                    Err(error) => {
+                        self.emd_relation_error(group, label, error);
+                        continue;
                     }
-                    Err(error) => self.emd_relation_error(group, label, error),
+                };
+                if slot != 9 {
+                    continue;
+                }
+                for link in record.links.iter().filter(|link| link.species == species) {
+                    self.emd_script_source(node, link.source);
                 }
             }
+            for error in errors {
+                self.emd_relation_error(group, ROOT_LABELS[slot], error.message.clone());
+            }
         }
+    }
+
+    fn emd_script_source(&mut self, node: usize, source: ScriptSource) {
+        let (name, value) = match source {
+            ScriptSource::Condition {
+                record,
+                key,
+                selector,
+            } => (
+                format!("条件引用 {record:03}"),
+                format!("状态 {key} · 选择 {selector}"),
+            ),
+            ScriptSource::Native(binding) => {
+                let parameter = binding
+                    .parameter
+                    .map_or_else(String::new, |value| format!(" · 参数 {value}"));
+                (
+                    format!("原生绑定 {:03} · {}", binding.record, binding.group),
+                    format!("DLL 子表 1 · 槽 {}{parameter}", binding.slot),
+                )
+            }
+        };
+        let at = self.document.nodes[node].range.start;
+        self.field(node, name, value, at, 0);
     }
 }

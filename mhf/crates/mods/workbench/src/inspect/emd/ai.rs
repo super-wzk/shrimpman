@@ -251,10 +251,14 @@ mod tests {
                 Err(error) => failures.push((index, error.to_string())),
             }
         }
-        for index in [185, 186, 187, 188, 189, 190, 272, 273] {
+        for record in super::super::relations::script_links(&file).records {
+            if record.reference.slot != 9 || record.links.is_empty() {
+                continue;
+            }
+            let index = record.reference.record;
             assert!(
                 failures.iter().all(|(failed, _)| *failed != index),
-                "known Zinogre root9[{index}] failed: {failures:?}"
+                "associated root9[{index}] failed: {failures:?}"
             );
         }
         eprintln!(
