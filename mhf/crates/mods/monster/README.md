@@ -24,7 +24,7 @@ attach、回滚和 detach 的顺序。功能各自的代码不放在源码根目
 | `ai/bytecode.rs` | 已命名 opcode、选择子宽度与 `is_stop` |
 | `ai/decompile.rs` | 有界读取可追踪状态与事件入口，生成函数式 DSL 并校验字节往返；这是部分提取，未知语义使用 `native(...)` |
 | `ai/control.rs` | 编译器、绑定和覆盖共用的常数：事件槽、主表下标、路由掩码 |
-| `ai/overlay.rs` | `dat/monster-ai` 的 Hook 与加载：签名校验、`(map, species)` 会话缓存、私有块发布 |
+| `ai/overlay.rs` | `dat/monster-ai` 的 Hook 与加载：签名校验、`(map, species, 原生块地址)` 会话缓存、私有块发布 |
 | `species/mod.rs` | 8 处上限的预留、写入、还原与 DLL 引用 |
 | `species/patches.rs` | 8 处上限的 RVA 与原始／替换字节 |
 | `docs/` | [`dsl-spec.md`](docs/dsl-spec.md) 语言规范、[`opcode-catalog.md`](docs/opcode-catalog.md) 等逐 opcode 目录、[`runtime-fields.md`](docs/runtime-fields.md) 实体字段词典 |
@@ -68,12 +68,17 @@ crate 还在记录初始化 `0x00860360` 上安装 Hook（安装前校验共享�
 `dat/monster-ai/maps/<map>/<species>/main.mhai` 生成的私有块，并按私有状态表和 actor
 `+A10` 重算游标。原生初始化先跑完，覆盖后生效。
 
-每个 `(map, species)` 在首次取用时读取工程，地图入口不存在时回退到
+每个 `(map, species, 原生块地址)` 在首次取用时读取工程，地图入口不存在时回退到
 `dat/monster-ai/common/<species>/main.mhai`（见 [DSL 规范](docs/dsl-spec.md)），解析、编译，
 再在活着的物种块上叠出私有块；没有 `base native;` 的文件被拒绝。文件不存在
 时该格保持原生并记住"没有文件"；文件存在但解析或绑定失败是硬错误，该 actor
-保持原生、每次生成都记录并重试，改好文件后不必重开会话。species 大于 `0x83`
-的 actor 不走这张表，直接跳过。
+保持原生、每次生成都记录并重试，改好文件后不必重开会话。
+
+自动覆盖不以 `131` 为物种上限。`0–131` 从地图行表取原生块，`132–176` 由
+`0x1086E100` 选择，两条路径都在上述初始化函数内写入相同的 actor 字段，随后使用
+同一绑定流程。物种 `166` 还根据任务状态选择原生块，因此缓存包含实际块地址，
+保证各块分别继承原生内容。原生选择器对 `136` 和 `177` 以上返回空指针；这些 ID
+需要先补齐有效原生基座及其他物种数据，自动覆盖本身不提供新物种初始化能力。
 
 AI Hook 与上限补丁共用生命周期：attach 先写补丁再装 Hook，Hook 安装失败时
 回滚补丁；detach 反序卸载。

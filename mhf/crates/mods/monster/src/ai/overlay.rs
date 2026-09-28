@@ -10,18 +10,25 @@
 //! `+9F0` exists in the client, and no reader caches a table pointer across
 //! calls.
 //!
-//! The files are read from the session's own data root (spec §8.3); the
-//! descriptor they inherit is the one the actor just selected, which is why a
-//! binding is built per `(map, species)` on first use and kept for the session.
+//! The files are read from the session's own data root; the
+//! descriptor they inherit is the one the actor just selected: species through
+//! 131 use the map row, while 132..=176 use `0x1086E100`. Both paths publish the
+//! same descriptor layout. Bindings are kept per `(map, species, descriptor)`
+//! for the session because species 166 can select different native blocks for
+//! the same map according to quest state.
 
-use crate::ai::bind::{Arena, NativeMemory};
-use crate::ai::{Base, Error as AiError};
+use crate::ai::{
+    Base, Error as AiError,
+    bind::{self, Arena, NativeMemory},
+    dsl::Project,
+};
 use crate::native::{put, read, verify_image};
 use mhf_hooks::{HookGuard, HookSlot, ModuleReference};
 use std::{
     collections::HashMap,
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
+    path::Path,
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicUsize, Ordering},
@@ -38,9 +45,6 @@ const INIT_SIGNATURE: [u8; 8] = [0x8a, 0x56, 0x03, 0xa1, 0x3c, 0xff, 0x7f, 0x1e]
 /// (`0x10AA5D19` writes it).
 const SESSION: usize = 0x0e7f_ff3c;
 const MAP_ID: usize = 0x34;
-/// Above this species the client leaves the shared row table and selects a
-/// per-species block, so a row overlay does not apply (spec §8.2).
-const SPECIES_LIMIT: u8 = 0x83;
 /// Actor offset of the selected species (`[actor+3]`).
 const SPECIES: usize = 0x03;
 /// Actor fields the initializer derives from the block.
@@ -48,7 +52,7 @@ const DESCRIPTOR: usize = 0x09f0;
 const SCRIPT: usize = 0x09f4;
 const STATE: usize = 0x0a10;
 const CURSOR: usize = 0x0a5c;
-/// Where the install layer expects `(map, species)` files (spec §8.3).
+/// Project root, with map-specific and common species directories.
 const ROOT: &str = "dat/monster-ai";
 
 static SLOT: HookSlot<State> = HookSlot::new();
@@ -56,8 +60,8 @@ static SLOT: HookSlot<State> = HookSlot::new();
 /// it has entered an invocation.
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
-/// One cell's overlay, or `None` once the layer decided the cell has none.
-type Bindings = Mutex<HashMap<(u32, u8), Option<Arc<Bound>>>>;
+/// Cached overlays indexed by `(map, species, native descriptor)`.
+type Bindings = Mutex<HashMap<(u32, u8, u32), Option<Arc<Bound>>>>;
 
 /// Owns the installed hook. Removal needs every native caller stopped.
 pub(crate) struct Hook {
@@ -122,24 +126,19 @@ impl Drop for Hook {
     }
 }
 
-/// Retained callback state: the module it hooks and one binding per cell.
+/// Retained callback state: the module it hooks and bindings for native blocks.
 struct State {
     module: ModuleReference,
     base: usize,
-    /// `None` records "this cell has no file", so the two misses are not
-    /// re-read for every spawn. A file that exists but does not bind is *not*
-    /// cached: it is a hard error (spec §8.3), so the next spawn retries it and
-    /// a fixed file takes effect without restarting the session.
+    /// Missing projects are cached as `None`; errors are retried on the next
+    /// spawn, so fixing a file does not require restarting the session.
     bindings: Bindings,
 }
 
 impl State {
-    /// Overlay one actor's AI, if its cell has a file.
+    /// Overlay one actor's AI if its species has a project.
     unsafe fn apply(&self, actor: usize) -> Result<(), String> {
         let species = unsafe { read::<u8>(actor + SPECIES) };
-        if species > SPECIES_LIMIT {
-            return Ok(());
-        }
         let session = unsafe { read::<u32>(self.base + SESSION) } as usize;
         if session == 0 {
             return Err(format!("no session is loaded at {SESSION:#010x}"));
@@ -168,38 +167,41 @@ impl State {
         species: u8,
         descriptor: u32,
     ) -> Result<Option<Arc<Bound>>, String> {
+        let key = (map, species, descriptor);
         if let Some(cached) = self
             .bindings
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(&(map, species))
+            .get(&key)
         {
             return Ok(cached.clone());
         }
-        // A file that exists is an override, so its errors are propagated
-        // instead of being read as "no file". The actor keeps its native AI
-        // because there is no third state to publish, but the layer reports the
-        // failure on every spawn until the file binds.
-        let bound = self.load(map, species, descriptor)?.map(Arc::new);
+        let bound = Bound::load(map, species, descriptor)?.map(Arc::new);
         self.bindings
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert((map, species), bound.clone());
+            .insert(key, bound.clone());
         Ok(bound)
     }
+}
 
+/// One installed overlay. `_blocks` owns every word the game can now read, so it
+/// has to outlive the actors that were pointed at it.
+struct Bound {
+    descriptor: u32,
+    state_table: u32,
+    _blocks: Blocks,
+}
+
+impl Bound {
     /// Read, resolve imports, compile and bind one project. Only a missing
     /// map entry falls back to the same species' common project.
-    fn load(&self, map: u32, species: u8, descriptor: u32) -> Result<Option<Bound>, String> {
-        let Some(project) = crate::ai::dsl::Project::load(std::path::Path::new(ROOT), map, species)
-            .map_err(|error| error.to_string())?
+    fn load(map: u32, species: u8, descriptor: u32) -> Result<Option<Self>, String> {
+        let Some(project) =
+            Project::load(Path::new(ROOT), map, species).map_err(|error| error.to_string())?
         else {
             return Ok(None);
         };
-        self.compile(&project, descriptor).map(Some)
-    }
-
-    fn compile(&self, project: &crate::ai::dsl::Project, descriptor: u32) -> Result<Bound, String> {
         let path = &project.entry;
         let compiled = project
             .compile()
@@ -213,23 +215,14 @@ impl State {
             eprintln!("monster AI {path}: {warning}");
         }
         let mut blocks = Blocks::default();
-        let overlay =
-            crate::ai::bind::materialize(&compiled.program, descriptor, &Live, &mut blocks)
-                .map_err(|error| format!("{path}: {error}"))?;
-        Ok(Bound {
+        let overlay = bind::materialize(&compiled.program, descriptor, &Live, &mut blocks)
+            .map_err(|error| format!("{path}: {error}"))?;
+        Ok(Some(Self {
             descriptor: overlay.descriptor,
             state_table: overlay.state_table,
             _blocks: blocks,
-        })
+        }))
     }
-}
-
-/// One installed overlay. `_blocks` owns every word the game can now read, so it
-/// has to outlive the actors that were pointed at it.
-struct Bound {
-    descriptor: u32,
-    state_table: u32,
-    _blocks: Blocks,
 }
 
 /// The game's own address space, as the binding's read side.
