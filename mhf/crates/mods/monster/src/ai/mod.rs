@@ -16,7 +16,9 @@ use std::fmt;
 pub mod bind;
 pub mod bytecode;
 pub mod control;
+mod debug_bindings;
 pub mod decompile;
+pub use debug_bindings::matched_script_bindings;
 pub mod dsl;
 pub use dsl::slot::NativeSlot;
 #[cfg(all(feature = "provider", windows, target_arch = "x86"))]

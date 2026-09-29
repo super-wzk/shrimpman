@@ -518,7 +518,8 @@ pub(super) unsafe extern "thiscall" fn select_action(target: usize) -> i8 {
             unsafe { transmute(BASE.load(Ordering::Relaxed) + 0x008696d0) };
         return unsafe { original(target) };
     };
-    if target == state.controlled_monster.load(Ordering::Relaxed) && target != 0 {
+    let controlled = target != 0 && target == state.controlled_monster.load(Ordering::Relaxed);
+    if super::ai_debug::should_suspend(state, target, controlled) {
         return 0;
     }
     let original: unsafe extern "thiscall" fn(usize) -> i8 = unsafe { transmute(state.monster_ai) };

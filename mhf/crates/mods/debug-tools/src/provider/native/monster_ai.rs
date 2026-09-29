@@ -22,6 +22,7 @@ pub(super) struct Editor {
     retained: Vec<Blocks>,
     retained_bytes: usize,
     originals: Vec<(AiTarget, u32)>,
+    pub(super) debug_sources: Vec<super::ai_debug::InstalledSource>,
 }
 
 impl Editor {
@@ -36,6 +37,7 @@ impl Editor {
         self.epoch = self.epoch.wrapping_add(1);
         self.reply = None;
         self.originals.clear();
+        self.debug_sources.clear();
     }
 }
 
@@ -113,15 +115,34 @@ pub(super) unsafe fn execute(
             Ok(AiDocument {
                 descriptor,
                 source: Some(project),
-                message: "已读取工程；编辑后点击应用热替换。".into(),
+                message: "已读取工程；编辑后点击应用更改。".into(),
             })
         }
-        AiOperation::Inspect => inspect_document(
-            descriptor,
-            target.species,
-            unsafe { get(actor + 2576) },
-            map,
-        ),
+        AiOperation::Inspect => {
+            let document = inspect_document(
+                descriptor,
+                target.species,
+                unsafe { get(actor + 2576) },
+                map,
+            )?;
+            editor
+                .debug_sources
+                .retain(|source| source.target != target);
+            if let Some(source) = &document.source
+                && let Ok(compiled) = source.compile()
+                && let Ok(scripts) =
+                    ai::matched_script_bindings(&compiled.program, descriptor, &Live)
+                && !scripts.is_empty()
+            {
+                editor.debug_sources.push(super::ai_debug::InstalledSource {
+                    target,
+                    descriptor,
+                    debug_info: Arc::new(compiled.debug_info),
+                    scripts,
+                });
+            }
+            Ok(document)
+        }
         AiOperation::Apply {
             descriptor: expected,
             mut source,
@@ -155,9 +176,19 @@ pub(super) unsafe fn execute(
             }
             editor.retained_bytes += blocks.bytes;
             editor.retained.push(blocks);
+            super::ai_debug::invalidate_target(state, target, "AI 已热替换，请附加到新版本");
             unsafe {
                 publish(actor, overlay.descriptor, first);
             }
+            editor
+                .debug_sources
+                .retain(|source| source.target != target);
+            editor.debug_sources.push(super::ai_debug::InstalledSource {
+                target,
+                descriptor: overlay.descriptor,
+                debug_info: Arc::new(compiled.debug_info),
+                scripts: overlay.scripts,
+            });
             Ok(AiDocument {
                 descriptor: overlay.descriptor,
                 source: Some(source),
@@ -185,6 +216,10 @@ pub(super) unsafe fn execute(
             // Prepare the refreshed text before committing the restore.
             let mut document = inspect_document(original, target.species, 0, map)?;
             document.message = "已恢复首次热替换前的 AI，从状态 0 重新开始。".into();
+            super::ai_debug::invalidate_target(state, target, "已恢复原生 AI，请重新附加");
+            editor
+                .debug_sources
+                .retain(|source| source.target != target);
             unsafe {
                 publish(actor, original, first);
             }
@@ -338,7 +373,7 @@ unsafe fn publish(actor: usize, descriptor: u32, first: u32) {
     }
 }
 
-struct Live;
+pub(super) struct Live;
 
 impl Memory for Live {
     fn bytes(&self, address: u32, length: usize) -> ai::Result<Vec<u8>> {

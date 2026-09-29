@@ -40,6 +40,10 @@ impl Action {
 }
 
 enum DebugCommand {
+    AiDebug {
+        target: AiTarget,
+        operation: AiDebugOperation,
+    },
     MonsterAi {
         request: u64,
         target: AiTarget,
@@ -146,6 +150,30 @@ struct AiTarget {
     species: u8,
 }
 
+enum AiDebugOperation {
+    Attach,
+    Detach,
+    Pause,
+    Continue,
+    StepInstruction,
+    RunUntilYield,
+    ClearTrace,
+    SetBreakpoints(Vec<mhf_ai_debug::Breakpoint>),
+    SourceBreakpoint { path: String, line: usize },
+}
+
+#[derive(Clone)]
+struct AiDebugSnapshot {
+    target: AiTarget,
+    attached: bool,
+    state: mhf_ai_debug::Snapshot,
+    paused: bool,
+    reason: String,
+    recording: mhf_ai_debug::Recording,
+    breakpoints: Vec<mhf_ai_debug::Breakpoint>,
+    debug_info: Arc<mhf_monster::ai::dsl::DebugInfo>,
+}
+
 #[derive(Clone)]
 struct MonsterStatus {
     target: AiTarget,
@@ -214,6 +242,7 @@ pub(crate) struct DebugSnapshot {
     ai_targets: Vec<AiTarget>,
     monster_statuses: Vec<MonsterStatus>,
     ai_reply: Option<Arc<AiReply>>,
+    ai_debug: Option<Arc<AiDebugSnapshot>>,
 }
 
 #[derive(Default)]

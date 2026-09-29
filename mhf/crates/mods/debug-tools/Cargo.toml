@@ -9,7 +9,7 @@ default = []
 headers = ["mhf-mod-sdk/headers"]
 provider = [
     "dep:mhf-base", "dep:egui", "dep:egui-hunter", "dep:mhf-font", "dep:mhf-hooks",
-    "dep:mhf-mod-host", "dep:mhf-quest", "dep:mhf-ui", "dep:windows", "dep:mhf-monster",
+    "dep:mhf-mod-host", "dep:mhf-quest", "dep:mhf-ui", "dep:windows", "dep:mhf-monster", "dep:mhf-ai-debug",
 ]
 
 [dependencies]
@@ -18,6 +18,7 @@ mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
 safer-ffi = { workspace = true, features = ["dyn-traits"] }
 
 [target.'cfg(windows)'.dependencies]
+mhf-ai-debug = { path = "../../shared/ai-debug", optional = true }
 mhf-monster = { path = "../monster", optional = true }
 mhf-base = { path = "../base", optional = true }
 egui = { workspace = true, optional = true }

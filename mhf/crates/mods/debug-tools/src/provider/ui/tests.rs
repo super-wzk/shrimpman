@@ -157,6 +157,8 @@ fn monster_species_picker_sends_only_the_selected_instance_and_preserves_failed_
         }),
     }));
     ui.frame(vec![]);
+    ui.click("更多");
+    ui.click("怪物管理");
     ui.click("菌猪 ▾");
     ui.click("搜索名称或编号");
     let popup_id = Id::new("replacement-species").with("popup");
@@ -213,7 +215,7 @@ fn monster_species_picker_sends_only_the_selected_instance_and_preserves_failed_
         result: Err("资源槽已满".into()),
     }));
     ui.frame(vec![]);
-    ui.click("应用热替换");
+    ui.click("应用更改");
     let commands = ui.window.control.commands();
     assert!(
         matches!(commands.as_slice(), [DebugCommand::MonsterAi { operation: AiOperation::Apply { source: actual, .. }, .. }]
@@ -1056,7 +1058,7 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
         panic!("missing inspection");
     };
     assert_eq!(*selected, target);
-    ui.click("应用热替换");
+    ui.click("应用更改");
     assert!(ui.window.control.commands().is_empty());
     ui.snapshot.ai_reply = Some(Arc::new(AiReply {
         request: *request,
@@ -1072,7 +1074,7 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
         }),
     }));
     ui.frame(vec![]);
-    ui.click("应用热替换");
+    ui.click("应用更改");
     let commands = ui.window.control.commands();
     let [
         DebugCommand::MonsterAi {
@@ -1096,13 +1098,94 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
         result: Err("测试编译失败".into()),
     }));
     ui.frame(vec![]);
-    ui.click("应用热替换");
+    ui.click("应用更改");
     let commands = ui.window.control.commands();
     assert!(
         matches!(commands.as_slice(), [DebugCommand::MonsterAi { operation: AiOperation::Apply { source: actual, .. }, .. }] if actual.files[0].source == source)
     );
     ui.snapshot.ai_targets[0].serial += 1;
     ui.frame(vec![]);
-    ui.click("应用热替换");
+    ui.click("应用更改");
     assert!(ui.window.control.commands().is_empty());
+}
+
+#[test]
+fn monster_selector_refreshes_source_and_moves_the_attached_debugger() {
+    use crate::provider::{
+        AiDebugOperation, AiDebugSnapshot, AiDocument, AiOperation, AiReply, AiTarget,
+    };
+    let first = AiTarget {
+        epoch: 1,
+        pool: 0x1000,
+        slot: 1,
+        serial: 1,
+        model: 0x2000,
+        species: 6,
+    };
+    let second = AiTarget { slot: 2, ..first };
+    let state = mhf_ai_debug::Snapshot::default();
+    let mut ui = DebugUi::new(DebugSnapshot {
+        ready: true,
+        ai_targets: vec![first, second],
+        ..Default::default()
+    });
+    ui.window.page = 5;
+    ui.frame(vec![]);
+    let initial = ui.window.control.commands();
+    let [DebugCommand::MonsterAi { request, .. }] = initial.as_slice() else {
+        panic!("missing initial inspect");
+    };
+    let reply = |request, target, source: &str| {
+        Arc::new(AiReply {
+            request,
+            target,
+            result: Ok(AiDocument {
+                descriptor: 0x3000,
+                source: Some(mhf_monster::ai::dsl::Project::single(
+                    None,
+                    6,
+                    source.into(),
+                )),
+                message: String::new(),
+            }),
+        })
+    };
+    ui.snapshot.ai_reply = Some(reply(*request, first, "script_for_first"));
+    ui.snapshot.ai_debug = Some(Arc::new(AiDebugSnapshot {
+        target: first,
+        attached: true,
+        paused: true,
+        state: state.clone(),
+        recording: mhf_ai_debug::Recording::empty(state),
+        reason: String::new(),
+        breakpoints: vec![],
+        debug_info: Default::default(),
+    }));
+    ui.frame(vec![]);
+    ui.click("#1 大怪鸟");
+    ui.click("#2 大怪鸟");
+    let commands = ui.window.control.commands();
+    let [
+        DebugCommand::AiDebug {
+            target: detached,
+            operation: AiDebugOperation::Detach,
+        },
+        DebugCommand::MonsterAi {
+            target: inspected,
+            request,
+            operation: AiOperation::Inspect,
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("selection did not switch debugger and script");
+    };
+    assert_eq!(*detached, first);
+    assert_eq!(*inspected, second);
+    assert!(!ui.texts.iter().any(|(text, _)| text == "script_for_first"));
+    ui.snapshot.ai_reply = Some(reply(*request, second, "script_for_second"));
+    ui.frame(vec![]);
+    assert!(ui.texts.iter().any(|(text, _)| text == "script_for_second"));
+    assert!(
+        matches!(ui.window.control.commands().as_slice(), [DebugCommand::AiDebug { target, operation: AiDebugOperation::Attach }] if *target == second)
+    );
 }

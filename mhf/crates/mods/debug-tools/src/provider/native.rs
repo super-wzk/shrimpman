@@ -1,3 +1,4 @@
+mod ai_debug;
 mod area;
 mod combat;
 mod monster;
@@ -45,6 +46,7 @@ pub(crate) struct State {
     camera_pitch: AtomicU32,
     controlled_monster: AtomicUsize,
     runtime: Mutex<Runtime>,
+    ai_debug: Mutex<ai_debug::Runtime>,
 }
 
 #[derive(Default)]
@@ -121,7 +123,11 @@ const SIGNATURES: &[(usize, &[u8])] = &[
 ];
 
 unsafe fn validate(base: usize) -> Result<(), String> {
-    for &(rva, expected) in SIGNATURES.iter().chain(equipment::SIGNATURES) {
+    for &(rva, expected) in SIGNATURES
+        .iter()
+        .chain(equipment::SIGNATURES)
+        .chain(ai_debug::SIGNATURES)
+    {
         if unsafe { std::slice::from_raw_parts((base + rva) as *const u8, expected.len()) }
             != expected
         {
@@ -168,6 +174,7 @@ pub(crate) unsafe fn install(
             monster::select_action as *mut c_void,
         )
     }?;
+    unsafe { ai_debug::install(&mut hooks, base) }?;
     let hunter_update = unsafe {
         hooks.create(
             "debug hunter suspension",
@@ -236,6 +243,7 @@ pub(crate) unsafe fn install(
             camera_pitch: AtomicU32::new(60.0_f32.to_bits()),
             controlled_monster: AtomicUsize::new(0),
             runtime: Mutex::new(Runtime::default()),
+            ai_debug: Mutex::new(ai_debug::Runtime::default()),
         })
     }
 }
@@ -269,6 +277,7 @@ unsafe fn restart(state: &State, runtime: &mut Runtime) -> Result<(), String> {
     unsafe {
         equipment::refresh_resource_indices(state.model())?;
         runtime.ai.invalidate();
+        ai_debug::invalidate(state, "任务重开，调试会话已结束");
         runtime.action_definition = None;
         monster::release(state, runtime);
         *state.combat.lock().unwrap_or_else(PoisonError::into_inner) = Default::default();
@@ -381,6 +390,7 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
         ai_targets: Vec::new(),
         monster_statuses: Vec::new(),
         ai_reply: runtime.ai.reply.clone(),
+        ai_debug: ai_debug::snapshot(state),
     };
     if let Some(control) = &runtime.monster {
         snapshot.monster = Some(control.species);
@@ -471,6 +481,19 @@ unsafe extern "C" fn dispatch() -> i32 {
             for command in state.control.commands() {
                 let current = snapshot(state, &runtime);
                 let _: Result<(), String> = match command {
+                    DebugCommand::AiDebug { target, operation } => {
+                        if current.ready && current.ai_targets.contains(&target) {
+                            let source = runtime
+                                .ai
+                                .debug_sources
+                                .iter()
+                                .find(|source| source.target == target);
+                            ai_debug::command(state, target, operation, source);
+                        } else {
+                            ai_debug::invalidate_target(state, target, "当前任务或怪物实例已失效");
+                        }
+                        Ok(())
+                    }
                     DebugCommand::MonsterAi {
                         request,
                         target,
@@ -675,6 +698,8 @@ unsafe extern "C" fn dispatch() -> i32 {
                 };
             }
             monster::before_frame(state, &mut runtime);
+            let targets = monster_ai::targets(state, runtime.ai.epoch);
+            ai_debug::before_frame(state, &targets);
         }
         let original: unsafe extern "C" fn() -> i32 = transmute(state.dispatch);
         let result = original();
@@ -706,18 +731,23 @@ fn session_started(state: &State) -> bool {
 
 #[cfg(test)]
 mod hook_tests {
-    use super::{SIGNATURES, equipment, validate};
+    use super::{SIGNATURES, ai_debug, equipment, validate};
 
     #[test]
     fn debug_validation_does_not_revalidate_the_already_hooked_offline_bootstrap() {
         let size = SIGNATURES
             .iter()
             .chain(equipment::SIGNATURES)
+            .chain(ai_debug::SIGNATURES)
             .map(|(rva, bytes)| rva + bytes.len())
             .max()
             .unwrap();
         let mut image = vec![0; size];
-        for &(rva, bytes) in SIGNATURES.iter().chain(equipment::SIGNATURES) {
+        for &(rva, bytes) in SIGNATURES
+            .iter()
+            .chain(equipment::SIGNATURES)
+            .chain(ai_debug::SIGNATURES)
+        {
             image[rva..rva + bytes.len()].copy_from_slice(bytes);
         }
         image[0x008d25a0..0x008d25a8].fill(0xe9);

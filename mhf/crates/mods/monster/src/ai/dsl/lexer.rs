@@ -30,6 +30,10 @@ pub(super) struct Token {
     pub(super) kind: TokenKind,
     pub(super) line: usize,
     pub(super) column: usize,
+    pub(super) offset: usize,
+    pub(super) end_offset: usize,
+    pub(super) end_line: usize,
+    pub(super) end_column: usize,
 }
 
 impl Token {
@@ -59,6 +63,7 @@ impl<'a> Lexer<'a> {
         let mut tokens = Vec::new();
         loop {
             self.skip_trivia();
+            let offset = self.offset;
             let line = self.line;
             let column = self.column;
             let Some(byte) = self.peek() else {
@@ -66,6 +71,10 @@ impl<'a> Lexer<'a> {
                     kind: TokenKind::Eof,
                     line,
                     column,
+                    offset,
+                    end_offset: offset,
+                    end_line: line,
+                    end_column: column,
                 });
                 return Ok(tokens);
             };
@@ -165,7 +174,15 @@ impl<'a> Lexer<'a> {
                     ));
                 }
             };
-            tokens.push(Token { kind, line, column });
+            tokens.push(Token {
+                kind,
+                line,
+                column,
+                offset,
+                end_offset: self.offset,
+                end_line: self.line,
+                end_column: self.column,
+            });
         }
     }
 

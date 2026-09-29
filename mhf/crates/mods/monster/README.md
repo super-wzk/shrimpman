@@ -20,6 +20,8 @@ attach、回滚和 detach 的顺序。功能各自的代码不放在源码根目
 | `native.rs` | 共享原语：游戏内存的定长读写与已验证构建的 PE 指纹 |
 | `ai/mod.rs` | `Program`／`Node`／`Table`／`Base` 与 `validate_lossless` |
 | `ai/dsl/` | 多文件工程：词法、语法、命名空间解析及函数展开；`Project::load` → `Project::compile` → `Program` |
+| `ai/dsl/debug_info.rs` | 编译产物的源码文件、指令范围和生成标记；支持一条源语句对应多个执行位置 |
+| `ai/debug_bindings.rs` | 对声明槽位的原生脚本逐字节比对，返回可绑定源码的地址范围，不发布或修改脚本 |
 | `ai/bind.rs` | 把 `base native;` 声明叠到活块上：读窗口、写私有 descriptor／状态表／事件格与脚本 |
 | `ai/bytecode.rs` | 已命名 opcode、选择子宽度与 `is_stop` |
 | `ai/decompile.rs` | 有界读取可追踪状态与事件入口，生成函数式 DSL 并校验字节往返；这是部分提取，未知语义使用 `native(...)` |

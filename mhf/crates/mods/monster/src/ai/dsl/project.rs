@@ -233,6 +233,7 @@ impl Project {
             }
             for function in &document.functions {
                 let mut function = function.clone();
+                function.source.path = file.path.clone();
                 if function.name != "main" {
                     function.name = qualify(&file.path, &function.name);
                 }
@@ -250,6 +251,16 @@ impl Project {
                 }
             }
         }
+        entry.source_files = self
+            .files
+            .iter()
+            .filter(|file| visited.contains(&file.path))
+            .cloned()
+            .collect();
+        // Declaration anchors use the entry even if caller-supplied files are reordered.
+        entry
+            .source_files
+            .sort_by_key(|file| file.path != self.entry);
         entry.compile()
     }
 }
@@ -290,6 +301,7 @@ fn qualify(path: &str, name: &str) -> String {
 
 fn rewrite(body: &mut [Statement], path: &str, imports: &HashMap<&str, String>) -> Result<()> {
     for statement in body {
+        statement.source.path = path.into();
         match &mut statement.kind {
             StatementKind::Call {
                 callee: Callee::Name(name),

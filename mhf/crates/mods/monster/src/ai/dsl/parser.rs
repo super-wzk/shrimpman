@@ -7,13 +7,14 @@ use super::compile::is_reserved_command;
 use super::condition::{Condition, Degrees, Mode};
 use super::lexer::{Lexer, Token, TokenKind};
 use super::target::{Direction, EntityTarget, PointTarget};
-use super::{EVENT_SLOT_COUNT, VERSION};
+use super::{EVENT_SLOT_COUNT, SourceFile, SourceLocation, VERSION};
 use crate::ai::control::EVENT_SLOTS;
 use crate::ai::{Base, Error, Result};
 
 /// One parsed document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
+    pub(super) source_files: Vec<SourceFile>,
     pub(crate) native_functions: HashMap<String, super::slot::NativeSlot>,
     pub version: u32,
     pub species: u8,
@@ -30,6 +31,7 @@ pub struct Document {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
+    pub(super) source: SourceLocation,
     pub name: String,
     pub body: Vec<Statement>,
     /// `handler fn`: a native request handler with its own return contract.
@@ -82,6 +84,7 @@ pub struct StateDecl {
 /// One statement inside a block body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Statement {
+    pub(super) source: SourceLocation,
     pub kind: StatementKind,
     pub line: usize,
     pub column: usize,
@@ -219,15 +222,17 @@ pub(super) fn parse_module(source: &str) -> Result<Document> {
     Parser::new(source)?.parse(true)
 }
 
-struct Parser {
+struct Parser<'a> {
+    source: &'a str,
     tokens: Vec<Token>,
     position: usize,
     body_depth: usize,
 }
 
-impl Parser {
-    fn new(source: &str) -> Result<Self> {
+impl<'a> Parser<'a> {
+    fn new(source: &'a str) -> Result<Self> {
         Ok(Self {
+            source,
             tokens: Lexer::new(source).lex()?,
             position: 0,
             body_depth: 0,
@@ -279,6 +284,10 @@ impl Parser {
         };
 
         let mut document = Document {
+            source_files: vec![SourceFile {
+                path: "<source>".into(),
+                source: self.source.to_owned(),
+            }],
             native_functions: HashMap::new(),
             version,
             species,
@@ -366,9 +375,11 @@ impl Parser {
                 self.expect(&TokenKind::LeftParen, "'('")?;
                 self.expect(&TokenKind::RightParen, "')' (functions have no parameters)")?;
                 self.expect(&TokenKind::LeftBrace, "'{'")?;
+                let body = self.parse_body()?;
                 document.functions.push(Function {
+                    source: self.source_location(&name),
                     name: identifier(&name)?.into(),
-                    body: self.parse_body()?,
+                    body,
                     handler,
                     line: name.line,
                     column: name.column,
@@ -544,6 +555,7 @@ impl Parser {
             "';' after function reference (without parentheses)",
         )?;
         Ok(Statement {
+            source: self.source_location(&token),
             kind: StatementKind::Call {
                 callee: Callee::Name(name),
                 args: Vec::new(),
@@ -556,8 +568,10 @@ impl Parser {
     fn entry_reference(&mut self) -> Result<Statement> {
         let token = self.current().clone();
         if self.consume(&TokenKind::LeftBrace) {
+            let body = self.parse_body()?;
             Ok(Statement {
-                kind: StatementKind::EntryBody(self.parse_body()?),
+                source: self.source_location(&token),
+                kind: StatementKind::EntryBody(body),
                 line: token.line,
                 column: token.column,
             })
@@ -566,8 +580,32 @@ impl Parser {
         }
     }
 
+    fn source_location(&self, start: &Token) -> SourceLocation {
+        let end = &self.tokens[self.position.saturating_sub(1)];
+        SourceLocation {
+            path: "<source>".into(),
+            function: String::new(),
+            line: start.line,
+            column: start.column,
+            end_line: end.end_line,
+            end_column: end.end_column,
+            byte_start: start.offset,
+            byte_end: end.end_offset,
+        }
+    }
+
     fn parse_statement(&mut self) -> Result<Statement> {
         let token = self.current().clone();
+        let kind = self.parse_statement_kind(&token)?;
+        Ok(Statement {
+            source: self.source_location(&token),
+            kind,
+            line: token.line,
+            column: token.column,
+        })
+    }
+
+    fn parse_statement_kind(&mut self, token: &Token) -> Result<StatementKind> {
         let name = match &token.kind {
             TokenKind::Word(word) => word.clone(),
             _ => {
@@ -577,12 +615,6 @@ impl Parser {
             }
         };
         self.advance();
-        let position = |kind: StatementKind| Statement {
-            kind,
-            line: token.line,
-            column: token.column,
-        };
-
         match name.as_str() {
             "context" => Err(token.error("context.query(id) is only valid as a match selector")),
             "handle" => {
@@ -593,11 +625,11 @@ impl Parser {
                 self.expect_keyword("then")?;
                 self.expect(&TokenKind::LeftBrace, "'{' after then")?;
                 let then_body = self.parse_body()?;
-                Ok(position(StatementKind::Handle { handler, then_body }))
+                Ok(StatementKind::Handle { handler, then_body })
             }
             "pass" => {
                 self.expect(&TokenKind::Semicolon, "';'")?;
-                Ok(position(StatementKind::Pass))
+                Ok(StatementKind::Pass)
             }
             "if" => {
                 let namespace = self.take_word("self or context")?;
@@ -676,16 +708,16 @@ impl Parser {
                 } else {
                     None
                 };
-                Ok(position(StatementKind::If {
+                Ok(StatementKind::If {
                     condition,
                     then_body,
                     else_body,
-                }))
+                })
             }
             "else" => Err(token.error("else must immediately follow an if block")),
             "return" => {
                 self.expect(&TokenKind::Semicolon, "';'")?;
-                Ok(position(StatementKind::Return))
+                Ok(StatementKind::Return)
             }
             "transition" => {
                 if self.peek_is(&TokenKind::LeftParen) {
@@ -696,7 +728,7 @@ impl Parser {
                 let target = self.take_word("state name")?;
                 let state = identifier(&target)?.to_owned();
                 self.expect(&TokenKind::Semicolon, "';'")?;
-                Ok(position(StatementKind::Transition { state }))
+                Ok(StatementKind::Transition { state })
             }
             "restart" | "end" => {
                 if self.peek_is(&TokenKind::LeftParen) {
@@ -709,13 +741,13 @@ impl Parser {
                     self.advance();
                 }
                 self.expect(&TokenKind::Semicolon, "';'")?;
-                Ok(position(if forget_target {
+                Ok(if forget_target {
                     StatementKind::ResetForgetTarget
                 } else if name == "end" {
                     StatementKind::Reset
                 } else {
                     StatementKind::Restart
-                }))
+                })
             }
             "match" => {
                 /// The byte-match selectors share one layout; they differ only in
@@ -800,7 +832,7 @@ impl Parser {
                         return Err(token.error("target angle match requires 1..255 cases"));
                     }
                     self.body_depth -= 1;
-                    return Ok(position(StatementKind::TargetAngle { branches, fallback }));
+                    return Ok(StatementKind::TargetAngle { branches, fallback });
                 }
                 let area_route =
                     !context_match && self.current_word() == Some("area_route_profile");
@@ -867,7 +899,7 @@ impl Parser {
                         branches.push((value, self.parse_branch_body()?));
                     };
                     self.body_depth -= 1;
-                    return Ok(position(selector.kind(branches, fallback)));
+                    return Ok(selector.kind(branches, fallback));
                 }
                 if area_route || context_match {
                     let argument = if area_route {
@@ -911,14 +943,14 @@ impl Parser {
                         branches.push((value, self.parse_branch_body()?));
                     };
                     self.body_depth -= 1;
-                    return Ok(position(match argument {
+                    return Ok(match argument {
                         Some(argument) => StatementKind::ContextQuery {
                             argument,
                             branches,
                             fallback,
                         },
                         None => StatementKind::AreaRouteProfile { branches, fallback },
-                    }));
+                    });
                 }
                 self.expect_keyword("target_distance_group")?;
                 self.expect(&TokenKind::LeftParen, "'('")?;
@@ -951,7 +983,7 @@ impl Parser {
                     }
                 }
                 self.body_depth -= 1;
-                Ok(position(StatementKind::TargetDistanceGroups(branches)))
+                Ok(StatementKind::TargetDistanceGroups(branches))
             }
             "random" => {
                 if self.body_depth >= 64 {
@@ -973,7 +1005,7 @@ impl Parser {
                     return Err(token.error("random requires at least one branch"));
                 }
                 self.body_depth -= 1;
-                Ok(position(StatementKind::Random(branches)))
+                Ok(StatementKind::Random(branches))
             }
             "self" => {
                 self.expect(&TokenKind::Dot, "'.' after self")?;
@@ -1106,10 +1138,10 @@ impl Parser {
                         let parameter = byte(parameter, &token, "action parameter")?;
                         self.expect(&TokenKind::RightParen, "')' after action arguments")?;
                         self.expect(&TokenKind::Semicolon, "';'")?;
-                        return Ok(position(StatementKind::Call {
+                        return Ok(StatementKind::Call {
                             callee: Callee::Action { group, id },
                             args: vec![parameter],
-                        }));
+                        });
                     }
                     _ => return Err(method.error(format!(
                         "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, bind_target_area, bind_target_ground_point, set_mode, resolve_target, replenish_recovery_meter, replenish_foraging_meter, init_area_change, try_change_area, bind_scanned_object, clear_undetected_player_tracking_timers, select_perception_profile or increment_random_value"
@@ -1120,7 +1152,7 @@ impl Parser {
                     &format!("')' after {name} arguments"),
                 )?;
                 self.expect(&TokenKind::Semicolon, "';'")?;
-                Ok(position(kind))
+                Ok(kind)
             }
             _ => {
                 let name = self.qualified_name(name)?;
@@ -1132,12 +1164,12 @@ impl Parser {
                             "native() needs at least one byte: it is the escape hatch for commands that have no name yet (spec §5)",
                         ));
                     }
-                    Ok(position(StatementKind::Native { bytes: args }))
+                    Ok(StatementKind::Native { bytes: args })
                 } else {
-                    Ok(position(StatementKind::Call {
+                    Ok(StatementKind::Call {
                         callee: Callee::Name(name),
                         args,
-                    }))
+                    })
                 }
             }
         }

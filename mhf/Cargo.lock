@@ -1670,6 +1670,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mhf-ai-debug"
+version = "0.1.0"
+dependencies = [
+ "mhf-monster",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mhf-ai-decompile"
 version = "0.1.0"
 dependencies = [
@@ -1737,6 +1746,7 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "egui-hunter",
+ "mhf-ai-debug",
  "mhf-base",
  "mhf-font",
  "mhf-hooks",

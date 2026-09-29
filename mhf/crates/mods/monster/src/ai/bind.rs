@@ -69,7 +69,7 @@ pub trait Arena {
 }
 
 /// Where a materialised binding put its descriptor and state table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Overlay {
     /// Address to store in the actor's descriptor field.
     pub descriptor: u32,
@@ -77,6 +77,15 @@ pub struct Overlay {
     /// private copy when the document declares states, and the native table
     /// otherwise.
     pub state_table: u32,
+    /// Final script allocations, after automatic call-slot relocation.
+    pub scripts: Vec<ScriptBinding>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptBinding {
+    pub node: usize,
+    pub address: u32,
+    pub length: usize,
 }
 
 /// Overlay a `base native;` declaration onto the live descriptor at `address`.
@@ -232,9 +241,24 @@ pub fn materialize(
     for (address, block) in addresses.iter().zip(&words) {
         arena.write(*address, block)?;
     }
+    let mut scripts: Vec<_> = scripts
+        .into_iter()
+        .map(|(node, block)| {
+            let Node::Script(bytes) = &program.nodes[node] else {
+                unreachable!("script allocations reference validated script nodes")
+            };
+            ScriptBinding {
+                node,
+                address: addresses[block],
+                length: bytes.len(),
+            }
+        })
+        .collect();
+    scripts.sort_by_key(|binding| binding.node);
     Ok(Overlay {
         descriptor: addresses[descriptor],
         state_table: words[descriptor][MAIN_ROOT_INDEX],
+        scripts,
     })
 }
 

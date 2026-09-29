@@ -9,6 +9,7 @@
 mod allocation;
 mod compile;
 pub(crate) mod condition;
+mod debug_info;
 mod lexer;
 pub(crate) mod parser;
 mod project;
@@ -17,6 +18,7 @@ mod project_tests;
 pub(crate) mod slot;
 pub(crate) mod target;
 
+pub use debug_info::{DebugInfo, SourceLocation, SourceMapping};
 pub use parser::parse;
 pub use project::{Project, SourceFile};
 

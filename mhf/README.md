@@ -7,7 +7,7 @@
 | --- | --- |
 | [`crates/mods/`](crates/mods/) | Config、Base、Login、Debug、Workbench、DatRedirect 运行 Mod，Font／UI／Quest／Geometry／Monster 组件，以及独立的 Unicode／Translation crate（不在应用运行清单中） |
 | [`crates/runtime/`](crates/runtime/) | 游戏会话、Mod 生命周期、公共 C 协议、Rust SDK、Hook 管理、包发现与依赖解析 |
-| [`crates/shared/`](crates/shared/) | [`egui-hunter`](crates/shared/egui-hunter/README.md) 组件与 [`resource`](crates/shared/resource/README.md) 游戏资源类型 |
+| [`crates/shared/`](crates/shared/) | [`egui-hunter`](crates/shared/egui-hunter/README.md) 组件、[`resource`](crates/shared/resource/README.md) 游戏资源类型与 [`ai-debug`](crates/shared/ai-debug/README.md) 断点、轨迹与录制回放 |
 | [`crates/apps/`](crates/apps/) | 游戏入口 [`launcher`](crates/apps/launcher/README.md)、独立管理器 [`mod-manager`](crates/apps/mod-manager/README.md)、离线 AI 导出 [`ai-decompile`](crates/apps/ai-decompile/README.md) 及共享内建清单 [`launcher-catalog`](crates/apps/launcher-catalog/README.md) |
 
 ## 领域 API 与提供方

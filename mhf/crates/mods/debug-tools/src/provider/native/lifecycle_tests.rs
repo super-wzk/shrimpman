@@ -21,7 +21,7 @@ fn supported_client_keeps_quest_and_debug_hook_lifetimes_separate() {
     let offline_rvas = [0x008d25a0, 0x01501c30, 0x00817950];
     let debug_rvas = [
         0x008fcee0, 0x0089e510, 0x008696d0, 0x00a5b800, 0x00baee10, 0x00b7b570, 0x008b6bf0,
-        0x008b7b60, 0x00846ca0,
+        0x008b7b60, 0x00846ca0, 0x008696ee, 0x00869723, 0x0086a077,
     ];
     let offline_originals = offline_rvas.map(entry);
     let debug_originals = debug_rvas.map(entry);
@@ -59,6 +59,14 @@ fn supported_client_keeps_quest_and_debug_hook_lifetimes_separate() {
             !control.snapshot().hunter_initialized,
             "install must not bootstrap the hunter or read the catalog"
         );
+        {
+            let invocation = super::SLOT.enter();
+            unsafe {
+                super::ai_debug::tests::exercise_supported_native_dispatch(
+                    invocation.state().unwrap(),
+                );
+            }
+        }
         for (rva, original) in debug_rvas.into_iter().zip(&debug_originals) {
             assert_ne!(entry(rva), *original, "debug entry {rva:#x} was not hooked");
         }

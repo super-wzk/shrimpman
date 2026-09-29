@@ -3199,3 +3199,124 @@ fn ordinary_pass_matches_mark_unhandled_and_return() {
         }
     }
 }
+
+#[test]
+fn source_maps_keep_imported_identity_spans_and_explicit_returns() {
+    let entry = "mhf_ai 1;\nspecies 6;\nmap 31;\nimport \"helper.mhai\" as h;\nfn main() {\n    h.act();\n}\n";
+    let module = "fn act() {\n    native(0x92, 0x48, 3);\n    return;\n}\n";
+    let mut p = project(entry, &[("maps/31/6/helper.mhai", module)]);
+    // File order does not define identity or which file owns entry declarations.
+    p.files.reverse();
+    let compiled = p.compile().unwrap();
+    let info = &compiled.debug_info;
+    assert_eq!(info.files[0].path, p.entry);
+    assert_eq!(info.files.len(), 2);
+    let native: Vec<_> = info.positions("maps/31/6/helper.mhai", 2).collect();
+    assert_eq!(native.len(), 2);
+    for mapping in &native {
+        assert_eq!(mapping.source.function, "act");
+        assert_eq!((mapping.source.line, mapping.source.column), (2, 5));
+        assert_eq!(
+            (mapping.source.end_line, mapping.source.end_column),
+            (2, 27)
+        );
+        assert_eq!(
+            &module[mapping.source.byte_start..mapping.source.byte_end],
+            "native(0x92, 0x48, 3);"
+        );
+        assert_eq!(info.lookup(mapping.script, mapping.end - 1), Some(*mapping));
+    }
+    assert_eq!((native[0].start, native[0].end), (0, 1));
+    assert_eq!((native[1].start, native[1].end), (1, 3));
+    let returned = info.positions("maps/31/6/helper.mhai", 3).next().unwrap();
+    let Node::Script(bytes) = &compiled.program.nodes[returned.script] else {
+        panic!()
+    };
+    assert_eq!(&bytes[returned.start..returned.end], [0xff, 1]);
+    assert_eq!(
+        &module[returned.source.byte_start..returned.source.byte_end],
+        "return;"
+    );
+    assert!(info.lookup(returned.script, returned.end).is_none());
+    let call = info.positions(&p.entry, 6).next().unwrap();
+    assert_eq!(call.source.function, "main");
+    assert_eq!(
+        &entry[call.source.byte_start..call.source.byte_end],
+        "h.act();"
+    );
+}
+
+#[test]
+fn source_maps_cover_each_emitted_instruction_once_and_distinguish_markers() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31;\nfn main() {\n    if self.flashed {\n        nop();\n    } else {\n        wait(2);\n    }\n}\n",
+        &[],
+    );
+    let compiled = p.compile().unwrap();
+    let info = &compiled.debug_info;
+    for (script, node) in compiled.program.nodes.iter().enumerate() {
+        let Node::Script(bytes) = node else { continue };
+        let instructions = crate::ai::bytecode::decode(bytes).unwrap();
+        for instruction in instructions {
+            let mapping = info.lookup(script, instruction.offset).unwrap();
+            assert_eq!(mapping.start, instruction.offset);
+            assert_eq!(mapping.end, instruction.offset + instruction.bytes.len());
+            if matches!(instruction.bytes.as_slice(), [0x35, 1 | 2] | [0xff, 0]) {
+                assert!(mapping.generated);
+            }
+        }
+        let mappings: Vec<_> = info
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.script == script)
+            .collect();
+        assert_eq!(mappings.first().unwrap().start, 0);
+        assert_eq!(mappings.last().unwrap().end, bytes.len());
+        assert!(mappings.windows(2).all(|pair| pair[0].end == pair[1].start));
+    }
+    assert_eq!(info.positions(&p.entry, 3).count(), 1);
+    assert_eq!(info.positions(&p.entry, 4).count(), 1);
+    assert_eq!(info.positions(&p.entry, 6).count(), 1);
+}
+
+#[test]
+fn source_maps_bind_every_copy_of_a_lowered_continuation() {
+    let p = project(
+        "mhf_ai 1; species 6; map 31;\nfn main() {\n    if self.flashed {\n        if self.active { return; }\n        wait(1);\n    }\n    wait(2);\n}\n",
+        &[],
+    );
+    let compiled = p.compile().unwrap();
+    let copies: Vec<_> = compiled.debug_info.positions(&p.entry, 7).collect();
+    assert_eq!(copies.len(), 2);
+    assert_ne!(copies[0].start, copies[1].start);
+    assert_eq!(copies[0].source, copies[1].source);
+    for mapping in copies {
+        let Node::Script(bytes) = &compiled.program.nodes[mapping.script] else {
+            panic!()
+        };
+        assert_eq!(&bytes[mapping.start..mapping.end], [0x48, 2]);
+    }
+}
+
+#[test]
+fn source_map_keeps_only_compiled_files_and_does_not_change_program_bytes() {
+    let source = "mhf_ai 1; species 6; map 31; fn main() { native(0x92, 0xff, 0); }";
+    let p = project(
+        source,
+        &[("maps/31/6/unused.mhai", "fn unused() { wait(9); }")],
+    );
+    let compiled = p.compile().unwrap();
+    assert_eq!(
+        compiled.program,
+        parse(source).unwrap().compile().unwrap().program
+    );
+    assert_eq!(compiled.debug_info.files, [p.files[0].clone()]);
+    assert_eq!(compiled.debug_info.positions(&p.entry, 1).count(), 2);
+    assert!(
+        compiled
+            .debug_info
+            .mappings
+            .iter()
+            .all(|mapping| !mapping.generated)
+    );
+}
