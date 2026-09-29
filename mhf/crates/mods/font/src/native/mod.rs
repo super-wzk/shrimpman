@@ -1,7 +1,9 @@
 //! Process-local GDI font registration and native layout corrections.
 
+mod dpi;
 mod gdi;
 
+pub(crate) use gdi::install_for_module;
 pub use gdi::{HookState, TextRenderer, corrected_y, install_game};
 
 use crate::{FAMILY_NAME, resources::BYTES};

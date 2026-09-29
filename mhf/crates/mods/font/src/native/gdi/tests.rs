@@ -34,18 +34,24 @@ struct Surface {
     old_font: HGDIOBJ,
     old_bitmap: HGDIOBJ,
     pixels: *mut u32,
+    width: i32,
+    height: i32,
 }
 
 impl Surface {
     fn new() -> Self {
+        Self::with_font(96, 64, c"Arial")
+    }
+
+    fn with_font(width: i32, height: i32, family: &CStr) -> Self {
         unsafe {
             let hdc = CreateCompatibleDC(ptr::null_mut());
             assert!(!hdc.is_null());
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: 96,
-                    biHeight: -64,
+                    biWidth: width,
+                    biHeight: -height,
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB,
@@ -77,7 +83,7 @@ impl Surface {
                 0,
                 DEFAULT_QUALITY as u32,
                 0,
-                c"Arial".as_ptr().cast(),
+                family.as_ptr().cast(),
             );
             assert!(!font.is_null());
             let old_bitmap = SelectObject(hdc, bitmap);
@@ -92,18 +98,25 @@ impl Surface {
                 old_font,
                 old_bitmap,
                 pixels: pixels.cast(),
+                width,
+                height,
             }
         }
     }
 
     fn clear(&self) {
-        unsafe { assert_ne!(PatBlt(self.hdc, 0, 0, 96, 64, BLACKNESS), 0) };
+        unsafe {
+            assert_ne!(
+                PatBlt(self.hdc, 0, 0, self.width, self.height, BLACKNESS),
+                0
+            )
+        };
     }
 
     fn pixels(&self) -> Vec<u32> {
         unsafe {
             GdiFlush();
-            std::slice::from_raw_parts(self.pixels, 96 * 64).to_vec()
+            std::slice::from_raw_parts(self.pixels, (self.width * self.height) as usize).to_vec()
         }
     }
 }
@@ -340,6 +353,70 @@ fn native_encoding_keeps_font_corrections_without_unicode() {
             i32::MIN,
             "glyph indices bypass text conversion"
         );
+    }
+    hooks.uninstall().unwrap();
+
+    native_atlas_clears_previous_glyph_pixels();
+}
+
+fn native_atlas_clears_previous_glyph_pixels() {
+    let _registration = crate::native::register_for(crate::FAMILY_NAME).unwrap();
+    let family = CString::new(crate::FAMILY_NAME).unwrap();
+    let mut hooks = unsafe { install_game(family.as_bytes_with_nul(), None) }.unwrap();
+    {
+        let surface = Surface::with_font(32, 32, &family);
+        let mut metrics = TEXTMETRICW::default();
+        unsafe { assert_ne!(GetTextMetricsW(surface.hdc, &raw mut metrics), 0) };
+        let reference_y = 2 + font_layout_correction(29, metrics.tmAscent).y_offset;
+        let invocation = HOOK_STATE.enter();
+        let original = invocation.state().unwrap().ext_text_out_a;
+
+        // Fullwidth, halfwidth, and a missing glyph in the configured font.
+        for (character, bytes) in [
+            ('頭', b"\x93\xAA".as_slice()),
+            ('0', b"0".as_slice()),
+            ('０', b"\x82\x4F".as_slice()),
+        ] {
+            surface.clear();
+            unsafe {
+                assert_ne!(
+                    original(
+                        surface.hdc,
+                        0,
+                        reference_y,
+                        ETO_OPAQUE,
+                        ptr::null(),
+                        bytes.as_ptr(),
+                        bytes.len() as u32,
+                        ptr::null()
+                    ),
+                    0
+                );
+            }
+            let expected = surface.pixels();
+            unsafe {
+                // Poison the entire reused cell, including the area outside
+                // this glyph's extent, to catch stale strokes at every edge.
+                assert_ne!(PatBlt(surface.hdc, 0, 0, 32, 32, Gdi::WHITENESS), 0);
+                assert_ne!(
+                    Gdi::ExtTextOutA(
+                        surface.hdc,
+                        0,
+                        2,
+                        ETO_OPAQUE,
+                        ptr::null(),
+                        bytes.as_ptr(),
+                        bytes.len() as u32,
+                        ptr::null()
+                    ),
+                    0
+                );
+            }
+            assert!(
+                surface.pixels() == expected,
+                "native atlas glyph {character}"
+            );
+        }
     }
     hooks.uninstall().unwrap();
 }

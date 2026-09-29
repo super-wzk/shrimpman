@@ -10,8 +10,9 @@ use windows_sys::{
     Win32::{
         Foundation::{RECT, SIZE},
         Graphics::Gdi::{
-            self, CreateFontW, ETO_GLYPH_INDEX, ETO_OPTIONS, GetCurrentObject, GetTextAlign,
-            GetTextMetricsW, HDC, HFONT, HGDIOBJ, OBJ_FONT, TA_BASELINE, TA_TOP, TEXTMETRICW,
+            self, BITMAP, CreateFontW, ETO_GLYPH_INDEX, ETO_OPAQUE, ETO_OPTIONS, GetCurrentObject,
+            GetObjectW, GetTextAlign, GetTextMetricsW, HDC, HFONT, HGDIOBJ, OBJ_BITMAP, OBJ_FONT,
+            TA_BASELINE, TA_TOP, TEXTMETRICW,
         },
     },
     core::{BOOL, PCSTR},
@@ -21,6 +22,13 @@ use windows_sys::{
 const MS_GOTHIC_ASCENT_UNITS: i32 = 220;
 const MS_GOTHIC_DESCENT_UNITS: i32 = 36;
 const MS_GOTHIC_EM_UNITS: i32 = MS_GOTHIC_ASCENT_UNITS + MS_GOTHIC_DESCENT_UNITS;
+
+const GLYPH_CELL: RECT = RECT {
+    left: 0,
+    top: 0,
+    right: 32,
+    bottom: 32,
+};
 
 pub type GetTextExtentPoint32AFn = unsafe extern "system" fn(HDC, PCSTR, i32, *mut SIZE) -> BOOL;
 pub type ExtTextOutAFn = unsafe extern "system" fn(
@@ -92,9 +100,28 @@ pub unsafe fn install_game(
     font_name: &[u8],
     renderer: Option<TextRenderer>,
 ) -> Result<HookGuard<HookState>, String> {
+    unsafe { install(font_name, renderer, None) }
+}
+
+pub(crate) unsafe fn install_for_module(
+    font_name: &[u8],
+    renderer: Option<TextRenderer>,
+    module: *mut c_void,
+) -> Result<HookGuard<HookState>, String> {
+    unsafe { install(font_name, renderer, Some(module)) }
+}
+
+unsafe fn install(
+    font_name: &[u8],
+    renderer: Option<TextRenderer>,
+    module: Option<*mut c_void>,
+) -> Result<HookGuard<HookState>, String> {
     let font_name = CStr::from_bytes_until_nul(font_name)
         .map_err(|_| "configured font name is not NUL-terminated".to_owned())?;
     let mut hooks = HOOK_STATE.prepare()?;
+    if let Some(module) = module {
+        unsafe { super::dpi::prepare(&mut hooks, module) }?;
+    }
     let mut create_hook = |name, detour| unsafe { hooks.create_api(c"gdi32.dll", name, detour) };
     let create_font_a = create_hook(
         c"CreateFontA",
@@ -323,13 +350,49 @@ unsafe extern "system" fn ext_text_out_a_detour(
     if !unsafe { state.owns_font(hdc) } {
         return unsafe { (state.ext_text_out_a)(hdc, x, y, options, rect, string, count, spacing) };
     }
+    let clear_cell = state.renderer.is_none()
+        && x == 0
+        && y == 2
+        && options == ETO_OPAQUE
+        && rect.is_null()
+        && !string.is_null()
+        && matches!(count, 1 | 2)
+        && spacing.is_null()
+        && unsafe { is_native_glyph_cell(hdc) };
     let y = unsafe { state.corrected_y(hdc, y) };
+    if clear_cell {
+        // Cover the whole reused cell, not just the current text extent.
+        // Flush before the native caller copies DIB pixels into its texture.
+        return unsafe {
+            let result =
+                (state.ext_text_out_a)(hdc, x, y, options, &GLYPH_CELL, string, count, spacing);
+            Gdi::GdiFlush();
+            result
+        };
+    }
     // Glyph indices are already shaped, so only their font placement is adjusted.
     let draw = state
         .renderer
         .filter(|_| options & ETO_GLYPH_INDEX == 0)
         .map_or(state.ext_text_out_a, |renderer| renderer.draw);
     unsafe { draw(hdc, x, y, options, rect, string, count, spacing) }
+}
+
+unsafe fn is_native_glyph_cell(hdc: HDC) -> bool {
+    let mut bitmap = BITMAP::default();
+    // The separate ASCII atlas stores many glyphs in a larger bitmap.
+    let measured = unsafe {
+        GetObjectW(
+            GetCurrentObject(hdc, OBJ_BITMAP as u32),
+            std::mem::size_of::<BITMAP>() as i32,
+            (&raw mut bitmap).cast(),
+        )
+    };
+    measured != 0
+        && bitmap.bmWidth == GLYPH_CELL.right
+        && bitmap.bmHeight == GLYPH_CELL.bottom
+        && bitmap.bmBitsPixel == 32
+        && !bitmap.bmBits.is_null()
 }
 
 unsafe extern "system" fn delete_object_detour(object: HGDIOBJ) -> BOOL {

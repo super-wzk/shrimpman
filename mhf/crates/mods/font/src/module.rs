@@ -54,9 +54,14 @@ impl Module for FontMod {
         unsafe { context.register(INTERFACE_ID, (&self.service.api as *const FontTable).cast()) }
     }
 
-    fn attach(&mut self, _context: &Context) -> Result<()> {
-        self.hook =
-            Some(unsafe { native::install_game(self.name.as_bytes_with_nul(), self.renderer) }?);
+    fn attach(&mut self, context: &Context) -> Result<()> {
+        self.hook = Some(unsafe {
+            native::install_for_module(
+                self.name.as_bytes_with_nul(),
+                self.renderer,
+                context.game().module_base,
+            )
+        }?);
         Ok(())
     }
 

@@ -15,8 +15,14 @@ Windows provider 导出供 Base 组合的 `FontMod`，实现内部 `Module` 生�
 
 - `FontMod::new(name, renderer)` 接受字体名和 `Option<TextRenderer>`。
 - prepare 按所选名称注册进程内字体，并发布 `FontService` 的稳定接口表。
-- attach 安装字体创建、度量和绘制 Hook；detach 排空并移除 Hook，失败保留状态供重试。
+- attach 安装字体创建、度量、绘制和单字图集 DPI Hook；detach 排空并移除 Hook，失败保留状态供重试。
 - 字体注册与退役状态随提供方实例销毁，处于宿主的完整退出顺序内。
 
 `TextRenderer` 保留为可选扩展接口；当前 Base 传入 `None`，使用原生文本处理。`corrected_y` 供使用 W API 的原生文本绘制共享字体基线修正；
 `install_game` 和 `HookState` 供原生集成及其测试使用。提供方不定义独立 DLL 导出入口。
+
+原生 32×32 单字位图每次完整清除背景，并在复制像素前刷新 GDI，避免残留上一字的笔画。
+单字图集的字号计算固定采用 96 DPI，即 `-MulDiv(22, 96, 72) = -29`，字体名称、字重和质量仍按配置生效。
+该指令 Hook 仅支持已验证的 ZZ HD 客户端，在 RVA `0x014D3325` 校验原始指令后安装，
+随字体 Hook 组一起卸载；不修改全局 DPI 查询或进程 DPI 设置。
+直接调用 `install_game` 仅安装 GDI Hook；`FontMod::attach` 额外绑定宿主提供的游戏模块并安装 DPI Hook。
