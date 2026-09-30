@@ -68,6 +68,8 @@ fn definition() -> Definition {
         offset: 0,
         steps_range: 0..0,
         events_range: 0..36,
+        transitions_range: 0..0,
+        transitions: Vec::new(),
         steps: Vec::new(),
         events: vec![
             ActionEvent {

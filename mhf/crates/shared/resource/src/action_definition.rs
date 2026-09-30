@@ -1,4 +1,4 @@
-//! DAT[389] weapon actions read by native `10A67790` and `10A68510`.
+//! DAT[389] weapon actions read by native `10A67790`, `10A68110` and `10A68510`.
 //! Record offsets are relative to the supplied DAT bytes, including when its
 //! pointers have been relocated. Weapon callbacks retain their own opcode domain.
 
@@ -66,8 +66,10 @@ pub struct Definition {
     /// Twenty-four-byte action-directory record in the supplied DAT image.
     pub offset: usize,
     pub steps_range: Range<usize>,
+    pub transitions_range: Range<usize>,
     pub events_range: Range<usize>,
     pub steps: Vec<ActionStep>,
+    pub transitions: Vec<ActionTransition>,
     pub events: Vec<ActionEvent>,
 }
 
@@ -89,6 +91,14 @@ impl Definition {
             ActionStep::SIZE,
             offset + 4,
         )?;
+        let transitions_range = table(
+            bytes,
+            base,
+            dword(bytes, offset + 12)?,
+            dword(bytes, offset + 8)?,
+            ActionTransition::SIZE,
+            offset + 12,
+        )?;
         let events_range = table(
             bytes,
             base,
@@ -107,6 +117,12 @@ impl Definition {
                 }))
             })
             .collect();
+        let transitions = bytes[transitions_range.clone()]
+            .as_chunks::<{ ActionTransition::SIZE }>()
+            .0
+            .iter()
+            .map(|record| ActionTransition::parse(record))
+            .collect::<Result<_>>()?;
         let events = bytes[events_range.clone()]
             .as_chunks::<{ ActionEvent::SIZE }>()
             .0
@@ -126,8 +142,10 @@ impl Definition {
             action,
             offset,
             steps_range,
+            transitions_range,
             events_range,
             steps,
+            transitions,
             events,
         })
     }
@@ -142,6 +160,15 @@ impl Definition {
             index,
             self.events.len(),
             ActionEvent::SIZE,
+        )
+    }
+
+    pub fn transition_span(&self, index: usize) -> Option<Range<usize>> {
+        record_span(
+            &self.transitions_range,
+            index,
+            self.transitions.len(),
+            ActionTransition::SIZE,
         )
     }
 
@@ -167,6 +194,11 @@ impl Definition {
         self.record_path(source, "events", index)
     }
 
+    pub fn transition_path(&self, source: &str, index: usize) -> Option<ResourcePath> {
+        self.transition_span(index)?;
+        self.record_path(source, "transitions", index)
+    }
+
     fn record_path(&self, source: &str, table: &str, index: usize) -> Option<ResourcePath> {
         let mut path = self.resource_path(source).ok()?;
         path.push(PathSegment::Field(table.into())).ok()?;
@@ -186,6 +218,100 @@ impl ActionStep {
         let mut bytes = [0; Self::SIZE];
         for (index, word) in self.0.into_iter().enumerate() {
             bytes[index * 2..index * 2 + 2].copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+}
+
+/// Eight-byte native condition shared by transition windows and event timing.
+/// Unknown timing values and signed phase bytes retain their stored values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActionCondition {
+    pub step: u16,
+    pub timing: u8,
+    pub phase: i8,
+    pub frame: u16,
+    pub count: u16,
+}
+
+impl ActionCondition {
+    pub const SIZE: usize = 8;
+
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let b: &[u8; Self::SIZE] = bytes
+            .try_into()
+            .map_err(|_| Error::new(0, "expected 8 action condition bytes"))?;
+        Ok(Self {
+            step: u16::from_le_bytes([b[0], b[1]]),
+            timing: b[2],
+            phase: b[3] as i8,
+            frame: u16::from_le_bytes([b[4], b[5]]),
+            count: u16::from_le_bytes([b[6], b[7]]),
+        })
+    }
+
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut bytes = [0; Self::SIZE];
+        bytes[..2].copy_from_slice(&self.step.to_le_bytes());
+        bytes[2] = self.timing;
+        bytes[3] = self.phase as u8;
+        bytes[4..6].copy_from_slice(&self.frame.to_le_bytes());
+        bytes[6..].copy_from_slice(&self.count.to_le_bytes());
+        bytes
+    }
+}
+
+/// Forty-byte input/transition branch consumed by native `10A68110`.
+/// Input, selection and argument retain raw values without inferred key names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActionTransition {
+    pub priority: u16,
+    pub input: u16,
+    pub selection: u16,
+    pub input_start: ActionCondition,
+    pub input_end: ActionCondition,
+    pub argument: u16,
+    pub transition_start: ActionCondition,
+    pub transition_end: ActionCondition,
+}
+
+impl ActionTransition {
+    pub const SIZE: usize = 40;
+
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let b: &[u8; Self::SIZE] = bytes
+            .try_into()
+            .map_err(|_| Error::new(0, "expected 40 action transition bytes"))?;
+        let word = |at| u16::from_le_bytes([b[at], b[at + 1]]);
+        Ok(Self {
+            priority: word(0),
+            input: word(2),
+            selection: word(4),
+            input_start: ActionCondition::parse(&b[6..14])?,
+            input_end: ActionCondition::parse(&b[14..22])?,
+            argument: word(22),
+            transition_start: ActionCondition::parse(&b[24..32])?,
+            transition_end: ActionCondition::parse(&b[32..40])?,
+        })
+    }
+
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut bytes = [0; Self::SIZE];
+        for (at, value) in [
+            (0, self.priority),
+            (2, self.input),
+            (4, self.selection),
+            (22, self.argument),
+        ] {
+            bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        for (at, condition) in [
+            (6, self.input_start),
+            (14, self.input_end),
+            (24, self.transition_start),
+            (32, self.transition_end),
+        ] {
+            bytes[at..at + ActionCondition::SIZE].copy_from_slice(&condition.to_bytes());
         }
         bytes
     }
@@ -335,10 +461,19 @@ fn table(
     if count == 0 {
         return Ok(0..0);
     }
+    if pointer == 0 {
+        return Err(Error::new(field, "null weapon action table pointer"));
+    }
     let start = pointer
         .checked_sub(base)
         .ok_or_else(|| Error::new(field, "weapon action pointer precedes its DAT image"))?
         as usize;
+    if start < crate::dat::HEADER_SIZE {
+        return Err(Error::new(
+            field,
+            "weapon action pointer targets its DAT header",
+        ));
+    }
     let end = (count as usize)
         .checked_mul(stride)
         .and_then(|size| start.checked_add(size))

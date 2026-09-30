@@ -18,6 +18,7 @@
 | `container` | offset/size、MOMO、MHA 命名目录及资源 ID 索引、场景专用目录与嵌套封装 |
 | `dat` | DAT v89 根结构、装备／物品／生产记录、特效绑定与定义表，以及按布局解析的文本记录 |
 | `action_definition` | DAT[389] 武器招式、原始步骤／事件、动画引用与 SDT 攻击查找条件 |
+| `dat::motion_events` | DAT[390]／[391] 两级动作事件目录、16 字节操作事件与 22 字节分派事件 |
 | `emd` | 物种记录、按头部计数的根表和参数目录 |
 | `event_camera` | 逐帧事件相机的视野角、位置、滚转角与目标数组 |
 | `inf` | INF v6 任务分类、任务指针槽、原生 ID 查找及任务文本 |
@@ -80,9 +81,12 @@ assert_eq!(path.to_string(), "mhfsdt.bin#0/attacks/23");
 `action_definition::Definition::parse(bytes, base, weapon, action)` 读取 DAT[389]。
 离线文件传 `base = 0`，重定位后的 DAT 传其原生基址；返回偏移始终相对于输入字节，
 不保留宿主指针。`weapon_actions` 单独读取武器目录，支持 14 个武器、每个最多 256 个招式；
-步骤和事件各最多 4096 条，零计数不解引用其指针，非空表校验完整范围。
-`ActionStep` 保留六个原始 `u16`，`ActionEvent` 保留 12 字节的步骤、时机、
+步骤、派生条件和事件各最多 4096 条，零计数不解引用其指针，非空表校验完整范围。
+`ActionStep` 保留六个原始 `u16`，`ActionTransition` 保留 40 字节的优先级、
+输入／选择编号、调用参数及四个八字节条件窗口；`ActionEvent` 保留 12 字节的步骤、时机、
 有符号 phase、帧、次数、操作码与参数，均支持原样写回。来源路径和范围使用原始序号。
+派生表来自招式头 `+8/+12` 的数量／指针；窗口的原生消费证据见
+[招式定义](docs/action-definitions.md)。
 这些招式事件与特效资源的动作事件使用各自的原生布局，不互相转换。
 
 `NativeMotionRef` 保留原始动画 ID、武器与风格；已确认的 bank 返回规范 MOT 路径，
@@ -102,6 +106,7 @@ assert_eq!(path.to_string(), "mhfsdt.bin#0/attacks/23");
 应用可在资源读取线程建立并共享该目录，编辑 SDT 草稿后重新建立目录；
 公共 UI 接收解析得到的 `ResourcePath`，动画和攻击目标共用规范路径主值与复制行为。
 详细布局见 [DAT 格式](docs/dat-format.md)。
+动作事件目录及其原生消费证据见 [DAT 动作事件](docs/dat-motion-events.md)。
 
 ## 格式文档
 

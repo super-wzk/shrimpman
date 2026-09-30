@@ -68,6 +68,8 @@ pub enum Kind {
     DatRecord(usize),
     DatWeaponActions(u8),
     DatAction(u8, u16),
+    DatMotionEventGroup(mhf_resource::dat::motion_events::EventKind, usize),
+    DatMotionEventEntry(mhf_resource::dat::motion_events::EventKind, usize, usize),
     Emd,
     EmdGroup,
     EmdSpecies(u8),
@@ -154,6 +156,8 @@ impl Kind {
             Self::DatRecord(_) => "DAT 记录",
             Self::DatWeaponActions(_) => "武器招式目录",
             Self::DatAction(..) => "招式定义",
+            Self::DatMotionEventGroup(..) => "DAT 动作事件分组",
+            Self::DatMotionEventEntry(..) => "DAT 动作事件条目",
             Self::Emd => "EMD 物种资源",
             Self::EmdGroup => "EMD 分组",
             Self::EmdSpecies(_) => "EMD 物种记录",
@@ -414,6 +418,12 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
         Kind::DatWeaponActions(weapon) => builder.dat_weapon_actions(node, weapon)?,
         Kind::DatAction(weapon, action) => builder.dat_action_contents(node, weapon, action)?,
+        Kind::DatMotionEventGroup(kind, group) => {
+            builder.dat_motion_event_group(node, kind, group)?;
+        }
+        Kind::DatMotionEventEntry(kind, group, entry) => {
+            builder.dat_motion_event_entry(node, kind, group, entry)?;
+        }
         Kind::InfCategory(index) => builder.inf_category_records(node, index)?,
         Kind::InfQuest => builder.inf_quest_fields(node)?,
         Kind::EmdSpecies(species) => builder.emd_species_contents(node, species)?,

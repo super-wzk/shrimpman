@@ -431,7 +431,10 @@ fn original_dat_catalog_and_record_expansion() {
         TEXT_TABLES.len(),
         dat::DATA_TABLES.len()
     );
-    for table_index in [0, 5, 6, 7, 8, 10, 22, 25, 26, 27, 28] {
+    for table_index in [0, 5, 6, 7, 8, 10, 22, 25, 26]
+        .into_iter()
+        .chain((0..dat::EFFECT_TABLES.len()).map(|index| dat::DATA_TABLES.len() + index))
+    {
         let node = document
             .nodes
             .iter()

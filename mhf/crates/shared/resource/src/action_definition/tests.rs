@@ -2,28 +2,41 @@ use super::*;
 use crate::sdt;
 
 fn fixture(base: u32) -> Vec<u8> {
-    let mut bytes = vec![0; 0xa00];
+    let mut bytes = vec![0; 0x1300];
     for (offset, value) in [
-        (389 * 4, base + 0x700),
-        (0x700 + 7 * 8, 2),
-        (0x704 + 7 * 8, base + 0x800),
-        (0x818, 2),
-        (0x81c, base + 0x900),
-        (0x828, 2),
-        (0x82c, base + 0x940),
+        (389 * 4, base + 0x1000),
+        (0x1000 + 7 * 8, 2),
+        (0x1004 + 7 * 8, base + 0x1100),
+        (0x1118, 2),
+        (0x111c, base + 0x1200),
+        (0x1120, 2),
+        (0x1124, base + 0x1280),
+        (0x1128, 2),
+        (0x112c, base + 0x1240),
     ] {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     for (offset, words) in [
-        (0x900, [3_u16, 47, 0, 4, 0, 8]),
-        (0x90c, [4, 49, 2, 4, 12, 3]),
-        (0x940, [0, 1, 0, 0, 17, 8]),
-        (0x94c, [1, 0xfb07, 12, 3, 0xffee, 7]),
+        (0x1200, [3_u16, 47, 0, 4, 0, 8]),
+        (0x120c, [4, 49, 2, 4, 12, 3]),
+        (0x1240, [0, 1, 0, 0, 17, 8]),
+        (0x124c, [1, 0xfb07, 12, 3, 0xffee, 7]),
     ] {
         for (index, word) in words.into_iter().enumerate() {
             bytes[offset + index * 2..offset + index * 2 + 2].copy_from_slice(&word.to_le_bytes());
         }
     }
+    for (index, word) in [
+        0xabcd_u16, 0xfffe, 31, 0x1234, 0xfb07, 0x5678, 0x9012, 0x3456, 0x80ff, 0x789a, 0xbcde,
+        0xffff, 0x1122, 0x0203, 0x3344, 0x5566, 0x7788, 0xfe09, 0x99aa, 0xbbcc,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = 0x1280 + index * 2;
+        bytes[at..at + 2].copy_from_slice(&word.to_le_bytes());
+    }
+    bytes[0x12a8..0x12d0].fill(0xff);
     bytes
 }
 
@@ -35,8 +48,11 @@ fn relocated_and_file_offsets_preserve_original_records_and_source_spans() {
         definition,
         Definition::parse(&fixture(0x2000_0000), 0x2000_0000, 7, 1).unwrap()
     );
-    assert_eq!(definition.offset, 0x818);
-    assert_eq!(weapon_actions(&bytes, 0, 7).unwrap().records, 0x800..0x830);
+    assert_eq!(definition.offset, 0x1118);
+    assert_eq!(
+        weapon_actions(&bytes, 0, 7).unwrap().records,
+        0x1100..0x1130
+    );
     assert_eq!(definition.steps[0].0, [3, 47, 0, 4, 0, 8]);
     for (index, step) in definition.steps.iter().enumerate() {
         assert_eq!(
@@ -50,6 +66,51 @@ fn relocated_and_file_offsets_preserve_original_records_and_source_spans() {
             &bytes[definition.event_span(index).unwrap()]
         );
     }
+    for (index, transition) in definition.transitions.iter().enumerate() {
+        assert_eq!(
+            &transition.to_bytes(),
+            &bytes[definition.transition_span(index).unwrap()]
+        );
+    }
+    assert_eq!(definition.transitions_range, 0x1280..0x12d0);
+    assert_eq!(
+        definition.transitions[0],
+        ActionTransition {
+            priority: 0xabcd,
+            input: 0xfffe,
+            selection: 31,
+            input_start: ActionCondition {
+                step: 0x1234,
+                timing: 7,
+                phase: -5,
+                frame: 0x5678,
+                count: 0x9012,
+            },
+            input_end: ActionCondition {
+                step: 0x3456,
+                timing: 0xff,
+                phase: -128,
+                frame: 0x789a,
+                count: 0xbcde,
+            },
+            argument: 0xffff,
+            transition_start: ActionCondition {
+                step: 0x1122,
+                timing: 3,
+                phase: 2,
+                frame: 0x3344,
+                count: 0x5566,
+            },
+            transition_end: ActionCondition {
+                step: 0x7788,
+                timing: 9,
+                phase: -2,
+                frame: 0x99aa,
+                count: 0xbbcc,
+            },
+        }
+    );
+    assert_eq!(definition.transitions[1].selection, 0xffff);
     assert_eq!(definition.events[1].phase, -5);
     assert_eq!(definition.events[1].timing, 7);
     assert_eq!(definition.events[1].operation, 0xffee);
@@ -62,25 +123,106 @@ fn relocated_and_file_offsets_preserve_original_records_and_source_spans() {
         definition.event_path("mhfdat.bin", 1).unwrap().to_string(),
         "mhfdat.bin#389/7/1/events/1"
     );
+    assert_eq!(
+        definition
+            .transition_path("mhfdat.bin", 1)
+            .unwrap()
+            .to_string(),
+        "mhfdat.bin#389/7/1/transitions/1"
+    );
     assert!(definition.event_span(2).is_none());
     assert!(definition.step_path("mhfdat.bin", 2).is_none());
+    assert!(definition.transition_span(2).is_none());
+    assert!(definition.transition_path("mhfdat.bin", 2).is_none());
 }
 
 #[test]
 fn invalid_extents_and_unavailable_actions_fail_without_reinterpreting_empty_tables() {
     let mut bytes = fixture(0x2000_0000);
-    assert!(Definition::parse(&bytes[..0x94f], 0x2000_0000, 7, 1).is_err());
+    assert!(Definition::parse(&bytes[..0x124f], 0x2000_0000, 7, 1).is_err());
     assert!(Definition::parse(&bytes, 0x2000_0000, 7, 2).is_err());
     assert!(Definition::parse(&bytes, 0x2000_0000, 14, 0).is_err());
-    bytes[0x82c..0x830].copy_from_slice(&0x1fff_ffff_u32.to_le_bytes());
+    bytes[0x112c..0x1130].copy_from_slice(&0x1fff_ffff_u32.to_le_bytes());
     assert!(Definition::parse(&bytes, 0x2000_0000, 7, 1).is_err());
-    bytes[0x828..0x82c].copy_from_slice(&0_u32.to_le_bytes());
+    bytes[0x1128..0x112c].copy_from_slice(&0_u32.to_le_bytes());
     let definition = Definition::parse(&bytes, 0x2000_0000, 7, 1).unwrap();
     assert!(definition.events.is_empty());
     assert_eq!(definition.events_range, 0..0);
     assert!(definition.event_path("mhfdat.bin", 0).is_none());
-    bytes[0x818..0x81c].copy_from_slice(&4097_u32.to_le_bytes());
+    bytes[0x1118..0x111c].copy_from_slice(&4097_u32.to_le_bytes());
     assert!(Definition::parse(&bytes, 0x2000_0000, 7, 1).is_err());
+}
+
+#[test]
+fn transition_tables_reject_bad_extents_and_ignore_unused_pointers() {
+    let base = 0x2000_0000;
+    let original = fixture(base);
+    assert_eq!(
+        Definition::parse(&original[..0x12cf], base, 7, 1)
+            .unwrap_err()
+            .offset,
+        0x1124
+    );
+    let mut bytes = original.clone();
+    for pointer in [base - 1, u32::MAX] {
+        bytes[0x1124..0x1128].copy_from_slice(&pointer.to_le_bytes());
+        assert_eq!(
+            Definition::parse(&bytes, base, 7, 1).unwrap_err().offset,
+            0x1124
+        );
+    }
+    bytes[0x1120..0x1124].copy_from_slice(&0_u32.to_le_bytes());
+    for pointer in [
+        0,
+        base - 1,
+        base,
+        base + crate::dat::HEADER_SIZE as u32 - 1,
+        u32::MAX,
+    ] {
+        bytes[0x1124..0x1128].copy_from_slice(&pointer.to_le_bytes());
+        let definition = Definition::parse(&bytes, base, 7, 1).unwrap();
+        assert!(definition.transitions.is_empty());
+        assert_eq!(definition.transitions_range, 0..0);
+        assert!(definition.transition_path("mhfdat.bin", 0).is_none());
+    }
+    let mut bytes = original;
+    bytes[0x1120..0x1124].copy_from_slice(&4097_u32.to_le_bytes());
+    assert_eq!(
+        Definition::parse(&bytes, base, 7, 1).unwrap_err().offset,
+        0x1124
+    );
+}
+
+#[test]
+fn nonempty_action_tables_do_not_interpret_null_or_header_pointers_as_records() {
+    for base in [0, 0x2000_0000] {
+        for field in [DAT_ROOT as usize * 4, 0x103c, 0x111c, 0x1124, 0x112c] {
+            for pointer in [0, base, base + crate::dat::HEADER_SIZE as u32 - 1] {
+                let mut bytes = fixture(base);
+                bytes[field..field + 4].copy_from_slice(&pointer.to_le_bytes());
+                assert_eq!(
+                    Definition::parse(&bytes, base, 7, 1).unwrap_err().offset,
+                    field
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn condition_and_transition_record_parsers_require_exact_record_widths() {
+    let bytes = fixture(0);
+    let condition = &bytes[0x1286..0x128e];
+    assert_eq!(
+        ActionCondition::parse(condition).unwrap().to_bytes(),
+        condition
+    );
+    for length in [0, ActionCondition::SIZE - 1, ActionCondition::SIZE + 1] {
+        assert!(ActionCondition::parse(&vec![0; length]).is_err());
+    }
+    for length in [0, ActionTransition::SIZE - 1, ActionTransition::SIZE + 1] {
+        assert!(ActionTransition::parse(&vec![0; length]).is_err());
+    }
 }
 
 #[test]

@@ -75,6 +75,122 @@ fn counted_tables_reject_out_of_bounds_counts_and_pointers() {
     assert_eq!(Dat::parse(&bytes).unwrap().table(items).unwrap().count, 0);
 }
 
+#[test]
+fn random_recipe_tables_share_indices_and_keep_signed_ranges_and_flags() {
+    let recipes = dat::DATA_TABLES
+        .iter()
+        .find(|table| table.id == "random_recipes")
+        .unwrap();
+    let candidates = dat::DATA_TABLES
+        .iter()
+        .find(|table| table.id == "random_candidates")
+        .unwrap();
+    let mut bytes = image(3908);
+    set_u32(&mut bytes, 0x10, 3100);
+    set_u32(&mut bytes, 0x620, 3680);
+    set_u32(&mut bytes, 0x624, 3780);
+    // The recipe directory enumerates +0x238, and both tables use its index.
+    bytes[3100 + 0x238..3100 + 0x23a].copy_from_slice(&2u16.to_le_bytes());
+    // +0x23a is deliberately different; it is not the count used by consumers.
+    bytes[3100 + 0x23a..3100 + 0x23c].copy_from_slice(&9u16.to_le_bytes());
+    bytes[3680..3684].copy_from_slice(&[0xf1, 13, 27, 0xe2]);
+    set_u32(&mut bytes, 3684, 45000);
+    bytes[3688..3690].copy_from_slice(&(-3i16).to_le_bytes());
+    bytes[3690..3692].copy_from_slice(&(-32761i16).to_le_bytes());
+    bytes[3780..3788].copy_from_slice(&[0xff, 0xff, 70, 0xa5, 0xf9, 0xff, 11, 0]);
+
+    let file = Dat::parse(&bytes).unwrap();
+    let recipe_table = file.table(recipes).unwrap();
+    let candidate_table = file.table(candidates).unwrap();
+    assert_eq!(recipe_table.count, 2);
+    assert_eq!(candidate_table.count, 2);
+    assert_eq!(recipe_table.range, 3680..3760);
+    assert_eq!(candidate_table.range, 3780..3908);
+    for (layout, expected) in [
+        (
+            recipes,
+            vec![
+                ("field_01", 1, ScalarType::U8),
+                ("field_0a", 10, ScalarType::I16),
+            ],
+        ),
+        (
+            candidates,
+            vec![
+                ("field_02", 2, ScalarType::U8),
+                ("field_03", 3, ScalarType::U8),
+                ("field_04", 4, ScalarType::I16),
+                ("field_3e", 62, ScalarType::I16),
+            ],
+        ),
+    ] {
+        let RecordFormat::Fields(fields) = layout.format else {
+            panic!()
+        };
+        for (key, offset, scalar) in expected {
+            let field = fields.iter().find(|field| field.key == key).unwrap();
+            assert_eq!((field.offset, field.scalar), (offset, scalar));
+        }
+    }
+    let (_, recipe) = recipe_table.record(0).unwrap();
+    assert_eq!(
+        Reader::new(recipe).read_at::<i16>(10).unwrap().value,
+        -32761
+    );
+    let (_, candidate) = candidate_table.record(0).unwrap();
+    assert_eq!(
+        Reader::new(candidate).read_at::<u16>(0).unwrap().value,
+        u16::MAX
+    );
+    assert_eq!(candidate[3], 0xa5);
+    assert_eq!(Reader::new(candidate).read_at::<i16>(4).unwrap().value, -7);
+    assert_eq!(file.as_bytes(), bytes);
+
+    bytes.truncate(3907);
+    assert!(Dat::parse(&bytes).unwrap().table(candidates).is_err());
+    set_u32(&mut bytes, 0x620, u32::MAX);
+    assert_eq!(
+        Dat::parse(&bytes)
+            .unwrap()
+            .table(recipes)
+            .unwrap_err()
+            .offset,
+        0x620
+    );
+    set_u32(&mut bytes, 0x620, 3680);
+    bytes[3100 + 0x238..3100 + 0x23a].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert!(Dat::parse(&bytes).unwrap().table(recipes).is_err());
+    assert!(Dat::parse(&bytes).unwrap().table(candidates).is_err());
+}
+
+#[test]
+fn motion_event_group_keys_use_a_scalar_root_count() {
+    let layout = dat::DATA_TABLES
+        .iter()
+        .find(|table| table.id == "motion_event_group_keys")
+        .unwrap();
+    let mut bytes = image(3216);
+    set_u32(&mut bytes, 664 * 4, 3200);
+    set_u32(&mut bytes, 665 * 4, 2);
+    bytes[3200..3208].copy_from_slice(&[0x93, 0, 0x9b, 0, 0xff, 0xff, 0, 0]);
+    let file = Dat::parse(&bytes).unwrap();
+    let table = file.table(layout).unwrap();
+    assert_eq!(table.count, 2);
+    assert_eq!(table.range, 3200..3216);
+    let (_, record) = table.record(0).unwrap();
+    assert_eq!(
+        Reader::new(record).read_at::<u16>(4).unwrap().value,
+        u16::MAX
+    );
+    assert!(table.record(2).is_err());
+    assert_eq!(file.as_bytes(), bytes);
+    set_u32(&mut bytes, 665 * 4, u32::MAX);
+    assert!(Dat::parse(&bytes).unwrap().table(layout).is_err());
+    set_u32(&mut bytes, 665 * 4, 0);
+    set_u32(&mut bytes, 664 * 4, 0);
+    assert_eq!(Dat::parse(&bytes).unwrap().table(layout).unwrap().count, 0);
+}
+
 static TEXT: TableLayout = TableLayout {
     id: "text",
     label: "text",

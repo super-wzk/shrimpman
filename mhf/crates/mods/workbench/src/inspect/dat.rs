@@ -9,6 +9,7 @@ mod actions;
 #[cfg(test)]
 mod edit_tests;
 mod effects;
+mod motion_events;
 #[cfg(test)]
 mod tests;
 
@@ -120,6 +121,7 @@ impl Builder {
             }
         }
         self.dat_action_directory(node, &file, base);
+        self.dat_motion_event_directories(node, &file, base);
         self.dat_roots(node, &file, base);
     }
 

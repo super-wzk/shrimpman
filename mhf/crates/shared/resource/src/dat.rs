@@ -7,6 +7,7 @@ use std::ops::Range;
 use crate::{Error, Result, binary::Reader};
 
 mod effects;
+pub mod motion_events;
 mod schema;
 pub use effects::{EFFECT_TABLES, EffectRecordKind};
 pub(crate) use schema::fields;

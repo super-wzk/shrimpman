@@ -602,6 +602,77 @@ fn wide_navigation_and_monster_controls_resize_with_native_handles() {
 }
 
 #[test]
+fn definition_with_only_transitions_shows_original_conditions_and_source_span() {
+    use crate::provider::action_definition::ActionDefinition;
+    use mhf_resource::action_definition::{ActionCondition, ActionTransition, Definition};
+    let action = Action {
+        weapon: 4,
+        group: 1,
+        id: 0,
+    };
+    let condition = ActionCondition {
+        step: 3,
+        timing: 255,
+        phase: -128,
+        frame: 65534,
+        count: 65535,
+    };
+    let mut snapshot = populated_snapshot(1);
+    snapshot.action_definition = Some(Arc::new(ActionDefinition {
+        action,
+        motion_style: None,
+        attacks: None,
+        data: Ok(Definition {
+            weapon: action.weapon,
+            action: u16::from(action.id),
+            offset: 0x100,
+            steps_range: 0..0,
+            transitions_range: 0x200..0x228,
+            events_range: 0..0,
+            steps: Vec::new(),
+            transitions: vec![ActionTransition {
+                priority: 7,
+                input: 65533,
+                selection: 65532,
+                input_start: condition,
+                input_end: condition,
+                argument: 65531,
+                transition_start: condition,
+                transition_end: condition,
+            }],
+            events: Vec::new(),
+        }),
+    }));
+    let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
+    ui.window.definition_action = Some(action);
+    ui.context
+        .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+    ui.settle();
+    ui.visible_text("0 个步骤 · 0 个事件 · 1 个派生条件");
+    for label in [
+        "输入窗口起点",
+        "输入窗口终点",
+        "切换窗口起点",
+        "切换窗口终点",
+    ] {
+        ui.visible_text(label);
+    }
+    ui.visible_text("步骤 3 · 时机 255 · 阶段 -128 · 帧条件 65534 · 计数 65535");
+    let header = ui.visible_text("派生 0");
+    ui.frame(vec![Event::PointerMoved(header.center())]);
+    ui.settle();
+    for detail in [
+        "mhfdat.bin#389/4/0/transitions/0",
+        "数据层偏移 0x200..0x228 · 40 字节",
+    ] {
+        assert!(
+            ui.texts.iter().any(|(text, _, _)| text == detail),
+            "missing {detail}"
+        );
+    }
+}
+
+#[test]
 fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() {
     use crate::provider::action_definition::ActionDefinition;
     use mhf_resource::action_definition::{ActionEvent, ActionStep, Definition};
@@ -621,6 +692,8 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
             offset: 0,
             steps_range: 24..24 + 60 * 12,
             events_range: 24 + 60 * 12..24 + 61 * 12,
+            transitions_range: 0..0,
+            transitions: Vec::new(),
             steps: (0..60)
                 .map(|_| ActionStep([4, 1405, 65535, 4, 20, 1]))
                 .collect(),
@@ -658,7 +731,7 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
                 .contains_rect(rect),
             "{rect:?} at {size:?}"
         );
-        let summary = ui.visible_text("60 个步骤 · 1 个事件");
+        let summary = ui.visible_text("60 个步骤 · 1 个事件 · 0 个派生条件");
         ui.frame(vec![
             Event::PointerMoved(rect.center()),
             Event::MouseWheel {
@@ -669,7 +742,10 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
             },
         ]);
         ui.settle();
-        assert_eq!(ui.visible_text("60 个步骤 · 1 个事件"), summary);
+        assert_eq!(
+            ui.visible_text("60 个步骤 · 1 个事件 · 0 个派生条件"),
+            summary
+        );
         ui.visible_text("motion/w11goku.mot#4/5");
         for (text, rect, clip) in &ui.texts {
             if text.starts_with("motion/w11goku.mot") || text.contains("12345") {
@@ -708,7 +784,10 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
         ]);
         ui.settle();
         ui.visible_text("步骤 59 · 播放动画");
-        assert_eq!(ui.visible_text("60 个步骤 · 1 个事件"), summary);
+        assert_eq!(
+            ui.visible_text("60 个步骤 · 1 个事件 · 0 个派生条件"),
+            summary
+        );
     }
 }
 
@@ -757,6 +836,8 @@ fn definition_attack_and_motion_share_canonical_rows_and_copy_exact_targets() {
             offset: 0,
             steps_range: 24..36,
             events_range: 36..48,
+            transitions_range: 0..0,
+            transitions: Vec::new(),
             steps: vec![ActionStep([3, 1405, 0, 4, 0, 1])],
             events: vec![event],
         }),
@@ -823,6 +904,8 @@ fn definition_references_keep_unknown_targets_and_original_event_sources() {
             offset: 0x100,
             steps_range: 0x180..0x18c,
             events_range: 0x200..0x218,
+            transitions_range: 0..0,
+            transitions: Vec::new(),
             steps: vec![ActionStep([4, 1405, 0xffff, 0x8000, 12, 2])],
             // Display grouping puts event 1 before event 0, without changing
             // their original indices or the byte spans in their source paths.
@@ -1274,6 +1357,8 @@ fn definition_window_keeps_move_rows_in_place() {
             offset: 0,
             steps_range: 24..24 + 20 * 12,
             events_range: 0..0,
+            transitions_range: 0..0,
+            transitions: Vec::new(),
             steps: (0..20).map(|_| ActionStep([3, 1405, 0, 4, 0, 1])).collect(),
             events: vec![],
         }),

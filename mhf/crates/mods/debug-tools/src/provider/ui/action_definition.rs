@@ -131,17 +131,20 @@ pub(super) fn show(
                     return;
                 }
             };
-            if data.steps.is_empty() && data.events.is_empty() {
+            if data.steps.is_empty() && data.transitions.is_empty() && data.events.is_empty() {
                 ui.add(
-                    egui::Label::new("当前表中没有动作步骤或事件；原生代码中的定义尚未解析。")
-                        .wrap(),
+                    egui::Label::new(
+                        "当前表中没有动作步骤、派生条件或事件；原生代码中的定义尚未解析。",
+                    )
+                    .wrap(),
                 );
                 return;
             }
             ui.weak(format!(
-                "{} 个步骤 · {} 个事件",
+                "{} 个步骤 · {} 个事件 · {} 个派生条件",
                 data.steps.len(),
-                data.events.len()
+                data.events.len(),
+                data.transitions.len()
             ))
             .on_hover_ui(|ui| {
                 if let Ok(path) = data.resource_path("mhfdat.bin") {
@@ -249,6 +252,44 @@ pub(super) fn show(
                         if usize::from(entry.step) >= data.steps.len() {
                             event(ui, definition, data, event_index, false);
                         }
+                    }
+                    for (index, entry) in data.transitions.iter().enumerate() {
+                        ui.group(|ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.strong(format!("派生 {index}")).on_hover_ui(|ui| {
+                                if let Some((path, span)) = data
+                                    .transition_path("mhfdat.bin", index)
+                                    .zip(data.transition_span(index))
+                                {
+                                    ui.weak("来源");
+                                    ResourceReference::new(path).source_range(span).show(ui);
+                                }
+                            });
+                            ui.label(format!(
+                                "优先级 {} · 输入编号 {} · 选择编号 {} · 调用参数 {}",
+                                entry.priority, entry.input, entry.selection, entry.argument
+                            ));
+                            for (label, condition) in [
+                                ("输入窗口起点", entry.input_start),
+                                ("输入窗口终点", entry.input_end),
+                                ("切换窗口起点", entry.transition_start),
+                                ("切换窗口终点", entry.transition_end),
+                            ] {
+                                field(
+                                    ui,
+                                    label,
+                                    format!(
+                                        "步骤 {} · 时机 {} · 阶段 {} · 帧条件 {} · 计数 {}",
+                                        condition.step,
+                                        condition.timing,
+                                        condition.phase,
+                                        condition.frame,
+                                        condition.count
+                                    ),
+                                    false,
+                                );
+                            }
+                        });
                     }
                 });
         });
