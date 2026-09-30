@@ -480,13 +480,14 @@ fn scrolling_lists_keeps_tools_fixed_and_keyboard_can_activate_a_bottom_row() {
     for size in [vec2(440.0, 360.0), vec2(720.0, 480.0), vec2(1280.0, 900.0)] {
         let mut ui = PanelUi::new(populated_snapshot(1000), size, Page::Equipment);
         ui.settle();
+        ui.click_at(ui.visible_text("猎人装备 0").center());
+        ui.settle();
         let filter = ui.visible_text("装备名称或编号");
-        let slot = ui
+        let first = ui
             .context
-            .read_response(select_field_id("debug-slot"))
+            .read_response(Id::new("debug-equipment-list").with((6_u8, 0_u16)))
             .unwrap()
             .rect;
-        let first = ui.visible_text("猎人装备 0");
         ui.frame(vec![
             Event::PointerMoved(first.center()),
             Event::MouseWheel {
@@ -498,14 +499,11 @@ fn scrolling_lists_keeps_tools_fixed_and_keyboard_can_activate_a_bottom_row() {
         ]);
         ui.settle();
         assert_eq!(ui.visible_text("装备名称或编号"), filter);
-        assert_eq!(
-            ui.context
-                .read_response(select_field_id("debug-slot"))
-                .unwrap()
-                .rect,
-            slot
-        );
-        ui.visible_text("猎人装备 999");
+        let last = ui
+            .context
+            .read_response(Id::new("debug-equipment-list").with((6_u8, 999_u16)))
+            .unwrap();
+        assert!(Rect::from_min_size(pos2(0.0, 0.0), size).contains_rect(last.rect));
 
         ui.click_at(filter.center());
         let mut row_focused = false;
@@ -527,7 +525,9 @@ fn scrolling_lists_keeps_tools_fixed_and_keyboard_can_activate_a_bottom_row() {
                 .memory(|memory| memory.focused())
                 .and_then(|id| ui.context.read_response(id))
                 && ui.texts.iter().any(|(text, rect, clip)| {
-                    text == "换装" && clip.contains_rect(*rect) && focused.rect.contains_rect(*rect)
+                    text.starts_with("猎人装备 ")
+                        && clip.contains_rect(*rect)
+                        && focused.rect.contains_rect(*rect)
                 })
             {
                 assert!(Rect::from_min_size(pos2(0.0, 0.0), size).contains_rect(focused.rect));
@@ -1138,10 +1138,11 @@ fn transmog_ui() -> DebugUi {
 
 #[test]
 fn transmog_selects_and_restores_each_armor_slot_independently() {
-    for kind in [2, 3, 4, 5, 0] {
+    for (index, kind) in [2, 3, 4, 5, 0].into_iter().enumerate() {
         let mut ui = transmog_ui();
-        ui.window.transmog_slot = kind;
-        ui.window.transmog_filter = "11".into();
+        ui.window.transmog_filters[index] = "11".into();
+        ui.snapshot.transmogs.armor[usize::from(kind)] = 22;
+        ui.click(&format!("防具 {kind}:22"));
         ui.snapshot.equipment[0] = Some((kind, 22));
         ui.snapshot.transmogs.armor[if kind == 2 { 3 } else { 2 }] = 90;
         ui.click_id(Id::new("debug-transmog-list").with((kind, 11_u16)));
@@ -1150,7 +1151,8 @@ fn transmog_selects_and_restores_each_armor_slot_independently() {
             [DebugCommand::Transmog { kind: selected, id: Some(11) }] if *selected == kind
         ));
         ui.snapshot.transmogs.armor[usize::from(kind)] = 11;
-        ui.click_id(Id::new("debug-transmog-clear"));
+        ui.click(&format!("防具 {kind}:11"));
+        ui.click_id(Id::new("debug-transmog-clear").with(kind));
         assert!(matches!(
             ui.window.control.commands().as_slice(),
             [DebugCommand::Transmog { kind: selected, id: None }] if *selected == kind
@@ -1161,20 +1163,22 @@ fn transmog_selects_and_restores_each_armor_slot_independently() {
 #[test]
 fn transmog_reserves_zero_for_restore_and_disables_changes_when_not_ready() {
     let mut ui = transmog_ui();
-    ui.frame(vec![]);
-    ui.frame(vec![]);
+    ui.click("原装备外观");
     assert!(
         ui.context
             .read_response(Id::new("debug-transmog-list").with((2_u8, 0_u16)))
             .is_none()
     );
-    ui.click_id(Id::new("debug-transmog-clear"));
+    ui.click_id(Id::new("debug-transmog-clear").with(2_u8));
     assert!(ui.window.control.commands().is_empty());
-
+    let option = ui
+        .context
+        .read_response(Id::new("debug-transmog-list").with((2_u8, 11_u16)))
+        .unwrap()
+        .rect
+        .center();
     ui.snapshot.ready = false;
-    ui.snapshot.transmogs.armor[2] = 22;
-    ui.click_id(Id::new("debug-transmog-list").with((2_u8, 11_u16)));
-    ui.click_id(Id::new("debug-transmog-clear"));
+    ui.click_at(option);
     assert!(ui.window.control.commands().is_empty());
 }
 
@@ -1182,26 +1186,37 @@ fn transmog_reserves_zero_for_restore_and_disables_changes_when_not_ready() {
 fn equipped_items_can_reload_and_loading_state_disables_the_action() {
     let mut ui = DebugUi::new(populated_snapshot(4));
     ui.window.page = Page::Equipment;
+    ui.click("猎人装备 0");
     ui.click_id(Id::new("debug-equipment-list").with((6_u8, 0_u16)));
     assert!(matches!(
         ui.window.control.commands().as_slice(),
         [DebugCommand::Equip { kind: 6, id: 0 }]
     ));
+    ui.click("猎人装备 0");
+    let option = ui
+        .context
+        .read_response(Id::new("debug-equipment-list").with((6_u8, 0_u16)))
+        .unwrap()
+        .rect
+        .center();
     ui.snapshot.ready = false;
-    ui.click_id(Id::new("debug-equipment-list").with((6_u8, 0_u16)));
+    ui.click_at(option);
     assert!(ui.window.control.commands().is_empty());
 }
 
 #[test]
 fn equipment_and_transmog_preserve_independent_filters_and_slots() {
     let mut ui = transmog_ui();
-    ui.window.slot = 3;
-    ui.window.filter = "22".into();
-    ui.window.transmog_filter = "11".into();
+    ui.snapshot.equipment[2] = Some((3, 11));
+    ui.window.equipment_filters[2] = "22".into();
+    ui.window.transmog_filters[0] = "11".into();
+    ui.click("原装备外观");
     ui.click_id(Id::new("debug-transmog-list").with((2_u8, 11_u16)));
     ui.window.page = Page::Equipment;
+    ui.click("防具 3:11");
     ui.click_id(Id::new("debug-equipment-list").with((3_u8, 22_u16)));
     ui.window.page = Page::Transmog;
+    ui.click("原装备外观");
     ui.click_id(Id::new("debug-transmog-list").with((2_u8, 11_u16)));
     assert!(matches!(
         ui.window.control.commands().as_slice(),
@@ -1217,8 +1232,8 @@ fn equipment_and_transmog_preserve_independent_filters_and_slots() {
             },
         ]
     ));
-    assert_eq!(ui.window.filter, "22");
-    assert_eq!(ui.window.transmog_filter, "11");
+    assert_eq!(ui.window.equipment_filters[2], "22");
+    assert_eq!(ui.window.transmog_filters[0], "11");
 }
 
 #[test]
@@ -1604,17 +1619,11 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
                         window.show(ui, &snapshot, &mut input);
                     },
                 );
-                let visible_equipment = output.shapes.iter().filter(|clipped| {
-                    matches!(&clipped.shape, egui::Shape::Text(text)
-                        if text.galley.job.text.starts_with("猎人装备 ")
-                            && clipped.clip_rect.contains_rect(clipped.shape.visual_bounding_rect()))
-                }).count();
                 output.drop_without_applying_deltas();
                 time += 0.2;
-                visible_equipment
             };
             frame(vec![], false);
-            let visible_equipment = frame(vec![], false);
+            frame(vec![], false);
             let tab = context
                 .read_response(Id::new("debug-pages").with(("header", Id::new("task"))))
                 .unwrap();
@@ -1629,13 +1638,6 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
                     "task controls must not allocate widgets on {page:?}"
                 );
             }
-            if height == 900.0 && matches!(page, Page::Equipment | Page::Transmog) {
-                assert!(
-                    visible_equipment >= 6,
-                    "only {visible_equipment} equipment rows are fully visible"
-                );
-            }
-
             // Navigate through the actual task tab from every starting page.
             let position = tab.rect.center();
             for pressed in [true, false] {
@@ -1997,4 +1999,113 @@ fn monster_selector_refreshes_source_and_moves_the_attached_debugger() {
     assert!(
         matches!(ui.window.control.commands().as_slice(), [DebugCommand::AiDebug { target, operation: AiDebugOperation::Attach }] if *target == second)
     );
+}
+
+#[test]
+fn weapon_style_switch_respects_loading_monster_and_magnet_spike() {
+    let mut ui = DebugUi::new(populated_snapshot(4));
+    ui.window.page = Page::Equipment;
+    ui.snapshot.weapon_style = Some(WeaponStyle::Earth);
+    ui.frame(vec![]);
+    ui.click("地型");
+    ui.click("地型");
+    assert!(ui.window.control.commands().is_empty());
+    for style in [
+        WeaponStyle::Heaven,
+        WeaponStyle::Storm,
+        WeaponStyle::Extreme,
+    ] {
+        ui.click(style.name());
+        assert!(matches!(ui.window.control.commands().as_slice(),
+            [DebugCommand::WeaponStyle(actual)] if *actual == style));
+    }
+    ui.click("地型");
+    let option = ui.position("极型");
+    ui.snapshot.ready = false;
+    ui.click_at(option);
+    assert!(ui.window.control.commands().is_empty());
+    ui.snapshot.ready = true;
+    ui.snapshot.monster = Some(1);
+    ui.click("地型");
+    assert!(ui.window.control.commands().is_empty());
+    ui.snapshot.monster = None;
+    ui.snapshot.weapon = 13;
+    ui.snapshot.weapon_style = Some(WeaponStyle::Extreme);
+    ui.frame(vec![]);
+    ui.click("极型");
+    ui.click("天型");
+    assert!(ui.window.control.commands().is_empty());
+}
+
+#[test]
+fn equipment_form_selects_each_part_without_a_slot_switch() {
+    let mut ui = transmog_ui();
+    ui.window.page = Page::Equipment;
+    for (slot, kind) in [(1, 2), (2, 3), (3, 4), (4, 5), (5, 0)] {
+        ui.snapshot.equipment[slot] = Some((kind, 11));
+    }
+    ui.frame(vec![]);
+    for label in ["武器", "秘传书", "头部", "胸部", "腕部", "腰部", "腿部"] {
+        ui.position(label);
+    }
+    for (slot, kind) in [(1, 2), (2, 3), (3, 4), (4, 5), (5, 0)] {
+        ui.window.equipment_filters[slot] = "22".into();
+        ui.click(&format!("防具 {kind}:11"));
+        ui.click_id(Id::new("debug-equipment-list").with((kind, 22_u16)));
+        assert!(matches!(ui.window.control.commands().as_slice(),
+            [DebugCommand::Equip { kind: actual, id: 22 }] if *actual == kind));
+    }
+}
+
+#[test]
+fn equipment_popup_keeps_search_and_weapon_selector_open() {
+    let mut ui = DebugUi::new(populated_snapshot(4));
+    Arc::get_mut(&mut ui.snapshot.catalog)
+        .unwrap()
+        .equipment
+        .push(Equipment {
+            kind: 7,
+            id: 22,
+            model_ids: [22; 2],
+            weapon: Some(1),
+            name: "测试重弩".into(),
+        });
+    ui.window.page = Page::Equipment;
+    ui.click("猎人装备 0");
+    ui.click("装备名称或编号");
+    ui.frame(vec![Event::Text("22".into())]);
+    ui.click("大剑");
+    ui.click("重弩");
+    assert_eq!(ui.window.weapon, 1);
+    assert_eq!(ui.window.equipment_filters[0], "22");
+    ui.click_id(Id::new("debug-equipment-list").with((7_u8, 22_u16)));
+    assert!(matches!(
+        ui.window.control.commands().as_slice(),
+        [DebugCommand::Equip { kind: 7, id: 22 }]
+    ));
+    ui.frame(vec![]);
+    assert!(!ui.texts.iter().any(|(text, _)| text == "筛选装备"));
+}
+
+#[test]
+fn equipment_popup_closes_outside_and_escape_keeps_the_parent_of_weapon_selector() {
+    let mut ui = DebugUi::new(populated_snapshot(4));
+    ui.window.page = Page::Equipment;
+    ui.click("猎人装备 0");
+    ui.click("大剑");
+    assert!(egui::Popup::is_any_open(&ui.context));
+    let escape = || Event::Key {
+        key: Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    ui.frame(vec![escape()]);
+    ui.frame(vec![]);
+    assert!(!egui::Popup::is_any_open(&ui.context));
+    assert_eq!(ui.window.equipment_popup, Some((false, 0)));
+    ui.click_at(pos2(470.0, 590.0));
+    assert_eq!(ui.window.equipment_popup, None);
+    assert!(ui.window.control.commands().is_empty());
 }

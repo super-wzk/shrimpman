@@ -8,6 +8,7 @@ mod archives;
 
 use super::{
     Appearance, AppearanceChange, AppearanceOptions, Equipment, EquipmentCatalog, Face, Transmogs,
+    WeaponStyle,
 };
 use std::{mem::transmute, ptr};
 use windows::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
@@ -320,6 +321,7 @@ pub unsafe fn appearance_options(dat: usize) -> [AppearanceOptions; 2] {
 pub unsafe fn change_appearance(
     client: Client,
     moveset: Option<u8>,
+    style: Option<WeaponStyle>,
     transmogs: &Transmogs,
     options: &[AppearanceOptions; 2],
     change: AppearanceChange,
@@ -339,7 +341,7 @@ pub unsafe fn change_appearance(
         put(save + 1, u8::from(next.female));
         put(save + 2, next.face);
         put(save + 3, next.hair);
-        refresh(client, moveset, transmogs, player, save);
+        refresh(client, moveset, style, transmogs, player, save);
     }
     Ok(())
 }
@@ -351,6 +353,7 @@ pub unsafe fn change_appearance(
 pub unsafe fn equip(
     client: Client,
     moveset: Option<u8>,
+    style: Option<WeaponStyle>,
     transmogs: &Transmogs,
     kind: u8,
     id: u16,
@@ -388,7 +391,7 @@ pub unsafe fn equip(
             return Err("无法装备所选装备".into());
         }
 
-        refresh(client, moveset, transmogs, player, save);
+        refresh(client, moveset, style, transmogs, player, save);
     }
     Ok(())
 }
@@ -489,6 +492,44 @@ pub unsafe fn change_transmog(client: Client, transmogs: &Transmogs) -> Result<(
     Ok(())
 }
 
+/// # Safety
+/// Run on the task thread for a live hunter, before its motion resources load.
+pub unsafe fn apply_weapon_style(client: Client, player: usize, style: WeaponStyle) {
+    unsafe {
+        let style = style.for_weapon(get(player + 3)) as u8;
+        put(player + 3394, style);
+        // Native motion loaders prefer this selector when the client enables it.
+        if client.read::<u8>(0x1ed52953) != 0 {
+            put(client.address(0x1ee08ce4), u32::from(style));
+        }
+    }
+}
+
+/// # Safety
+/// Run on the initialized local hunter's task thread with the verified client.
+pub unsafe fn change_weapon_style(client: Client, style: WeaponStyle) -> Result<(), String> {
+    unsafe {
+        let (player, _) = local_hunter(client)?;
+        let weapon = get::<u8>(player + 3);
+        if style.for_weapon(weapon) != style {
+            return Err("磁斩锤仅支持极型".into());
+        }
+        refresh_resource_indices(client)?;
+        reset_action(client, player);
+        apply_weapon_style(client, player, style);
+        // Tonfa selects distinct motion archives by style in 1089F8C0.
+        reload_moveset(client.address(0x1089f8c0), u32::from(weapon));
+        bind_animations(
+            client.address(0x10a92d70),
+            client.address(0x108ec090),
+            client.address(0x10bba300),
+            player,
+        );
+        reset_action(client, player);
+    }
+    Ok(())
+}
+
 unsafe fn reset_action(client: Client, player: usize) {
     unsafe {
         // End the old action while its weapon class and resources still agree.
@@ -502,6 +543,7 @@ unsafe fn reset_action(client: Client, player: usize) {
 unsafe fn refresh(
     client: Client,
     moveset: Option<u8>,
+    style: Option<WeaponStyle>,
     transmogs: &Transmogs,
     player: usize,
     save: usize,
@@ -534,6 +576,9 @@ unsafe fn refresh(
         // model's animation buffers; the actual model ID still comes from gear.
         let weapon = moveset.unwrap_or_else(|| get(player + 3));
         put(player + 3, weapon);
+        if let Some(style) = style {
+            apply_weapon_style(client, player, style);
+        }
 
         invalidate_model_ids(player);
 

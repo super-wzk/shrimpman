@@ -22,8 +22,8 @@ pub mod theme;
 pub use components::{
     Button, ButtonKind, Checkbox, Dialog, DialogState, Field, FormLayout, IconButton, ItemSlot,
     LabelPlacement, Meter, NoticeKind, Notifications, Panel, Popup, Property, RichTooltip,
-    ScrollPanel, SelectField, SplitPane, SplitPaneOutput, Surface, Tab, Tabs, TextField, Toggle,
-    Validation, Window, key_hint, notice, properties,
+    ScrollPanel, Segment, SegmentedControl, SelectField, SplitPane, SplitPaneOutput, Surface, Tab,
+    Tabs, TextField, Toggle, Validation, Window, key_hint, notice, properties,
 };
 pub use input::{Direction, GamepadState, InputDevice, NavigationInput, consume_escape};
 pub use primitives::focus::{EngagementPlugin, FocusEngagement, FocusGroup, scroll_on_focus};

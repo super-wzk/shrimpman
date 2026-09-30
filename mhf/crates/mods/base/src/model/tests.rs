@@ -156,3 +156,17 @@ fn gender_change_requires_both_appearance_directories() {
             .is_err()
     );
 }
+
+#[test]
+fn weapon_changes_preserve_supported_styles_and_replace_unsupported_styles() {
+    for style in WeaponStyle::ALL {
+        for weapon in 0..13 {
+            assert_eq!(style.for_weapon(weapon), style);
+        }
+        assert_eq!(style.for_weapon(13), WeaponStyle::Extreme);
+    }
+    assert_eq!(
+        WeaponStyle::Earth.for_weapon(13).for_weapon(0),
+        WeaponStyle::Extreme
+    );
+}

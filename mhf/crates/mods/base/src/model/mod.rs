@@ -25,6 +25,38 @@ pub const NATIVE_WEAPON_NAMES: [&str; 14] = [
     "磁斩锤",
 ];
 
+/// Native secret-book styles (player +3394).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WeaponStyle {
+    Earth,
+    Heaven,
+    Storm,
+    Extreme,
+}
+
+impl WeaponStyle {
+    pub const ALL: [Self; 4] = [Self::Earth, Self::Heaven, Self::Storm, Self::Extreme];
+
+    pub fn from_native(value: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(value)).copied()
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Earth => "地型",
+            Self::Heaven => "天型",
+            Self::Storm => "岚型",
+            Self::Extreme => "极型",
+        }
+    }
+
+    pub fn for_weapon(self, weapon: u8) -> Self {
+        // 10B37970 forces native weapon class 13 (Magnet Spike) to style 3.
+        if weapon == 13 { Self::Extreme } else { self }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Equipment {
     pub kind: u8,

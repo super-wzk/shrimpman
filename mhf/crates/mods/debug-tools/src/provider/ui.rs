@@ -1,11 +1,11 @@
 use super::{
     Action, AppearanceChange, DebugCommand, DebugControl, DebugSnapshot, NATIVE_WEAPON_NAMES,
-    input::InputSettings,
+    WeaponStyle, input::InputSettings,
 };
 
 use egui_hunter::{
-    Button, ButtonKind, Field, FormLayout, Icon, LabelPlacement, NavigationState, Panel,
-    SelectField, Tab, Tabs, Tokens,
+    Button, ButtonKind, Field, FormLayout, Icon, LabelPlacement, NavigationState, Panel, Segment,
+    SegmentedControl, SelectField, Tab, Tabs, Tokens,
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -68,10 +68,9 @@ pub(crate) struct DebugPanel {
     control: Arc<DebugControl>,
     page: Page,
     weapon: u8,
-    slot: u8,
-    filter: String,
-    transmog_slot: u8,
-    transmog_filter: String,
+    equipment_filters: [String; 6],
+    equipment_popup: Option<(bool, usize)>,
+    transmog_filters: [String; 5],
     action_filter: String,
     action_weapon: Option<u8>,
     monster_filter: String,
@@ -86,10 +85,9 @@ impl DebugPanel {
             control,
             page: Page::default(),
             weapon: 0,
-            slot: 6,
-            filter: String::new(),
-            transmog_slot: 2,
-            transmog_filter: String::new(),
+            equipment_filters: Default::default(),
+            equipment_popup: None,
+            transmog_filters: Default::default(),
             action_filter: String::new(),
             action_weapon: None,
             monster_filter: String::new(),
@@ -201,6 +199,13 @@ impl DebugPanel {
         ui.separator();
         // Lists and editor panes each own their scrolling. Only content-sized
         // forms scroll as a page, so toolbars never disappear behind a list.
+        if !matches!(self.page, Page::Equipment | Page::Transmog)
+            || self
+                .equipment_popup
+                .is_some_and(|(transmog, _)| transmog != (self.page == Page::Transmog))
+        {
+            self.equipment_popup = None;
+        }
         match self.page {
             Page::Task | Page::Appearance => {
                 egui::ScrollArea::vertical()
@@ -346,7 +351,8 @@ impl DebugPanel {
                 ui.label("换装与换区会保留当前外观；头盔可能遮挡发型。");
             }
             Page::Equipment => {
-                ui.label("选择装备后原地热替换，刷新模型、技能与招式资源。");
+                ui.label("按部位展开选择器，搜索名称或编号并选中装备即可原地换装；重选当前装备可重新加载。");
+                ui.label("秘传书原地切换，换装与换区保留；磁斩锤仅支持极型。");
             }
             Page::Transmog => {
                 ui.label("应用幻化会回到待机并替换防具外观，保留装备属性、技能与招式来源。");
@@ -516,89 +522,177 @@ impl DebugPanel {
     }
 
     fn equipment(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
-        filter_field(ui, "筛选装备", &mut self.filter, "装备名称或编号");
-        let id = egui::Id::new("debug-slot");
-        ui.horizontal_wrapped(|ui| {
-            let mut field = SelectField::new(id, slot_name(self.slot));
-            field.native = field.native.height(menu_height(ui)).width(80.0);
-            field.show_ui(ui, |ui| {
-                for kind in [6, 2, 3, 4, 5, 0] {
-                    if ui
-                        .selectable_value(&mut self.slot, kind, slot_name(kind))
-                        .clicked()
-                    {
-                        ui.close();
-                    }
-                }
-            });
-            if self.slot == 6 {
-                weapon_selector(ui, "debug-weapon", &mut self.weapon);
-            }
-        });
-        self.equipment_list(ui, snapshot, false);
+        self.equipment_form(ui, snapshot, false);
     }
 
     fn transmog(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
-        filter_field(ui, "筛选幻化", &mut self.transmog_filter, "防具名称或编号");
-        let id = egui::Id::new("debug-transmog-slot");
-        let mut field = SelectField::new(id, slot_name(self.transmog_slot));
-        field.native = field.native.height(menu_height(ui)).width(80.0);
-        field.show_ui(ui, |ui| {
-            for kind in [2, 3, 4, 5, 0] {
-                if ui
-                    .selectable_value(&mut self.transmog_slot, kind, slot_name(kind))
-                    .clicked()
-                {
-                    ui.close();
-                }
-            }
-        });
-        let current = snapshot.transmogs.selected(self.transmog_slot);
-        ui.horizontal_wrapped(|ui| {
-            let label = match current {
-                None => "当前幻化：原装备外观".to_owned(),
-                Some(id) => match snapshot
-                    .catalog
-                    .equipment
-                    .iter()
-                    .find(|item| item.kind == self.transmog_slot && item.id == id)
-                {
-                    Some(item) => format!(
-                        "当前幻化：{} · 编号 {id} · 模型编号 {}",
-                        item.name,
-                        item.model_ids[usize::from(snapshot.appearance.female)]
-                    ),
-                    None => format!("当前幻化：编号 {id}"),
-                },
-            };
-            ui.add(egui::Label::new(label).wrap());
-            if ui
-                .add_enabled(
-                    snapshot.ready && current.is_some(),
-                    Button::new("恢复原样")
-                        .id(egui::Id::new("debug-transmog-clear"))
-                        .kind(ButtonKind::Quiet),
-                )
-                .clicked()
-            {
-                self.send(DebugCommand::Transmog {
-                    kind: self.transmog_slot,
-                    id: None,
-                });
-            }
-        });
-        self.equipment_list(ui, snapshot, true);
+        self.equipment_form(ui, snapshot, true);
     }
 
-    fn equipment_list(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, transmog: bool) {
-        let (slot, filter, list_id) = if transmog {
-            (
-                self.transmog_slot,
-                &mut self.transmog_filter,
-                "debug-transmog-list",
-            )
+    fn equipment_form(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, transmog: bool) {
+        let fields = [
+            Field::new(egui::Id::new("debug-equipped-weapon")).label("武器"),
+            Field::new(egui::Id::new("debug-weapon-style")).label("秘传书"),
+            Field::new(egui::Id::new("debug-equipped-head")).label("头部"),
+            Field::new(egui::Id::new("debug-equipped-chest")).label("胸部"),
+            Field::new(egui::Id::new("debug-equipped-arms")).label("腕部"),
+            Field::new(egui::Id::new("debug-equipped-waist")).label("腰部"),
+            Field::new(egui::Id::new("debug-equipped-legs")).label("腿部"),
+        ];
+        egui::ScrollArea::vertical()
+            .id_salt(("debug-equipment-form-scroll", transmog))
+            .show(ui, |ui| {
+                ui.add_enabled_ui(snapshot.ready, |ui| {
+                    FormLayout::new(egui::Id::new("debug-equipment-form"))
+                        .label_placement(LabelPlacement::Left)
+                        .label_width(64.0)
+                        .show(
+                            ui,
+                            if transmog { &fields[2..] } else { &fields },
+                            |ui, index| {
+                                let index = if transmog { index + 2 } else { index };
+                                if index == 1 {
+                                    self.weapon_style(ui, snapshot)
+                                } else {
+                                    self.equipment_slot(
+                                        ui,
+                                        snapshot,
+                                        index.saturating_sub(1),
+                                        transmog,
+                                    )
+                                }
+                            },
+                        );
+                });
+            });
+    }
+
+    fn weapon_style(&self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) -> egui::Response {
+        let segments = WeaponStyle::ALL.map(|style| {
+            Segment::new(style, style.name())
+                .enabled(snapshot.monster.is_none() && style.for_weapon(snapshot.weapon) == style)
+        });
+        let mut selected = snapshot.weapon_style;
+        let response = SegmentedControl::new(egui::Id::new("debug-weapon-style")).show(
+            ui,
+            &mut selected,
+            &segments,
+        );
+        if response.changed()
+            && let Some(style) = selected
+        {
+            self.send(DebugCommand::WeaponStyle(style));
+        }
+        response
+    }
+
+    fn equipment_slot(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &DebugSnapshot,
+        slot: usize,
+        transmog: bool,
+    ) -> egui::Response {
+        let kind = [6, 2, 3, 4, 5, 0][slot];
+        let current = if transmog {
+            snapshot.transmogs.selected(kind).map(|id| (kind, id))
         } else {
-            (self.slot, &mut self.filter, "debug-equipment-list")
+            snapshot.equipment[slot]
+        };
+        let label = match current {
+            None => if transmog {
+                "原装备外观"
+            } else {
+                "未装备"
+            }
+            .to_owned(),
+            Some((kind, id)) => snapshot
+                .catalog
+                .equipment
+                .iter()
+                .find(|item| (item.kind, item.id) == (kind, id))
+                .map_or_else(|| format!("编号 {id}"), |item| item.name.clone()),
+        };
+        let response = ui
+            .push_id(("debug-equipment-slot", transmog, slot), |ui| {
+                ui.add(
+                    egui::Button::new(label)
+                        .right_text("⏷")
+                        .truncate()
+                        .min_size(egui::vec2(
+                            ui.available_width(),
+                            ui.spacing().interact_size.y,
+                        )),
+                )
+            })
+            .inner;
+        egui_hunter::scroll_on_focus(&response);
+        if response.clicked() {
+            self.equipment_popup =
+                (self.equipment_popup != Some((transmog, slot))).then_some((transmog, slot));
+        }
+        let mut open = self.equipment_popup == Some((transmog, slot)) && ui.is_enabled();
+        // Keep the parent independent of egui's single memory-popup slot, which
+        // the weapon ComboBox owns while its menu is open.
+        let child_open = egui::Popup::is_any_open(ui.ctx());
+        let style = ui.style().clone();
+        egui::Popup::from_response(&response)
+            .id(response.id.with("equipment-popup"))
+            .open_bool(&mut open)
+            .width(response.rect.width())
+            .close_behavior(if child_open {
+                egui::PopupCloseBehavior::IgnoreClicks
+            } else {
+                egui::PopupCloseBehavior::CloseOnClickOutside
+            })
+            .show(|ui| {
+                ui.set_style(style);
+                ui.set_width(response.rect.width());
+                let filter = if transmog {
+                    &mut self.transmog_filters[slot - 1]
+                } else {
+                    &mut self.equipment_filters[slot]
+                };
+                filter_field(ui, "筛选装备", filter, "装备名称或编号");
+                if slot == 0 {
+                    weapon_selector(ui, "debug-weapon", &mut self.weapon);
+                }
+                if transmog
+                    && ui
+                        .add_enabled(
+                            current.is_some(),
+                            Button::new("恢复原装备外观")
+                                .id(egui::Id::new("debug-transmog-clear").with(kind))
+                                .full_width(),
+                        )
+                        .clicked()
+                {
+                    self.send(DebugCommand::Transmog { kind, id: None });
+                    ui.close();
+                }
+                self.equipment_list(ui, snapshot, slot, transmog);
+            });
+        if self.equipment_popup == Some((transmog, slot)) && !open {
+            self.equipment_popup = None;
+            if !ui.ctx().input(|input| input.pointer.any_click()) && response.enabled() {
+                response.request_focus();
+            }
+        }
+        response
+    }
+
+    fn equipment_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &DebugSnapshot,
+        index: usize,
+        transmog: bool,
+    ) {
+        let slot = [6, 2, 3, 4, 5, 0][index];
+        let (filter, list_id) = if transmog {
+            (&mut self.transmog_filters[index - 1], "debug-transmog-list")
+        } else {
+            (&mut self.equipment_filters[index], "debug-equipment-list")
         };
         let query = filter.trim().to_lowercase();
         let items = snapshot
@@ -628,7 +722,8 @@ impl DebugPanel {
         }
         let row_height = result_row_height(ui);
         egui::ScrollArea::vertical()
-            .id_salt(list_id)
+            .id_salt((list_id, slot))
+            .max_height(240.0)
             .content_margin(egui::Margin {
                 right: 12,
                 ..egui::Margin::ZERO
@@ -643,61 +738,59 @@ impl DebugPanel {
                     } else {
                         snapshot.equipment.contains(&Some((item.kind, item.id)))
                     };
-                    ui.push_id((item.kind, item.id), |ui| {
-                        result_row(ui, row_height, equipped, |ui| {
-                            if equipped && transmog {
-                                ui.label(
-                                    egui::RichText::new("已幻化")
-                                        .small()
-                                        .color(Tokens::get(ui).primary),
-                                );
-                            } else {
-                                let label = if transmog {
-                                    "幻化"
-                                } else if equipped {
-                                    "重新加载"
-                                } else {
-                                    "换装"
-                                };
-                                let equip = ui.add_enabled(
-                                    snapshot.ready,
-                                    Button::new(label)
-                                        .id(egui::Id::new(list_id).with((item.kind, item.id))),
-                                );
-                                if equip.clicked() {
-                                    self.send(if transmog {
-                                        DebugCommand::Transmog {
-                                            kind: item.kind,
-                                            id: Some(item.id),
-                                        }
-                                    } else {
-                                        DebugCommand::Equip {
-                                            kind: item.kind,
-                                            id: item.id,
-                                        }
-                                    });
-                                }
-                            }
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(ui.available_width(), row_height - 4.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.add(egui::Label::new(&item.name).truncate())
-                                        .on_hover_text(&item.name);
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "编号 {} · 模型编号 {}",
-                                            item.id,
-                                            item.model_ids[usize::from(snapshot.appearance.female)]
-                                        ))
-                                        .small()
-                                        .weak(),
-                                    );
-                                },
-                            );
-                        });
+                    let response = ui.add_enabled(
+                        snapshot.ready,
+                        Button::new("")
+                            .id(egui::Id::new(list_id).with((item.kind, item.id)))
+                            .selected(equipped)
+                            .full_width()
+                            .min_size(egui::vec2(0.0, row_height)),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            response.enabled(),
+                            equipped,
+                            &item.name,
+                        )
                     });
+                    let mut rect = response.rect.shrink2(ui.spacing().button_padding);
+                    rect.max.x -= ui.spacing().icon_width;
+                    let painter = ui.painter_at(rect);
+                    painter.text(
+                        rect.left_top(),
+                        egui::Align2::LEFT_TOP,
+                        &item.name,
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        ui.visuals().text_color(),
+                    );
+                    painter.text(
+                        rect.left_bottom(),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!(
+                            "编号 {} · 模型编号 {}",
+                            item.id,
+                            item.model_ids[usize::from(snapshot.appearance.female)]
+                        ),
+                        egui::TextStyle::Small.resolve(ui.style()),
+                        ui.visuals().weak_text_color(),
+                    );
+                    if response.clicked() {
+                        if !transmog || !equipped {
+                            self.send(if transmog {
+                                DebugCommand::Transmog {
+                                    kind: item.kind,
+                                    id: Some(item.id),
+                                }
+                            } else {
+                                DebugCommand::Equip {
+                                    kind: item.kind,
+                                    id: item.id,
+                                }
+                            });
+                        }
+                        ui.close();
+                    }
                 }
             });
     }
@@ -1207,17 +1300,6 @@ fn menu_height(ui: &egui::Ui) -> f32 {
         .y
         .clamp(viewport.top(), viewport.bottom());
     ((y - viewport.top()).max(viewport.bottom() - y) - 32.0).clamp(24.0, 240.0)
-}
-
-fn slot_name(kind: u8) -> &'static str {
-    match kind {
-        2 => "头部",
-        3 => "胸部",
-        4 => "腕部",
-        5 => "腰部",
-        0 => "腿部",
-        _ => "武器",
-    }
 }
 
 #[cfg(test)]

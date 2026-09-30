@@ -15,6 +15,7 @@ use input::InputSettings;
 use mhf_base::model::Face;
 use mhf_base::model::{
     Appearance, AppearanceChange, AppearanceOptions, Equipment, NATIVE_WEAPON_NAMES, Transmogs,
+    WeaponStyle,
 };
 pub use module::DebugToolsMod;
 pub(crate) use native::{State, install};
@@ -59,6 +60,7 @@ enum DebugCommand {
         id: Option<u16>,
     },
     Appearance(AppearanceChange),
+    WeaponStyle(WeaponStyle),
     Action(Action),
     FollowEquipment,
     Transform {
@@ -226,6 +228,7 @@ pub(crate) struct DebugSnapshot {
     areas: Vec<u16>,
     weapon: u8,
     equipped_weapon: u8,
+    weapon_style: Option<WeaponStyle>,
     equipment: [Option<(u8, u16)>; 6],
     transmogs: Transmogs,
     appearance: Appearance,

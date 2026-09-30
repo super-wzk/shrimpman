@@ -4,7 +4,7 @@ mod combat;
 mod monster;
 mod monster_ai;
 
-use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Transmogs};
+use super::{Action, Catalog, DebugCommand, DebugControl, DebugSnapshot, Transmogs, WeaponStyle};
 use mhf_base::model::native::{self as equipment, Client};
 use mhf_hooks::{HookGuard, HookSlot, ModuleReference};
 use mhf_quest::QuestControl;
@@ -57,6 +57,7 @@ struct Runtime {
     catalog: Arc<Catalog>,
     catalog_ready: bool,
     moveset: Option<u8>,
+    weapon_style: Option<WeaponStyle>,
     transmogs: Transmogs,
     pending_action: Option<Action>,
     ready_frames: u8,
@@ -72,6 +73,17 @@ impl State {
     fn model(&self) -> Client {
         // State is held by the installed hook guard, which retains and validates the DLL.
         unsafe { Client::new(self.base) }
+    }
+
+    unsafe fn weapon_style(&self, player: usize) -> Option<WeaponStyle> {
+        unsafe {
+            let style = if self.read::<u8>(0x1ed52953) != 0 {
+                self.read::<u32>(0x1ee08ce4)
+            } else {
+                u32::from(get::<u8>(player + 3394))
+            };
+            u8::try_from(style).ok().and_then(WeaponStyle::from_native)
+        }
     }
 
     fn address(&self, va: usize) -> usize {
@@ -271,6 +283,9 @@ unsafe extern "C" fn initialize_players() -> i32 {
             if let Some(weapon) = runtime.moveset {
                 put(player + 3, weapon);
             }
+            if let Some(style) = runtime.weapon_style {
+                equipment::apply_weapon_style(state.model(), player, style);
+            }
         }
         result
     }
@@ -372,6 +387,7 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
         areas: Vec::new(),
         weapon: 0,
         equipped_weapon: 0,
+        weapon_style: None,
         equipment: [None; 6],
         transmogs: runtime.transmogs,
         appearance: Default::default(),
@@ -426,6 +442,7 @@ unsafe fn snapshot(state: &State, runtime: &Runtime) -> DebugSnapshot {
             snapshot.monster_statuses = monster_ai::statuses(&snapshot.ai_targets);
         }
         snapshot.weapon = get(player + 3);
+        snapshot.weapon_style = state.weapon_style(player);
         let actor = monster::actor(state, runtime).unwrap_or(player);
         snapshot.action_group = get(actor + 21);
         snapshot.action_id = get(actor + 20);
@@ -544,14 +561,9 @@ unsafe extern "C" fn dispatch() -> i32 {
                         runtime.action_definition =
                             Some(Arc::new(super::action_definition::ActionDefinition {
                                 action,
-                                motion_style: equipment::hunter(state.model()).and_then(|player| {
-                                    let style = if state.read::<u8>(0x1ed52953) != 0 {
-                                        state.read::<u32>(0x1ee08ce4)
-                                    } else {
-                                        u32::from(get::<u8>(player + 3394))
-                                    };
-                                    (style <= 3).then_some(style as u8)
-                                }),
+                                motion_style: equipment::hunter(state.model())
+                                    .and_then(|player| state.weapon_style(player))
+                                    .map(|style| style as u8),
                                 attacks: definition.as_ref().ok().and_then(|definition| {
                                     state.attack_resources.snapshot(definition)
                                 }),
@@ -586,11 +598,11 @@ unsafe extern "C" fn dispatch() -> i32 {
                         restart(state, &mut runtime)
                     }
                     DebugCommand::Equip { kind, id } if current.ready => {
-                        if runtime
+                        if let Some(item) = runtime
                             .catalog
                             .equipment
                             .iter()
-                            .any(|item| (item.kind, item.id) == (kind, id))
+                            .find(|item| (item.kind, item.id) == (kind, id))
                         {
                             // Weapon reloads must bind effects with the equipped
                             // weapon class: 10BBA300 matches both class and model.
@@ -600,14 +612,40 @@ unsafe extern "C" fn dispatch() -> i32 {
                             } else {
                                 runtime.moveset
                             };
-                            equipment::equip(state.model(), moveset, &runtime.transmogs, kind, id)
-                                .map(|()| {
-                                    runtime.moveset = moveset;
-                                    runtime.pending_action = None;
-                                })
+                            let weapon_style = item.weapon.map_or(runtime.weapon_style, |weapon| {
+                                Some(
+                                    current
+                                        .weapon_style
+                                        .unwrap_or(WeaponStyle::Earth)
+                                        .for_weapon(weapon),
+                                )
+                            });
+                            equipment::equip(
+                                state.model(),
+                                moveset,
+                                weapon_style,
+                                &runtime.transmogs,
+                                kind,
+                                id,
+                            )
+                            .map(|()| {
+                                runtime.moveset = moveset;
+                                runtime.weapon_style = weapon_style;
+                                runtime.pending_action = None;
+                                runtime.action_definition = None;
+                            })
                         } else {
                             Err("装备编号无效".into())
                         }
+                    }
+                    DebugCommand::WeaponStyle(style)
+                        if current.ready && runtime.monster.is_none() =>
+                    {
+                        equipment::change_weapon_style(state.model(), style).map(|()| {
+                            runtime.weapon_style = Some(style);
+                            runtime.pending_action = None;
+                            runtime.action_definition = None;
+                        })
                     }
                     DebugCommand::Transmog { kind, id } if current.ready => runtime
                         .transmogs
@@ -623,6 +661,7 @@ unsafe extern "C" fn dispatch() -> i32 {
                         equipment::change_appearance(
                             state.model(),
                             runtime.moveset,
+                            runtime.weapon_style,
                             &runtime.transmogs,
                             &runtime.catalog.appearances,
                             change,
