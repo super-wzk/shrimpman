@@ -37,7 +37,7 @@ prepare 完成后，宿主优先选择 `mhf.launch.v1`；没有普通提供方�
 
 配置存储与通用 INI 桥由独立 [`mhf.config`](../../mods/config/README.md) 提供。
 Base 提交游戏设置及 INI 映射，Login 自己注册并解析所属配置；内核只接收应用准备的值。
-字体、界面、Geometry 与任务字节属于 Base 内部组件；应用使用原生文本与 CP932 任务，未启用 Unicode 和 Translation 组件。
+字体、界面、Geometry 与任务字节属于 Base 内部组件；应用使用原生文本与 CP932 任务。
 
 任务与调试说明见 [Debug](../../mods/debug/README.md)，登录编码与 ABI 字段规则见
 [Login](../../mods/login/README.md)，界面和输入法见 [UI](../../mods/ui/README.md)。

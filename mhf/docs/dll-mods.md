@@ -215,8 +215,6 @@ Debug 原生状态通过 Base 的公开 Quest 控制接口访问任务会话。�
 `mhf_ui::UiHost` 从 `mhf.base` 的 `mhf.ui.v1` 注册面板，回调中的 `UiTable` 只在该次调用内有效；`Panel::close` 成功后已排空回调，失败应在 `Mod::stop` 中传播，让宿主保留消费者 DLL。回调不能同步注销自身。当前完整 egui 调试窗口要求内置 Base，不跨 DLL 传递 egui 对象。
 Base 内部包含 Font、UI、Geometry、Monster 和 Quest；各组件保留自己的代码边界，游戏文本保持原生处理。
 
-应用运行清单与头文件聚合不包含 Unicode 和 Translation crate。
-
 数据 Mod 的 [`mhf.data.v1`](../crates/runtime/mod-host/include/mhf_data.h) 提供资源根路径及相对文件读取。它是通用资源入口。
 
 ## 配置、导入与导出

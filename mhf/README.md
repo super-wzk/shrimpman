@@ -5,7 +5,7 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| [`crates/mods/`](crates/mods/) | Config、Base、Login、Debug、Workbench、DatRedirect 运行 Mod，Font／UI／Quest／Geometry／Monster 组件，以及独立的 Unicode／Translation crate（不在应用运行清单中） |
+| [`crates/mods/`](crates/mods/) | Config、Base、Login、Debug、Workbench、DatRedirect 运行 Mod，以及 Font／UI／Quest／Geometry／Monster 组件 |
 | [`crates/runtime/`](crates/runtime/) | 游戏会话、Mod 生命周期、公共 C 协议、Rust SDK、Hook 管理、包发现与依赖解析 |
 | [`crates/shared/`](crates/shared/) | [`egui-hunter`](crates/shared/egui-hunter/README.md) 组件、[`resource`](crates/shared/resource/README.md) 游戏资源类型、[`ai-debug`](crates/shared/ai-debug/README.md) 断点、轨迹与录制回放，以及 `shrimpman-{common,domain,transport}` 客户端协议代码 |
 | [`crates/apps/`](crates/apps/) | 游戏入口 [`launcher`](crates/apps/launcher/README.md)、独立管理器 [`mod-manager`](crates/apps/mod-manager/README.md)、离线 AI 导出 [`ai-decompile`](crates/apps/ai-decompile/README.md) 及共享内建清单 [`launcher-catalog`](crates/apps/launcher-catalog/README.md) |
@@ -26,8 +26,6 @@ Cargo 会合并 features；API 与 provider 可以同时启用，provider 在 AP
 | 配置与 INI 桥 | [`mhf-config`](crates/mods/config/README.md) |
 | 字体 | [`mhf-font`](crates/mods/font/README.md) |
 | 面板、控件与 D3D9 UI 后端 | [`mhf-ui`](crates/mods/ui/README.md) |
-| Unicode 文本与原生 IME（不在应用运行清单中） | [`mhf-unicode`](crates/mods/unicode/README.md) |
-| 译文与词典（不在应用运行清单中） | [`mhf-translation`](crates/mods/translation/README.md) |
 | 当前离线任务后端 | [`mhf-quest`](crates/mods/quest/README.md) |
 | 游戏线程调试工具 | [`mhf-debug-tools`](crates/mods/debug-tools/README.md) |
 | 资源浏览与原生模型工作台 | [`mhf-workbench`](crates/mods/workbench/README.md) |

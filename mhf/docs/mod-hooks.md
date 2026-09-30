@@ -85,7 +85,7 @@ DLL 的 `mhf_mod_sdk::Mod` 与 C 生命周期没有该阶段，必须在 detach 
 领域 crate 不自动定义 DLL 入口，也不会因启用 provider 就改变这两种生命周期契约。
 
 UI 的 D3D9、窗口和 DirectInput Hook、Font Hook、Geometry 与 Monster 由 Base 的组件管理；
-Quest 也归 Base，在启动提供方请求本地会话后安装任务 Hook。应用不包含 Unicode 原生 IME Hook。
+Quest 也归 Base，在启动提供方请求本地会话后安装任务 Hook。
 
 detour 内不能安装或卸载 Hook。Invocation 覆盖状态读取和原函数调用；裸汇编中直接使用 trampoline 的入口，仍需先停止原生调用来源，不能只依赖 Rust 计数。
 

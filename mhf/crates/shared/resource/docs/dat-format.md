@@ -141,7 +141,7 @@ DAT[390] 的事件为 16 字节，DAT[391] 为 22 字节，保留各自的调用
 ## 文本、展开和验证
 
 工作台构建脚本复用共享资源层的 `build/resource_layout.rs` 和 `resources/layout.json`，生成
-373 张 DAT 文本表布局，不依赖 Unicode/Translation 的运行时 provider。
+373 张 DAT 文本表布局。
 保留间接根路径、动态计数、目录存在性检查、物理 `first_record` 和混合记录中的非文本字节。
 显示层按 CP932 解码日文原文；二进制解析保留原始字符串，不对编码做拒绝性校验。
 

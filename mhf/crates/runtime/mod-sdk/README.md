@@ -81,7 +81,7 @@ let binding = mhf_mod_sdk::interface::bind::<CounterInterface>(dependencies)?;
 ```
 
 游戏功能和 Counter 的 Provider 使用 `derive_ReprC(dyn)` 与 `VirtualPtr` 生成业务 vtable。
-游戏领域 API 位于 `mhf/crates/mods/{font,ui,quest,debug-tools,translation}/src/api`，
+游戏领域 API 位于 `mhf/crates/mods/{font,ui,quest,debug-tools}/src/api`，
 各领域默认提供 API，`provider` feature 增加具体实现；SDK 不包含这些领域定义。
 Counter 的 `Snapshot` 同时作为 trait 返回值和 C 按值返回类型。
 `interface::bind` 返回的表仍然是宿主借用；消费者不取得虚拟对象所有权。

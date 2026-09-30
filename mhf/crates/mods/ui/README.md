@@ -24,7 +24,7 @@ panel.close()?;
 当前 Base 不注册游戏原生编辑器；UI 在 attach 阶段安装渲染和 DirectInput 后端，
 成功后发布输入捕获状态。
 UI 的安装失败会保留未能回滚的 Hook；stop 失败可重试，成功后清除共享捕获句柄。
-`HostIme` 保留为可选协作接口，当前应用不安装 Unicode 游戏 IME 适配器。
+`HostIme` 是可选的宿主编辑器协作接口。
 
 ## 资源引用组件
 

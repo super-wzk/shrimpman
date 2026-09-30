@@ -191,7 +191,7 @@ pub(super) unsafe extern "C" fn load(registers: *mut abi::Registers) {
     let result = catch_unwind(AssertUnwindSafe(|| unsafe {
         let path = CStr::from_ptr(path.cast());
         let buffer = prepare(state, cache, path)?;
-        // Call through the existing localization hook as well as the native reader.
+        // Let the native reader fill the prepared equipment cache buffer.
         let loaded =
             abi::read_equipment_file(state.address(0x8e27d0), path.as_ptr().cast(), buffer);
         if loaded == 0 {

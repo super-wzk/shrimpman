@@ -85,7 +85,7 @@ WSL 直接执行时转换配置、游戏路径，并通过 `WSLENV` 转发 `MHF_
 客户端与服务端的端口分别配置；使用自定义服务端口时，客户端需要设置对应的完整 URI。
 Sign TCP 文本编码默认 `utf8`；连接使用 Shift-JIS 的 Erupe 时设置
 `mhf.sign.encoding = "shift_jis";` 或 `MHF_SIGN__ENCODING=shift_jis`。
-此编码选项仅作用于 Sign TCP；应用使用原生游戏文本，Unicode/Translation 不在运行清单中。
+此编码选项仅作用于 Sign TCP；应用使用原生游戏文本。
 
 ## 启动功能
 

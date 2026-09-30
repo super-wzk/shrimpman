@@ -62,7 +62,7 @@ flowchart TD
 | `mhf.workbench` | 资源检查与独立预览；依赖 Base 和 Config，提供普通 `mhf.launch.v1`，与 Debug 同时启用会产生启动提供方冲突 |
 | `mhf.dat-redirect` | 默认关闭，独立启用后对所有启动模式生效；将游戏 `dat` 下的只读文件打开映射到配置根目录，缺失或打开失败时回退原文件；无 Mod 依赖，配置见 [DatRedirect](../crates/mods/dat-redirect/README.md) |
 
-Font、UI、Quest、Geometry、Monster 和 DebugTools 按职责分 crate，但不独立参与运行选择。Unicode 和 Translation 是独立 crate，不在应用运行清单中。
+Font、UI、Quest、Geometry、Monster 和 DebugTools 按职责分 crate，但不独立参与运行选择。
 Cargo feature 决定可用实现，配置决定选择。启用 Debug 时，普通启动提供方自动覆盖默认 Login 的 fallback。
 宿主优先检查普通提供方，仅在没有普通提供方时检查 fallback；有效层必须恰好有一个，否则在回调前报错。
 

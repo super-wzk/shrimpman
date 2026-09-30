@@ -1967,19 +1967,6 @@ name = "mhf-resource"
 version = "0.1.0"
 
 [[package]]
-name = "mhf-translation"
-version = "0.1.0"
-dependencies = [
- "mhf-config",
- "mhf-mod-host",
- "mhf-mod-sdk",
- "safer-ffi",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
 name = "mhf-ui"
 version = "0.1.0"
 dependencies = [
@@ -1993,28 +1980,6 @@ dependencies = [
  "safer-ffi",
  "windows",
  "windows-numerics",
-]
-
-[[package]]
-name = "mhf-unicode"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "egui",
- "encoding_rs",
- "mhf-font",
- "mhf-hooks",
- "mhf-mod-host",
- "mhf-mod-sdk",
- "mhf-translation",
- "mhf-ui",
- "safer-ffi",
- "serde",
- "serde_json",
- "unicode-segmentation",
- "unicode-width",
- "windows",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

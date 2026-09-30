@@ -160,8 +160,7 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
             abi::build_detour as *mut c_void,
         )
     }?;
-    // The general file loader already belongs to localization. Intercept only
-    // equipment call sites, and the queued dispatcher before a file job starts.
+    // Intercept equipment call sites and the queued dispatcher before a file job starts.
     unsafe {
         hooks.create(
             "equipment source cache loading",
