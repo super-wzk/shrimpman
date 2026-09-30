@@ -10,6 +10,18 @@ pub(crate) struct Patch {
 }
 
 pub(crate) const PATCHES: &[Patch] = &[
+    // 10013823: renderer entry variant offset; cmp     [edi+4], ax
+    Patch {
+        rva: 0x00013823,
+        original: &[0x66, 0x39, 0x47, 0x04],
+        replacement: &[0x66, 0x39, 0x47, 0x08],
+    },
+    // 1001382E: renderer entry variant offset; cmp     [edi+2], ax
+    Patch {
+        rva: 0x0001382e,
+        original: &[0x66, 0x39, 0x47, 0x02],
+        replacement: &[0x66, 0x39, 0x47, 0x04],
+    },
     // 10018F3A: batch length DWORD; movzx   edx, word ptr [ebx]
     Patch {
         rva: 0x00018f3a,

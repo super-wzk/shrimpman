@@ -84,13 +84,16 @@ def patches():
         yield int(rva, 16), decode(old), decode(new)
 
 
+def client_bytes(data, rva, size):
+    va, _, offset = next(s for s in sections(data) if s[0] <= rva < s[0] + s[1])
+    offset += rva - va
+    return data[offset:offset + size]
+
+
 def verify_patches(data):
-    spans = sections(data)
     count = 0
     for rva, old, new in patches():
-        va, _, offset = next(s for s in spans if s[0] <= rva < s[0] + s[1])
-        offset += rva - va
-        assert data[offset:offset + len(old)] == old, hex(rva)
+        assert client_bytes(data, rva, len(old)) == old, hex(rva)
         assert len(old) == len(new)
         original = next(DISASM.disasm(old, CODE))
         replacement = next(DISASM.disasm(new, CODE))
@@ -120,13 +123,67 @@ def verify_patches(data):
             elif original.mnemonic == "cmp":
                 assert replacement.operands[0].mem.disp == 2 * original.operands[0].mem.disp
                 write_operand(uc, replacement, replacement.operands[0], value)
+                if replacement.operands[1].type == CS_OP_REG:
+                    write_operand(uc, replacement, replacement.operands[1], 0)
                 uc.emu_start(CODE, CODE + len(new))
                 assert bool(uc.reg_read(reg.UC_X86_REG_EFLAGS) & 0x40) == (value == 0), hex(rva)
             else:
                 raise AssertionError((hex(rva), original.mnemonic))
         count += 1
-    assert count == 94
+    assert count == 96
     print(f"PASS: {count} native instruction edits match the DLL and execute correctly")
+
+
+def verify_renderer_entry(data):
+    """Run the actual descriptor lookup and shader-variant entry branches."""
+    lookup = client_bytes(data, 0x1351B, 0x13537 - 0x1351B)
+    entry_rva = 0x13807
+    original = client_bytes(data, entry_rva, 0x13838 - entry_rva)
+    patched = bytearray(original)
+    for rva, old, new in patches():
+        if entry_rva <= rva < entry_rva + len(patched):
+            offset = rva - entry_rva
+            assert patched[offset:offset + len(old)] == old
+            patched[offset:offset + len(old)] = new
+
+    def variant(code, flags, descriptor):
+        uc = cpu()
+        uc.mem_map(0x11B8C000, 0x1000)
+        model = DATA + 0x2000
+        batch_offset = 0x100
+        uc.mem_write(model, struct.pack("<I", flags))
+        uc.mem_write(model + 0x14, struct.pack("<I", batch_offset))
+        uc.mem_write(model + batch_offset, descriptor)
+        uc.reg_write(reg.UC_X86_REG_ESI, model)
+        uc.reg_write(reg.UC_X86_REG_EBP, STACK + 0x900)
+        uc.reg_write(reg.UC_X86_REG_ECX, 0)
+        uc.reg_write(reg.UC_X86_REG_EDI, 7)
+        uc.mem_write(CODE + 0x400, lookup)
+        uc.emu_start(CODE + 0x400, CODE + 0x400 + len(lookup))
+        uc.mem_write(CODE, bytes(code))
+        uc.emu_start(CODE, CODE + len(code))
+        return uc.reg_read(reg.UC_X86_REG_EDI)
+
+    cases = 0
+    regressions = 0
+    for flags in [0x200000, 0x300000]:
+        for length in [3, 65535, 65536, 70001]:
+            for material in [0, 1, 17]:
+                for tag in [0, 1, 17]:
+                    cells = [length, material, tag] if flags & 0x100000 else [length, tag]
+                    # Native WORD descriptors provide an independent behavior oracle.
+                    native = struct.pack("<" + "H" * len(cells), *(x & 65535 for x in cells))
+                    expected = variant(original, flags, native)
+                    wide = struct.pack("<" + "I" * len(cells), *cells)
+                    actual = variant(patched, flags, wide)
+                    assert actual == expected, (hex(flags), length, material, tag, actual, expected)
+                    regressions += variant(original, flags, wide) != expected
+                    cases += 1
+    assert regressions == 34, "fixtures must expose both stale selector offsets"
+    for flags in [0, 0x100000]:
+        assert variant(patched, flags, struct.pack("<II", 70001, 17)) == 7
+    print(f"PASS: real renderer entry matches native selector behavior in {cases} DWORD cases; "
+          f"the original offsets fail {regressions} cases")
 
 
 def coff_functions(path):
@@ -303,6 +360,7 @@ def main():
     args = parser.parse_args()
     data = args.client.read_bytes()
     verify_patches(data)
+    verify_renderer_entry(data)
     if args.object:
         verify_abi(args.object)
     if args.converters:
