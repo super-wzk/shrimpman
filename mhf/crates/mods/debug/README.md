@@ -3,7 +3,7 @@
 `mhf-debug` 提供运行 Mod `mhf.debug`，仅依赖 `mhf.base`。
 它在 prepare 发布普通启动接口 `mhf.launch.v1`，自动覆盖 Login 的 fallback，
 回调先通过 Base 的 Quest 启动接口选择本地任务，再填充临时猎人固定字段；
-游戏内工具继续由 `DebugToolsMod` 内部组件实现，共用同一个 Mod 所有权与生命周期。
+调试运行时、独立桌面面板和游戏内 HUD 由 `DebugToolsMod` 内部组件实现，共用同一个 Mod 所有权与生命周期。
 
 只有一个 `mhf-launcher`。在它读取的 `mhf.toml` 中启用 Debug：
 
@@ -30,8 +30,10 @@ quest = "quests/test.bin"
 `DebugModule::new(OverlayRegistry) -> Self` 接收内置 Base 的共享界面注册表；
 prepare 解析自身设置并绑定 `mhf.quest.launch.v1`，实际任务文件在启动回调执行时读取。
 未指定文件时读取 Debug 自己的 [`test-map.bin`](resources/quests/test-map.bin) 预设；始终向 Quest 提交实际字节，空数据或非法任务会使启动失败。
-check、attach、stop、detach、prepare_release 转发调试组件，egui 调试面板注册到 Launcher 注入的共享 UI 注册表。
+check、attach、stop、detach、prepare_release 转发调试组件；桌面面板运行在专用 eframe UI 线程，
+共享 UI 注册表仅承载游戏内 HUD、F7 和游戏操控输入。
 对外调试接口仍为 `mhf.debug-tools.v1`，其提供方 ID 为 `mhf.debug`。
 
-游戏内按 F7 显示或隐藏窗口。装备、招式、换区、变身和任务重开见
+在游戏或调试窗口按 F7 显示或隐藏面板，关闭面板保留当前草稿；结束调试才退出 UI 线程。
+装备、招式、换区、变身和任务重开见
 [调试工具操作](../debug-tools/README.md#调试操作)，任务数据与控制接口见 [Quest](../quest/README.md)。

@@ -320,11 +320,11 @@ fn default_theme_matches_the_approved_palette_and_control_sizes() {
             ui.add(Button::new("Primary").kind(ButtonKind::Primary))
                 .rect
                 .height(),
-            44.0
+            36.0
         );
         let mut value = String::new();
         let field = ui.add(TextField::new(Id::new("sized-field"), &mut value));
-        assert!((field.rect.height() - 40.0).abs() <= 1.0);
+        assert!((field.rect.height() - 36.0).abs() <= 1.0);
     });
 }
 

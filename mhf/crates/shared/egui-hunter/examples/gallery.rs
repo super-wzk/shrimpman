@@ -1021,26 +1021,11 @@ impl Gallery {
             if self.auto_sort {
                 ui.label(RichText::new("整理偏好：优先显示回复道具").small().weak());
             }
-            let volume = ui
-                .scope(|ui| {
-                    ui.spacing_mut().interact_size.y = 24.0;
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    for widget in [
-                        &mut widgets.noninteractive,
-                        &mut widgets.inactive,
-                        &mut widgets.hovered,
-                        &mut widgets.active,
-                        &mut widgets.open,
-                    ] {
-                        widget.corner_radius = egui::CornerRadius::same(4);
-                    }
-                    ui.add(
-                        egui::Slider::new(&mut self.volume, 0.0..=100.0)
-                            .trailing_fill(true)
-                            .text("音量"),
-                    )
-                })
-                .inner;
+            let volume = ui.add(
+                egui::Slider::new(&mut self.volume, 0.0..=100.0)
+                    .trailing_fill(true)
+                    .text("音量"),
+            );
             scroll_on_focus(&volume);
             ui.horizontal_wrapped(|ui| {
                 let help = ui.add(Button::new("查看道具说明").icon(Icon::Potion));

@@ -474,6 +474,46 @@ fn window_with_nested_panels_keeps_its_height_across_idle_frames() {
 }
 
 #[test]
+fn panel_header_actions_render_without_a_title() {
+    let ctx = Context::default();
+    Theme::default().apply(&ctx);
+    let mut action = None;
+    let panel = frame(&ctx, 400.0, 0.0, vec![], |ui| {
+        Panel::new("")
+            .show_with_header(
+                ui,
+                |ui| action = Some(ui.add(Button::new("Save"))),
+                |ui| ui.label("Editor"),
+            )
+            .response
+    });
+    let action = action.expect("untitled panel must still render its header actions");
+    assert!(panel.rect.contains_rect(action.rect));
+    assert!(action.sense.is_focusable());
+}
+
+#[test]
+fn long_panel_titles_keep_header_actions_inside_narrow_panels() {
+    let ctx = Context::default();
+    Theme::default().apply(&ctx);
+    for (index, width) in [800.0, 360.0, 240.0].into_iter().enumerate() {
+        let mut action = None;
+        let panel = frame(&ctx, width, index as f64 * 0.1, vec![], |ui| {
+            Panel::new("A long editor document title that must leave room for its actions")
+                .show_with_header(
+                    ui,
+                    |ui| action = Some(ui.add(Button::new("Save"))),
+                    |ui| ui.label("Editor"),
+                )
+                .response
+        });
+        let action = action.unwrap();
+        assert!(action.rect.right() <= width, "{width}: {action:?}");
+        assert!(panel.rect.contains_rect(action.rect));
+    }
+}
+
+#[test]
 fn responsive_columns_reflow_without_changing_child_identity() {
     let ctx = Context::default();
     Theme::default().apply(&ctx);
@@ -548,6 +588,49 @@ fn tabs_skip_disabled_headers_preserve_content_identity_and_leave_text_arrows_al
         });
     });
     assert_eq!(state.selected(), None);
+}
+
+#[test]
+fn tab_headers_wrap_in_the_parent_without_expanding_its_width() {
+    for density in [
+        egui_hunter::Density::Standard,
+        egui_hunter::Density::Compact,
+    ] {
+        let ctx = Context::default();
+        Theme::default().density(density).apply(&ctx);
+        let id = Id::new("wrapping-tabs");
+        let tabs = [
+            Tab::new(Id::new("monster"), "Monster AI"),
+            Tab::new(Id::new("resources"), "Resource tree"),
+            Tab::new(Id::new("recorder"), "Recorder").enabled(false),
+            Tab::new(Id::new("configuration"), "Configuration"),
+        ];
+        let mut state = NavigationState::default();
+        for (index, width) in [440.0, 320.0, 240.0].into_iter().enumerate() {
+            let (boundary, parent, headers) =
+                frame(&ctx, width, index as f64 * 0.1, vec![], |ui| {
+                    let boundary = ui.max_rect().right();
+                    Tabs::new(id).show(ui, &mut state, &tabs, |ui, _| ui.label("Content"));
+                    let headers =
+                        tabs.map(|tab| ctx.read_response(id.with(("header", tab.id))).unwrap());
+                    (boundary, ui.max_rect(), headers)
+                });
+            assert!(
+                parent.right() <= boundary,
+                "{density:?}, {width}: {parent:?}"
+            );
+            assert!(!headers[2].enabled());
+            for header in &headers {
+                assert!(
+                    header.rect.right() <= boundary,
+                    "{density:?}, {width}: {header:?}"
+                );
+            }
+            if width == 240.0 {
+                assert!(headers[3].rect.top() > headers[0].rect.top());
+            }
+        }
+    }
 }
 
 #[test]

@@ -3,14 +3,15 @@
 use super::{DebugCommand, DebugControl, DebugSnapshot, MonsterAction, MonsterInput};
 use egui::{Context, InputState, Key};
 
-pub(crate) struct InputController {
+#[derive(Clone, Copy)]
+pub(crate) struct InputSettings {
     species: u8,
     variant: u8,
     pub(super) speed: f32,
     pub(super) shortcuts: [Option<MonsterAction>; 4],
 }
 
-impl Default for InputController {
+impl Default for InputSettings {
     fn default() -> Self {
         Self {
             species: 94,
@@ -21,7 +22,7 @@ impl Default for InputController {
     }
 }
 
-impl InputController {
+impl InputSettings {
     pub(super) fn species(&self) -> u8 {
         self.species
     }
@@ -45,17 +46,15 @@ impl InputController {
         }
     }
 
-    /// Run after the window has updated settings and keyboard capture, including
-    /// frames where that window is closed. Publishing neutral movement on focus
-    /// loss complements the control channel's 200 ms expiry when frames stop.
+    /// Sample the game window. Focus loss publishes neutral movement; the
+    /// control channel's 200 ms expiry covers frames that stop arriving.
     pub(crate) fn update(
-        &mut self,
+        &self,
         context: &Context,
         control: &DebugControl,
         snapshot: &DebugSnapshot,
-        window_capture: bool,
     ) {
-        let capture = window_capture || context.egui_wants_keyboard_input();
+        let capture = context.egui_wants_keyboard_input();
         let sample = context.input(|input| self.sample(input, snapshot, capture));
         for command in sample.commands {
             let _ = control.send(command);
@@ -97,6 +96,18 @@ impl InputController {
         }
         Sample { movement, commands }
     }
+}
+
+pub(super) fn toggle_panel(context: &Context) -> bool {
+    context.input_mut(|input| {
+        let pressed = input.events.iter().any(|event| {
+            matches!(event,
+                egui::Event::Key { key: Key::F7, pressed: true, repeat: false, modifiers, .. }
+                    if *modifiers == egui::Modifiers::NONE)
+        });
+        input.consume_key(egui::Modifiers::NONE, Key::F7);
+        pressed
+    })
 }
 
 #[derive(Default)]

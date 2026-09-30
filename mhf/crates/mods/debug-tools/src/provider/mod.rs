@@ -1,6 +1,7 @@
 //! Optional in-process tools for an offline session. Mutations run on the game thread.
 
 mod action_definition;
+mod frontend;
 mod input;
 mod module;
 mod monsters;
@@ -9,7 +10,7 @@ mod overlay;
 mod service;
 mod ui;
 
-use input::InputController;
+use input::InputSettings;
 #[cfg(test)]
 use mhf_base::model::Face;
 use mhf_base::model::{
@@ -17,10 +18,9 @@ use mhf_base::model::{
 };
 pub use module::DebugToolsMod;
 pub(crate) use native::{State, install};
-pub(crate) use overlay::create as overlay;
+use overlay::create as overlay;
 pub use service::DebugService;
 use std::sync::{Arc, Mutex, PoisonError};
-use ui::DebugWindow;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Action {
@@ -108,6 +108,12 @@ impl Monster {
 struct MonsterAction {
     group: u8,
     id: u8,
+}
+
+#[derive(Clone, Copy, Default)]
+struct UiSettings {
+    input: InputSettings,
+    hud_target: Option<AiTarget>,
 }
 
 impl MonsterAction {
@@ -208,7 +214,6 @@ struct AiReply {
 struct AiDocument {
     descriptor: u32,
     source: Option<mhf_monster::ai::dsl::Project>,
-    message: String,
 }
 
 #[derive(Clone, Default)]
@@ -251,6 +256,7 @@ struct Shared {
     commands: Vec<DebugCommand>,
     monster_input: MonsterInput,
     input_at: Option<std::time::Instant>,
+    ui_settings: UiSettings,
 }
 
 pub struct DebugControl {
@@ -262,6 +268,20 @@ impl DebugControl {
         Arc::new(Self {
             shared: Mutex::new(Shared::default()),
         })
+    }
+
+    fn ui_settings(&self) -> UiSettings {
+        self.shared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ui_settings
+    }
+
+    fn set_ui_settings(&self, settings: UiSettings) {
+        self.shared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ui_settings = settings;
     }
 
     fn set_monster_input(&self, input: MonsterInput) {

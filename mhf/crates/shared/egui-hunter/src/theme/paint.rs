@@ -80,29 +80,27 @@ pub(crate) fn button_visuals(
     selected: bool,
     kind: ButtonKind,
 ) -> egui::style::WidgetVisuals {
-    let tokens = Tokens::get(ui);
     let mut visuals = visuals(ui, response, selected);
     visuals.bg_fill = visuals.weak_bg_fill;
-    visuals.bg_stroke = ui.visuals().window_stroke;
+    if matches!(kind, ButtonKind::Danger | ButtonKind::DangerQuiet) {
+        visuals.fg_stroke.color = ui.visuals().error_fg_color;
+    }
     if selected {
         return visuals;
     }
     let fill = match kind {
         ButtonKind::Default => return visuals,
         ButtonKind::Primary => {
+            let tokens = Tokens::get(ui);
             visuals.fg_stroke.color = tokens.on_primary;
             visuals.bg_stroke = Stroke::NONE;
             tokens.primary
         }
         ButtonKind::Danger => {
-            visuals.fg_stroke.color = ui.visuals().error_fg_color;
             visuals.bg_stroke = Stroke::NONE;
-            tokens.danger_fill
+            Tokens::get(ui).danger_fill
         }
         ButtonKind::Quiet | ButtonKind::DangerQuiet => {
-            if kind == ButtonKind::DangerQuiet {
-                visuals.fg_stroke.color = ui.visuals().error_fg_color;
-            }
             visuals.bg_stroke = Stroke::NONE;
             if response.enabled()
                 && (response.hovered()
@@ -125,6 +123,18 @@ pub(crate) fn field_visuals(ui: &Ui, response: &Response) -> egui::style::Widget
     visuals.bg_fill = ui.visuals().text_edit_bg_color();
     visuals.bg_stroke = ui.visuals().widgets.inactive.bg_stroke;
     visuals
+}
+
+/// Shared semantic surface and content color for text and icon buttons.
+pub(crate) fn button(ui: &Ui, response: &Response, selected: bool, kind: ButtonKind) -> Color32 {
+    let mut visuals = button_visuals(ui, response, selected, kind);
+    if focused(ui, response) {
+        visuals.bg_stroke = focus_stroke(ui, kind == ButtonKind::Primary && !selected);
+    }
+    control(ui, response.rect, &visuals);
+    ui.visuals()
+        .override_text_color
+        .unwrap_or_else(|| visuals.text_color())
 }
 
 pub(crate) fn control(ui: &Ui, rect: Rect, visuals: &egui::style::WidgetVisuals) {

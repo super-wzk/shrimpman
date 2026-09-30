@@ -122,16 +122,10 @@ fn native_and_hunter_controls_share_density_without_changing_fonts_or_siblings()
         );
         close(ui.button("Standard sibling").rect.height(), standard[0]);
     });
-    for (actual, expected) in standard
-        .into_iter()
-        .zip([36.0, 36.0, 44.0, 40.0, 40.0, 40.0, 40.0, 40.0])
-    {
+    for (actual, expected) in standard.into_iter().zip([36.0; 8]) {
         close(actual, expected);
     }
-    for (actual, expected) in compact
-        .into_iter()
-        .zip([24.0, 24.0, 28.0, 28.0, 28.0, 28.0, 28.0, 28.0])
-    {
+    for (actual, expected) in compact.into_iter().zip([24.0; 8]) {
         close(actual, expected);
     }
     assert_eq!(ctx.pixels_per_point(), pixels_per_point);
@@ -149,6 +143,142 @@ fn compact_controls_honor_larger_local_minimum_heights() {
                 assert!(height >= 64.0);
             }
         });
+    });
+}
+
+#[test]
+fn controls_share_geometry_and_keep_paint_bounds_on_hover_press_and_focus() {
+    for density in [Density::Standard, Density::Compact] {
+        for scale in [1.0, 2.0] {
+            let ctx = Context::default();
+            Theme::default().density(density).apply(&ctx);
+            ctx.set_pixels_per_point(scale);
+            let mut state = NavigationState::default();
+            let mut text = String::from("Control");
+            let mut draw = |events| {
+                let mut controls = Vec::new();
+                let output = render(&ctx, events, |ui| {
+                    controls.clear();
+                    ui.set_width(900.0);
+                    // Local native hover effects must not expand hunter controls.
+                    ui.visuals_mut().widgets.hovered.expansion = 4.0;
+                    ui.visuals_mut().widgets.active.expansion = 6.0;
+                    ui.horizontal(|ui| {
+                        controls.push(ui.add(Button::new("Control").id(Id::new("default"))));
+                        controls.push(
+                            ui.add(
+                                Button::new("Control")
+                                    .id(Id::new("primary"))
+                                    .kind(ButtonKind::Primary),
+                            ),
+                        );
+                        controls.push(
+                            ui.scope(|ui| {
+                                ui.set_width(140.0);
+                                SelectField::new(Id::new("select"), "Control")
+                                    .show_ui(ui, |_| ())
+                                    .response
+                            })
+                            .inner,
+                        );
+                        controls.push(
+                            ui.scope(|ui| {
+                                ui.set_width(140.0);
+                                ui.add(TextField::new(Id::new("text"), &mut text))
+                            })
+                            .inner,
+                        );
+                    });
+                    let tabs_id = Id::new("tabs");
+                    let tabs = [
+                        Tab::new(Id::new("first"), "Control"),
+                        Tab::new(Id::new("second"), "Control"),
+                    ];
+                    Tabs::new(tabs_id).show(ui, &mut state, &tabs, |_, _| ());
+                    for tab in tabs {
+                        controls.push(ctx.read_response(tabs_id.with(("header", tab.id))).unwrap());
+                    }
+                });
+                (controls, output)
+            };
+            let (baseline, _) = draw(vec![]);
+            let height = if density == Density::Standard {
+                36.0
+            } else {
+                24.0
+            };
+            for response in &baseline {
+                close(response.rect.height(), height);
+            }
+            assert_eq!(baseline[0].rect.size(), baseline[1].rect.size());
+            for (target_index, target) in baseline.iter().enumerate() {
+                let point = target.rect.center();
+                let (hovered, hover_output) = draw(vec![Event::PointerMoved(point)]);
+                assert!(hovered[target_index].hovered());
+                let (pressed, press_output) = draw(events::pointer(point, true));
+                assert!(pressed[target_index].is_pointer_button_down_on());
+                draw(events::pointer(pos2(-100.0, -100.0), false));
+                target.request_focus();
+                let (focused, focus_output) = draw(vec![]);
+                assert!(focused[target_index].has_focus());
+                for (responses, output) in [
+                    (hovered, hover_output),
+                    (pressed, press_output),
+                    (focused, focus_output),
+                ] {
+                    for (index, (actual, idle)) in responses.iter().zip(&baseline).enumerate() {
+                        assert_eq!(
+                            actual.rect, idle.rect,
+                            "control {index} moved in {density:?}"
+                        );
+                        let mut background = false;
+                        for shape in &output.shapes {
+                            if let Shape::Rect(rect) = &shape.shape
+                                && rect.rect.contains(actual.rect.center())
+                            {
+                                assert!(
+                                    actual.rect.contains_rect(rect.rect),
+                                    "control {index} expanded"
+                                );
+                                if rect.stroke.width > 0.0 {
+                                    assert_ne!(rect.stroke_kind, egui::StrokeKind::Outside);
+                                }
+                                background = true;
+                            }
+                        }
+                        if index < 4 {
+                            assert!(background, "control {index} has no background");
+                        }
+                    }
+                    for shape in &output.shapes {
+                        if let Shape::Text(text) = &shape.shape
+                            && text.galley.job.text == "Control"
+                        {
+                            for section in &text.galley.job.sections {
+                                assert_eq!(section.format.font_id.size, 14.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn primary_and_default_buttons_honor_the_same_explicit_minimum_size() {
+    let ctx = Context::default();
+    Theme::default().apply(&ctx);
+    render(&ctx, vec![], |ui| {
+        let minimum = vec2(140.0, 64.0);
+        let default = ui.add(Button::new("Control").min_size(minimum));
+        let primary = ui.add(
+            Button::new("Control")
+                .kind(ButtonKind::Primary)
+                .min_size(minimum),
+        );
+        assert_eq!(default.rect.size(), minimum);
+        assert_eq!(primary.rect.size(), minimum);
     });
 }
 
@@ -228,8 +358,8 @@ fn password_frame(
 #[test]
 fn password_icons_fit_their_click_region_and_keep_one_inside_focus_border() {
     for (density, minimum_width, minimum_height) in [
-        (Density::Standard, 28.0, 40.0),
-        (Density::Compact, 24.0, 28.0),
+        (Density::Standard, 28.0, 36.0),
+        (Density::Compact, 24.0, 24.0),
     ] {
         for icon_size in [None, Some(48.0)] {
             let ctx = Context::default();
@@ -390,10 +520,10 @@ fn compact_selection_popup_preserves_density_and_native_popup_overrides() {
         }
         let (density, padding, minimum_height, native, primary, text) = menu.unwrap();
         assert_eq!(density, Density::Compact);
-        close(padding, if custom_popup { 11.0 } else { 3.0 });
+        close(padding, if custom_popup { 11.0 } else { 4.0 });
         close(minimum_height, if custom_popup { 28.0 } else { 24.0 });
-        close(primary, native.max(28.0));
-        close(text, 28.0);
+        close(primary, native);
+        close(text, native);
         assert_eq!(Tokens::from_context(&ctx).density, Density::Standard);
     }
 }

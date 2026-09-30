@@ -95,7 +95,7 @@ Panel::new("任务列表").show(ui, |ui| {
 
 ### 界面密度
 
-默认 `Density::Standard` 保持现有登录和游戏 UI 的尺寸。资源工具等需要更多可见内容的页面，可以只为自己的 UI 子树启用 `Density::Compact`：
+默认 `Density::Standard` 使用 36 点基础控件高度。资源工具等需要更多可见内容的页面，可以为自己的 UI 子树启用 24 点的 `Density::Compact`：
 
 ```rust
 use egui_hunter::{Button, Density, TextField};
@@ -110,17 +110,15 @@ Density::Compact.scope(ui, |ui| {
 
 | 默认尺寸（逻辑点） | 标准 | 紧凑 |
 | --- | ---: | ---: |
-| 普通控件最小高度 | 36 | 24 |
-| 文本框 / 选择框最小高度 | 40 | 28 |
-| 主要按钮最小高度 | 44 | 28 |
+| 按钮 / 文本框 / 选择框 / 页签最小高度 | 36 | 24 |
 | 控件间距 X / Y | 8 / 6 | 6 / 4 |
-| 按钮内边距 X / Y | 12 / 7 | 8 / 3 |
+| 按钮内边距 X / Y | 12 / 8 | 8 / 4 |
 | 面板内边距 | 12 | 8 |
 | 图标 / 图标内框 | 20 / 16 | 16 / 12 |
 
-密度只调整布局尺寸；字体、字号、颜色、DPI 缩放与输入逻辑不变。文字或图标较大时控件仍会增高，显式 `.min_size(...)`、物品槽 `.size(...)` 和布局断点仍由调用方决定。`FormLayout` 的标签与控件共用字段高度；页签也考虑实际文字高度。`ResponsiveColumns` 默认间隙为当前横向 `item_spacing` 的两倍，显式 `.gap(...)` 优先。
+密度只调整布局尺寸；字体、字号、颜色、DPI 缩放与输入逻辑不变。控件共同继承 `Style.spacing.interact_size`，文字或图标较大时仍会增高，显式 `.min_size(...)`、物品槽 `.size(...)` 和布局断点由调用方决定。`FormLayout` 的标签与控件共用字段高度；页签也考虑实际文字高度。`ResponsiveColumns` 默认间隙为当前横向 `item_spacing` 的两倍，显式 `.gap(...)` 优先。
 
-独立宿主可以用 `Theme::default().density(Density::Compact).apply(&context)` 选择初始密度；同一 Context 中只有局部页面需要紧凑时，应使用 `Density::scope`，不要重复安装全局 Theme。`Density::get(ui)` 读取当前值。原生 spacing 和 hunter 特有的最小尺寸通过现有 Style / Tokens 继承：不要只修改 `Tokens::density` 而遗漏原生 spacing。
+独立宿主可以用 `Theme::default().density(Density::Compact).apply(&context)` 选择初始密度；同一 Context 中只有局部页面需要紧凑时，应使用 `Density::scope`，不要重复安装全局 Theme。`Density::get(ui)` 读取当前值。密度通过现有 Style / Tokens 继承：不要只修改 `Tokens::density` 而遗漏原生 spacing。主要按钮通过颜色强调，与同一密度下的普通按钮保持相同高度。
 
 Window、Dialog、Popup 和 RichTooltip 创建独立 Area，跨边界仍需传递 `.style(ui.style().clone()).tokens(Tokens::get(ui))`，或在新 Area 的内容闭包内调用 `Density::scope`。`SelectField` 自己的菜单已传递局部密度。浮动通知可用 `notifications.show_in(ui)` / `show_at_in(ui, anchor, offset)` 继承调用处；原有 `show(ctx)` / `show_at(ctx, ...)` 继续使用宿主默认值。
 
@@ -133,7 +131,7 @@ ui.scope(|ui| {
 });
 ```
 
-主要动作的前景/背景、成功的前景/背景、危险背景与焦点颜色没有完整的原生语义字段，保存在 `Tokens`。`Tokens::get(ui)` 读取最近的 Ui 标签，回退到 Context 中安装的默认值；`tokens.scope(ui, content)` 提供仅对后代生效的局部覆盖。通用颜色、字体、圆角和间距使用 `Style` / `Visuals`；仅没有原生 Style 字段的 hunter 控件最小高度由密度值补充。
+主要动作的前景/背景、成功的前景/背景、危险背景与焦点颜色没有完整的原生语义字段，保存在 `Tokens`。`Tokens::get(ui)` 读取最近的 Ui 标签，回退到 Context 中安装的默认值；`tokens.scope(ui, content)` 提供仅对后代生效的局部覆盖。通用颜色、字体、圆角、间距与控件基础尺寸使用 `Style` / `Visuals`。
 
 控件保留默认、悬浮、按下和禁用状态。主要按钮保持金色底与深色文字，选择行保持选中底与金色勾选，聚焦不替换这些状态。按钮、物品槽和选择控件仅将原有内部边框加粗到 2px，不扩展矩形或叠加另一圈；复选框强调方框，开关强调轨道。金色主按钮和已勾选控件使用深色焦点边框，保留原有填充与文字。文本框沿用原生选择、游标和编辑行为，聚焦时仅加粗原有内部边框至 2px，并保留校验色；不追加外环。密码字段可用 `.password_visible(&mut visible)` 在框内显示可聚焦的可见性按钮，编辑文字由原生 suffix 布局避让。焦点强调不改变内容尺寸和位置。Tabs 和 ScrollPanel 保留组件自身的内部焦点框，分别标记页签与键盘滚动区域。
 
@@ -156,7 +154,8 @@ Popup::new(&anchor)
 | 组件 | API | 行为 |
 | --- | --- | --- |
 | 面板 | `Panel::new(title).surface(Surface::Raised).show(...)` | 内容自适应高度、标题、圆角与装饰边框 |
-| 按钮 | `Button::new(label).kind(ButtonKind::Primary)` | 普通、主要、危险、Quiet、DangerQuiet；普通高 36px，主要高 44px |
+| 按钮 | `Button::new(label).kind(ButtonKind::Primary)` | 普通、主要、危险、Quiet、DangerQuiet；同一密度下共享高度，颜色表达语义 |
+| 图标按钮 | `IconButton::new(Icon::Play, "继续")` | 正方形、图标居中；标签用于无障碍和悬停/焦点提示，支持相同的 `.id/.kind/.selected` |
 | 页签 | `Tabs::new(id).show(...)` | 文字导航与金色底线；保留左右键、Home/End 和点击切换 |
 | 选择行 | `Button::new(label).selected(value).full_width()` | 深金色填充与金色勾选标记；焦点独立显示 |
 | 复选框 / 开关 | `Checkbox::new(...)` / `Toggle::new(...)` | 点击或 Space/Enter 切换，返回 `changed()` |
@@ -183,6 +182,7 @@ Popup::new(&anchor)
 | 对话框 | `Dialog::new(id, title)` + `DialogState` | 模态遮罩、初始焦点、确认/取消、Esc、可配置点击背景关闭 |
 | 弹出菜单 | `Popup::new(&anchor)` | 使用原生 Popup 开关状态，锚点点击切换、自动调整位置、点击外部关闭；内部通过 `ui.close()` 收起 |
 | 响应式分栏 | `ResponsiveColumns::new(id).min_column_width(400.0)` | 等宽分栏、窄屏堆叠；默认最多两栏，重排时保留子控件 ID |
+| 可调整分栏 | `SplitPane::horizontal(id).min_sizes(240.0, 160.0)` | 左右或上下拖动分隔，记忆比例，双击恢复默认；空间不足时按最小尺寸比例退让 |
 | 表单布局 | `FormLayout::new(id).show(ui, &fields, control)` | 共享标签列宽、同行标签高度与主控件起点；窄屏自动减少列数，左侧标签可移至上方 |
 | 页签容器 | `Tabs::new(id)` + `NavigationState` + `Tab` | 选中内容作用域、禁用页签、左右/Home/End 导航；移除当前页后自动回退 |
 | 导航栈 | `NavigationStack<Page>` | 压入页面、逐级返回、根页保护、返回后恢复入口焦点 |
@@ -194,6 +194,8 @@ Popup::new(&anchor)
 布局计算、尺寸协商、裁剪和层级仍交给 egui；库内统一外观与交互约定。行列、网格、分隔线、文字、图片、单选框和下拉框可以继续组合 egui 标准 API，继承主题。状态对象由宿主持有，核心不包含游戏业务、后台线程或系统输入采集。
 
 控件焦点统一使用 egui 的 `Memory`：启用的按钮、选择行、复选框、开关和物品格在鼠标点击后请求同一个键盘焦点，随后可以直接用方向键或 Enter 操作。悬停不会抢焦点，禁用组件不会因点击获得焦点。
+
+按钮、选择框和页签的悬停、按下、选中与焦点只改变颜色和框内描边，不扩张分配的尺寸。`SelectField` 的原生菜单继承局部样式；显式 `.native.popup_style(...)` 继续由调用方配置。
 
 `consume_escape(ctx)` 在子内容处理完输入后消费剩余的无修饰键 Esc，只对新的按下返回 `true`，丢弃长按连发。文本字段先沿用 egui 的 Esc 失焦行为并消费该次按键，保留已编辑文本；导航栈和对话框随后才处理返回或关闭。返回后的父页面及焦点在下一次绘制时恢复。这个函数不选择活动界面，也不决定是否拦截游戏输入：宿主应在当前活动界面的子弹层处理完后调用它，并根据界面是否仍接管输入设置宿主策略，不能仅凭 `egui_wants_keyboard_input()` 判断界面已经退出。
 
@@ -219,6 +221,18 @@ panel.show_rows(ui, 36.0, 10_000, |ui, visible_rows| {
 ```
 
 `show_rows` 的行高不包含行间距，调用方应保持每行等高。分栏中的索引代表稳定位置；如果数据会排序或增删，内容控件另用稳定业务 ID。`ScrollPanel` 的滚动 ID 相对于父 UI；分栏、导航页面和页签内容提供稳定父作用域。
+
+`SplitPane` 占满父 UI 的剩余空间；`.horizontal(...)` 是左右分栏，`.vertical(...)` 是上下分栏。每个分栏使用全局唯一的稳定 ID 记忆用户比例，缩小后再扩大恢复偏好比例，双击分隔条恢复 `.default_ratio(...)`。两栏内容分别裁切，滚动区域由内容自行提供；分隔条不增加 Tab 停靠点。
+
+```rust
+egui_hunter::SplitPane::horizontal(egui::Id::new("editor-details"))
+    .default_ratio(0.7)
+    .min_sizes(300.0, 180.0)
+    .show(ui, |editor, details| {
+        editor.label("源码");
+        details.label("检查");
+    });
+```
 
 `show` / `show_rows` 为滚动内容创建原生 `UiBuilder::sense` 焦点入口，可通过 Tab 或点击内容空白处聚焦。聚焦滚动视口时，按住 Up/Down 连续滚动，PageUp/PageDown 翻页；焦点在子文本框或按钮上时保留子控件行为。标题和外层 Panel 只负责展示。已有的原生 `egui::ScrollArea` 可在内容闭包末尾调用 `scroll_keyboard(ui, focus_id)` 接入相同行为，调用处以 `UiBuilder::sense` 为滚动视口提供焦点入口。内层滚动区独立消费自己的按键，点击内层空白处也不会被外层抢走焦点。
 
@@ -375,7 +389,7 @@ FormLayout::new(egui::Id::new("profile-form"))
 
 默认单列、标签在上。`.label_placement(LabelPlacement::Left)` 使用共同的标签列宽，`.label_width(...)` 可显式指定，`.label_align(...)` 控制标签文字在列内的左右位置。左侧标签默认对齐主控件中心；多行编辑器等高控件可在对应 `Field` 上设置 `.label_vertical_align(egui::Align::Min)`，让标签靠顶。可用宽度不足时，布局自动改为上方标签，避免标签挤占编辑区域。
 
-上方标签允许换行，同一行预留相同标签高度；没有标签的字段也保留该行标签槽。帮助和校验文字位于各自控件下方，不参与主控件居中，下一行按本行最大高度排列。字段作用域将原生 `interact_size.y` 下限设为 40 点，`TextField` 和 `SelectField` 使用该尺寸，并继承更大的局部样式；其他控件仍可通过自身 API 配置尺寸。复合字段可在闭包中组合输入框、单位与按钮，返回主控件的 `Response`，让标签关联和垂直对齐使用这个控件。
+上方标签允许换行，同一行预留相同标签高度；没有标签的字段也保留该行标签槽。帮助和校验文字位于各自控件下方，不参与主控件居中，下一行按本行最大高度排列。字段沿用父级的控件尺寸；`TextField`、`SelectField` 和按钮共享同一密度，文字、图标与显式尺寸较大时自然增高。复合字段可在闭包中组合输入框、单位与按钮，返回主控件的 `Response`，让标签关联和垂直对齐使用这个控件。
 
 `FormLayout` 使用字段的稳定 ID 建立作用域，调整宽度或字段顺序不会按列号重建原生控件身份。字段内部使用 `TextField`、`SelectField` 时只传控件内容，标签和校验统一放在外层 `Field` 上。布局不会增加 Tab 停靠点。独立使用时，两个字段控件也可继续直接调用 `.label(...)`、`.help(...)`、`.validation(...)`。
 

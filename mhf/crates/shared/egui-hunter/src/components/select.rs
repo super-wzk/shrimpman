@@ -75,24 +75,17 @@ impl<'a> SelectField<'a> {
             crate::input::discard_escape_repeats(ui.ctx());
             let enabled = ui.is_enabled();
             let tokens = Tokens::get(ui);
+            let widgets = &mut ui.visuals_mut().widgets;
+            for visual in [
+                &mut widgets.inactive,
+                &mut widgets.hovered,
+                &mut widgets.active,
+                &mut widgets.open,
+            ] {
+                visual.expansion = 0.0;
+            }
             let original_style = ui.style().clone();
-            let width = ui.available_width();
-            let height = ui
-                .spacing()
-                .interact_size
-                .y
-                .max(crate::Density::get(ui).field_height());
-            let content_height = ui
-                .text_style_height(&egui::TextStyle::Button)
-                .max(ui.spacing().icon_width);
-            let padding = ui
-                .spacing()
-                .button_padding
-                .y
-                .max((height - content_height) / 2.0);
-            ui.spacing_mut().interact_size.y = height;
-            ui.spacing_mut().button_padding.y = padding;
-            ui.spacing_mut().combo_width = width;
+            ui.spacing_mut().combo_width = ui.available_width();
 
             let status = validation_color(ui);
             let focus_color = status.unwrap_or(tokens.focus);
@@ -119,8 +112,8 @@ impl<'a> SelectField<'a> {
                 Some(
                     tokens
                         .scope(ui, |ui| {
-                            // Restore the local style before the field's height and
-                            // validation overrides, then apply native popup overrides.
+                            // Restore the local style before validation overrides,
+                            // then apply native popup overrides.
                             // The popup Area otherwise starts from the global style.
                             let popup_style = egui::containers::menu::MenuConfig::find(ui).style;
                             ui.set_style(original_style);

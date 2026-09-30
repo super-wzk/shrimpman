@@ -288,7 +288,7 @@ fn embedded_password_button_reserves_text_space_and_focus_stays_inside_one_field
                 );
                 assert!(editor.rect.contains_rect(button.rect));
                 assert!(editor.rect.width() <= width + 0.1);
-                assert!((editor.rect.height() - 40.0).abs() <= 1.0);
+                assert!((editor.rect.height() - 36.0).abs() <= 1.0);
                 let mut focus_borders = 0;
                 let mut text_seen = false;
                 for shape in shapes {

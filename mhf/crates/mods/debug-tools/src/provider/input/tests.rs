@@ -1,5 +1,4 @@
 use super::*;
-use crate::provider::ui::DebugWindow;
 use egui::{Event, Modifiers, RawInput};
 use std::{
     sync::Arc,
@@ -54,7 +53,7 @@ fn axes(input: MonsterInput) -> [f32; 4] {
 fn movement_uses_existing_axes_speed_boost_and_cancelling_keys() {
     let context = new_context();
     let control = control();
-    let mut input = InputController {
+    let input = InputSettings {
         speed: 450.0,
         ..Default::default()
     };
@@ -62,7 +61,7 @@ fn movement_uses_existing_axes_speed_boost_and_cancelling_keys() {
         &context,
         keys(&[Key::W, Key::D, Key::E], Modifiers::SHIFT),
         |context| {
-            input.update(context, &control, &snapshot(), false);
+            input.update(context, &control, &snapshot());
         },
     );
     assert_eq!(axes(control.monster_input()), [1.0, 1.0, 1.0, 1350.0]);
@@ -70,7 +69,7 @@ fn movement_uses_existing_axes_speed_boost_and_cancelling_keys() {
         &context,
         keys(&[Key::S, Key::A, Key::Q], Modifiers::NONE),
         |context| {
-            input.update(context, &control, &snapshot(), false);
+            input.update(context, &control, &snapshot());
         },
     );
     assert_eq!(axes(control.monster_input()), [0.0, 0.0, 0.0, 450.0]);
@@ -79,7 +78,7 @@ fn movement_uses_existing_axes_speed_boost_and_cancelling_keys() {
 
 #[test]
 fn shortcuts_use_the_selected_species_and_clear_only_when_selection_changes() {
-    let mut input = InputController::default();
+    let mut input = InputSettings::default();
     let actions = [
         MonsterAction { group: 1, id: 11 },
         MonsterAction { group: 2, id: 22 },
@@ -111,7 +110,7 @@ fn shortcuts_use_the_selected_species_and_clear_only_when_selection_changes() {
             Modifiers::NONE,
         ),
         |context| {
-            input.update(context, &control, &snapshot(), false);
+            input.update(context, &control, &snapshot());
         },
     );
     let commands = control.commands();
@@ -135,7 +134,7 @@ fn shortcuts_use_the_selected_species_and_clear_only_when_selection_changes() {
                 Modifiers::NONE,
             ),
             |context| {
-                input.update(context, &control, &snapshot, false);
+                input.update(context, &control, &snapshot);
             },
         );
         assert!(
@@ -151,7 +150,7 @@ fn shortcuts_use_the_selected_species_and_clear_only_when_selection_changes() {
         ..snapshot()
     };
     frame(&context, keys(&[Key::Num1], Modifiers::NONE), |context| {
-        input.update(context, &control, &selected, false);
+        input.update(context, &control, &selected);
     });
     assert!(
         control.commands().is_empty(),
@@ -162,7 +161,7 @@ fn shortcuts_use_the_selected_species_and_clear_only_when_selection_changes() {
 #[test]
 fn variant_changes_clear_bindings_and_species_changes_restore_the_normal_variant() {
     let action = MonsterAction { group: 2, id: 7 };
-    let mut input = InputController::default();
+    let mut input = InputSettings::default();
     for variant in [1, 16] {
         input.shortcuts[0] = Some(action);
         input.select_variant(variant);
@@ -185,7 +184,7 @@ fn variant_changes_clear_bindings_and_species_changes_restore_the_normal_variant
 fn shortcuts_require_the_selected_variant_to_match_the_controlled_monster() {
     let control = control();
     let action = MonsterAction { group: 2, id: 7 };
-    let mut input = InputController::default();
+    let mut input = InputSettings::default();
     input.select_variant(1);
     input.shortcuts[0] = Some(action);
     for variant in [0, 16, 1] {
@@ -196,7 +195,7 @@ fn shortcuts_require_the_selected_variant_to_match_the_controlled_monster() {
         frame(
             &new_context(),
             keys(&[Key::Num1, Key::W], Modifiers::NONE),
-            |context| input.update(context, &control, &snapshot, false),
+            |context| input.update(context, &control, &snapshot),
         );
         let commands = control.commands();
         if variant == input.variant() {
@@ -212,14 +211,10 @@ fn shortcuts_require_the_selected_variant_to_match_the_controlled_monster() {
 }
 
 #[test]
-fn window_capture_application_focus_and_stopped_control_publish_neutral_input() {
+fn application_focus_and_stopped_control_publish_neutral_input() {
     let control = control();
-    let mut input = InputController::default();
-    for (window_capture, focused, controlling) in [
-        (true, true, true),
-        (false, false, true),
-        (false, true, false),
-    ] {
+    let input = InputSettings::default();
+    for (focused, controlling) in [(false, true), (true, false)] {
         control.set_monster_input(MonsterInput {
             forward: 1.0,
             speed: 300.0,
@@ -233,7 +228,7 @@ fn window_capture_application_focus_and_stopped_control_publish_neutral_input() 
             ..snapshot()
         };
         frame(&context, raw, |context| {
-            input.update(context, &control, &snapshot, window_capture)
+            input.update(context, &control, &snapshot)
         });
         assert_eq!(axes(control.monster_input()), [0.0; 4]);
         assert!(control.commands().is_empty());
@@ -241,16 +236,16 @@ fn window_capture_application_focus_and_stopped_control_publish_neutral_input() 
 }
 
 #[test]
-fn focused_egui_editor_blocks_gameplay_even_without_window_capture() {
+fn focused_egui_editor_blocks_gameplay() {
     let context = new_context();
     let control = control();
-    let mut input = InputController::default();
+    let input = InputSettings::default();
     let mut text = String::new();
     context
         .run_ui(keys(&[Key::W, Key::R], Modifiers::NONE), |ui| {
             ui.text_edit_singleline(&mut text).request_focus();
             assert!(ui.ctx().egui_wants_keyboard_input());
-            input.update(ui.ctx(), &control, &snapshot(), false);
+            input.update(ui.ctx(), &control, &snapshot());
         })
         .drop_without_applying_deltas();
     assert_eq!(axes(control.monster_input()), [0.0; 4]);
@@ -258,29 +253,36 @@ fn focused_egui_editor_blocks_gameplay_even_without_window_capture() {
 }
 
 #[test]
-fn closing_the_debug_window_releases_gameplay_input_and_keeps_controller_settings() {
+fn shared_panel_settings_drive_only_game_window_input() {
     let context = new_context();
     let control = control();
-    let mut window = DebugWindow::new(control.clone());
-    let mut input = InputController {
-        speed: 500.0,
-        ..Default::default()
-    };
-    input.shortcuts[0] = Some(MonsterAction { group: 2, id: 7 });
-    frame(&context, keys(&[Key::W], Modifiers::NONE), |context| {
-        let capture = window.show(context, &snapshot(), &mut input);
-        assert!(capture);
-        input.update(context, &control, &snapshot(), capture);
-    });
+    let mut settings = control.ui_settings();
+    settings.input.speed = 500.0;
+    settings.input.shortcuts[0] = Some(MonsterAction { group: 2, id: 7 });
+    control.set_ui_settings(settings);
+
+    let panel_context = new_context();
+    let mut draft = String::new();
+    frame(
+        &panel_context,
+        keys(&[Key::W, Key::Backspace], Modifiers::NONE),
+        |context| {
+            egui::Window::new("editor").show(context, |ui| {
+                ui.text_edit_multiline(&mut draft).request_focus();
+            });
+        },
+    );
+    assert!(control.commands().is_empty());
     assert_eq!(axes(control.monster_input()), [0.0; 4]);
+
     frame(
         &context,
-        keys(&[Key::F7, Key::Num1], Modifiers::NONE),
+        keys(&[Key::W, Key::Num1], Modifiers::NONE),
         |context| {
-            let capture = window.show(context, &snapshot(), &mut input);
-            assert!(!capture);
-            assert!(!context.input(|input| input.key_pressed(Key::F7)));
-            input.update(context, &control, &snapshot(), capture);
+            control
+                .ui_settings()
+                .input
+                .update(context, &control, &snapshot());
         },
     );
     assert_eq!(axes(control.monster_input()), [1.0, 0.0, 0.0, 500.0]);
@@ -291,24 +293,15 @@ fn closing_the_debug_window_releases_gameplay_input_and_keeps_controller_setting
             id: 7
         })]
     ));
-    // Sampling does not need to render the hidden window at all.
-    frame(&context, keys(&[Key::R], Modifiers::NONE), |context| {
-        input.update(context, &control, &snapshot(), false);
-    });
-    assert_eq!(axes(control.monster_input()), [1.0, 0.0, 0.0, 500.0]);
-    assert!(matches!(
-        control.commands().as_slice(),
-        [DebugCommand::NextMonsterAction]
-    ));
 }
 
 #[test]
 fn missing_frames_expire_movement_and_full_command_queues_remain_bounded() {
     let context = new_context();
     let control = control();
-    let mut input = InputController::default();
+    let input = InputSettings::default();
     frame(&context, keys(&[Key::W], Modifiers::NONE), |context| {
-        input.update(context, &control, &snapshot(), false);
+        input.update(context, &control, &snapshot());
     });
     assert_eq!(control.monster_input().forward, 1.0);
     control.shared.lock().unwrap().input_at = Some(Instant::now() - Duration::from_millis(201));
@@ -318,14 +311,14 @@ fn missing_frames_expire_movement_and_full_command_queues_remain_bounded() {
         control.send(DebugCommand::NextMonsterAction).unwrap();
     }
     frame(&context, keys(&[Key::R], Modifiers::NONE), |context| {
-        input.update(context, &control, &snapshot(), false);
+        input.update(context, &control, &snapshot());
     });
     assert_eq!(control.commands().len(), 16);
     frame(
         &new_context(),
         keys(&[Key::R], Modifiers::NONE),
         |context| {
-            input.update(context, &control, &snapshot(), false);
+            input.update(context, &control, &snapshot());
         },
     );
     assert!(matches!(

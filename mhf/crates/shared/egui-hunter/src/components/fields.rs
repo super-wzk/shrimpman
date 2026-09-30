@@ -116,9 +116,11 @@ impl TextField<'_> {
                 0.0
             },
         );
-        let min_height = density
-            .field_height()
-            .max(ui.spacing().interact_size.y)
+        let min_height = ui
+            .spacing()
+            .interact_size
+            .y
+            .max(content_height + ui.spacing().button_padding.y * 2.0)
             .max(if password_visible.is_some() {
                 ui.spacing().icon_width_inner + visibility_inset * 2.0
             } else {

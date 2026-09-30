@@ -115,7 +115,6 @@ pub(super) unsafe fn execute(
             Ok(AiDocument {
                 descriptor,
                 source: Some(project),
-                message: "已读取工程；编辑后点击应用更改。".into(),
             })
         }
         AiOperation::Inspect => {
@@ -192,10 +191,6 @@ pub(super) unsafe fn execute(
             Ok(AiDocument {
                 descriptor: overlay.descriptor,
                 source: Some(source),
-                message: format!(
-                    "已热替换此实例，从状态 0 重新开始。{} 条 native / 语义提示；未写入文件。",
-                    compiled.warnings.len()
-                ),
             })
         }
         AiOperation::Restore {
@@ -214,8 +209,7 @@ pub(super) unsafe fn execute(
                 return Err("原始状态 0 不可为空".into());
             }
             // Prepare the refreshed text before committing the restore.
-            let mut document = inspect_document(original, target.species, 0, map)?;
-            document.message = "已恢复首次热替换前的 AI，从状态 0 重新开始。".into();
+            let document = inspect_document(original, target.species, 0, map)?;
             super::ai_debug::invalidate_target(state, target, "已恢复原生 AI，请重新附加");
             editor
                 .debug_sources
@@ -243,11 +237,6 @@ fn inspect_document(
             species,
             document.source,
         )),
-        message: if document.warnings.is_empty() {
-            "已反编译可达状态、事件和子脚本；未导出项沿用原生。".into()
-        } else {
-            format!("部分脚本沿用原生：\n{}", document.warnings.join("\n"))
-        },
     })
 }
 
@@ -331,7 +320,6 @@ pub(super) unsafe fn replace_species(
     Ok(AiDocument {
         descriptor: 0,
         source: None,
-        message: "已修改目标种类，正在重载任务；任务目标条件保持原样。".into(),
     })
 }
 

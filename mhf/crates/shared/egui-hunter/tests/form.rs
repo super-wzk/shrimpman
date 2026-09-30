@@ -261,7 +261,7 @@ fn narrowing_and_reordering_preserve_native_control_ids_and_focus() {
 
 #[test]
 fn field_returns_the_control_response_and_honors_larger_local_interaction_height() {
-    for height in [24.0, 60.0] {
+    for height in [36.0, 60.0] {
         let ctx = Context::default();
         Theme::default().apply(&ctx);
         ctx.run_ui(Default::default(), |ui| {
@@ -279,7 +279,7 @@ fn field_returns_the_control_response_and_honors_larger_local_interaction_height
             let control = control.unwrap();
             assert_eq!(response.id, control.id);
             assert_eq!(response.rect, control.rect);
-            assert!(response.rect.height() >= height.max(40.0));
+            assert!(response.rect.height() >= height);
             close(ui.spacing().interact_size.y, height);
         })
         .drop_without_applying_deltas();

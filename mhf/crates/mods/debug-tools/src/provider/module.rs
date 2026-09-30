@@ -1,4 +1,4 @@
-use super::{DebugControl, DebugService, State, install, overlay};
+use super::{DebugControl, DebugService, State, frontend::DebugDesktop, install, overlay};
 use mhf_hooks::HookGuard;
 use mhf_mod_host::{Context, Module, Result};
 use mhf_ui::{OverlayRegistration, OverlayRegistry};
@@ -10,6 +10,8 @@ pub struct DebugToolsMod {
     service: Rc<DebugService>,
     registry: OverlayRegistry,
     registration: Option<OverlayRegistration>,
+    // Drop the UI thread before retiring the native hook state.
+    desktop: Option<DebugDesktop>,
     hook: Option<HookGuard<State>>,
 }
 
@@ -21,6 +23,7 @@ impl DebugToolsMod {
             control,
             registry,
             registration: None,
+            desktop: None,
             hook: None,
         }
     }
@@ -42,7 +45,12 @@ impl Module for DebugToolsMod {
                 self.control.clone(),
             )
         }?);
-        self.registration = Some(self.registry.register(overlay(self.control.clone())));
+        let desktop = DebugDesktop::start(self.control.clone())?;
+        self.registration = Some(
+            self.registry
+                .register(overlay(self.control.clone(), desktop.state())),
+        );
+        self.desktop = Some(desktop);
         unsafe {
             context.register(
                 crate::api::INTERFACE_ID,
@@ -54,6 +62,10 @@ impl Module for DebugToolsMod {
     fn stop(&mut self, _context: &Context) -> Result<()> {
         if let Some(registration) = &mut self.registration {
             registration.unregister();
+        }
+        self.control.set_monster_input(Default::default());
+        if let Some(desktop) = &mut self.desktop {
+            desktop.stop()?;
         }
         Ok(())
     }

@@ -81,15 +81,19 @@ impl FormLayout {
                     .clamp(1, self.max_columns)
                     .min(fields.len().max(1));
                 let column_width = ((width - gap * (columns - 1) as f32) / columns as f32).max(0.0);
-                let label_width = self.label_width.unwrap_or_else(|| {
-                    fields
-                        .iter()
-                        .filter_map(|field| field.label_galley(ui, f32::INFINITY))
-                        .map(|label| label.size().x)
-                        .fold(0.0, f32::max)
-                        .min(column_width * 0.4)
-                        .min(200.0)
-                });
+                let label_width = if self.label_placement == LabelPlacement::Left {
+                    self.label_width.unwrap_or_else(|| {
+                        fields
+                            .iter()
+                            .filter_map(|field| field.label_galley(ui, f32::INFINITY))
+                            .map(|label| label.size().x)
+                            .fold(0.0, f32::max)
+                            .min(column_width * 0.4)
+                            .min(200.0)
+                    })
+                } else {
+                    0.0
+                };
                 let placement = if self.label_placement == LabelPlacement::Left
                     && (label_width > 0.0 || !fields.iter().any(Field::has_label))
                     && column_width >= label_width + gap + 120.0
@@ -113,37 +117,32 @@ impl FormLayout {
                             )
                         })
                         .collect();
-                    let label_height = labels
-                        .iter()
-                        .flatten()
-                        .map(|label| label.size().y)
-                        .fold(0.0, f32::max);
-                    let control_offset = row
-                        .iter()
-                        .zip(&labels)
-                        .map(|(field, label)| {
-                            field.control_offset(
-                                label.as_ref().map_or(0.0, |label| label.size().y),
-                                ui.spacing()
-                                    .interact_size
-                                    .y
-                                    .max(crate::Density::get(ui).field_height()),
-                            )
-                        })
-                        .fold(0.0, f32::max);
+                    let layout = match placement {
+                        LabelPlacement::Above => FieldLayout::Above {
+                            label_height: labels
+                                .iter()
+                                .flatten()
+                                .map(|label| label.size().y)
+                                .fold(0.0, f32::max),
+                            align: self.label_align,
+                        },
+                        LabelPlacement::Left => FieldLayout::Left {
+                            label_width,
+                            control_offset: row
+                                .iter()
+                                .zip(&labels)
+                                .map(|(field, label)| {
+                                    field.control_offset(
+                                        label.as_ref().map_or(0.0, |label| label.size().y),
+                                        ui.spacing().interact_size.y,
+                                    )
+                                })
+                                .fold(0.0, f32::max),
+                            align: self.label_align,
+                        },
+                    };
                     ui.columns(columns, |columns| {
                         for (index, (field, label)) in row.iter().zip(labels).enumerate() {
-                            let layout = match placement {
-                                LabelPlacement::Above => FieldLayout::Above {
-                                    label_height,
-                                    align: self.label_align,
-                                },
-                                LabelPlacement::Left => FieldLayout::Left {
-                                    label_width,
-                                    control_offset,
-                                    align: self.label_align,
-                                },
-                            };
                             responses.push(field.show_with_layout(
                                 &mut columns[index],
                                 self.id.with(field.id),

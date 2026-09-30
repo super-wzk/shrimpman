@@ -1,7 +1,7 @@
 use crate::provider::{
     AiDebugOperation, AiDebugSnapshot, AiTarget, DebugCommand, DebugControl, DebugSnapshot,
 };
-use egui_hunter::{Button, ButtonKind};
+use egui_hunter::{ButtonKind, Icon, IconButton};
 use mhf_ai_debug::ReplaySession;
 
 mod breakpoints;
@@ -16,8 +16,8 @@ pub(super) struct DebuggerUi {
     error: Option<String>,
     import_json: String,
     import_open: bool,
-    recording_path: String,
-    export_json: Option<String>,
+    import_path: String,
+    recording_save: Option<String>,
     replay: Option<ReplaySession>,
     replay_requested: bool,
     breakpoint_kind: usize,
@@ -142,6 +142,18 @@ impl DebuggerUi {
         std::mem::take(&mut self.replay_requested)
     }
 
+    pub(super) fn take_recording_save(&mut self) -> Option<String> {
+        self.recording_save.take()
+    }
+
+    pub(super) fn recording_save_finished(&mut self, result: Result<bool, String>) {
+        match result {
+            Ok(true) => self.error = None,
+            Ok(false) => {}
+            Err(error) => self.error = Some(error),
+        }
+    }
+
     pub(super) fn follows_live(&self) -> bool {
         self.follow_latest
     }
@@ -183,20 +195,28 @@ impl DebuggerUi {
                     for (field, value) in &debug.state.fields {
                         ui.monospace(field);
                         ui.monospace(value.to_string());
-                        let watched = debug.breakpoints.iter().any(|bp| {
-                            bp.kind == mhf_ai_debug::BreakpointKind::FieldChanged(field.clone())
+                        let has_field_breakpoint = debug.breakpoints.iter().any(|bp| {
+                            matches!(&bp.kind, mhf_ai_debug::BreakpointKind::FieldChanged(name) if name == field)
                         });
+                        let (icon, label) = if has_field_breakpoint {
+                            (Icon::BreakpointOff, "移除字段断点")
+                        } else {
+                            (Icon::Breakpoint, "添加字段断点")
+                        };
                         if ui
                             .add_enabled(
                                 active && debug.attached,
-                                egui::Button::selectable(watched, "监视"),
+                                IconButton::new(icon, label)
+                                .id(egui::Id::new(("ai-field-breakpoint", field)))
+                                .kind(ButtonKind::Danger)
+                                .selected(has_field_breakpoint),
                             )
-                            .on_hover_text("字段变化时暂停；再次点击移除监视断点")
+                            .on_hover_text("字段发生变化时暂停 AI；再次点击移除字段断点")
                             .clicked()
                         {
                             let mut breakpoints = debug.breakpoints.clone();
                             let kind = mhf_ai_debug::BreakpointKind::FieldChanged(field.clone());
-                            if watched {
+                            if has_field_breakpoint {
                                 breakpoints.retain(|bp| bp.kind != kind);
                             } else {
                                 breakpoints.push(mhf_ai_debug::Breakpoint {
@@ -264,36 +284,64 @@ impl DebuggerUi {
         let attached = debug.is_some_and(|debug| debug.attached);
         let paused = debug.is_some_and(|debug| debug.paused);
         let mut operation = None;
-        ui.horizontal(|ui| {
-            if !attached && ui.add_enabled(active, Button::new("附加")).clicked() {
-                operation = Some(AiDebugOperation::Attach);
-            }
-            if ui
-                .add_enabled(
-                    active && attached,
-                    Button::new(if paused { "继续" } else { "暂停" }),
+        if ui
+            .add_enabled(
+                active,
+                IconButton::new(
+                    if attached { Icon::Detach } else { Icon::Attach },
+                    if attached {
+                        "分离调试器"
+                    } else {
+                        "附加调试器"
+                    },
                 )
-                .clicked()
-            {
-                operation = Some(if paused {
-                    AiDebugOperation::Continue
-                } else {
-                    AiDebugOperation::Pause
-                });
-            }
-            if ui
-                .add_enabled(active && attached && paused, Button::new("单步"))
-                .clicked()
-            {
-                operation = Some(AiDebugOperation::StepInstruction);
-            }
-            if ui
-                .add_enabled(active && attached && paused, Button::new("至让出"))
-                .clicked()
-            {
-                operation = Some(AiDebugOperation::RunUntilYield);
-            }
-        });
+                .id(egui::Id::new("ai-attach"))
+                .selected(attached),
+            )
+            .clicked()
+        {
+            operation = Some(if attached {
+                AiDebugOperation::Detach
+            } else {
+                AiDebugOperation::Attach
+            });
+        }
+        if ui
+            .add_enabled(
+                active && attached,
+                IconButton::new(
+                    if paused { Icon::Play } else { Icon::Pause },
+                    if paused { "继续" } else { "暂停" },
+                )
+                .id(egui::Id::new("ai-pause")),
+            )
+            .clicked()
+        {
+            operation = Some(if paused {
+                AiDebugOperation::Continue
+            } else {
+                AiDebugOperation::Pause
+            });
+        }
+        if ui
+            .add_enabled(
+                active && attached && paused,
+                IconButton::new(Icon::Step, "单步").id(egui::Id::new("ai-step")),
+            )
+            .clicked()
+        {
+            operation = Some(AiDebugOperation::StepInstruction);
+        }
+        if ui
+            .add_enabled(
+                active && attached && paused,
+                IconButton::new(Icon::StepOut, "至让出").id(egui::Id::new("ai-run-yield")),
+            )
+            .clicked()
+        {
+            operation = Some(AiDebugOperation::RunUntilYield);
+        }
+
         if let Some(operation) = operation
             && let Some(target) = target
             && let Err(error) = send(control, target, operation)
@@ -311,37 +359,28 @@ impl DebuggerUi {
         debug: Option<&AiDebugSnapshot>,
     ) {
         if ui
-            .add_enabled(debug.is_some(), Button::new("保存录制…"))
+            .add_enabled(
+                debug.is_some(),
+                IconButton::new(Icon::Save, "保存录制").id(egui::Id::new("ai-recording-save")),
+            )
             .clicked()
             && let Some(debug) = debug
         {
-            self.open_export(debug.recording.to_json());
-            ui.close();
+            self.request_recording_save(debug.recording.to_json());
         }
         let attached = debug.is_some_and(|debug| debug.attached);
         if ui
-            .add_enabled(active && attached, Button::new("分离调试器"))
+            .add_enabled(
+                active && attached,
+                IconButton::new(Icon::Trash, "清空轨迹")
+                    .id(egui::Id::new("ai-trace-clear"))
+                    .kind(ButtonKind::Danger),
+            )
             .clicked()
             && let Some(target) = target
         {
-            self.error = send(control, target, AiDebugOperation::Detach).err();
+            self.error = send(control, target, AiDebugOperation::ClearTrace).err();
         }
-        ui.horizontal_wrapped(|ui| {
-            if attached {
-                ui.weak("附加期间自动记录");
-            }
-            if ui
-                .add_enabled(
-                    active && attached,
-                    Button::new("清空轨迹").kind(ButtonKind::Quiet),
-                )
-                .clicked()
-                && let Some(target) = target
-                && let Err(error) = send(control, target, AiDebugOperation::ClearTrace)
-            {
-                self.error = Some(error);
-            }
-        });
     }
 
     pub(super) fn show_workspace_error(&self, ui: &mut egui::Ui) {

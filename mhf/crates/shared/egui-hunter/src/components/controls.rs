@@ -109,9 +109,6 @@ impl Widget for Button<'_> {
         let mut size = (content_size + padding * 2.0)
             .max(self.min_size)
             .max(ui.spacing().interact_size);
-        if self.kind == ButtonKind::Primary {
-            size.y = size.y.max(crate::Density::get(ui).primary_button_height());
-        }
         if self.full_width {
             size.x = ui.available_width();
         }
@@ -138,16 +135,7 @@ impl Widget for Button<'_> {
         if ui.is_rect_visible(rect) {
             let selected = self.selected == Some(true);
             let painter = ui.painter_at(rect);
-            let mut visuals = paint::button_visuals(ui, &response, selected, self.kind);
-            if paint::focused(ui, &response) {
-                visuals.bg_stroke =
-                    paint::focus_stroke(ui, self.kind == ButtonKind::Primary && !selected);
-            }
-            paint::control(ui, rect, &visuals);
-            let color = ui
-                .visuals()
-                .override_text_color
-                .unwrap_or_else(|| visuals.text_color());
+            let color = paint::button(ui, &response, selected, self.kind);
             let content_width = galley.size().x + icon_space;
             let text_rect = Rect::from_min_max(
                 pos2(rect.left() + padding.x, rect.top()),

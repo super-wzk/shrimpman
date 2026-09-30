@@ -22,6 +22,20 @@ pub enum Icon {
     Trash,
     Eye,
     EyeOff,
+    Breakpoint,
+    BreakpointOff,
+    Play,
+    Pause,
+    Step,
+    StepOut,
+    Attach,
+    Detach,
+    Apply,
+    Refresh,
+    FolderOpen,
+    Undo,
+    Copy,
+    Save,
     SwordAndShield,
     HeavyBowgun,
     Hammer,
@@ -240,6 +254,143 @@ impl Icon {
                 if self == Self::EyeOff {
                     line(&[(0.1, 0.1), (0.9, 0.9)]);
                 }
+            }
+            Self::Breakpoint => {
+                p.circle_filled(rect.center(), rect.width() * 0.28, color);
+            }
+            Self::BreakpointOff => {
+                p.circle_stroke(rect.center(), rect.width() * 0.28, stroke);
+                line(&[(0.3, 0.3), (0.7, 0.7)]);
+            }
+            Self::Play => {
+                p.add(Shape::convex_polygon(
+                    vec![point(0.28, 0.16), point(0.84, 0.5), point(0.28, 0.84)],
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+            Self::Pause => {
+                for (left, right) in [(0.24, 0.41), (0.59, 0.76)] {
+                    p.rect_filled(
+                        Rect::from_min_max(point(left, 0.16), point(right, 0.84)),
+                        1,
+                        color,
+                    );
+                }
+            }
+            Self::Step => {
+                p.add(Shape::convex_polygon(
+                    vec![point(0.18, 0.2), point(0.66, 0.5), point(0.18, 0.8)],
+                    color,
+                    Stroke::NONE,
+                ));
+                line(&[(0.8, 0.16), (0.8, 0.84)]);
+            }
+            Self::StepOut => {
+                line(&[(0.2, 0.58), (0.2, 0.88), (0.8, 0.88), (0.8, 0.58)]);
+                line(&[(0.5, 0.72), (0.5, 0.12)]);
+                line(&[(0.28, 0.34), (0.5, 0.12), (0.72, 0.34)]);
+            }
+            Self::Attach | Self::Detach => {
+                line(&[
+                    (0.55, 0.33),
+                    (0.46, 0.24),
+                    (0.33, 0.24),
+                    (0.16, 0.41),
+                    (0.16, 0.55),
+                    (0.28, 0.67),
+                    (0.42, 0.67),
+                    (0.52, 0.57),
+                ]);
+                line(&[
+                    (0.45, 0.67),
+                    (0.54, 0.76),
+                    (0.67, 0.76),
+                    (0.84, 0.59),
+                    (0.84, 0.45),
+                    (0.72, 0.33),
+                    (0.58, 0.33),
+                    (0.48, 0.43),
+                ]);
+                line(&[(0.36, 0.58), (0.64, 0.42)]);
+                if self == Self::Detach {
+                    line(&[(0.17, 0.17), (0.83, 0.83)]);
+                }
+            }
+            Self::Apply => {
+                p.circle_stroke(rect.center(), rect.width() * 0.4, stroke);
+                line(&[(0.26, 0.5), (0.43, 0.68), (0.74, 0.33)]);
+            }
+            Self::Refresh => {
+                line(&[
+                    (0.8, 0.44),
+                    (0.79, 0.28),
+                    (0.62, 0.16),
+                    (0.38, 0.16),
+                    (0.18, 0.35),
+                    (0.16, 0.57),
+                    (0.3, 0.78),
+                    (0.53, 0.84),
+                    (0.74, 0.74),
+                ]);
+                line(&[(0.6, 0.44), (0.8, 0.44), (0.8, 0.22)]);
+            }
+            Self::FolderOpen => {
+                line(&[
+                    (0.1, 0.3),
+                    (0.1, 0.82),
+                    (0.78, 0.82),
+                    (0.93, 0.43),
+                    (0.28, 0.43),
+                    (0.17, 0.75),
+                ]);
+                line(&[
+                    (0.1, 0.3),
+                    (0.1, 0.18),
+                    (0.35, 0.18),
+                    (0.48, 0.3),
+                    (0.8, 0.3),
+                    (0.8, 0.43),
+                ]);
+            }
+            Self::Undo => {
+                line(&[(0.4, 0.15), (0.14, 0.37), (0.4, 0.59)]);
+                line(&[
+                    (0.14, 0.37),
+                    (0.6, 0.37),
+                    (0.79, 0.46),
+                    (0.86, 0.61),
+                    (0.82, 0.79),
+                    (0.65, 0.86),
+                ]);
+            }
+            Self::Copy => {
+                line(&[
+                    (0.64, 0.35),
+                    (0.64, 0.14),
+                    (0.14, 0.14),
+                    (0.14, 0.64),
+                    (0.35, 0.64),
+                ]);
+                line(&[
+                    (0.35, 0.35),
+                    (0.86, 0.35),
+                    (0.86, 0.86),
+                    (0.35, 0.86),
+                    (0.35, 0.35),
+                ]);
+            }
+            Self::Save => {
+                line(&[
+                    (0.15, 0.15),
+                    (0.7, 0.15),
+                    (0.86, 0.31),
+                    (0.86, 0.85),
+                    (0.15, 0.85),
+                    (0.15, 0.15),
+                ]);
+                line(&[(0.32, 0.15), (0.32, 0.4), (0.65, 0.4), (0.65, 0.15)]);
+                line(&[(0.32, 0.85), (0.32, 0.6), (0.68, 0.6), (0.68, 0.85)]);
             }
             // Weapon variants returned above use the original PNG, never theme tint.
             _ => unreachable!("weapon icon handled before vector painting"),

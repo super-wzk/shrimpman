@@ -1,14 +1,20 @@
 use super::*;
 
+const TARGET: AiTarget = AiTarget {
+    epoch: 1,
+    pool: 0x1000,
+    slot: 0,
+    serial: 1,
+    model: 0,
+    species: 6,
+};
+
 #[test]
 fn status_hud_tracks_exact_instance_and_does_not_capture_pointer() {
     let target = AiTarget {
-        epoch: 1,
-        pool: 0x1000,
         slot: 2,
         serial: 7,
-        model: 0,
-        species: 6,
+        ..TARGET
     };
     let mut editor = Editor {
         selected: Some(target),
@@ -40,7 +46,11 @@ fn status_hud_tracks_exact_instance_and_does_not_capture_pointer() {
                 events: vec![egui::Event::PointerMoved(egui::pos2(770.0, 570.0))],
                 ..Default::default()
             },
-            |ui| editor.show_hud(ui.ctx(), snapshot),
+            |ui| {
+                if let Some(target) = editor.hud_target() {
+                    show_hud(ui.ctx(), snapshot, target);
+                }
+            },
         );
         let texts = output
             .shapes
@@ -72,12 +82,9 @@ fn status_hud_tracks_exact_instance_and_does_not_capture_pointer() {
 #[test]
 fn compact_workspace_keeps_primary_controls_and_source_above_the_fold() {
     let target = AiTarget {
-        epoch: 1,
-        pool: 0x1000,
         slot: 1,
-        serial: 1,
         model: 0x2000,
-        species: 6,
+        ..TARGET
     };
     for width in [340.0, 960.0] {
         let context = egui::Context::default();
@@ -111,31 +118,232 @@ fn compact_workspace_keeps_primary_controls_and_source_above_the_fold() {
                 },
                 |ui| editor.show(ui, &snapshot, &control),
             );
-            for label in ["更多", "附加", "单步", "应用更改"] {
-                let bounds = output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.job.text == label => {
-                            Some(text.galley.rect.translate(text.pos.to_vec2()))
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("missing {label} at {width}"));
+            let controls = [
+                "ai-attach",
+                "ai-pause",
+                "ai-step",
+                "ai-run-yield",
+                "ai-apply",
+            ]
+            .map(|id| {
+                (
+                    id,
+                    context
+                        .read_response(egui::Id::new(id))
+                        .map(|response| response.rect),
+                )
+            });
+            let source = context
+                .read_response(editor.source_id.unwrap())
+                .unwrap()
+                .rect;
+            output.drop_without_applying_deltas();
+            for (id, bounds) in controls {
+                let bounds = bounds.unwrap_or_else(|| panic!("missing {id} at {width}"));
                 assert!(
-                    bounds.right() <= width && bounds.bottom() < 130.0,
-                    "{label} at {width}: {bounds:?}"
+                    bounds.right() <= width && bounds.bottom() < 760.0,
+                    "{id} at {width}: {bounds:?}"
                 );
             }
-            let source = context.read_response(egui::Id::new("ai-source")).unwrap();
             assert!(
-                source.rect.top() < 210.0,
-                "source at {width}: {:?}",
-                source.rect
+                source.top() < 760.0 && source.bottom() > source.top(),
+                "source at {width}: {source:?}"
             );
-            output.drop_without_applying_deltas();
         }
     }
+}
+
+#[test]
+fn management_displays_only_the_exact_live_instance_without_changing_replay_or_drafts() {
+    let target = AiTarget {
+        slot: 7,
+        serial: 42,
+        model: 0x2000,
+        ..TARGET
+    };
+    let status = crate::provider::MonsterStatus {
+        target,
+        ai_state: 12,
+        action_group: 3,
+        action_id: 4,
+        action_stage: 1,
+        animation: 9,
+        frame: 8.5,
+        position: [1.0, 2.0, 3.0],
+    };
+    for width in [320.0, 960.0] {
+        let context = egui::Context::default();
+        egui_hunter::Theme::default()
+            .density(egui_hunter::Density::Compact)
+            .apply(&context);
+        let mut editor = Editor {
+            selected: Some(target),
+            page: Page::Replay,
+            draft: Draft {
+                loaded: Some((target, 0x3000)),
+                source: "unsaved script".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let control = DebugControl::new();
+        let mut snapshot = DebugSnapshot {
+            ready: true,
+            ai_targets: vec![target],
+            monster_statuses: vec![
+                crate::provider::MonsterStatus {
+                    target: AiTarget {
+                        serial: 43,
+                        ..target
+                    },
+                    ai_state: 77,
+                    ..status.clone()
+                },
+                status.clone(),
+            ],
+            ..Default::default()
+        };
+        let draw = |editor: &mut Editor, snapshot: &DebugSnapshot| {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 640.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| editor.show_management(ui, snapshot, &control),
+            );
+            let texts = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            output.drop_without_applying_deltas();
+            texts
+        };
+        let texts = draw(&mut editor, &snapshot);
+        assert!(texts.iter().any(|text| text == "AI 主状态"));
+        assert!(texts.iter().any(|text| text == "12"));
+        assert!(!texts.iter().any(|text| text == "77"));
+        snapshot.monster_statuses.pop();
+        let texts = draw(&mut editor, &snapshot);
+        assert!(texts.iter().any(|text| text == "实例状态暂不可用"));
+        assert!(!texts.iter().any(|text| text == "77"));
+        assert_eq!(editor.selected, Some(target));
+        assert_eq!(editor.page, Page::Replay);
+        assert_eq!(editor.draft.source, "unsaved script");
+        assert!(control.commands().is_empty());
+    }
+}
+
+#[test]
+fn workspace_preserves_split_scroll_and_draft_focus_across_trace_visibility_and_resize() {
+    let context = egui::Context::default();
+    egui_hunter::Theme::default()
+        .density(egui_hunter::Density::Compact)
+        .apply(&context);
+    let mut editor = Editor::default();
+    editor
+        .draft
+        .set_project(mhf_monster::ai::dsl::Project::single(
+            None,
+            6,
+            "restart;\n".repeat(120),
+        ));
+    let snapshot = DebugSnapshot::default();
+    let control = DebugControl::new();
+    let mut time = 0.0;
+    let mut draw = |editor: &mut Editor, size, events| {
+        time += 0.1;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        editor.workspace(ui, &snapshot, &control, false);
+                    });
+            },
+        );
+        output.drop_without_applying_deltas();
+    };
+    let size = egui::vec2(1000.0, 680.0);
+    draw(&mut editor, size, vec![]);
+    draw(&mut editor, size, vec![]);
+    let divider = egui::Id::new(("ai-workspace-inspector", Page::Live)).with("divider");
+    let before = context.read_response(divider).unwrap().rect.center();
+    let after = before - egui::vec2(100.0, 0.0);
+    let click = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    draw(
+        &mut editor,
+        size,
+        vec![egui::Event::PointerMoved(before), click(before, true)],
+    );
+    draw(&mut editor, size, vec![egui::Event::PointerMoved(after)]);
+    draw(&mut editor, size, vec![click(after, false)]);
+    draw(&mut editor, size, vec![]);
+    let adjusted = context.read_response(divider).unwrap().rect.center().x;
+    assert!(
+        adjusted < before.x - 50.0,
+        "before {before:?}, adjusted {adjusted}"
+    );
+    let source_id = editor.source_id.unwrap();
+    let scroll_id =
+        egui::Id::new(("ai-source-pane", Page::Live)).with(egui::IdSalt::new("ai-source-scroll"));
+    let mut scroll = egui::scroll_area::State::load(&context, scroll_id).unwrap();
+    scroll.offset.y = 300.0;
+    scroll.store(&context, scroll_id);
+    draw(&mut editor, size, vec![]);
+    let offset = egui::scroll_area::State::load(&context, scroll_id)
+        .unwrap()
+        .offset
+        .y;
+    assert!(offset > 200.0);
+    editor.show_trace = false;
+    draw(&mut editor, size, vec![]);
+    assert!((context.read_response(divider).unwrap().rect.center().x - adjusted).abs() < 0.5);
+    assert!(
+        (egui::scroll_area::State::load(&context, scroll_id)
+            .unwrap()
+            .offset
+            .y
+            - offset)
+            .abs()
+            < 0.5
+    );
+    assert_eq!(editor.source_id, Some(source_id));
+
+    context.memory_mut(|memory| memory.request_focus(source_id));
+    draw(
+        &mut editor,
+        egui::vec2(420.0, 400.0),
+        vec![egui::Event::Text("edited".into())],
+    );
+    assert_eq!(editor.source_id, Some(source_id));
+    assert!(context.memory(|memory| memory.has_focus(source_id)));
+    assert!(editor.draft.source.contains("edited"));
+    let draft = editor.draft.source.clone();
+    draw(&mut editor, size, vec![]);
+    editor.show_trace = true;
+    draw(&mut editor, size, vec![]);
+    assert!((context.read_response(divider).unwrap().rect.center().x - adjusted).abs() < 0.5);
+    assert_eq!(editor.source_id, Some(source_id));
+    assert!(context.memory(|memory| memory.has_focus(source_id)));
+    assert_eq!(editor.draft.source, draft);
 }
 
 #[test]
@@ -164,16 +372,176 @@ fn file_switches_and_apply_snapshot_preserve_all_edited_files() {
 }
 
 #[test]
+fn highlighted_editor_preserves_breakpoint_gutter_and_blocks_pending_edits() {
+    let target = TARGET;
+    let context = egui::Context::default();
+    egui_hunter::Theme::default().apply(&context);
+    let control = DebugControl::new();
+    let mut editor = Editor {
+        selected: Some(target),
+        draft: Draft {
+            source: "fn main() {\n    restart;\n}\n".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let markers = SourceMarkers {
+        path: "test.mhai".into(),
+        current_line: Some(2),
+        breakpoint_lines: vec![2],
+        interactive: true,
+    };
+    let breakpoint = egui::Id::new(("ai-source-breakpoint", "test.mhai", 2));
+    let mut time = 0.0;
+    let mut draw = |editor: &mut Editor, events| {
+        time += 0.1;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 400.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let height = ui.available_height();
+                editor.source_editor(ui, Some(&markers), None, &control, height);
+            },
+        );
+        output.drop_without_applying_deltas();
+    };
+    for _ in 0..2 {
+        draw(&mut editor, vec![]);
+    }
+    let gutter = context.read_response(breakpoint).unwrap();
+    let source_id = editor.source_id.unwrap();
+    let source = context.read_response(source_id).unwrap();
+    assert!(gutter.rect.right() <= source.rect.left());
+    assert!(gutter.rect.top() > source.rect.top());
+    let click = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    let pos = gutter.rect.center();
+    draw(
+        &mut editor,
+        vec![egui::Event::PointerMoved(pos), click(pos, true)],
+    );
+    draw(&mut editor, vec![click(pos, false)]);
+    assert!(matches!(
+        control.commands().as_slice(),
+        [DebugCommand::AiDebug {
+            target: actual,
+            operation: AiDebugOperation::SourceBreakpoint { path, line: 2 },
+        }] if *actual == target && path == "test.mhai"
+    ));
+
+    context.memory_mut(|memory| memory.request_focus(source_id));
+    editor.pending = Some(Pending {
+        request: 1,
+        target,
+        replacement: None,
+        preserve_draft: false,
+        attach: false,
+    });
+    let source = editor.draft.source.clone();
+    draw(&mut editor, vec![egui::Event::Text("ignored".into())]);
+    assert_eq!(editor.draft.source, source);
+    assert!(!editor.draft.modified);
+}
+
+#[test]
+fn paused_execution_keeps_the_focused_draft_and_follows_after_blur() {
+    use crate::provider::AiDebugSnapshot;
+    use mhf_monster::ai::dsl::{DebugInfo, Project, SourceFile, SourceLocation, SourceMapping};
+    use std::sync::Arc;
+
+    let target = TARGET;
+    let mut project = Project::single(None, 6, "fn main() { restart; }".into());
+    project.files.push(SourceFile {
+        path: "combat.mhai".into(),
+        source: "fn combat() { return; }".into(),
+    });
+    let info = DebugInfo {
+        files: project.files.clone(),
+        mappings: vec![SourceMapping {
+            script: 0,
+            start: 0,
+            end: 2,
+            source: SourceLocation {
+                path: project.files[1].path.clone(),
+                line: 1,
+                ..Default::default()
+            },
+            generated: false,
+        }],
+    };
+    let mut editor = Editor {
+        selected: Some(target),
+        ..Default::default()
+    };
+    editor.draft.set_project(project);
+    let control = DebugControl::new();
+    let context = egui::Context::default();
+    let draw = |editor: &mut Editor, snapshot: &DebugSnapshot| {
+        let output = context.run_ui(Default::default(), |ui| {
+            editor.source_page(ui, snapshot, &control, true);
+        });
+        output.drop_without_applying_deltas();
+    };
+    draw(&mut editor, &DebugSnapshot::default());
+    let source_id = editor.source_id.unwrap();
+    context.memory_mut(|memory| memory.request_focus(source_id));
+    let state = mhf_ai_debug::Snapshot {
+        pc: Some(mhf_ai_debug::ProgramLocation {
+            revision: 1,
+            script: 0,
+            offset: 0,
+        }),
+        ..Default::default()
+    };
+    let mut snapshot = DebugSnapshot {
+        ai_debug: Some(Arc::new(AiDebugSnapshot {
+            target,
+            attached: true,
+            paused: true,
+            state: state.clone(),
+            recording: mhf_ai_debug::Recording::empty(state),
+            reason: String::new(),
+            breakpoints: vec![],
+            debug_info: info.into(),
+        })),
+        ..Default::default()
+    };
+    draw(&mut editor, &snapshot);
+    assert_eq!(editor.draft.file, 0);
+    assert!(context.memory(|memory| memory.has_focus(source_id)));
+
+    context.memory_mut(|memory| memory.surrender_focus(source_id));
+    Arc::make_mut(snapshot.ai_debug.as_mut().unwrap())
+        .state
+        .pc
+        .as_mut()
+        .unwrap()
+        .offset = 1;
+    draw(&mut editor, &snapshot);
+    assert_eq!(editor.draft.file, 1);
+    assert_eq!(editor.draft.source, "fn combat() { return; }");
+}
+
+#[test]
 fn replacement_follows_the_requested_spawn_even_when_the_reload_reply_is_lost() {
     use crate::provider::{AiDocument, AiReply};
     use std::sync::Arc;
     let old = AiTarget {
-        epoch: 1,
-        pool: 0x1000,
         slot: 4,
         serial: 3,
         model: 0x2000,
-        species: 6,
+        ..TARGET
     };
     let replacement = AiTarget {
         epoch: 2,
@@ -211,7 +579,6 @@ fn replacement_follows_the_requested_spawn_even_when_the_reload_reply_is_lost() 
                 result: Ok(AiDocument {
                     descriptor: 0,
                     source: None,
-                    message: "loading".into(),
                 }),
             }));
         }
@@ -246,12 +613,9 @@ fn rapid_target_changes_ignore_stale_replies_and_attach_after_source_refresh() {
     use crate::provider::{AiDebugSnapshot, AiDocument, AiReply};
     use std::sync::Arc;
     let first = AiTarget {
-        epoch: 1,
-        pool: 0x1000,
         slot: 1,
-        serial: 1,
         model: 0x2000,
-        species: 6,
+        ..TARGET
     };
     let second = AiTarget { slot: 2, ..first };
     let third = AiTarget { slot: 3, ..first };
@@ -300,7 +664,6 @@ fn rapid_target_changes_ignore_stale_replies_and_attach_after_source_refresh() {
                     target.species,
                     source.into(),
                 )),
-                message: String::new(),
             }),
         })
     };
@@ -334,14 +697,7 @@ fn rapid_target_changes_ignore_stale_replies_and_attach_after_source_refresh() {
 
 #[test]
 fn switching_instances_restores_their_own_drafts_and_descriptors() {
-    let first = AiTarget {
-        epoch: 1,
-        pool: 0x1000,
-        slot: 0,
-        serial: 1,
-        model: 0,
-        species: 6,
-    };
+    let first = TARGET;
     let second = AiTarget { slot: 1, ..first };
     let control = DebugControl::new();
     let mut editor = Editor {

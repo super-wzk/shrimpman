@@ -1,9 +1,11 @@
 use crate::provider::{
     AiDebugOperation, AiOperation, AiTarget, DebugCommand, DebugControl, DebugSnapshot, monsters,
 };
-use egui_hunter::{Button, ButtonKind, NoticeKind, Notifications, Popup, Tokens};
+use egui_hunter::{Button, ButtonKind, Icon, IconButton, NoticeKind, Notifications, SelectField};
 
 mod debugger;
+mod management;
+mod source;
 mod workspace;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -13,6 +15,14 @@ enum Page {
     Replay,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+enum View {
+    #[default]
+    Source,
+    Inspector,
+    Trace,
+}
+
 pub(super) struct Editor {
     selected: Option<AiTarget>,
     page: Page,
@@ -20,20 +30,19 @@ pub(super) struct Editor {
     inspector: usize,
     show_inspector: bool,
     show_trace: bool,
-    trace_height: f32,
+    compact_view: View,
     reveal_line: Option<usize>,
+    source_id: Option<egui::Id>,
     last_stop: Option<(AiTarget, mhf_ai_debug::ProgramLocation)>,
     show_status: bool,
     draft: Draft,
     request: u64,
     pending: Option<Pending>,
     replacement: Option<(AiTarget, u8)>,
-    detached: bool,
     drafts: Vec<(Option<AiTarget>, Draft)>,
     error: Option<String>,
     notifications: Notifications,
     replacement_species: Option<u8>,
-    manage_monster: bool,
     species_filter: String,
 }
 
@@ -44,22 +53,21 @@ impl Default for Editor {
             page: Page::default(),
             debugger: debugger::DebuggerUi::new(),
             inspector: 0,
-            show_inspector: false,
+            show_inspector: true,
             show_trace: true,
-            trace_height: 160.0,
+            compact_view: View::Source,
             reveal_line: None,
+            source_id: None,
             last_stop: None,
             show_status: false,
             draft: Draft::default(),
             request: 0,
             pending: None,
             replacement: None,
-            detached: false,
             drafts: Vec::new(),
             error: None,
             notifications: Notifications::with_capacity(egui::Id::new("monster-ai-errors"), 1),
             replacement_species: None,
-            manage_monster: false,
             species_filter: String::new(),
         }
     }
@@ -84,7 +92,6 @@ struct SourceMarkers {
 struct Draft {
     loaded: Option<(AiTarget, u32)>,
     source: String,
-    message: String,
     project: Option<mhf_monster::ai::dsl::Project>,
     file: usize,
     modified: bool,
@@ -95,8 +102,7 @@ impl Draft {
         let previous = self
             .project
             .as_ref()
-            .and_then(|p| p.files.get(self.file))
-            .map(|f| &f.path);
+            .map(|project| &project.files[self.file].path);
         self.file = project
             .files
             .iter()
@@ -113,8 +119,9 @@ impl Draft {
             || self
                 .project
                 .as_ref()
-                .and_then(|project| project.files.get(self.file))
-                .map_or(!self.source.is_empty(), |file| file.source != self.source)
+                .map_or(!self.source.is_empty(), |project| {
+                    project.files[self.file].source != self.source
+                })
     }
 
     fn select_file(&mut self, selected: usize) {
@@ -135,56 +142,61 @@ impl Draft {
     }
 }
 
+pub(super) fn show_hud(context: &egui::Context, snapshot: &DebugSnapshot, target: AiTarget) {
+    let status = if snapshot.ready {
+        snapshot
+            .monster_statuses
+            .iter()
+            .find(|status| status.target == target)
+    } else {
+        None
+    };
+    egui::Area::new(egui::Id::new("debug-monster-status-hud"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
+        .order(egui::Order::Middle)
+        .movable(false)
+        .interactable(false)
+        .show(context, |ui| {
+            ui.set_max_width((context.content_rect().width() - 24.0).max(80.0));
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(170))
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.visuals_mut().override_text_color = Some(egui::Color32::from_gray(230));
+                    ui.strong(label(target));
+                    if let Some(status) = status {
+                        ui.label(format!("AI 主状态 {}", status.ai_state));
+                        ui.label(format!(
+                            "动作 {}:{} / {} · 动画 {} · 帧 {:.1}",
+                            status.action_group,
+                            status.action_id,
+                            status.action_stage,
+                            status.animation,
+                            status.frame
+                        ));
+                        ui.small(format!(
+                            "位置  X {:.1}  Y {:.1}  Z {:.1}",
+                            status.position[0], status.position[1], status.position[2]
+                        ));
+                    } else {
+                        ui.label("目标已卸载或任务未就绪，请重新选择怪物。");
+                    }
+                });
+        });
+}
+
 impl Editor {
-    pub(super) fn show_hud(&self, context: &egui::Context, snapshot: &DebugSnapshot) {
-        if !self.show_status {
-            return;
-        }
-        let Some(target) = self.selected else {
-            return;
-        };
-        let status = snapshot
-            .ready
-            .then(|| {
-                snapshot
-                    .monster_statuses
-                    .iter()
-                    .find(|status| status.target == target)
-            })
-            .flatten();
-        egui::Area::new(egui::Id::new("debug-monster-status-hud"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
-            .order(egui::Order::Middle)
-            .movable(false)
-            .interactable(false)
-            .show(context, |ui| {
-                ui.set_max_width((context.content_rect().width() - 24.0).max(80.0));
-                egui::Frame::new()
-                    .fill(egui::Color32::from_black_alpha(170))
-                    .corner_radius(6)
-                    .inner_margin(egui::Margin::symmetric(10, 8))
-                    .show(ui, |ui| {
-                        ui.visuals_mut().override_text_color = Some(egui::Color32::from_gray(230));
-                        ui.strong(label(target));
-                        if let Some(status) = status {
-                            ui.label(format!("AI 主状态 {}", status.ai_state));
-                            ui.label(format!(
-                                "动作 {}:{} / {} · 动画 {} · 帧 {:.1}",
-                                status.action_group,
-                                status.action_id,
-                                status.action_stage,
-                                status.animation,
-                                status.frame
-                            ));
-                            ui.small(format!(
-                                "位置  X {:.1}  Y {:.1}  Z {:.1}",
-                                status.position[0], status.position[1], status.position[2]
-                            ));
-                        } else {
-                            ui.label("目标已卸载或任务未就绪，请重新选择怪物。");
-                        }
-                    });
-            });
+    pub(super) fn hud_target(&self) -> Option<AiTarget> {
+        self.selected.filter(|_| self.show_status)
+    }
+
+    pub(super) fn take_recording_save(&mut self) -> Option<String> {
+        self.debugger.take_recording_save()
+    }
+
+    pub(super) fn recording_save_finished(&mut self, result: Result<bool, String>) {
+        self.debugger.recording_save_finished(result);
     }
 
     pub(super) fn show(
@@ -193,142 +205,106 @@ impl Editor {
         snapshot: &DebugSnapshot,
         control: &DebugControl,
     ) {
-        if self.detached {
-            ui.label("AI 调试器已在独立窗口打开。");
-            if ui.add(Button::new("返回面板编辑")).clicked() {
-                self.detached = false;
-            } else {
-                return;
-            }
-        }
-        self.content(ui, snapshot, control, false);
-    }
-
-    pub(super) fn show_window(
-        &mut self,
-        context: &egui::Context,
-        snapshot: &DebugSnapshot,
-        control: &DebugControl,
-    ) -> Option<egui::Rect> {
-        if !self.detached {
-            return None;
-        }
-        let viewport = context.content_rect().shrink(8.0);
-        let mut open = true;
-        let window = egui::Window::new("怪物 · AI 调试器")
-            .id(egui::Id::new("debug-monster-ai-editor"))
-            .open(&mut open)
-            .resizable(true)
-            .default_pos(viewport.min + egui::vec2(24.0, 24.0))
-            .default_size(egui::vec2(900.0, 640.0).min(viewport.size()))
-            .min_size(egui::vec2(300.0, 240.0).min(viewport.size()))
-            .max_size(viewport.size())
-            .constrain_to(viewport)
-            .vscroll(viewport.height() < 400.0)
-            .show(context, |ui| self.content(ui, snapshot, control, true));
-        self.detached &= open;
-        window.map(|window| window.response.rect)
-    }
-
-    fn content(
-        &mut self,
-        ui: &mut egui::Ui,
-        snapshot: &DebugSnapshot,
-        control: &DebugControl,
-        fill_height: bool,
-    ) {
         self.sync_target(snapshot, control);
         let previous_page = self.page;
-        let mut selected = self.selected;
-        ui.spacing_mut().item_spacing.y = 4.0;
-        ui.spacing_mut().interact_size.y = 24.0;
-        let compact = ui.available_width() < 900.0;
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("ai-session-mode")
-                .width(62.0)
-                .selected_text(match self.page {
-                    Page::Live => "现场",
-                    Page::Replay => "回放",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.page, Page::Live, "现场");
-                    ui.selectable_value(&mut self.page, Page::Replay, "回放");
+        let target_width = (ui.available_width() - 160.0).clamp(100.0, 280.0);
+        let active = ui
+            .horizontal_wrapped(|ui| {
+                let mut mode = SelectField::new(
+                    egui::Id::new("ai-session-mode"),
+                    if self.page == Page::Live {
+                        "现场"
+                    } else {
+                        "回放"
+                    },
+                );
+                mode.native = mode.native.width(84.0);
+                mode.show_ui(ui, |ui| {
+                    for (page, label) in [(Page::Live, "现场"), (Page::Replay, "回放")] {
+                        if ui
+                            .add(
+                                Button::new(label)
+                                    .kind(ButtonKind::Quiet)
+                                    .selected(self.page == page)
+                                    .full_width(),
+                            )
+                            .clicked()
+                        {
+                            self.page = page;
+                            ui.close();
+                        }
+                    }
                 });
-            if self.page == Page::Live {
-                ui.add_enabled_ui(snapshot.ready, |ui| {
-                    egui::ComboBox::from_id_salt("ai-target")
-                        .width(140.0)
-                        .selected_text(
-                            self.selected
-                                .map(label)
-                                .unwrap_or_else(|| "选择怪物".into()),
-                        )
-                        .show_ui(ui, |ui| {
-                            for &target in &snapshot.ai_targets {
-                                ui.selectable_value(&mut selected, Some(target), label(target));
-                            }
-                        });
-                });
-            }
-            if selected != self.selected {
-                self.select_target(selected, snapshot, control);
-            }
-            if !compact {
-                self.run_toolbar(ui, snapshot, control);
-            }
-            ui.menu_button("更多", |ui| {
-                self.more_menu(ui, snapshot, control, fill_height)
-            });
-        });
-        if compact {
-            egui::ScrollArea::horizontal()
-                .id_salt("ai-run-toolbar")
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| self.run_toolbar(ui, snapshot, control));
-                });
-        }
+                if self.page == Page::Live {
+                    self.target_picker(ui, snapshot, control, target_width);
+                }
+                let active = self.active(snapshot);
+                self.run_toolbar(ui, snapshot, control, active);
+                active
+            })
+            .inner;
         ui.separator();
-        let active = snapshot.ready
-            && self
-                .selected
-                .is_some_and(|target| snapshot.ai_targets.contains(&target));
+        if self.debugger.take_replay_request() {
+            self.page = Page::Replay;
+        }
         if self.page != previous_page {
             self.debugger.set_follow(self.page != Page::Replay);
             self.inspector = 0;
-        }
-        if self.debugger.take_replay_request() {
-            self.page = Page::Replay;
         }
         ui.push_id(self.page, |ui| {
             self.workspace(ui, snapshot, control, active)
         });
         self.debugger.import_dialog(ui.ctx());
-        if self.manage_monster {
-            let mut open = true;
-            egui::Window::new("怪物管理")
-                .id(egui::Id::new("ai-monster-management"))
-                .open(&mut open)
-                .default_width(340.0)
-                .resizable(false)
-                .show(ui.ctx(), |ui| {
-                    ui.add_enabled_ui(active && self.pending.is_none(), |ui| {
-                        if let Some(target) = self.selected {
-                            ui.label(label(target));
-                        }
-                        self.species_picker(ui, snapshot, control)
-                    });
-                });
-            self.manage_monster = open
-                && !self
-                    .pending
-                    .as_ref()
-                    .is_some_and(|pending| pending.replacement.is_some());
+        self.show_notifications(ui);
+    }
+
+    fn active(&self, snapshot: &DebugSnapshot) -> bool {
+        snapshot.ready
+            && self
+                .selected
+                .is_some_and(|target| snapshot.ai_targets.contains(&target))
+    }
+
+    fn target_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &DebugSnapshot,
+        control: &DebugControl,
+        width: f32,
+    ) {
+        let mut selected = self.selected;
+        ui.add_enabled_ui(snapshot.ready, |ui| {
+            let mut targets = SelectField::new(
+                egui::Id::new("ai-target"),
+                self.selected
+                    .map(label)
+                    .unwrap_or_else(|| "选择怪物".into()),
+            );
+            targets.native = targets.native.width(width);
+            targets.show_ui(ui, |ui| {
+                for &target in &snapshot.ai_targets {
+                    if ui
+                        .add(
+                            Button::new(&label(target))
+                                .kind(ButtonKind::Quiet)
+                                .selected(selected == Some(target))
+                                .full_width(),
+                        )
+                        .clicked()
+                    {
+                        selected = Some(target);
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if selected != self.selected {
+            self.select_target(selected, snapshot, control);
         }
-        if self.pending.is_some() {
-            ui.weak("正在等待游戏线程…");
-        }
+    }
+
+    fn show_notifications(&mut self, ui: &mut egui::Ui) {
         if let Some(error) = self.error.take() {
-            self.draft.message.clear();
             self.notifications.push_for(
                 ui.ctx(),
                 NoticeKind::Danger,
@@ -360,7 +336,9 @@ impl Editor {
             && self.last_stop != Some((debug.target, pc))
         {
             self.last_stop = Some((debug.target, pc));
-            if !ui.memory(|memory| memory.has_focus(egui::Id::new("ai-source")))
+            if !self
+                .source_id
+                .is_some_and(|id| ui.memory(|memory| memory.has_focus(id)))
                 && let Some(mapping) = execution_mapping
                 && let Some(project) = &self.draft.project
                 && let Some(index) = project
@@ -388,14 +366,32 @@ impl Editor {
                 ui.weak("历史轨迹");
             } else if let Some(project) = &self.draft.project {
                 ui.add_enabled_ui(self.pending.is_none(), |ui| {
-                    egui::ComboBox::from_id_salt("ai-source-file")
-                        .width((ui.available_width() - 180.0).clamp(120.0, 360.0))
-                        .selected_text(project.files[self.draft.file].path.as_str())
+                    let mut files = SelectField::new(
+                        egui::Id::new("ai-source-file"),
+                        project.files[self.draft.file].path.as_str(),
+                    );
+                    files.native = files
+                        .native
+                        .width((ui.available_width() - 120.0).clamp(120.0, 400.0));
+                    files
                         .show_ui(ui, |ui| {
                             for (index, file) in project.files.iter().enumerate() {
-                                ui.selectable_value(&mut selected_file, index, &file.path);
+                                if ui
+                                    .add(
+                                        Button::new(&file.path)
+                                            .kind(ButtonKind::Quiet)
+                                            .selected(index == selected_file)
+                                            .full_width(),
+                                    )
+                                    .clicked()
+                                {
+                                    selected_file = index;
+                                    ui.close();
+                                }
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text(project.files[self.draft.file].path.as_str());
                 });
             }
             let execution_file = execution_mapping.and_then(|mapping| {
@@ -409,7 +405,8 @@ impl Editor {
             if ui
                 .add_enabled(
                     self.pending.is_none() && (execution_file.is_some() || !following),
-                    Button::new("定位执行").kind(ButtonKind::Quiet),
+                    IconButton::new(Icon::ArrowUpRight, "定位执行")
+                        .id(egui::Id::new("ai-locate-execution")),
                 )
                 .on_hover_text("恢复现场跟随，并定位到当前执行位置；未应用草稿不标记执行行。")
                 .clicked()
@@ -477,12 +474,12 @@ impl Editor {
             ui.weak("草稿未应用 · 行断点暂不可用")
                 .on_hover_text("草稿与执行版本不同，应用后恢复源码断点和执行行标记。");
         }
-        egui::ScrollArea::both()
+        let viewport_height = ui.available_height().max(0.0);
+        egui::ScrollArea::vertical()
             .id_salt("ai-source-scroll")
-            .max_height(ui.available_height().max(80.0))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                self.source_editor(ui, markers.as_ref(), mapped, control);
+                self.source_editor(ui, markers.as_ref(), mapped, control, viewport_height);
             });
     }
 
@@ -492,6 +489,7 @@ impl Editor {
         markers: Option<&SourceMarkers>,
         debug: Option<&crate::provider::AiDebugSnapshot>,
         control: &DebugControl,
+        viewport_height: f32,
     ) {
         ui.horizontal_top(|ui| {
             let font = egui::TextStyle::Monospace.resolve(ui.style());
@@ -505,19 +503,22 @@ impl Editor {
                 + 14.0;
             let (gutter, _) =
                 ui.allocate_exact_size(egui::vec2(gutter_width, 0.0), egui::Sense::hover());
+            let editable = self.pending.is_none();
             let output = ui
-                .add_enabled_ui(self.pending.is_none(), |ui| {
-                    egui::TextEdit::multiline(&mut self.draft.source)
-                        .id(egui::Id::new("ai-source"))
-                        .font(egui::TextStyle::Monospace)
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(1)
-                        .show(ui)
+                .add_enabled_ui(editable, |ui| {
+                    let mut read_only;
+                    let text: &mut dyn egui::TextBuffer = if editable {
+                        &mut self.draft.source
+                    } else {
+                        read_only = self.draft.source.as_str();
+                        &mut read_only
+                    };
+                    source::show(ui, "ai-source", text, false, viewport_height)
                 })
                 .inner;
 
-            self.draft.modified |= output.response.changed();
+            self.source_id = Some(output.response.id);
+            self.draft.modified |= editable && output.response.changed();
 
             // Match actual text rows, including margins and font scaling.
             // Wrapped continuation rows do not introduce a source line number.
@@ -536,11 +537,7 @@ impl Editor {
                         egui::pos2(output.response.rect.right(), rect.bottom()),
                     );
                     if markers.is_some_and(|markers| markers.current_line == Some(line_number)) {
-                        ui.painter().rect_filled(
-                            row_rect,
-                            0.0,
-                            ui.visuals().selection.bg_fill.gamma_multiply(0.22),
-                        );
+                        source::highlight_line(ui, row_rect);
                         ui.painter().text(
                             egui::pos2(gutter.left(), rect.top()),
                             egui::Align2::LEFT_TOP,
@@ -615,103 +612,6 @@ impl Editor {
         });
     }
 
-    fn species_picker(
-        &mut self,
-        ui: &mut egui::Ui,
-        snapshot: &DebugSnapshot,
-        control: &DebugControl,
-    ) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("种类");
-            let selected = self
-                .replacement_species
-                .or(self.selected.map(|target| target.species));
-            let name = selected
-                .and_then(|species| monsters::NAMES.get(usize::from(species)))
-                .copied()
-                .unwrap_or("选择种类");
-            let picker = ui.add_sized(
-                [
-                    180.0_f32.min(ui.available_width()),
-                    ui.spacing().interact_size.y,
-                ],
-                Button::new(&format!("{name} ▾")).id(egui::Id::new("replacement-species")),
-            );
-            let enabled = ui.is_enabled();
-            // Use viewport space, not the popup's previous measured height:
-            // a short search result must not cap the next unfiltered list.
-            let screen = ui.ctx().content_rect();
-            let space =
-                (screen.bottom() - picker.rect.bottom()).max(picker.rect.top() - screen.top());
-            let list_height = (space - ui.spacing().interact_size.y - 64.0).clamp(60.0, 240.0);
-            let mut popup = Popup::new(&picker)
-                .style(ui.style().clone())
-                .tokens(Tokens::get(ui));
-            popup.native = popup.native.width(picker.rect.width().max(220.0));
-            popup.show(|ui| {
-                if !enabled {
-                    ui.close();
-                    return;
-                }
-                let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.species_filter)
-                        .hint_text("搜索名称或编号")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.separator();
-                let mut list = egui::ScrollArea::vertical()
-                    .id_salt("replacement-species-list")
-                    .max_height(list_height)
-                    .min_scrolled_height(list_height)
-                    .auto_shrink([false, true]);
-                if search.changed() {
-                    list = list.vertical_scroll_offset(0.0);
-                }
-                list.show(ui, |ui| {
-                    let filter = self.species_filter.trim();
-                    let mut found = false;
-                    for monster in &snapshot.catalog.monsters {
-                        if filter.is_empty()
-                            || monster.name.contains(filter)
-                            || monster.id.to_string().contains(filter)
-                        {
-                            found = true;
-                            if ui
-                                .selectable_value(
-                                    &mut self.replacement_species,
-                                    Some(monster.id),
-                                    format!("{} · {}", monster.name, monster.id),
-                                )
-                                .clicked()
-                            {
-                                ui.close();
-                            }
-                        }
-                    }
-                    if !found {
-                        ui.weak("没有匹配的种类");
-                    }
-                });
-            });
-            let selected = self.replacement_species.or(selected);
-            if ui
-                .add_enabled(
-                    selected.is_some_and(|species| {
-                        self.selected
-                            .is_some_and(|target| target.species != species)
-                    }),
-                    Button::new("替换并重载任务"),
-                )
-                .on_hover_text(
-                    "仅替换选中目标的种类。重载任务以加载模型和 AI，任务进度会重置，目标条件不变。",
-                )
-                .clicked()
-            {
-                self.submit(control, AiOperation::ReplaceSpecies(selected.unwrap()));
-            }
-        });
-    }
-
     fn sync_target(&mut self, snapshot: &DebugSnapshot, control: &DebugControl) {
         if let Some(reply) = &snapshot.ai_reply
             && self.pending.as_ref().is_some_and(|pending| {
@@ -733,7 +633,6 @@ impl Editor {
                         {
                             self.draft.set_project(source.clone());
                         }
-                        self.draft.message.clone_from(&document.message);
                         if pending.attach
                             && snapshot.ready
                             && snapshot.ai_targets.contains(&reply.target)

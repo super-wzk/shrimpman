@@ -20,6 +20,7 @@ pub struct Field<'a> {
     label_vertical_align: Align,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum FieldLayout {
     Above {
         label_height: f32,
@@ -233,11 +234,6 @@ impl<'a> Field<'a> {
                     .with_tag_value(VALIDATION_COLOR, status.map(|(_, _, color)| color)),
             ),
             |ui| {
-                ui.spacing_mut().interact_size.y = ui
-                    .spacing()
-                    .interact_size
-                    .y
-                    .max(crate::Density::get(ui).field_height());
                 let response = control(ui);
                 if let Some((message, icon, color)) = status {
                     ui.horizontal_top(|ui| {

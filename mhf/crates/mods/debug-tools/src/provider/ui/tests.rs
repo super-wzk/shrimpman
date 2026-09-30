@@ -2,11 +2,13 @@ use super::*;
 use crate::provider::{
     Appearance, AppearanceOptions, Catalog, Equipment, Face, Monster, MonsterAction,
 };
-use egui::{Event, Id, RawInput, Rect, pos2, vec2};
+use egui::{Context, Event, Id, Key, Modifiers, RawInput, Rect, pos2, vec2};
 
 fn context() -> Context {
     let context = Context::default();
-    egui_hunter::Theme::default().apply(&context);
+    egui_hunter::Theme::default()
+        .density(egui_hunter::Density::Compact)
+        .apply(&context);
     mhf_font::install(&context);
     context
 }
@@ -105,8 +107,8 @@ fn populated_snapshot(item_count: u16) -> DebugSnapshot {
 
 struct DebugUi {
     context: Context,
-    window: DebugWindow,
-    input: InputController,
+    window: DebugPanel,
+    input: InputSettings,
     snapshot: DebugSnapshot,
     texts: Vec<(String, Rect)>,
 }
@@ -136,7 +138,7 @@ fn monster_species_picker_sends_only_the_selected_instance_and_preserves_failed_
             });
     }
     let mut ui = DebugUi::new(snapshot);
-    ui.window.page = 5;
+    ui.window.page = Page::MonsterAi;
     ui.frame(vec![]);
     let commands = ui.window.control.commands();
     let [DebugCommand::MonsterAi { request, .. }] = commands.as_slice() else {
@@ -153,12 +155,10 @@ fn monster_species_picker_sends_only_the_selected_instance_and_preserves_failed_
                 4,
                 source.into(),
             )),
-            message: "已反编译".into(),
         }),
     }));
     ui.frame(vec![]);
-    ui.click("更多");
-    ui.click("怪物管理");
+    ui.window.page = Page::MonsterManagement;
     ui.click("菌猪 ▾");
     ui.click("搜索名称或编号");
     let popup_id = Id::new("replacement-species").with("popup");
@@ -215,7 +215,8 @@ fn monster_species_picker_sends_only_the_selected_instance_and_preserves_failed_
         result: Err("资源槽已满".into()),
     }));
     ui.frame(vec![]);
-    ui.click("应用更改");
+    ui.window.page = Page::MonsterAi;
+    ui.click_id(Id::new("ai-apply"));
     let commands = ui.window.control.commands();
     assert!(
         matches!(commands.as_slice(), [DebugCommand::MonsterAi { operation: AiOperation::Apply { source: actual, .. }, .. }]
@@ -227,8 +228,11 @@ impl DebugUi {
     fn new(snapshot: DebugSnapshot) -> Self {
         Self {
             context: context(),
-            window: DebugWindow::new(DebugControl::new()),
-            input: InputController::default(),
+            window: DebugPanel {
+                page: Page::Appearance,
+                ..DebugPanel::new(DebugControl::new())
+            },
+            input: InputSettings::default(),
             snapshot,
             texts: Vec::new(),
         }
@@ -243,16 +247,20 @@ impl DebugUi {
             },
             |ui| {
                 egui::CentralPanel::default().show(ui, |ui| match self.window.page {
-                    1 => self.window.equipment(ui, &self.snapshot, 360.0),
-                    2 => self.window.transmog(ui, &self.snapshot, 360.0),
-                    3 => self.window.actions(ui, &self.snapshot, 360.0),
-                    5 => self
-                        .window
-                        .ai
-                        .show(ui, &self.snapshot, &self.window.control),
-                    4 => self
-                        .window
-                        .monsters(ui, &self.snapshot, &mut self.input, 360.0),
+                    Page::Equipment => self.window.equipment(ui, &self.snapshot),
+                    Page::Transmog => self.window.transmog(ui, &self.snapshot),
+                    Page::Actions => self.window.actions(ui, &self.snapshot),
+                    Page::MonsterAi => {
+                        self.window
+                            .ai
+                            .show(ui, &self.snapshot, &self.window.control)
+                    }
+                    Page::MonsterManagement => {
+                        self.window
+                            .ai
+                            .show_management(ui, &self.snapshot, &self.window.control)
+                    }
+                    Page::Monsters => self.window.monsters(ui, &self.snapshot, &mut self.input),
                     _ => self.window.appearance(ui, &self.snapshot),
                 });
             },
@@ -306,6 +314,376 @@ impl DebugUi {
         self.frame(vec![]);
         let response = self.context.read_response(id).unwrap();
         self.click_at(response.rect.center());
+    }
+}
+
+struct PanelUi {
+    context: Context,
+    window: DebugPanel,
+    input: InputSettings,
+    snapshot: DebugSnapshot,
+    size: egui::Vec2,
+    time: f64,
+    texts: Vec<(String, Rect, Rect)>,
+}
+
+impl PanelUi {
+    fn new(snapshot: DebugSnapshot, size: egui::Vec2, page: Page) -> Self {
+        Self {
+            context: context(),
+            window: DebugPanel {
+                page,
+                ..DebugPanel::new(DebugControl::new())
+            },
+            input: InputSettings::default(),
+            snapshot,
+            size,
+            time: 0.0,
+            texts: Vec::new(),
+        }
+    }
+
+    fn frame(&mut self, events: Vec<Event>) {
+        let output = self.context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), self.size)),
+                time: Some(self.time),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ui| self.window.show(ui, &self.snapshot, &mut self.input),
+        );
+        self.texts = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.job.text.clone(),
+                    Rect::from_min_size(text.pos, text.galley.size()),
+                    clipped.clip_rect,
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        self.time += 0.1;
+    }
+
+    fn settle(&mut self) {
+        for _ in 0..4 {
+            self.frame(Vec::new());
+        }
+    }
+
+    fn visible_text(&self, label: &str) -> Rect {
+        self.texts
+            .iter()
+            .find(|(text, rect, clip)| text == label && clip.contains_rect(*rect))
+            .unwrap_or_else(|| panic!("missing fully visible text {label:?} at {:?}", self.size))
+            .1
+    }
+
+    fn click_at(&mut self, position: egui::Pos2) {
+        for pressed in [true, false] {
+            self.frame(vec![
+                Event::PointerMoved(position),
+                Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                },
+            ]);
+        }
+        self.settle();
+    }
+
+    fn select_page(&mut self, page: Page) {
+        self.settle();
+        let id = Id::new("debug-pages").with(("header", page.tab().id));
+        let response = self.context.read_response(id).unwrap();
+        assert!(Rect::from_min_size(pos2(0.0, 0.0), self.size).contains_rect(response.rect));
+        self.click_at(response.rect.center());
+        assert_eq!(self.window.page, page);
+    }
+
+    fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
+        self.frame(vec![Event::PointerMoved(from)]);
+        self.frame(vec![Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        self.frame(vec![Event::PointerMoved(from.lerp(to, 0.5))]);
+        self.frame(vec![Event::PointerMoved(to)]);
+        self.frame(vec![Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        self.settle();
+    }
+}
+
+#[test]
+fn responsive_navigation_reaches_every_page_without_queuing_game_operations() {
+    for size in [vec2(440.0, 360.0), vec2(720.0, 480.0), vec2(1280.0, 900.0)] {
+        let mut ui = PanelUi::new(populated_snapshot(20), size, Page::Task);
+        for page in Page::ALL {
+            ui.select_page(page);
+            assert!(
+                ui.window.control.commands().is_empty(),
+                "navigation is local"
+            );
+            if page != Page::Task {
+                assert!(ui.context.read_response(Id::new("debug-restart")).is_none());
+            }
+        }
+        ui.select_page(Page::Task);
+        let restart = ui.context.read_response(Id::new("debug-restart")).unwrap();
+        assert!(Rect::from_min_size(pos2(0.0, 0.0), size).contains_rect(restart.rect));
+        ui.click_at(restart.rect.center());
+        assert!(matches!(
+            ui.window.control.commands().as_slice(),
+            [DebugCommand::Restart]
+        ));
+    }
+}
+
+#[test]
+fn scrolling_lists_keeps_tools_fixed_and_keyboard_can_activate_a_bottom_row() {
+    for size in [vec2(440.0, 360.0), vec2(720.0, 480.0), vec2(1280.0, 900.0)] {
+        let mut ui = PanelUi::new(populated_snapshot(1000), size, Page::Equipment);
+        ui.settle();
+        let filter = ui.visible_text("装备名称或编号");
+        let slot = ui
+            .context
+            .read_response(select_field_id("debug-slot"))
+            .unwrap()
+            .rect;
+        let first = ui.visible_text("猎人装备 0");
+        ui.frame(vec![
+            Event::PointerMoved(first.center()),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                phase: egui::TouchPhase::Move,
+                delta: vec2(0.0, -100_000.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        ui.settle();
+        assert_eq!(ui.visible_text("装备名称或编号"), filter);
+        assert_eq!(
+            ui.context
+                .read_response(select_field_id("debug-slot"))
+                .unwrap()
+                .rect,
+            slot
+        );
+        ui.visible_text("猎人装备 999");
+
+        ui.click_at(filter.center());
+        let mut row_focused = false;
+        for _ in 0..16 {
+            ui.frame(
+                [true, false]
+                    .map(|pressed| Event::Key {
+                        key: Key::Tab,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: Modifiers::NONE,
+                    })
+                    .into(),
+            );
+            ui.settle();
+            if let Some(focused) = ui
+                .context
+                .memory(|memory| memory.focused())
+                .and_then(|id| ui.context.read_response(id))
+                && ui.texts.iter().any(|(text, rect, clip)| {
+                    text == "换装" && clip.contains_rect(*rect) && focused.rect.contains_rect(*rect)
+                })
+            {
+                assert!(Rect::from_min_size(pos2(0.0, 0.0), size).contains_rect(focused.rect));
+                row_focused = true;
+                break;
+            }
+        }
+        assert!(
+            row_focused,
+            "Tab did not reach the visible bottom rows at {size:?}"
+        );
+        ui.frame(vec![Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(
+            matches!(ui.window.control.commands().as_slice(), [DebugCommand::Equip { kind: 6, id }] if *id >= 950),
+            "keyboard activation must use a visible row at the end of the list"
+        );
+    }
+}
+
+#[test]
+fn wide_navigation_and_monster_controls_resize_with_native_handles() {
+    let mut ui = PanelUi::new(populated_snapshot(20), vec2(1280.0, 900.0), Page::Equipment);
+    ui.settle();
+    let navigation = Id::new("debug-navigation");
+    let before = egui::containers::panel::PanelState::load(&ui.context, navigation)
+        .unwrap()
+        .size()
+        .x;
+    let handle = ui
+        .context
+        .read_response(navigation.with("__resize"))
+        .unwrap()
+        .rect
+        .center();
+    ui.drag(handle, handle + vec2(48.0, 0.0));
+    let after = egui::containers::panel::PanelState::load(&ui.context, navigation)
+        .unwrap()
+        .size()
+        .x;
+    assert!(
+        after > before + 20.0,
+        "navigation resize did not persist: {before} -> {after}"
+    );
+    ui.select_page(Page::Monsters);
+    let controls = Id::new("debug-monster-control-panel");
+    let before = egui::containers::panel::PanelState::load(&ui.context, controls)
+        .unwrap()
+        .size()
+        .x;
+    let handle = ui
+        .context
+        .read_response(controls.with("__resize"))
+        .unwrap()
+        .rect
+        .center();
+    ui.drag(handle, handle - vec2(48.0, 0.0));
+    let after = egui::containers::panel::PanelState::load(&ui.context, controls)
+        .unwrap()
+        .size()
+        .x;
+    assert!(
+        after > before + 20.0,
+        "monster control resize did not persist: {before} -> {after}"
+    );
+    assert!(ui.window.control.commands().is_empty());
+}
+
+#[test]
+fn definition_field_labels_and_values_align_in_columns() {
+    use crate::provider::action_definition::{ActionDefinition, ActionStep, Definition};
+    let action = Action {
+        weapon: 4,
+        group: 1,
+        id: 2,
+    };
+    let mut snapshot = populated_snapshot(20);
+    snapshot.action_definition = Some(Arc::new(ActionDefinition {
+        action,
+        motion_style: Some(0),
+        data: Ok(Definition {
+            steps: vec![ActionStep([3, 1405, 0, 4, 0, 1])],
+            events: Vec::new(),
+        }),
+    }));
+    let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
+    ui.window.definition_action = Some(action);
+    for zoom in [1.0, 1.5] {
+        ui.context.set_zoom_factor(zoom);
+        ui.settle();
+        for (label, value) in [("动画参数", "0, 4"), ("等待条件", "等待计数 1")] {
+            let label = ui.visible_text(label);
+            let value = ui.visible_text(value);
+            assert!(
+                (label.center().y - value.center().y).abs() <= 1.0,
+                "{zoom}: field label/value are misaligned: {label:?}, {value:?}"
+            );
+            assert!(value.left() >= label.right() + 8.0);
+        }
+    }
+}
+
+#[test]
+fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() {
+    use crate::provider::action_definition::{
+        ActionDefinition, ActionEvent, ActionStep, Definition,
+    };
+    let action = Action {
+        weapon: 11,
+        group: 1,
+        id: 2,
+    };
+    let mut snapshot = populated_snapshot(20);
+    snapshot.action_definition = Some(Arc::new(ActionDefinition {
+        action,
+        motion_style: Some(3),
+        data: Ok(Definition {
+            steps: (0..60)
+                .map(|_| ActionStep([4, 1405, 65535, 4, 20, 1]))
+                .collect(),
+            events: vec![ActionEvent {
+                step: 59,
+                timing: 2,
+                phase: 0,
+                frame: 20,
+                count: 1,
+                operation: 4,
+                argument: 12345,
+            }],
+        }),
+    }));
+    let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
+    ui.window.definition_action = Some(action);
+    ui.settle();
+    let id = Id::new("debug-action-definition");
+    let before = egui::AreaState::load(&ui.context, id).unwrap().rect();
+    ui.drag(
+        before.right_bottom() - vec2(2.0, 2.0),
+        before.right_bottom() + vec2(100.0, 80.0),
+    );
+    let resized = egui::AreaState::load(&ui.context, id).unwrap().rect();
+    assert!(resized.width() > before.width() + 50.0 && resized.height() > before.height() + 30.0);
+    for size in [vec2(440.0, 360.0), vec2(720.0, 480.0)] {
+        ui.size = size;
+        ui.settle();
+        let rect = egui::AreaState::load(&ui.context, id).unwrap().rect();
+        assert!(
+            Rect::from_min_size(pos2(0.0, 0.0), size)
+                .shrink(7.0)
+                .contains_rect(rect),
+            "{rect:?} at {size:?}"
+        );
+        let summary = ui.visible_text("60 个步骤 · 1 个事件");
+        ui.frame(vec![
+            Event::PointerMoved(rect.center()),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                phase: egui::TouchPhase::Move,
+                delta: vec2(0.0, -100_000.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        ui.settle();
+        assert_eq!(ui.visible_text("60 个步骤 · 1 个事件"), summary);
+        ui.visible_text("步骤 59 · 播放动画");
+        for (text, rect, clip) in &ui.texts {
+            if text.starts_with("motion/w11goku.mot") || text.contains("记录 12345") {
+                assert!(
+                    rect.right() <= clip.right() + 1.0 && rect.left() >= clip.left() - 1.0,
+                    "detail is horizontally clipped: {text}: {rect:?}, {clip:?}"
+                );
+            }
+        }
     }
 }
 
@@ -416,7 +794,7 @@ fn appearance_menu_ignores_a_queued_selection_when_loading_starts() {
 
 fn transmog_ui() -> DebugUi {
     let mut ui = DebugUi::new(populated_snapshot(0));
-    ui.window.page = 2;
+    ui.window.page = Page::Transmog;
     Arc::get_mut(&mut ui.snapshot.catalog).unwrap().equipment = [2, 3, 4, 5, 0]
         .into_iter()
         .flat_map(|kind| {
@@ -477,7 +855,7 @@ fn transmog_reserves_zero_for_restore_and_disables_changes_when_not_ready() {
 #[test]
 fn equipped_items_can_reload_and_loading_state_disables_the_action() {
     let mut ui = DebugUi::new(populated_snapshot(4));
-    ui.window.page = 1;
+    ui.window.page = Page::Equipment;
     ui.click_id(Id::new("debug-equipment-list").with((6_u8, 0_u16)));
     assert!(matches!(
         ui.window.control.commands().as_slice(),
@@ -495,9 +873,9 @@ fn equipment_and_transmog_preserve_independent_filters_and_slots() {
     ui.window.filter = "22".into();
     ui.window.transmog_filter = "11".into();
     ui.click_id(Id::new("debug-transmog-list").with((2_u8, 11_u16)));
-    ui.window.page = 1;
+    ui.window.page = Page::Equipment;
     ui.click_id(Id::new("debug-equipment-list").with((3_u8, 22_u16)));
-    ui.window.page = 2;
+    ui.window.page = Page::Transmog;
     ui.click_id(Id::new("debug-transmog-list").with((2_u8, 11_u16)));
     assert!(matches!(
         ui.window.control.commands().as_slice(),
@@ -520,7 +898,7 @@ fn equipment_and_transmog_preserve_independent_filters_and_slots() {
 #[test]
 fn filtered_hunter_actions_trigger_the_matching_catalog_action() {
     let mut ui = DebugUi::new(populated_snapshot(4));
-    ui.window.page = 3;
+    ui.window.page = Page::Actions;
     ui.window.action_filter = " 2 ".into();
     ui.click("触发");
     assert!(matches!(
@@ -536,7 +914,7 @@ fn filtered_hunter_actions_trigger_the_matching_catalog_action() {
 #[test]
 fn inspecting_a_filtered_move_only_requests_its_definition() {
     let mut ui = DebugUi::new(populated_snapshot(4));
-    ui.window.page = 3;
+    ui.window.page = Page::Actions;
     ui.window.action_filter = "2".into();
     ui.click("定义");
     assert!(matches!(
@@ -552,12 +930,9 @@ fn inspecting_a_filtered_move_only_requests_its_definition() {
 #[test]
 fn runtime_hud_stays_at_bottom_left_without_capturing_input() {
     let context = context();
-    let mut window = DebugWindow::new(DebugControl::new());
-    window.open = false;
-    let mut input = InputController::default();
     let mut snapshot = populated_snapshot(1);
     let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
-    let mut frame = |snapshot: &DebugSnapshot, events| {
+    let frame = |snapshot: &DebugSnapshot, events| {
         let output = context.run_ui(
             RawInput {
                 screen_rect: Some(screen),
@@ -565,7 +940,7 @@ fn runtime_hud_stays_at_bottom_left_without_capturing_input() {
                 ..Default::default()
             },
             |ui| {
-                assert!(!window.show(ui.ctx(), snapshot, &mut input));
+                show_hud(ui.ctx(), snapshot, None);
             },
         );
         let texts: Vec<_> = output
@@ -621,19 +996,19 @@ fn runtime_hud_stays_at_bottom_left_without_capturing_input() {
 }
 
 #[test]
-fn definition_window_keeps_move_rows_in_place_and_captures_its_clicks() {
+fn definition_window_keeps_move_rows_in_place() {
     use crate::provider::action_definition::{ActionDefinition, ActionStep, Definition};
     let context = context();
-    let mut window = DebugWindow::new(DebugControl::new());
-    window.page = 3;
-    let mut input = InputController::default();
+    let mut window = DebugPanel::new(DebugControl::new());
+    window.page = Page::Actions;
+    let mut input = InputSettings::default();
     let mut snapshot = populated_snapshot(8);
     let action = Action {
         weapon: 0,
         group: 1,
         id: 2,
     };
-    let mut frame = |window: &mut DebugWindow, snapshot: &DebugSnapshot, events| {
+    let mut frame = |window: &mut DebugPanel, snapshot: &DebugSnapshot, events| {
         let output = context.run_ui(
             RawInput {
                 screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 900.0))),
@@ -641,14 +1016,16 @@ fn definition_window_keeps_move_rows_in_place_and_captures_its_clicks() {
                 ..Default::default()
             },
             |ui| {
-                window.show(ui.ctx(), snapshot, &mut input);
+                window.show(ui, snapshot, &mut input);
             },
         );
         let texts: Vec<_> = output
             .shapes
             .iter()
             .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) => Some((text.galley.job.text.clone(), text.pos)),
+                egui::Shape::Text(text) => {
+                    Some((text.galley.job.text.clone(), text.pos, shape.clip_rect))
+                }
                 _ => None,
             })
             .collect();
@@ -658,13 +1035,20 @@ fn definition_window_keeps_move_rows_in_place_and_captures_its_clicks() {
     for _ in 0..4 {
         frame(&mut window, &snapshot, vec![]);
     }
-    let rows = |texts: Vec<(String, egui::Pos2)>| {
+    let initial = frame(&mut window, &snapshot, vec![]);
+    let list_clip = initial
+        .iter()
+        .find(|(text, _, _)| text.starts_with("武器招式 "))
+        .unwrap()
+        .2;
+    let rows = |texts: Vec<(String, egui::Pos2, Rect)>| {
         texts
             .into_iter()
-            .filter(|(text, _)| text.starts_with("武器招式 "))
+            .filter(|(text, _, clip)| text.starts_with("武器招式 ") && *clip == list_clip)
+            .map(|(text, position, _)| (text, position))
             .collect::<Vec<_>>()
     };
-    let before = rows(frame(&mut window, &snapshot, vec![]));
+    let before = rows(initial);
     assert!(!before.is_empty());
     snapshot.action_definition = Some(Arc::new(ActionDefinition {
         action,
@@ -679,31 +1063,13 @@ fn definition_window_keeps_move_rows_in_place_and_captures_its_clicks() {
         frame(&mut window, &snapshot, vec![]);
     }
     let texts = frame(&mut window, &snapshot, vec![]);
-    let position = texts
-        .iter()
-        .find(|(text, _)| text.starts_with("步骤 0 ·"))
-        .expect("definition is visible in its own window")
-        .1
-        + vec2(5.0, 5.0);
-    assert_eq!(before, rows(texts));
-    frame(
-        &mut window,
-        &snapshot,
-        vec![
-            Event::PointerMoved(position),
-            Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
+    assert!(
+        texts
+            .iter()
+            .any(|(text, _, _)| text.starts_with("步骤 0 ·")),
+        "definition is visible in its own window"
     );
-    assert!(window.focused);
-    window.open = false;
-    let texts = frame(&mut window, &snapshot, vec![]);
-    assert!(!texts.iter().any(|(text, _)| text.starts_with("步骤 0 ·")));
-    assert!(!window.focused);
+    assert_eq!(before, rows(texts));
 }
 
 fn monster_ui() -> DebugUi {
@@ -723,7 +1089,7 @@ fn monster_ui() -> DebugUi {
         }),
         ..Default::default()
     });
-    ui.window.page = 4;
+    ui.window.page = Page::Monsters;
     ui.input.select_species(11);
     ui
 }
@@ -890,27 +1256,28 @@ fn filtered_runtime_monster_actions_trigger_and_bind_the_matching_action() {
 }
 
 #[test]
-fn each_page_keeps_session_controls_above_tabs_in_a_short_window() {
+fn task_tab_exposes_session_controls_from_each_page_in_a_short_window() {
     verify_session_controls_accessibility(false);
 }
 
 #[test]
-fn tab_navigation_reaches_and_activates_session_controls_on_every_page() {
+fn task_tab_navigation_reaches_and_activates_session_controls_from_each_page() {
     verify_session_controls_accessibility(true);
 }
 
 fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
-    for height in [380.0, 900.0] {
-        for page in 0..6 {
+    for size in [vec2(440.0, 360.0), vec2(720.0, 480.0), vec2(1280.0, 900.0)] {
+        let height = size.y;
+        for page in Page::ALL {
             let context = context();
             let control = DebugControl::new();
-            let mut window = DebugWindow::new(control.clone());
+            let mut window = DebugPanel::new(control.clone());
             window.page = page;
-            let mut input = InputController::default();
-            // Keep a large catalog for programmatic focus and geometry. For
-            // the full Tab route, use a list longer than the visible viewport.
+            let mut input = InputSettings::default();
+            // The starting page has realistic scrollable content, while task
+            // controls must remain reachable after selecting the task tab.
             let snapshot = populated_snapshot(if navigate_with_tabs { 8 } else { 2000 });
-            let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(480.0, height));
+            let screen = Rect::from_min_size(pos2(0.0, 0.0), size);
             let mut time = 0.0;
             let mut frame = |events: Vec<Event>, focus_session_controls: bool| {
                 let output = context.run_ui(
@@ -927,7 +1294,7 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
                             // gained_focus can observe the transition.
                             ui.memory_mut(|memory| memory.request_focus(Id::new("debug-exit")));
                         }
-                        window.show(ui.ctx(), &snapshot, &mut input);
+                        window.show(ui, &snapshot, &mut input);
                     },
                 );
                 let visible_equipment = output.shapes.iter().filter(|clipped| {
@@ -942,25 +1309,51 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
             frame(vec![], false);
             let visible_equipment = frame(vec![], false);
             let tab = context
-                .read_response(Id::new("debug-pages").with(("header", Id::new("equipment"))))
+                .read_response(Id::new("debug-pages").with(("header", Id::new("task"))))
                 .unwrap();
-            let controls = context.read_response(Id::new("debug-exit")).unwrap();
             assert!(
-                controls.rect.bottom() < tab.rect.top(),
-                "session controls must stay above tabs: {controls:?}, {tab:?}"
+                screen.contains_rect(tab.rect) && (size.x >= 920.0 || tab.rect.top() < 40.0),
+                "navigation must stay fully visible at {size:?}: {tab:?}"
             );
-            assert!(
-                tab.rect.top() < 210.0,
-                "compact header is too tall: {tab:?}"
-            );
-            if height == 900.0 && matches!(page, 1 | 2) {
+            if page != Page::Task {
+                assert!(
+                    context.read_response(Id::new("debug-exit")).is_none()
+                        && context.read_response(Id::new("debug-restart")).is_none(),
+                    "task controls must not allocate widgets on {page:?}"
+                );
+            }
+            if height == 900.0 && matches!(page, Page::Equipment | Page::Transmog) {
                 assert!(
                     visible_equipment >= 6,
                     "only {visible_equipment} equipment rows are fully visible"
                 );
             }
+
+            // Navigate through the actual task tab from every starting page.
+            let position = tab.rect.center();
+            for pressed in [true, false] {
+                frame(
+                    vec![
+                        Event::PointerMoved(position),
+                        Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Modifiers::NONE,
+                        },
+                    ],
+                    false,
+                );
+            }
+            frame(vec![], false);
+            let controls = context.read_response(Id::new("debug-exit")).unwrap();
+            assert!(
+                controls.rect.top() > tab.rect.bottom(),
+                "task controls belong inside task content: {controls:?}, {tab:?}"
+            );
+
             if navigate_with_tabs {
-                for _ in 0..80 {
+                for _ in 0..24 {
                     frame(
                         [true, false]
                             .map(|pressed| Event::Key {
@@ -984,7 +1377,7 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
                             screen.contains_rect(focused.rect)
                                 && focused.interact_rect.height() >= focused.rect.height() - 1.0
                                 && focused.interact_rect.width() >= focused.rect.width() - 1.0,
-                            "Tab focus is clipped on page {page}, height {height}: {focused:?}"
+                            "Tab focus is clipped from page {page:?}, height {height}: {focused:?}"
                         );
                     }
                     if context.memory(|memory| memory.focused()) == Some(Id::new("debug-exit")) {
@@ -998,15 +1391,15 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
                 frame(vec![], false);
             }
             let exit = context.read_response(Id::new("debug-exit")).unwrap();
-            assert!(exit.has_focus(), "page {page}, height {height}");
+            assert!(exit.has_focus(), "from page {page:?}, height {height}");
             assert!(
                 screen.contains_rect(exit.rect),
-                "page {page}, height {height}: {exit:?}"
+                "from page {page:?}, height {height}: {exit:?}"
             );
             assert!(
                 exit.interact_rect.height() >= exit.rect.height() - 1.0
                     && exit.interact_rect.width() >= exit.rect.width() - 1.0,
-                "session controls are clipped on page {page}, height {height}: {exit:?}"
+                "task controls are clipped from page {page:?}, height {height}: {exit:?}"
             );
             frame(
                 vec![Event::Key {
@@ -1027,6 +1420,117 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
 }
 
 #[test]
+fn management_and_ai_share_the_instance_without_losing_edited_drafts() {
+    use crate::provider::{AiDocument, AiOperation, AiReply, AiTarget};
+    let first = AiTarget {
+        epoch: 1,
+        pool: 0x1000,
+        slot: 1,
+        serial: 1,
+        model: 0x2000,
+        species: 6,
+    };
+    let second = AiTarget { slot: 2, ..first };
+    let source = "mhf_ai 1; species 6; base native;";
+    let edited = format!("{source}\n// retained draft");
+    let mut ui = PanelUi::new(
+        DebugSnapshot {
+            ready: true,
+            ai_targets: vec![first, second],
+            ..Default::default()
+        },
+        vec2(1280.0, 900.0),
+        Page::MonsterAi,
+    );
+    let reply = |request, target, descriptor| {
+        Arc::new(AiReply {
+            request,
+            target,
+            result: Ok(AiDocument {
+                descriptor,
+                source: Some(mhf_monster::ai::dsl::Project::single(
+                    None,
+                    6,
+                    source.into(),
+                )),
+            }),
+        })
+    };
+    ui.settle();
+    let initial = ui.window.control.commands();
+    let [DebugCommand::MonsterAi { request, .. }] = initial.as_slice() else {
+        panic!("missing initial inspect");
+    };
+    ui.snapshot.ai_reply = Some(reply(*request, first, 0x3000));
+    ui.settle();
+    ui.click_at(ui.visible_text(source).center());
+    let modifiers = Modifiers {
+        ctrl: true,
+        command: true,
+        ..Modifiers::NONE
+    };
+    ui.frame(vec![
+        Event::Key {
+            key: Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        },
+        Event::Key {
+            key: Key::A,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers,
+        },
+        Event::Text(edited.clone()),
+    ]);
+    assert!(ui.window.control.commands().is_empty());
+    ui.select_page(Page::MonsterManagement);
+    assert!(
+        ui.window.control.commands().is_empty(),
+        "page changes keep the active instance"
+    );
+
+    for (label, target, descriptor) in [
+        ("#2 大怪鸟 · 物种 6", second, 0x4000),
+        ("#1 大怪鸟 · 物种 6", first, 0x3100),
+    ] {
+        let picker = ui
+            .context
+            .read_response(select_field_id("ai-target"))
+            .unwrap();
+        ui.click_at(picker.rect.center());
+        ui.click_at(ui.visible_text(label).center());
+        let commands = ui.window.control.commands();
+        let [
+            DebugCommand::MonsterAi {
+                request,
+                target: inspected,
+                operation: AiOperation::Inspect,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("missing shared target inspect");
+        };
+        assert_eq!(*inspected, target);
+        ui.snapshot.ai_reply = Some(reply(*request, target, descriptor));
+        ui.settle();
+    }
+    ui.select_page(Page::MonsterAi);
+    let apply = ui.context.read_response(Id::new("ai-apply")).unwrap();
+    ui.click_at(apply.rect.center());
+    assert!(
+        matches!(ui.window.control.commands().as_slice(), [DebugCommand::MonsterAi {
+        target,
+        operation: AiOperation::Apply { descriptor: 0x3100, source },
+        ..
+    }] if *target == first && source.files[0].source == edited)
+    );
+}
+
+#[test]
 fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance() {
     use crate::provider::{AiDocument, AiOperation, AiReply, AiTarget};
     let target = AiTarget {
@@ -1044,7 +1548,7 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
         ai_targets: vec![target],
         ..Default::default()
     });
-    ui.window.page = 5;
+    ui.window.page = Page::MonsterAi;
     ui.frame(vec![]);
     let commands = ui.window.control.commands();
     let [
@@ -1058,7 +1562,7 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
         panic!("missing inspection");
     };
     assert_eq!(*selected, target);
-    ui.click("应用更改");
+    ui.click_id(Id::new("ai-apply"));
     assert!(ui.window.control.commands().is_empty());
     ui.snapshot.ai_reply = Some(Arc::new(AiReply {
         request: *request,
@@ -1070,11 +1574,10 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
                 target.species,
                 source.into(),
             )),
-            message: "已反编译".into(),
         }),
     }));
     ui.frame(vec![]);
-    ui.click("应用更改");
+    ui.click_id(Id::new("ai-apply"));
     let commands = ui.window.control.commands();
     let [
         DebugCommand::MonsterAi {
@@ -1098,14 +1601,14 @@ fn monster_ai_auto_inspects_preserves_failed_draft_and_rejects_reused_instance()
         result: Err("测试编译失败".into()),
     }));
     ui.frame(vec![]);
-    ui.click("应用更改");
+    ui.click_id(Id::new("ai-apply"));
     let commands = ui.window.control.commands();
     assert!(
         matches!(commands.as_slice(), [DebugCommand::MonsterAi { operation: AiOperation::Apply { source: actual, .. }, .. }] if actual.files[0].source == source)
     );
     ui.snapshot.ai_targets[0].serial += 1;
     ui.frame(vec![]);
-    ui.click("应用更改");
+    ui.click_id(Id::new("ai-apply"));
     assert!(ui.window.control.commands().is_empty());
 }
 
@@ -1129,7 +1632,7 @@ fn monster_selector_refreshes_source_and_moves_the_attached_debugger() {
         ai_targets: vec![first, second],
         ..Default::default()
     });
-    ui.window.page = 5;
+    ui.window.page = Page::MonsterAi;
     ui.frame(vec![]);
     let initial = ui.window.control.commands();
     let [DebugCommand::MonsterAi { request, .. }] = initial.as_slice() else {
@@ -1146,7 +1649,6 @@ fn monster_selector_refreshes_source_and_moves_the_attached_debugger() {
                     6,
                     source.into(),
                 )),
-                message: String::new(),
             }),
         })
     };

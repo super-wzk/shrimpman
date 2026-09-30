@@ -59,7 +59,7 @@ impl<'a> Window<'a> {
         let tokens = self.tokens.unwrap_or_else(|| Tokens::from_context(ctx));
         let close_button = Button::new("关闭")
             .kind(crate::ButtonKind::Quiet)
-            .min_size(egui::vec2(60.0, 28.0));
+            .min_size(egui::vec2(60.0, 0.0));
         let response = native.show(ctx, |ui| {
             if let Some(style) = self.style {
                 ui.set_style(style);

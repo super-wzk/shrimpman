@@ -1,11 +1,11 @@
 use super::{
     Action, AppearanceChange, DebugCommand, DebugControl, DebugSnapshot, NATIVE_WEAPON_NAMES,
-    input::InputController,
+    input::InputSettings,
 };
-use egui::{Context, Key, Modifiers};
+
 use egui_hunter::{
-    Button, ButtonKind, Field, FormLayout, Icon, LabelPlacement, NavigationState, SelectField, Tab,
-    Tabs, Tokens,
+    Button, ButtonKind, Field, FormLayout, Icon, LabelPlacement, NavigationState, Panel,
+    SelectField, Tab, Tabs, Tokens,
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -13,10 +13,60 @@ mod action_definition;
 mod hud;
 mod monster_ai;
 
-pub(crate) struct DebugWindow {
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+enum Page {
+    #[default]
+    Task,
+    Appearance,
+    Equipment,
+    Transmog,
+    Actions,
+    Monsters,
+    MonsterManagement,
+    MonsterAi,
+}
+
+impl Page {
+    const ALL: [Self; 8] = [
+        Self::Task,
+        Self::Appearance,
+        Self::Equipment,
+        Self::Transmog,
+        Self::Actions,
+        Self::Monsters,
+        Self::MonsterManagement,
+        Self::MonsterAi,
+    ];
+
+    fn tab(self) -> Tab<'static> {
+        let (id, label) = match self {
+            Self::Task => ("task", "任务"),
+            Self::Appearance => ("appearance", "外观"),
+            Self::Equipment => ("equipment", "装备"),
+            Self::Transmog => ("transmog", "幻化"),
+            Self::Actions => ("actions", "招式"),
+            Self::Monsters => ("monsters", "怪物变身"),
+            Self::MonsterManagement => ("monster-management", "怪物管理"),
+            Self::MonsterAi => ("monster-ai", "怪物 AI"),
+        };
+        Tab::new(egui::Id::new(id), label)
+    }
+}
+
+pub(crate) fn show_hud(
+    context: &egui::Context,
+    snapshot: &DebugSnapshot,
+    target: Option<super::AiTarget>,
+) {
+    hud::show(context, snapshot);
+    if let Some(target) = target {
+        monster_ai::show_hud(context, snapshot, target);
+    }
+}
+
+pub(crate) struct DebugPanel {
     control: Arc<DebugControl>,
-    open: bool,
-    page: usize,
+    page: Page,
     weapon: u8,
     slot: u8,
     filter: String,
@@ -25,18 +75,16 @@ pub(crate) struct DebugWindow {
     action_filter: String,
     action_weapon: Option<u8>,
     monster_filter: String,
-    focused: bool,
     monster_action_filter: String,
     definition_action: Option<Action>,
     ai: monster_ai::Editor,
 }
 
-impl DebugWindow {
+impl DebugPanel {
     pub(crate) fn new(control: Arc<DebugControl>) -> Self {
         Self {
             control,
-            open: true,
-            page: 0,
+            page: Page::default(),
             weapon: 0,
             slot: 6,
             filter: String::new(),
@@ -45,7 +93,6 @@ impl DebugWindow {
             action_filter: String::new(),
             action_weapon: None,
             monster_filter: String::new(),
-            focused: true,
             monster_action_filter: String::new(),
             definition_action: None,
             ai: monster_ai::Editor::default(),
@@ -54,192 +101,200 @@ impl DebugWindow {
     fn send(&self, command: DebugCommand) {
         let _ = self.control.send(command);
     }
+    pub(crate) fn take_recording_save(&mut self) -> Option<String> {
+        self.ai.take_recording_save()
+    }
+    pub(crate) fn recording_save_finished(&mut self, result: Result<bool, String>) {
+        self.ai.recording_save_finished(result);
+    }
     pub(crate) fn show(
-        &mut self,
-        context: &Context,
-        snapshot: &DebugSnapshot,
-        input: &mut InputController,
-    ) -> bool {
-        if context.input_mut(|input| {
-            let pressed = input.events.iter().any(|event| {
-                matches!(event,
-                egui::Event::Key { key: Key::F7, pressed: true, repeat: false, modifiers, .. }
-                    if *modifiers == Modifiers::NONE)
-            });
-            input.consume_key(Modifiers::NONE, Key::F7);
-            pressed
-        }) {
-            self.open = !self.open;
-            self.focused = self.open;
-        }
-        hud::show(context, snapshot);
-        let mut open = self.open;
-        let viewport = context.content_rect();
-        let max_width = (viewport.width() - 32.0).max(80.0);
-        let max_height = (viewport.height() - 72.0).max(48.0);
-        let window = egui::Window::new(egui::RichText::new("任务调试 · F7").size(16.0))
-            .id(egui::Id::new("quest-debugger"))
-            .title_frame(
-                egui::Frame::window(&context.global_style())
-                    .inner_margin(egui::Margin::symmetric(12, 6)),
-            )
-            .open(&mut open)
-            .default_pos(viewport.min + egui::vec2(16.0, 16.0))
-            .default_width(430.0_f32.min(max_width))
-            .min_width(280.0_f32.min(max_width))
-            .max_width(max_width)
-            .default_height(620.0_f32.min(max_height))
-            .min_height(280.0_f32.min(max_height))
-            .max_height(max_height)
-            .constrain_to(viewport.shrink(8.0))
-            .vscroll(max_height < 280.0)
-            .show(context, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-                self.summary(ui, snapshot);
-                self.session_controls(ui, snapshot);
-                self.area_controls(ui, snapshot);
-                let tabs = [
-                    Tab::new(egui::Id::new("appearance"), "外观"),
-                    Tab::new(egui::Id::new("equipment"), "装备"),
-                    Tab::new(egui::Id::new("transmog"), "幻化"),
-                    Tab::new(egui::Id::new("actions"), "招式"),
-                    Tab::new(egui::Id::new("monsters"), "怪物变身"),
-                    Tab::new(egui::Id::new("monster-ai"), "怪物"),
-                ];
-                let mut navigation = NavigationState::default();
-                navigation.select(tabs[self.page].id);
-                Tabs::new(egui::Id::new("debug-pages")).show(
-                    ui,
-                    &mut navigation,
-                    &tabs,
-                    |ui, page| {
-                        self.page = tabs.iter().position(|tab| tab.id == page).unwrap_or(0);
-                        let body_height = ui.available_height().max(48.0);
-                        // Keep navigation fixed. The body scroll remains available when
-                        // the game viewport is short or a diagnostic section is expanded.
-                        egui::ScrollArea::vertical()
-                            .id_salt("debug-page-body")
-                            .content_margin(egui::Margin {
-                                right: 12,
-                                ..egui::Margin::ZERO
-                            })
-                            .auto_shrink([false, false])
-                            .max_height(body_height)
-                            .show(ui, |ui| {
-                                let list_height = (body_height - 128.0).clamp(120.0, 360.0);
-                                match self.page {
-                                    0 => self.appearance(ui, snapshot),
-                                    1 => self.equipment(ui, snapshot, list_height),
-                                    2 => self.transmog(ui, snapshot, list_height),
-                                    3 => self.actions(ui, snapshot, list_height),
-                                    5 => self.ai.show(ui, snapshot, &self.control),
-                                    _ => self.monsters(ui, snapshot, input, list_height),
-                                }
-                                ui.add_space(4.0);
-                                self.details(ui, snapshot, input);
-                            });
-                    },
-                );
-            });
-        self.open = open;
-        let definition_rect = if self.open {
-            self.definition_action.and_then(|action| {
-                let mut open = true;
-                let position = window.as_ref().map_or(viewport.min, |window| {
-                    window.response.rect.right_top() + egui::vec2(8.0, 0.0)
-                });
-                let rect = action_definition::show(context, snapshot, action, &mut open, position);
-                if !open {
-                    self.definition_action = None;
-                }
-                rect
-            })
-        } else {
-            None
-        };
-        let ai_rect = if self.open {
-            self.ai.show_window(context, snapshot, &self.control)
-        } else {
-            None
-        };
-        self.ai.show_hud(context, snapshot);
-        if !self.open {
-            self.focused = false;
-        } else if let Some(window) = window {
-            let pressed = context.input(|input| {
-                input
-                    .pointer
-                    .any_pressed()
-                    .then(|| input.pointer.interact_pos())
-                    .flatten()
-            });
-            if let Some(position) = pressed {
-                self.focused = window.response.rect.contains(position)
-                    || definition_rect.is_some_and(|rect| rect.contains(position))
-                    || ai_rect.is_some_and(|rect| rect.contains(position))
-                    || context
-                        .layer_id_at(position)
-                        .is_some_and(|layer| layer.order == egui::Order::Foreground);
-                if !self.focused {
-                    context.memory_mut(|memory| {
-                        if let Some(id) = memory.focused() {
-                            memory.surrender_focus(id);
-                        }
-                    });
-                }
-            }
-        }
-        self.focused
-    }
-
-    fn summary(&self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
-        ui.scope(|ui| {
-            ui.spacing_mut().interact_size.y = 24.0;
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("任务 {}", snapshot.quest_id));
-                let help = ui.add(Button::new("使用说明"));
-                let mut popup = egui_hunter::Popup::new(&help)
-                    .title("使用说明")
-                    .style(ui.style().clone())
-                    .tokens(Tokens::get(ui));
-                popup.native = popup
-                    .native
-                    .width(360.0_f32.min(ui.ctx().content_rect().width() - 32.0));
-                popup.show(|ui| self.usage_help(ui));
-                let tokens = Tokens::get(ui);
-                egui::Frame::new()
-                    .fill(if snapshot.ready {
-                        tokens.success_fill
-                    } else {
-                        ui.visuals().extreme_bg_color
-                    })
-                    .corner_radius(6)
-                    .inner_margin(egui::Margin::symmetric(6, 2))
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(if snapshot.ready {
-                                "可调试"
-                            } else {
-                                "加载 / 结算中"
-                            })
-                            .small()
-                            .color(if snapshot.ready {
-                                tokens.success
-                            } else {
-                                ui.visuals().weak_text_color()
-                            }),
-                        );
-                    });
-            });
-        });
-    }
-
-    fn details(
         &mut self,
         ui: &mut egui::Ui,
         snapshot: &DebugSnapshot,
-        input: &mut InputController,
+        input: &mut InputSettings,
     ) {
+        if ui.available_width() >= 920.0 {
+            egui::Panel::left("debug-navigation")
+                .default_size(152.0)
+                .size_range(128.0..=224.0)
+                .resizable(true)
+                .frame(
+                    egui::Frame::new()
+                        .inner_margin(ui.spacing().window_margin)
+                        .fill(ui.visuals().faint_bg_color),
+                )
+                .show(ui, |ui| self.sidebar(ui));
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.inner_margin(ui.spacing().window_margin))
+                .show(ui, |ui| self.page_content(ui, snapshot, input));
+        } else {
+            let tabs = Page::ALL.map(Page::tab);
+            let mut navigation = NavigationState::default();
+            navigation.select(self.page.tab().id);
+            Tabs::new(egui::Id::new("debug-pages")).show(ui, &mut navigation, &tabs, |ui, page| {
+                self.page = Page::ALL[tabs.iter().position(|tab| tab.id == page).unwrap()];
+                self.page_content(ui, snapshot, input);
+            });
+        }
+        if let Some(action) = self.definition_action {
+            let mut open = true;
+            action_definition::show(ui.ctx(), snapshot, action, &mut open);
+            if !open {
+                self.definition_action = None;
+            }
+        }
+    }
+
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        for page in Page::ALL {
+            match page {
+                Page::Appearance => {
+                    ui.add_space(12.0);
+                    ui.weak("猎人");
+                }
+                Page::Monsters => {
+                    ui.add_space(12.0);
+                    ui.weak("怪物");
+                }
+                _ => {}
+            }
+            let tab = page.tab();
+            if ui
+                .add(
+                    Button::new(tab.label)
+                        .id(egui::Id::new("debug-pages").with(("header", tab.id)))
+                        .selected(self.page == page)
+                        .kind(ButtonKind::Quiet)
+                        .full_width(),
+                )
+                .clicked()
+            {
+                self.page = page;
+            }
+        }
+    }
+
+    fn page_content(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &DebugSnapshot,
+        input: &mut InputSettings,
+    ) {
+        let compact_monsters = self.page == Page::Monsters && ui.available_width() < 720.0;
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.help(ui);
+                if compact_monsters {
+                    let settings = ui.add(Button::new("操控设置"));
+                    let mut popup = egui_hunter::Popup::new(&settings)
+                        .style(ui.style().clone())
+                        .tokens(Tokens::get(ui));
+                    popup.native = popup.native.width(320.0);
+                    popup.show(|ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height((ui.ctx().content_rect().height() - 100.0).max(80.0))
+                            .show(ui, |ui| self.monster_controls(ui, snapshot, input));
+                    });
+                }
+            });
+        });
+        ui.separator();
+        // Lists and editor panes each own their scrolling. Only content-sized
+        // forms scroll as a page, so toolbars never disappear behind a list.
+        match self.page {
+            Page::Task | Page::Appearance => {
+                egui::ScrollArea::vertical()
+                    .id_salt(("debug-page-body", self.page.tab().id))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match self.page {
+                        Page::Task => {
+                            Panel::new("").show(ui, |ui| {
+                                self.summary(ui, snapshot);
+                                ui.weak(format!("地图 {} · 场景 {}", snapshot.map, snapshot.scene));
+                                ui.add_space(8.0);
+                                ui.label("所在区域");
+                                self.area_controls(ui, snapshot);
+                                ui.add_space(8.0);
+                                self.session_controls(ui, snapshot);
+                            });
+                            self.details(ui, snapshot);
+                        }
+                        _ => {
+                            ui.set_max_width(640.0);
+                            Panel::new("").show(ui, |ui| self.appearance(ui, snapshot));
+                        }
+                    });
+            }
+            Page::Equipment => self.equipment(ui, snapshot),
+            Page::Transmog => self.transmog(ui, snapshot),
+            Page::Actions => self.actions(ui, snapshot),
+            Page::MonsterAi => self.ai.show(ui, snapshot, &self.control),
+            Page::MonsterManagement => self.ai.show_management(ui, snapshot, &self.control),
+            Page::Monsters => {
+                if ui.available_width() >= 720.0 {
+                    egui::Panel::right("debug-monster-control-panel")
+                        .default_size(256.0)
+                        .size_range(224.0..=360.0)
+                        .resizable(true)
+                        .frame(
+                            egui::Frame::new()
+                                .inner_margin(ui.spacing().window_margin)
+                                .fill(ui.visuals().faint_bg_color),
+                        )
+                        .show(ui, |ui| {
+                            ui.strong("操控设置");
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| self.monster_controls(ui, snapshot, input));
+                        });
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                            right: 12,
+                            ..egui::Margin::ZERO
+                        }))
+                        .show(ui, |ui| self.monsters(ui, snapshot, input));
+                } else {
+                    self.monsters(ui, snapshot, input);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn hud_target(&self) -> Option<super::AiTarget> {
+        self.ai.hud_target()
+    }
+
+    fn summary(&self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(format!("任务 {}", snapshot.quest_id));
+            let tokens = Tokens::get(ui);
+            egui::Frame::new()
+                .fill(if snapshot.ready {
+                    tokens.success_fill
+                } else {
+                    ui.visuals().extreme_bg_color
+                })
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(6, 2))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(if snapshot.ready {
+                            "可调试"
+                        } else {
+                            "加载 / 结算中"
+                        })
+                        .small()
+                        .color(if snapshot.ready {
+                            tokens.success
+                        } else {
+                            ui.visuals().weak_text_color()
+                        }),
+                    );
+                });
+        });
+    }
+
+    fn details(&self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
         if snapshot.controlling_monster {
             disclosure(ui, "交战详情", |ui| {
                 ui.label(format!(
@@ -266,47 +321,70 @@ impl DebugWindow {
                 }
             });
         }
-        if self.page == 4 {
-            self.monster_controls(ui, snapshot, input);
-        }
+    }
+
+    fn help(&self, ui: &mut egui::Ui) {
+        let help = ui.add(Button::new("帮助").kind(ButtonKind::Quiet));
+        let mut popup = egui_hunter::Popup::new(&help)
+            .title("使用说明")
+            .style(ui.style().clone())
+            .tokens(Tokens::get(ui));
+        popup.native = popup
+            .native
+            .width(360.0_f32.min(ui.ctx().content_rect().width() - 32.0));
+        popup.show(|ui| self.usage_help(ui));
     }
 
     fn usage_help(&self, ui: &mut egui::Ui) {
         match self.page {
-            0 => {
+            Page::Task => {
+                ui.label("选择区域立即换区；重开任务重新载入当前任务，结束调试关闭本次会话。");
+                ui.label("F7 显示或隐藏调试窗口，隐藏后保留草稿和选择。");
+            }
+            Page::Appearance => {
                 ui.label("选择性别、脸型或发型后原地热替换；切换性别会同步全身装备模型。");
                 ui.label("换装与换区会保留当前外观；头盔可能遮挡发型。");
             }
-            1 => {
+            Page::Equipment => {
                 ui.label("选择装备后原地热替换，刷新模型、技能与招式资源。");
             }
-            2 => {
+            Page::Transmog => {
                 ui.label("应用幻化会回到待机并替换防具外观，保留装备属性、技能与招式来源。");
                 ui.label("换装、换区与切换性别会保留幻化选择；恢复原样可清除当前部位的幻化。");
                 ui.label("头部需要先装备防具；卸下头盔或性别不兼容时，对应幻化暂不显示。");
             }
-            3 => {
+            Page::Actions => {
                 ui.label("调用游戏招式状态机；编号来自当前客户端，未确认的名称保留编号。");
                 ui.label("跨武器触发保留当前装备，重载任务后使用所选武器的招式资源。");
                 ui.label("触发后可使用 F7 隐藏窗口观察。");
             }
-            5 => {
+            Page::MonsterManagement => {
                 ui.label("修改种类：选择新种类后重载任务，更新选中目标的出生记录、模型和 AI；任务进度会重置，目标条件不变。");
                 ui.label(
                     "仅支持能对应到任务目标出生记录的实例；动态召唤、机关和变身实例暂不支持。",
                 );
+                ui.label("管理页与 AI 页共用选中的实例，切换页面会保留脚本草稿。");
+                ui.label("属性信息来自当前任务快照；更换实例不会修改其他怪物。");
+            }
+            Page::MonsterAi => {
                 ui.label("选择任务中已加载的怪物实例后，会自动反编译其当前 AI。");
+                ui.label(
+                    "工具栏图标按执行控制、源码操作和录制分组，悬停或键盘聚焦可查看操作名称。",
+                );
+                ui.label(
+                    "监视页显示运行字段；字段旁的断点图标在字段变化时暂停 AI，再次点击移除断点。",
+                );
                 ui.label("悬浮状态：跟随选中实例，显示 AI 主状态、动作、动画帧和位置；隐藏 F7 面板后仍显示，不拦截游戏输入。");
                 ui.label("重新反编译：读取游戏内存，覆盖当前草稿。");
                 ui.label("加载工程：读取磁盘上的地图专用或默认工程，覆盖草稿，不会立即应用。");
                 ui.label("应用更改：仅修改选中实例，并从状态 0 重新开始。");
                 ui.label("恢复替换前 AI：恢复首次热替换前的 AI。");
                 ui.label("草稿不会自动执行或保存到文件；复制 DSL 仅复制当前文件。");
-                ui.label("独立窗口可调整大小；切换文件或实例会保留各自草稿。");
+                ui.label("调试窗口可调整大小；切换文件或实例会保留各自草稿。");
                 ui.label("反编译仍为部分导出，未导出的表项沿用原生。");
                 ui.label("变身操控对象的自动选招会暂停，可用「原生选招」执行 AI。");
             }
-            _ => {
+            Page::Monsters => {
                 ui.label("变种仍受当前任务设定影响；任务内同种怪物共用所选变种。");
                 ui.label("从完整种类列表选择；重载当前地图并自动变身，无需场上已有该怪物。");
                 ui.label("保留原任务目标，额外生成受控怪物；其他怪物会将你作为敌方目标。");
@@ -339,7 +417,6 @@ impl DebugWindow {
             if exit.clicked() {
                 self.send(DebugCommand::Exit);
             }
-            ui.small("F7 显示 / 隐藏");
         });
     }
 
@@ -438,51 +515,43 @@ impl DebugWindow {
         ui.add_space(4.0);
     }
 
-    fn equipment(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, list_height: f32) {
+    fn equipment(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
         filter_field(ui, "筛选装备", &mut self.filter, "装备名称或编号");
         let id = egui::Id::new("debug-slot");
-        ui.vertical(|ui| {
-            ui.horizontal_wrapped(|ui| {
-                let mut field = SelectField::new(id, slot_name(self.slot));
-                field.native = field.native.height(menu_height(ui)).width(80.0);
-                let slot = field.show_ui(ui, |ui| {
-                    for kind in [6, 2, 3, 4, 5, 0] {
-                        if ui
-                            .selectable_value(&mut self.slot, kind, slot_name(kind))
-                            .clicked()
-                        {
-                            ui.close();
-                        }
+        ui.horizontal_wrapped(|ui| {
+            let mut field = SelectField::new(id, slot_name(self.slot));
+            field.native = field.native.height(menu_height(ui)).width(80.0);
+            field.show_ui(ui, |ui| {
+                for kind in [6, 2, 3, 4, 5, 0] {
+                    if ui
+                        .selectable_value(&mut self.slot, kind, slot_name(kind))
+                        .clicked()
+                    {
+                        ui.close();
                     }
-                });
-                if self.slot == 6 {
-                    weapon_selector(ui, "debug-weapon", &mut self.weapon);
                 }
-                slot.response
-            })
-            .inner
+            });
+            if self.slot == 6 {
+                weapon_selector(ui, "debug-weapon", &mut self.weapon);
+            }
         });
-        self.equipment_list(ui, snapshot, list_height, false);
+        self.equipment_list(ui, snapshot, false);
     }
 
-    fn transmog(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, list_height: f32) {
+    fn transmog(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
         filter_field(ui, "筛选幻化", &mut self.transmog_filter, "防具名称或编号");
         let id = egui::Id::new("debug-transmog-slot");
-        ui.vertical(|ui| {
-            let mut field = SelectField::new(id, slot_name(self.transmog_slot));
-            field.native = field.native.height(menu_height(ui)).width(80.0);
-            field
-                .show_ui(ui, |ui| {
-                    for kind in [2, 3, 4, 5, 0] {
-                        if ui
-                            .selectable_value(&mut self.transmog_slot, kind, slot_name(kind))
-                            .clicked()
-                        {
-                            ui.close();
-                        }
-                    }
-                })
-                .response
+        let mut field = SelectField::new(id, slot_name(self.transmog_slot));
+        field.native = field.native.height(menu_height(ui)).width(80.0);
+        field.show_ui(ui, |ui| {
+            for kind in [2, 3, 4, 5, 0] {
+                if ui
+                    .selectable_value(&mut self.transmog_slot, kind, slot_name(kind))
+                    .clicked()
+                {
+                    ui.close();
+                }
+            }
         });
         let current = snapshot.transmogs.selected(self.transmog_slot);
         ui.horizontal_wrapped(|ui| {
@@ -518,16 +587,10 @@ impl DebugWindow {
                 });
             }
         });
-        self.equipment_list(ui, snapshot, list_height, true);
+        self.equipment_list(ui, snapshot, true);
     }
 
-    fn equipment_list(
-        &mut self,
-        ui: &mut egui::Ui,
-        snapshot: &DebugSnapshot,
-        list_height: f32,
-        transmog: bool,
-    ) {
+    fn equipment_list(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, transmog: bool) {
         let (slot, filter, list_id) = if transmog {
             (
                 self.transmog_slot,
@@ -564,17 +627,14 @@ impl DebugWindow {
             return;
         }
         let row_height = result_row_height(ui);
-        let previous_offset = list_offset(ui, list_id);
-        let mut focused_row = None;
-        let list = egui::ScrollArea::vertical()
+        egui::ScrollArea::vertical()
             .id_salt(list_id)
             .content_margin(egui::Margin {
                 right: 12,
                 ..egui::Margin::ZERO
             })
-            .max_height(list_height)
             .animated(false)
-            .auto_shrink([false, true])
+            .auto_shrink([false, false])
             .show_rows(ui, row_height, items.len(), |ui, rows| {
                 for row in rows {
                     let item = items[row];
@@ -604,9 +664,6 @@ impl DebugWindow {
                                     Button::new(label)
                                         .id(egui::Id::new(list_id).with((item.kind, item.id))),
                                 );
-                                if equip.gained_focus() {
-                                    focused_row = Some(equip.rect);
-                                }
                                 if equip.clicked() {
                                     self.send(if transmog {
                                         DebugCommand::Transmog {
@@ -643,48 +700,43 @@ impl DebugWindow {
                     });
                 }
             });
-        reveal_result(ui, focused_row, previous_offset - list.state.offset.y);
     }
 
-    fn actions(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, list_height: f32) {
+    fn actions(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
         if snapshot.monster.is_some() {
             ui.label("当前处于怪物形态，请在“怪物变身”页使用怪物招式，或先恢复猎人。");
             return;
         }
         filter_field(ui, "筛选招式", &mut self.action_filter, "招式编号");
         let mut source = self.action_weapon.unwrap_or(snapshot.weapon).min(13);
-        ui.vertical(|ui| {
-            ui.horizontal_wrapped(|ui| {
-                let selection = weapon_selector(ui, "debug-action-source", &mut source);
-                if selection.changed() {
-                    self.action_weapon = Some(source);
-                }
-                if ui
-                    .add_enabled(
-                        snapshot.ready,
-                        Button::new("回到待机").kind(ButtonKind::Quiet),
-                    )
-                    .clicked()
-                {
-                    self.send(DebugCommand::Action(Action {
-                        group: 0,
-                        id: 0,
-                        weapon: snapshot.weapon,
-                    }));
-                }
-                if ui
-                    .add_enabled(
-                        snapshot.ready,
-                        Button::new("跟随装备").kind(ButtonKind::Quiet),
-                    )
-                    .clicked()
-                {
-                    self.action_weapon = None;
-                    self.send(DebugCommand::FollowEquipment);
-                }
-                selection
-            })
-            .inner
+        ui.horizontal_wrapped(|ui| {
+            let selection = weapon_selector(ui, "debug-action-source", &mut source);
+            if selection.changed() {
+                self.action_weapon = Some(source);
+            }
+            if ui
+                .add_enabled(
+                    snapshot.ready,
+                    Button::new("回到待机").kind(ButtonKind::Quiet),
+                )
+                .clicked()
+            {
+                self.send(DebugCommand::Action(Action {
+                    group: 0,
+                    id: 0,
+                    weapon: snapshot.weapon,
+                }));
+            }
+            if ui
+                .add_enabled(
+                    snapshot.ready,
+                    Button::new("跟随装备").kind(ButtonKind::Quiet),
+                )
+                .clicked()
+            {
+                self.action_weapon = None;
+                self.send(DebugCommand::FollowEquipment);
+            }
         });
         let filter = self.action_filter.trim();
         let actions = snapshot
@@ -713,17 +765,14 @@ impl DebugWindow {
             return;
         }
         let row_height = result_row_height(ui);
-        let previous_offset = list_offset(ui, "debug-actions-list");
-        let mut focused_row = None;
-        let list = egui::ScrollArea::vertical()
+        egui::ScrollArea::vertical()
             .id_salt("debug-actions-list")
             .content_margin(egui::Margin {
                 right: 12,
                 ..egui::Margin::ZERO
             })
-            .max_height(list_height)
             .animated(false)
-            .auto_shrink([false, true])
+            .auto_shrink([false, false])
             .show_rows(ui, row_height, actions.len(), |ui, rows| {
                 for row in rows {
                     let action = actions[row];
@@ -735,17 +784,11 @@ impl DebugWindow {
                                 snapshot.ready,
                                 Button::new("定义").kind(ButtonKind::Quiet),
                             );
-                            if definition.gained_focus() {
-                                focused_row = Some(definition.rect);
-                            }
                             if definition.clicked() {
                                 self.definition_action = Some(action);
                                 self.send(DebugCommand::InspectAction(action));
                             }
                             let trigger = ui.add_enabled(snapshot.ready, Button::new("触发"));
-                            if trigger.gained_focus() {
-                                focused_row = Some(trigger.rect);
-                            }
                             if trigger.clicked() {
                                 self.send(DebugCommand::Action(action));
                             }
@@ -768,16 +811,9 @@ impl DebugWindow {
                     });
                 }
             });
-        reveal_result(ui, focused_row, previous_offset - list.state.offset.y);
     }
 
-    fn monsters(
-        &mut self,
-        ui: &mut egui::Ui,
-        snapshot: &DebugSnapshot,
-        input: &mut InputController,
-        list_height: f32,
-    ) {
+    fn monsters(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, input: &mut InputSettings) {
         filter_field(ui, "筛选怪物", &mut self.monster_filter, "怪物中文名或编号");
         let mut species = input.species();
         let ids = ["debug-monster-species", "debug-monster-variant"].map(egui::Id::new);
@@ -921,17 +957,14 @@ impl DebugWindow {
             return;
         }
         let row_height = result_row_height(ui);
-        let previous_offset = list_offset(ui, "debug-monster-actions");
-        let mut focused_row = None;
-        let list = egui::ScrollArea::vertical()
+        egui::ScrollArea::vertical()
             .id_salt("debug-monster-actions")
             .content_margin(egui::Margin {
                 right: 12,
                 ..egui::Margin::ZERO
             })
-            .max_height(list_height)
             .animated(false)
-            .auto_shrink([false, true])
+            .auto_shrink([false, false])
             .show_rows(ui, row_height, actions.len(), |ui, rows| {
                 for row in rows {
                     let action = actions[row];
@@ -940,9 +973,6 @@ impl DebugWindow {
                     ui.push_id((species, variant, action.group, action.id), |ui| {
                         result_row(ui, row_height, current, |ui| {
                             let trigger = ui.add_enabled(snapshot.ready, Button::new("触发"));
-                            if trigger.gained_focus() {
-                                focused_row = Some(trigger.rect);
-                            }
                             if trigger.clicked() {
                                 self.send(DebugCommand::TransformAction {
                                     species,
@@ -950,18 +980,25 @@ impl DebugWindow {
                                     action,
                                 });
                             }
-                            let binding = ui.menu_button("绑定", |ui| {
-                                for slot in 0..4 {
-                                    if ui.button(format!("快捷键 {}", slot + 1)).clicked() {
-                                        input.shortcuts[slot] = Some(action);
-                                        ui.close();
+                            let binding = ui.add(Button::new("绑定").kind(ButtonKind::Quiet));
+                            egui_hunter::Popup::new(&binding)
+                                .style(ui.style().clone())
+                                .tokens(Tokens::get(ui))
+                                .show(|ui| {
+                                    for slot in 0..4 {
+                                        if ui
+                                            .add(
+                                                Button::new(&format!("快捷键 {}", slot + 1))
+                                                    .kind(ButtonKind::Quiet)
+                                                    .full_width(),
+                                            )
+                                            .clicked()
+                                        {
+                                            input.shortcuts[slot] = Some(action);
+                                            ui.close();
+                                        }
                                     }
-                                }
-                            });
-                            egui_hunter::scroll_on_focus(&binding.response);
-                            if binding.response.gained_focus() {
-                                focused_row = Some(binding.response.rect);
-                            }
+                                });
                             if current {
                                 ui.label(
                                     egui::RichText::new("当前")
@@ -981,49 +1018,36 @@ impl DebugWindow {
                     });
                 }
             });
-        reveal_result(ui, focused_row, previous_offset - list.state.offset.y);
     }
 
     fn monster_controls(
         &mut self,
         ui: &mut egui::Ui,
         snapshot: &DebugSnapshot,
-        input: &mut InputController,
+        input: &mut InputSettings,
     ) {
         disclosure(ui, "镜头与移动", |ui| {
-            ui.scope(|ui| {
-                ui.spacing_mut().interact_size.y = 24.0;
-                let widgets = &mut ui.visuals_mut().widgets;
-                for visuals in [
-                    &mut widgets.inactive,
-                    &mut widgets.hovered,
-                    &mut widgets.active,
-                    &mut widgets.open,
-                ] {
-                    visuals.corner_radius = egui::CornerRadius::same(4);
-                }
-                ui.add(egui::Slider::new(&mut input.speed, 50.0..=800.0).text("移动速度"));
-                let mut distance = snapshot.camera_distance.max(300.0);
-                if ui
-                    .add(egui::Slider::new(&mut distance, 300.0..=5000.0).text("镜头距离"))
-                    .changed()
-                {
-                    self.send(DebugCommand::CameraDistance(distance));
-                }
-                let mut pitch = snapshot.camera_pitch;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut pitch, -60.0..=80.0)
-                            .text("垂直角度")
-                            .suffix("°")
-                            .step_by(1.0),
-                    )
-                    .changed()
-                {
-                    self.send(DebugCommand::CameraPitch(pitch));
-                }
-            });
-            ui.small("垂直角度：正值俯视，0° 平视，负值仰视。");
+            ui.add(egui::Slider::new(&mut input.speed, 50.0..=800.0).text("移动速度"));
+            let mut distance = snapshot.camera_distance.max(300.0);
+            if ui
+                .add(egui::Slider::new(&mut distance, 300.0..=5000.0).text("镜头距离"))
+                .changed()
+            {
+                self.send(DebugCommand::CameraDistance(distance));
+            }
+            let mut pitch = snapshot.camera_pitch;
+            if ui
+                .add(
+                    egui::Slider::new(&mut pitch, -60.0..=80.0)
+                        .text("垂直角度")
+                        .suffix("°")
+                        .step_by(1.0),
+                )
+                .on_hover_text("正值俯视，0° 平视，负值仰视。")
+                .changed()
+            {
+                self.send(DebugCommand::CameraPitch(pitch));
+            }
         });
         disclosure(ui, "快捷招式", |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1057,23 +1081,10 @@ fn filter_field(ui: &mut egui::Ui, id: &str, value: &mut String, placeholder: &s
 }
 
 fn disclosure(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
-    let response = ui.collapsing(label, content);
+    let response = egui::CollapsingHeader::new(label)
+        .default_open(true)
+        .show(ui, content);
     egui_hunter::scroll_on_focus(&response.header_response);
-}
-
-fn list_offset(ui: &egui::Ui, id: &str) -> f32 {
-    egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(egui::IdSalt::new(id)))
-        .map_or(0.0, |state| state.offset.y)
-}
-
-fn reveal_result(ui: &mut egui::Ui, focused: Option<egui::Rect>, applied_scroll: f32) {
-    if let Some(rect) = focused
-        && !ui.input(|input| input.pointer.any_pressed() || input.pointer.any_click())
-    {
-        // The inner list consumed the focus request. Reveal the same control
-        // in the body, accounting for the scroll the inner list just applied.
-        ui.scroll_to_rect(rect.translate(egui::vec2(0.0, applied_scroll)), None);
-    }
 }
 
 fn empty_results(ui: &mut egui::Ui, message: &str, filter: &mut String) {

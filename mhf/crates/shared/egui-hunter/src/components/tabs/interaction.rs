@@ -48,16 +48,14 @@ impl TabsInteraction {
             let mut headers = Vec::with_capacity(tabs.len());
             ui.horizontal_wrapped(|ui| {
                 for tab in tabs {
-                    let response = ui
-                        .add_enabled_ui(tab.enabled, |ui| {
-                            render_header(
-                                ui,
-                                tab,
-                                self.id.with(("header", tab.id)),
-                                state.selected() == Some(tab.id),
-                            )
-                        })
-                        .inner;
+                    let response = ui.add_enabled(tab.enabled, |ui: &mut Ui| {
+                        render_header(
+                            ui,
+                            tab,
+                            self.id.with(("header", tab.id)),
+                            state.selected() == Some(tab.id),
+                        )
+                    });
                     if response.clicked() {
                         state.select(tab.id);
                     }

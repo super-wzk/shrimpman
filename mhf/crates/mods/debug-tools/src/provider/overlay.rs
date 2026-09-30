@@ -3,20 +3,15 @@ use std::sync::Arc;
 use egui_hunter::Theme;
 use mhf_ui::{Overlay, egui};
 
-use super::{DebugControl, DebugWindow, InputController};
+use super::{DebugControl, frontend::WindowState, input, ui};
 
-pub(crate) fn create(control: Arc<DebugControl>) -> Box<dyn Overlay> {
-    Box::new(DebugOverlay {
-        window: DebugWindow::new(Arc::clone(&control)),
-        control,
-        input: InputController::default(),
-    })
+pub(super) fn create(control: Arc<DebugControl>, window: Arc<WindowState>) -> Box<dyn Overlay> {
+    Box::new(DebugOverlay { window, control })
 }
 
 struct DebugOverlay {
     control: Arc<DebugControl>,
-    window: DebugWindow,
-    input: InputController,
+    window: Arc<WindowState>,
 }
 
 impl Overlay for DebugOverlay {
@@ -28,8 +23,11 @@ impl Overlay for DebugOverlay {
     fn ui(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx();
         let snapshot = self.control.snapshot();
-        let capture = self.window.show(context, &snapshot, &mut self.input);
-        self.input
-            .update(context, &self.control, &snapshot, capture);
+        if input::toggle_panel(context) {
+            self.window.toggle();
+        }
+        let settings = self.control.ui_settings();
+        ui::show_hud(context, &snapshot, settings.hud_target);
+        settings.input.update(context, &self.control, &snapshot);
     }
 }

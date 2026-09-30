@@ -5,10 +5,10 @@ use super::Tokens;
 /// Control density in logical points. Fonts, DPI, colors and input stay intact.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Density {
-    /// The original hunter layout: 36-point controls and 40-point fields.
+    /// Roomy spacing with a shared 36-point control height.
     #[default]
     Standard,
-    /// Tighter spacing, 24-point controls and 28-point fields.
+    /// Tighter spacing with a shared 24-point control height.
     Compact,
 }
 
@@ -19,8 +19,7 @@ impl Density {
     }
 
     /// Apply density to this subtree without changing Context or sibling Uis.
-    /// Native egui widgets inherit the spacing; hunter widgets also inherit
-    /// their density-specific minimum sizes through the existing token scope.
+    /// Native egui and hunter widgets inherit the same control spacing.
     ///
     /// Detached Areas need an explicit copy of both `ui.style().clone()` and
     /// `Tokens::get(ui)`, as with other local hunter styles. Alternatively, call
@@ -42,7 +41,7 @@ impl Density {
             Self::Standard => {
                 spacing.item_spacing = vec2(8.0, 6.0);
                 spacing.window_margin = Margin::same(12);
-                spacing.button_padding = vec2(12.0, 7.0);
+                spacing.button_padding = vec2(12.0, 8.0);
                 spacing.icon_width = 20.0;
                 spacing.icon_width_inner = 16.0;
                 spacing.icon_spacing = 8.0;
@@ -54,7 +53,7 @@ impl Density {
             Self::Compact => {
                 spacing.item_spacing = vec2(6.0, 4.0);
                 spacing.window_margin = Margin::same(8);
-                spacing.button_padding = vec2(8.0, 3.0);
+                spacing.button_padding = vec2(8.0, 4.0);
                 spacing.icon_width = 16.0;
                 spacing.icon_width_inner = 12.0;
                 spacing.icon_spacing = 6.0;
@@ -63,27 +62,6 @@ impl Density {
                 spacing.slider_width = 160.0;
                 spacing.slider_rail_height = 6.0;
             }
-        }
-    }
-
-    pub(crate) fn field_height(self) -> f32 {
-        match self {
-            Self::Standard => 40.0,
-            Self::Compact => 28.0,
-        }
-    }
-
-    pub(crate) fn primary_button_height(self) -> f32 {
-        match self {
-            Self::Standard => 44.0,
-            Self::Compact => 28.0,
-        }
-    }
-
-    pub(crate) fn tab_height(self) -> f32 {
-        match self {
-            Self::Standard => 36.0,
-            Self::Compact => 24.0,
         }
     }
 

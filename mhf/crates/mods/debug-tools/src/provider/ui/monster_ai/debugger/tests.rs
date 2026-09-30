@@ -77,27 +77,6 @@ fn condition_breakpoints_only_use_captured_fields() {
 }
 
 #[test]
-fn reused_instance_cannot_show_or_control_previous_debug_session() {
-    let debug = fixture();
-    let target = debug.target;
-    let snapshot = DebugSnapshot {
-        ai_debug: Some(std::sync::Arc::new(debug)),
-        ..Default::default()
-    };
-    assert!(session(&snapshot, Some(target)).is_some());
-    assert!(
-        session(
-            &snapshot,
-            Some(AiTarget {
-                serial: target.serial + 1,
-                ..target
-            })
-        )
-        .is_none()
-    );
-}
-
-#[test]
 fn invalid_import_preserves_the_loaded_replay() {
     let recording = fixture().recording;
     let mut ui = DebuggerUi::default();
@@ -112,15 +91,9 @@ fn invalid_import_preserves_the_loaded_replay() {
 
 #[test]
 fn live_controls_send_commands_for_the_exact_instance_and_disable_stale_targets() {
-    use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Shape};
+    use egui::{Event, Pos2, RawInput, Rect};
     let debug = fixture();
     let target = debug.target;
-    let snapshot = DebugSnapshot {
-        ready: true,
-        ai_targets: vec![target],
-        ai_debug: Some(std::sync::Arc::new(debug)),
-        ..Default::default()
-    };
     let control = DebugControl::new();
     let context = egui::Context::default();
     let mut debugger = DebuggerUi::default();
@@ -131,47 +104,19 @@ fn live_controls_send_commands_for_the_exact_instance_and_disable_stale_targets(
                 events,
                 ..Default::default()
             },
-            |ui| {
-                debugger.controls(
-                    ui,
-                    &control,
-                    Some(target),
-                    active,
-                    session(&snapshot, Some(target)),
-                )
-            },
+            |ui| debugger.controls(ui, &control, Some(target), active, Some(&debug)),
         );
-        let labels = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                Shape::Text(text) => Some((
-                    text.galley.job.text.clone(),
-                    text.galley.rect.translate(text.pos.to_vec2()).center(),
-                )),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         output.drop_without_applying_deltas();
-        labels
     };
-    for label in ["继续", "单步", "至让出"] {
+    for id in ["ai-pause", "ai-step", "ai-run-yield"] {
         draw(vec![], true);
-        let labels = draw(vec![], true);
-        let position = labels.iter().find(|(text, _)| text == label).unwrap().1;
+        let position = context
+            .read_response(egui::Id::new(id))
+            .unwrap()
+            .rect
+            .center();
         for pressed in [true, false] {
-            draw(
-                vec![
-                    Event::PointerMoved(position),
-                    Event::PointerButton {
-                        pos: position,
-                        button: PointerButton::Primary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    },
-                ],
-                true,
-            );
+            draw(pointer_click(position, pressed), true);
         }
     }
     let commands = control.commands();
@@ -179,30 +124,378 @@ fn live_controls_send_commands_for_the_exact_instance_and_disable_stale_targets(
         matches!(commands.as_slice(), [DebugCommand::AiDebug { target: a, operation: AiDebugOperation::Continue }, DebugCommand::AiDebug { target: b, operation: AiDebugOperation::StepInstruction }, DebugCommand::AiDebug { target: c, operation: AiDebugOperation::RunUntilYield }] if *a == target && *b == target && *c == target)
     );
     draw(vec![], false);
-    let position = draw(vec![], false)
-        .iter()
-        .find(|(text, _)| text == "单步")
+    draw(vec![], false);
+    let position = context
+        .read_response(egui::Id::new("ai-step"))
         .unwrap()
-        .1;
+        .rect
+        .center();
     for pressed in [true, false] {
-        draw(
-            vec![
-                Event::PointerMoved(position),
-                Event::PointerButton {
-                    pos: position,
-                    button: PointerButton::Primary,
-                    pressed,
-                    modifiers: Modifiers::NONE,
-                },
-            ],
-            false,
-        );
+        draw(pointer_click(position, pressed), false);
     }
     assert!(control.commands().is_empty());
 }
 
 #[test]
-fn replay_trace_selection_keeps_cursor_state_and_next_instruction_consistent() {
+fn attach_icon_uses_one_id_and_toggles_commands_and_tooltips_from_snapshot_state() {
+    let mut debug = fixture();
+    let target = debug.target;
+    let control = DebugControl::new();
+    let context = egui::Context::default();
+    mhf_font::install(&context);
+    egui_hunter::Theme::default()
+        .density(egui_hunter::Density::Compact)
+        .apply(&context);
+    let mut debugger = DebuggerUi::new();
+    let id = egui::Id::new("ai-attach");
+    let mut draw = |attached, active, events| {
+        debug.attached = attached;
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.horizontal(|ui| {
+                    debugger.controls(ui, &control, Some(target), active, Some(&debug))
+                });
+            },
+        );
+        let expected = if attached {
+            "分离调试器"
+        } else {
+            "附加调试器"
+        };
+        let tooltip = output.shapes.iter().any(|shape| {
+            matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == expected)
+        });
+        output.drop_without_applying_deltas();
+        (context.read_response(id).unwrap().rect, tooltip)
+    };
+    let mut original = None;
+    for attached in [false, true] {
+        let (rect, _) = draw(attached, true, Vec::new());
+        if let Some(original) = original {
+            assert_eq!(
+                rect, original,
+                "changing attachment state must not move the toggle"
+            );
+        }
+        original = Some(rect);
+        for pressed in [true, false] {
+            draw(attached, true, pointer_click(rect.center(), pressed));
+        }
+        assert!(
+            draw(attached, true, Vec::new()).1,
+            "focused toggle must identify its current action"
+        );
+        assert!(context.read_response(egui::Id::new("ai-detach")).is_none());
+    }
+    assert!(matches!(control.commands().as_slice(), [
+        DebugCommand::AiDebug { target: a, operation: AiDebugOperation::Attach },
+        DebugCommand::AiDebug { target: b, operation: AiDebugOperation::Detach },
+    ] if *a == target && *b == target));
+    for attached in [false, true] {
+        draw(attached, false, Vec::new());
+        let (rect, _) = draw(attached, false, Vec::new());
+        assert!(!context.read_response(id).unwrap().enabled());
+        for pressed in [true, false] {
+            draw(attached, false, pointer_click(rect.center(), pressed));
+        }
+    }
+    assert!(control.commands().is_empty());
+}
+
+fn inspector_frame(
+    context: &egui::Context,
+    debugger: &mut DebuggerUi,
+    debug: &AiDebugSnapshot,
+    control: &DebugControl,
+    target: AiTarget,
+    active: bool,
+    events: Vec<egui::Event>,
+) -> (Option<egui::Response>, Vec<String>, (bool, bool, bool)) {
+    let snapshot = DebugSnapshot {
+        ai_debug: Some(std::sync::Arc::new(debug.clone())),
+        ..Default::default()
+    };
+    let mut response = None;
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(340.0, 650.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            debugger.inspect(ui, &snapshot, Some(target), false, control, active);
+            response = context.read_response(egui::Id::new(("ai-field-breakpoint", "ai_state")));
+        },
+    );
+    let texts = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect();
+    let glyph = response.as_ref().map_or((false, false, false), |response| {
+        let circle = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Circle(circle) => (circle.center == response.rect.center()
+                && circle.radius > 0.0
+                && response.rect.contains_rect(egui::Rect::from_center_size(
+                    circle.center,
+                    egui::Vec2::splat(circle.radius * 2.0),
+                )))
+            .then_some(circle),
+            _ => None,
+        });
+        let slash = output.shapes.iter().any(|shape| {
+            let (points, width) = match &shape.shape {
+                egui::Shape::Path(path) if path.points.len() == 2 => {
+                    (&path.points[..], path.stroke.width)
+                }
+                egui::Shape::LineSegment { points, stroke } => (&points[..], stroke.width),
+                _ => return false,
+            };
+            width > 0.0
+                && points.iter().all(|point| response.rect.contains(*point))
+                && points[0].x != points[1].x
+                && points[0].y != points[1].y
+        });
+        (
+            circle.is_some_and(|circle| circle.fill != egui::Color32::TRANSPARENT),
+            circle.is_some_and(|circle| {
+                circle.stroke.width > 0.0 && circle.stroke.color != egui::Color32::TRANSPARENT
+            }),
+            slash,
+        )
+    });
+    output.drop_without_applying_deltas();
+    (response, texts, glyph)
+}
+
+fn pointer_click(position: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+    vec![
+        egui::Event::PointerMoved(position),
+        egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]
+}
+
+#[test]
+fn field_breakpoint_icon_removes_disabled_breakpoints_and_adds_for_the_exact_instance() {
+    let context = egui::Context::default();
+    mhf_font::install(&context);
+    egui_hunter::Theme::default()
+        .density(egui_hunter::Density::Compact)
+        .apply(&context);
+    context.all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+    let control = DebugControl::new();
+    let mut debugger = DebuggerUi::new();
+    let mut debug = fixture();
+    let unrelated = mhf_ai_debug::Breakpoint {
+        id: 8,
+        enabled: true,
+        kind: BreakpointKind::Opcode(5),
+        condition: None,
+    };
+    debug.breakpoints = vec![
+        mhf_ai_debug::Breakpoint {
+            id: 3,
+            enabled: false,
+            kind: BreakpointKind::FieldChanged("ai_state".into()),
+            condition: None,
+        },
+        unrelated.clone(),
+    ];
+    let (initial, _, glyph) = inspector_frame(
+        &context,
+        &mut debugger,
+        &debug,
+        &control,
+        debug.target,
+        true,
+        vec![],
+    );
+    let initial = initial.unwrap();
+    assert!(initial.enabled());
+    assert_eq!(initial.rect.width(), initial.rect.height());
+    assert_eq!(
+        glyph,
+        (false, true, true),
+        "removal must show an outlined circle with a slash"
+    );
+    let (hovered, _, _) = inspector_frame(
+        &context,
+        &mut debugger,
+        &debug,
+        &control,
+        debug.target,
+        true,
+        vec![egui::Event::PointerMoved(initial.rect.center())],
+    );
+    assert!(hovered.unwrap().hovered());
+    inspector_frame(
+        &context,
+        &mut debugger,
+        &debug,
+        &control,
+        debug.target,
+        true,
+        vec![],
+    );
+    let (hovered, texts, _) = inspector_frame(
+        &context,
+        &mut debugger,
+        &debug,
+        &control,
+        debug.target,
+        true,
+        vec![],
+    );
+    assert_eq!(hovered.unwrap().rect, initial.rect);
+    assert!(texts.iter().any(|text| text == "移除字段断点"));
+    for pressed in [true, false] {
+        inspector_frame(
+            &context,
+            &mut debugger,
+            &debug,
+            &control,
+            debug.target,
+            true,
+            pointer_click(initial.rect.center(), pressed),
+        );
+    }
+    let commands = control.commands();
+    let [
+        DebugCommand::AiDebug {
+            target,
+            operation: AiDebugOperation::SetBreakpoints(breakpoints),
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("field breakpoint click must send one replacement set");
+    };
+    assert_eq!(*target, debug.target);
+    assert_eq!(breakpoints, std::slice::from_ref(&unrelated));
+    debug.breakpoints = breakpoints.clone();
+    let (response, texts, glyph) = inspector_frame(
+        &context,
+        &mut debugger,
+        &debug,
+        &control,
+        debug.target,
+        true,
+        vec![],
+    );
+    assert_eq!(response.unwrap().rect, initial.rect);
+    assert!(texts.iter().any(|text| text == "添加字段断点"));
+    assert_eq!(
+        glyph,
+        (true, false, false),
+        "addition must show a plain dot in the same button"
+    );
+    for pressed in [true, false] {
+        inspector_frame(
+            &context,
+            &mut debugger,
+            &debug,
+            &control,
+            debug.target,
+            true,
+            pointer_click(initial.rect.center(), pressed),
+        );
+    }
+    let commands = control.commands();
+    let [
+        DebugCommand::AiDebug {
+            target,
+            operation: AiDebugOperation::SetBreakpoints(breakpoints),
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("field breakpoint click must create a replacement set");
+    };
+    assert_eq!(*target, debug.target);
+    assert_eq!(
+        breakpoints,
+        &[
+            unrelated,
+            mhf_ai_debug::Breakpoint {
+                id: 9,
+                enabled: true,
+                kind: BreakpointKind::FieldChanged("ai_state".into()),
+                condition: None,
+            },
+        ]
+    );
+    assert!(debugger.error.is_none());
+}
+
+#[test]
+fn field_breakpoint_icon_disables_pending_and_detached_instances_and_rejects_reused_targets() {
+    for (attached, active) in [(true, false), (false, true)] {
+        let context = egui::Context::default();
+        let control = DebugControl::new();
+        let mut debugger = DebuggerUi::new();
+        let mut debug = fixture();
+        debug.attached = attached;
+        let response = inspector_frame(
+            &context,
+            &mut debugger,
+            &debug,
+            &control,
+            debug.target,
+            active,
+            vec![],
+        )
+        .0
+        .unwrap();
+        assert!(!response.enabled());
+        for pressed in [true, false] {
+            inspector_frame(
+                &context,
+                &mut debugger,
+                &debug,
+                &control,
+                debug.target,
+                active,
+                pointer_click(response.rect.center(), pressed),
+            );
+        }
+        assert!(control.commands().is_empty());
+    }
+    let context = egui::Context::default();
+    let control = DebugControl::new();
+    let mut debugger = DebuggerUi::new();
+    let debug = fixture();
+    let reused = AiTarget {
+        serial: debug.target.serial + 1,
+        ..debug.target
+    };
+    let (response, _, _) = inspector_frame(
+        &context,
+        &mut debugger,
+        &debug,
+        &control,
+        reused,
+        true,
+        vec![],
+    );
+    assert!(response.is_none());
+    assert!(control.commands().is_empty());
+}
+
+fn two_step_recording() -> Recording {
     let mut state = fixture().state;
     let mut trace = mhf_ai_debug::TraceBuffer::default();
     for value in [3, 4] {
@@ -220,7 +513,175 @@ fn replay_trace_selection_keeps_cursor_state_and_next_instruction_consistent() {
             })
             .unwrap();
     }
-    let recording = trace.recording().unwrap();
+    trace.recording().unwrap()
+}
+
+fn recording_actions_frame(
+    context: &egui::Context,
+    debugger: &mut DebuggerUi,
+    snapshot: &DebugSnapshot,
+    control: &DebugControl,
+    replay: bool,
+    events: Vec<egui::Event>,
+) -> Vec<String> {
+    let target = snapshot.ai_debug.as_ref().map(|debug| debug.target);
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(640.0, 480.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            ui.horizontal(|ui| {
+                if replay {
+                    debugger.replay_actions(ui, snapshot, target);
+                } else {
+                    debugger.recording_actions(
+                        ui,
+                        control,
+                        target,
+                        false,
+                        session(snapshot, target),
+                    );
+                }
+            });
+            debugger.import_dialog(ui.ctx());
+        },
+    );
+    let texts = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect();
+    output.drop_without_applying_deltas();
+    texts
+}
+
+#[test]
+fn live_and_replay_save_queue_json_once_without_opening_the_import_dialog() {
+    let recording = two_step_recording();
+    let expected_json = recording.to_json().unwrap();
+    for replay in [false, true] {
+        let mut debug = fixture();
+        debug.attached = false;
+        debug.recording = recording.clone();
+        let snapshot = DebugSnapshot {
+            ai_debug: Some(std::sync::Arc::new(debug)),
+            ..Default::default()
+        };
+        let context = egui::Context::default();
+        let control = DebugControl::new();
+        let mut debugger = DebuggerUi::new();
+        if replay {
+            debugger.load_recording(recording.clone());
+        }
+        let save_id = if replay {
+            "ai-replay-save"
+        } else {
+            "ai-recording-save"
+        };
+        for _ in 0..2 {
+            recording_actions_frame(&context, &mut debugger, &snapshot, &control, replay, vec![]);
+        }
+        let response = context.read_response(egui::Id::new(save_id)).unwrap();
+        assert!(response.enabled(), "{save_id}");
+        for pressed in [true, false] {
+            let texts = recording_actions_frame(
+                &context,
+                &mut debugger,
+                &snapshot,
+                &control,
+                replay,
+                pointer_click(response.rect.center(), pressed),
+            );
+            assert!(
+                !texts
+                    .iter()
+                    .any(|text| text == "录制文件路径" || text == "保存文件")
+            );
+        }
+        assert!(!debugger.import_open);
+        let json = debugger.take_recording_save().unwrap();
+        assert_eq!(json, expected_json);
+        assert_eq!(Recording::from_json(&json).unwrap(), recording);
+        assert!(debugger.take_recording_save().is_none());
+        assert!(control.commands().is_empty());
+    }
+}
+
+#[test]
+fn recording_save_results_handle_cancel_success_and_failure_and_keep_import_separate() {
+    let mut debugger = DebuggerUi {
+        error: Some("原有错误".into()),
+        ..DebuggerUi::new()
+    };
+    debugger.recording_save_finished(Ok(false));
+    assert_eq!(debugger.error.as_deref(), Some("原有错误"));
+    debugger.recording_save_finished(Err("保存失败：磁盘不可写".into()));
+    assert_eq!(debugger.error.as_deref(), Some("保存失败：磁盘不可写"));
+    debugger.recording_save_finished(Ok(true));
+    assert!(debugger.error.is_none());
+    debugger.recording_save_finished(Ok(false));
+    assert!(debugger.error.is_none());
+
+    let mut invalid = fixture().recording;
+    invalid.version += 1;
+    debugger.request_recording_save(invalid.to_json());
+    assert!(debugger.error.is_some());
+    assert!(debugger.take_recording_save().is_none());
+    assert!(!debugger.import_open);
+
+    let context = egui::Context::default();
+    let control = DebugControl::new();
+    let snapshot = DebugSnapshot::default();
+    for replay in [false, true] {
+        recording_actions_frame(&context, &mut debugger, &snapshot, &control, replay, vec![]);
+        let id = if replay {
+            "ai-replay-save"
+        } else {
+            "ai-recording-save"
+        };
+        assert!(!context.read_response(egui::Id::new(id)).unwrap().enabled());
+    }
+    let point = context
+        .read_response(egui::Id::new("ai-replay-import"))
+        .unwrap()
+        .rect
+        .center();
+    for pressed in [true, false] {
+        recording_actions_frame(
+            &context,
+            &mut debugger,
+            &snapshot,
+            &control,
+            true,
+            pointer_click(point, pressed),
+        );
+    }
+    let texts = recording_actions_frame(&context, &mut debugger, &snapshot, &control, true, vec![]);
+    assert!(debugger.import_open);
+    for label in [
+        "导入录制",
+        "录制文件路径",
+        "打开文件",
+        "粘贴录制 JSON",
+        "验证并导入",
+    ] {
+        assert!(texts.iter().any(|text| text == label), "{label}");
+    }
+    assert!(!texts.iter().any(|text| text == "保存文件"));
+    assert!(debugger.take_recording_save().is_none());
+}
+
+#[test]
+fn replay_trace_selection_keeps_cursor_state_and_next_instruction_consistent() {
+    let recording = two_step_recording();
     let first = recording.entries[0].sequence;
     let initial = recording.initial.clone();
     let mut debugger = DebuggerUi::new();
@@ -250,20 +711,71 @@ fn replay_trace_selection_keeps_cursor_state_and_next_instruction_consistent() {
     draw(vec![]);
     let position = draw(vec![]).unwrap();
     for pressed in [true, false] {
-        draw(vec![
-            egui::Event::PointerMoved(position),
-            egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ]);
+        draw(pointer_click(position, pressed));
     }
     draw(vec![]);
     assert_eq!(debugger.replay.as_ref().unwrap().position(), 0);
     assert_eq!(debugger.replay.as_ref().unwrap().snapshot(), &initial);
     assert_eq!(debugger.selected_event, Some(first));
+}
+
+#[test]
+fn replay_icons_move_and_reset_the_recorded_state_and_disable_at_boundaries() {
+    fn frame(context: &egui::Context, debugger: &mut DebuggerUi, events: Vec<egui::Event>) {
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.horizontal(|ui| debugger.replay_controls(ui));
+            },
+        );
+        output.drop_without_applying_deltas();
+    }
+    let context = egui::Context::default();
+    let mut debugger = DebuggerUi::new();
+    debugger.load_recording(two_step_recording());
+    for (id, position, value) in [
+        ("ai-replay-next", 1, 3),
+        ("ai-replay-previous", 0, 2),
+        ("ai-replay-next", 1, 3),
+        ("ai-replay-next", 2, 4),
+        ("ai-replay-start", 0, 2),
+    ] {
+        for _ in 0..2 {
+            frame(&context, &mut debugger, Vec::new());
+        }
+        let response = context.read_response(egui::Id::new(id)).unwrap();
+        assert!(response.enabled());
+        for pressed in [true, false] {
+            frame(
+                &context,
+                &mut debugger,
+                pointer_click(response.rect.center(), pressed),
+            );
+        }
+        let replay = debugger.replay.as_ref().unwrap();
+        assert_eq!(replay.position(), position);
+        assert_eq!(replay.snapshot().fields["ai_state"], value);
+        assert_eq!(replay.snapshot().pc.unwrap().offset, 12 + position as u32);
+    }
+    for _ in 0..2 {
+        frame(&context, &mut debugger, Vec::new());
+    }
+    assert!(
+        !context
+            .read_response(egui::Id::new("ai-replay-previous"))
+            .unwrap()
+            .enabled()
+    );
+    assert!(
+        !context
+            .read_response(egui::Id::new("ai-replay-start"))
+            .unwrap()
+            .enabled()
+    );
+    assert!(debugger.error.is_none());
 }
 
 #[test]
@@ -288,16 +800,19 @@ fn detached_capture_is_labeled_archived_and_preserves_offline_replay() {
             session(&snapshot, Some(target)),
         )
     });
-    let labels = output
-        .shapes
-        .iter()
-        .filter_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(!labels.contains(&"AI 已暂停"));
-    assert!(labels.contains(&"保存录制…"));
-    assert_eq!(ui.replay.as_ref().unwrap().recording(), &loaded);
     output.drop_without_applying_deltas();
+    assert!(
+        context
+            .read_response(egui::Id::new("ai-recording-save"))
+            .unwrap()
+            .enabled()
+    );
+    assert!(context.read_response(egui::Id::new("ai-detach")).is_none());
+    assert!(
+        !context
+            .read_response(egui::Id::new("ai-trace-clear"))
+            .unwrap()
+            .enabled()
+    );
+    assert_eq!(ui.replay.as_ref().unwrap().recording(), &loaded);
 }

@@ -105,9 +105,9 @@ fn explicit_area_inheritance_carries_density_with_native_style() {
                 }));
             }
             let expected = if inherit {
-                (Density::Compact, 24.0, 28.0)
+                (Density::Compact, 24.0, 24.0)
             } else {
-                (Density::Standard, 36.0, 44.0)
+                (Density::Standard, 36.0, 36.0)
             };
             assert_eq!(actual.unwrap(), expected, "{kind:?}, inherit={inherit}");
             assert_eq!(*ctx.global_style(), *global);

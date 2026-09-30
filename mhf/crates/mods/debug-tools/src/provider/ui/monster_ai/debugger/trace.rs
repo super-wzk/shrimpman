@@ -38,7 +38,7 @@ pub(super) fn list(
         .max(ui.spacing().interact_size.y);
     egui::ScrollArea::both()
         .id_salt("ai-trace-list")
-        .max_height(260.0)
+        .auto_shrink([false, false])
         .stick_to_bottom(*follow_latest)
         .show_rows(ui, row_height, recording.entries.len(), |ui, range| {
             for index in range {
@@ -113,23 +113,31 @@ pub(super) fn recorded_source(
         data.insert_temp(reveal_id, key);
         changed
     });
-    egui::ScrollArea::both()
+    let viewport_height = ui.available_height().max(0.0);
+    egui::ScrollArea::vertical()
         .id_salt("ai-recorded-workspace-source")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (index, line) in source.lines().enumerate() {
-                let selected = span.is_some_and(|span| span.line as usize == index + 1);
-                let text = egui::RichText::new(format!("{:>4}  {}", index + 1, line)).monospace();
-                let response = ui.add(
-                    egui::Label::new(if selected {
-                        text.background_color(ui.visuals().selection.bg_fill)
-                    } else {
-                        text
-                    })
-                    .selectable(true),
+            let mut text: &str = source;
+            let output = super::super::source::show(
+                ui,
+                "ai-recorded-source",
+                &mut text,
+                true,
+                viewport_height,
+            );
+            if let Some(span) = span
+                && let Some(line) = span.line.checked_sub(1)
+                && let Some(row) = output.galley.rows.get(line as usize)
+            {
+                let row = row.rect().translate(output.galley_pos.to_vec2());
+                let highlight = egui::Rect::from_min_max(
+                    egui::pos2(output.response.rect.left(), row.top()),
+                    egui::pos2(output.response.rect.right(), row.bottom()),
                 );
-                if selected && reveal {
-                    response.scroll_to_me(Some(egui::Align::Center));
+                super::super::source::highlight_line(ui, highlight);
+                if reveal {
+                    ui.scroll_to_rect(row, Some(egui::Align::Center));
                 }
             }
         });

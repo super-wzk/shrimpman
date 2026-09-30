@@ -36,13 +36,8 @@ impl Tabs {
                     TextStyle::Button,
                 );
                 let padding = ui.spacing().button_padding;
-                let size = (galley.size() + padding * 2.0).max(vec2(
-                    0.0,
-                    ui.spacing()
-                        .interact_size
-                        .y
-                        .max(crate::Density::get(ui).tab_height()),
-                ));
+                let size =
+                    (galley.size() + padding * 2.0).max(vec2(0.0, ui.spacing().interact_size.y));
                 let (_, rect) = ui.allocate_space(size);
                 let response = ui.interact(rect, id, Sense::click());
                 crate::primitives::focus::focus_on_click(&response);
