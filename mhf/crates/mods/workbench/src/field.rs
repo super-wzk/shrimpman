@@ -4,6 +4,10 @@ use std::{borrow::Cow, fmt, fmt::Write as _, ops::Range, sync::Arc};
 
 use mhf_resource::binary::{self, BinaryValue, ValueKind};
 pub use mhf_resource::binary::{Endian, ScalarType};
+use mhf_resource::{
+    action_definition::{AttackReference, NativeMotionRef},
+    effect_archive::{CurveLookup, CurveReference},
+};
 
 /// A field's storage identity is independent of the node that displays it.
 /// DAT names and referenced effect definitions may live outside that node.
@@ -66,6 +70,10 @@ pub struct Patch {
 #[derive(Clone, Debug)]
 pub struct Field {
     pub name: String,
+    /// Stable raw schema key, independent of the translated display label.
+    pub key: Option<String>,
+    /// A typed resource target, separate from the editable stored value.
+    pub reference: Option<FieldReference>,
     pub value: String,
     /// Value legend for this field, shown with the name's hover text. Only
     /// confirmed interpretations belong here; raw offsets stay in `name`.
@@ -74,14 +82,71 @@ pub struct Field {
     pub writable: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FieldReference {
+    Address(crate::inspect::NodeAddress),
+    Motion(NativeMotionRef),
+    Attack(AttackReference),
+    NativeScript {
+        table: u32,
+        index: u32,
+    },
+    Curve {
+        reference: CurveReference,
+        lookup: CurveLookup,
+        target: Option<usize>,
+    },
+    /// Collection, native lookup key, and optional resolved document node.
+    Indexed(ReferenceCollection, u32, Option<usize>),
+    Many(Vec<FieldReference>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceCollection {
+    SkeletonNodes,
+    SkeletonNodeIds,
+    ModelMaterials,
+    ModelMeshes,
+    ModelMaterialSlots,
+    ModelTextures,
+    TextureImages,
+    Motions,
+    Emitters,
+    EffectDefinitions,
+    EffectResources,
+    StageResources,
+}
+
+impl ReferenceCollection {
+    pub const fn schema_name(self) -> &'static str {
+        match self {
+            Self::SkeletonNodes => "skeleton.nodes",
+            Self::SkeletonNodeIds => "skeleton.node_ids",
+            Self::ModelMaterials => "model.materials",
+            Self::ModelMeshes => "model.meshes",
+            Self::ModelMaterialSlots => "model.material_slots",
+            Self::ModelTextures => "model.textures",
+            Self::TextureImages => "textures.images",
+            Self::Motions => "motions",
+            Self::Emitters => "emitters",
+            Self::EffectDefinitions => "effect.definitions",
+            Self::EffectResources => "effect.resources",
+            Self::StageResources => "stage.resources",
+        }
+    }
+}
+
 impl Field {
     pub fn from_binary<T: BinaryValue + fmt::Debug>(
         name: impl Into<String>,
         buffer: usize,
         source: binary::Field<'_, T>,
     ) -> Self {
+        let name = name.into();
         Self {
-            name: name.into(),
+            key: schema_key(&name),
+            reference: None,
+            name,
             value: format!("{:?}", source.value),
             note: None,
             writable: !source.range.is_empty(),
@@ -109,6 +174,14 @@ impl Field {
         }
         self.binding.write(buffers, input)
     }
+}
+
+pub(crate) fn schema_key(name: &str) -> Option<String> {
+    let mut bytes = name.bytes();
+    let first = bytes.next()?;
+    (matches!(first, b'a'..=b'z' | b'A'..=b'Z' | b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+    .then(|| name.to_owned())
 }
 
 fn flag_storage(scalar: ScalarType) -> Result<ScalarType, String> {
@@ -652,6 +725,8 @@ mod tests {
         let buffers: Vec<Arc<[u8]>> =
             vec![Arc::from([0xaa; 4]), Arc::from([0xcc, 0x34, 0x12, 0xdd])];
         let field = Field {
+            reference: None,
+            key: None,
             name: "引用字段".into(),
             value: "formatted description is not storage".into(),
             note: None,

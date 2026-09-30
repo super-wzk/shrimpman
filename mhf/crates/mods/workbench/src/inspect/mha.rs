@@ -2,6 +2,7 @@
 
 use super::{Builder, Hint, Kind, archive_name, hex};
 use crate::metadata;
+use mhf_resource::PathSegment::Index;
 use mhf_resource::container::{MhaArchive, MhaEntry, MhaHeader};
 
 impl Builder {
@@ -80,6 +81,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(entry.index as u32)]);
             if let Some(value) = std::str::from_utf8(item.name)
                 .ok()
                 .and_then(metadata::from_filename)
@@ -87,7 +89,9 @@ impl Builder {
                 self.document.nodes[child].metadata.insert(value);
             }
             let meta = base + h.entries_offset as usize + entry.index * 20;
-            self.read::<u32>(child, "name_offset", meta)?;
+            let field = self.read::<u32>(child, "name_offset", meta)?;
+            self.document.nodes[child].fields[field].key = Some("entry_name_offset".into());
+            let field = self.document.nodes[child].fields.len();
             self.field(
                 child,
                 "原始名称",
@@ -95,11 +99,19 @@ impl Builder {
                 base + h.names_offset as usize + item.name_offset as usize,
                 item.name.len(),
             );
-            self.read::<u32>(child, "offset", meta + 4)?;
-            self.read::<u32>(child, "size", meta + 8)?;
-            self.read::<u32>(child, "padded_size", meta + 12)?;
-            self.read::<i16>(child, "file_id", meta + 16)?;
-            self.read::<u16>(child, "file_id_high_raw", meta + 18)?;
+            self.document.nodes[child].fields[field].key = Some("entry_name".into());
+            for (label, key, offset) in [
+                ("offset", "entry_offset", 4),
+                ("size", "entry_size", 8),
+                ("padded_size", "entry_padded_size", 12),
+            ] {
+                let field = self.read::<u32>(child, label, meta + offset)?;
+                self.document.nodes[child].fields[field].key = Some(key.into());
+            }
+            let field = self.read::<i16>(child, "file_id", meta + 16)?;
+            self.document.nodes[child].fields[field].key = Some("entry_file_id".into());
+            let field = self.read::<u16>(child, "file_id_high_raw", meta + 18)?;
+            self.document.nodes[child].fields[field].key = Some("entry_file_id_high_raw".into());
             let file_id = i32::from(item.native_file_id());
             self.field(
                 child,

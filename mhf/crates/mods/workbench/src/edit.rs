@@ -2,7 +2,7 @@
 //! walks physical owners back to the source file; parsed nodes are never used
 //! as independent files or serialized from their display strings.
 
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use crate::{
     action::NodeAction,
@@ -274,6 +274,7 @@ fn splice(source: &[u8], range: Range<usize>, replacement: &[u8]) -> Result<Vec<
 }
 
 fn restore_expanded(previous: &Document, mut updated: Document) -> Document {
+    updated.attack_directory = previous.attack_directory.clone();
     let mut pending = vec![(previous.root, updated.root, None)];
     let mut visited = vec![false; previous.nodes.len()];
     while let Some((old_index, new_index, mut emd)) = pending.pop() {
@@ -349,6 +350,13 @@ fn restore_expanded(previous: &Document, mut updated: Document) -> Document {
             );
         }
     }
+    if updated
+        .source
+        .file_name()
+        .is_some_and(|name| name == "mhfsdt.bin")
+    {
+        updated.attack_directory = Some(Arc::new(updated.parsed_attack_directory()));
+    }
     updated
 }
 
@@ -368,6 +376,9 @@ mod emd_identity_tests {
             deferred: bool,
         ) -> inspect::Node {
             inspect::Node {
+                native_id: None,
+                material_slots: Vec::new(),
+                address: None,
                 name: name.into(),
                 kind,
                 buffer: 0,
@@ -381,6 +392,8 @@ mod emd_identity_tests {
             }
         }
         Document {
+            attack_directory: None,
+            source: Default::default(),
             nodes: vec![
                 node("archive.bin", Kind::Archive, 0..base + 512, vec![1], false),
                 node("mhfemd.bin", Kind::Emd, base..base + 512, vec![2], false),

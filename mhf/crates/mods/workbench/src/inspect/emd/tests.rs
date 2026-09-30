@@ -1,5 +1,6 @@
 use super::*;
 use crate::inspect::{Document, expand, inspect};
+use std::sync::Arc;
 
 fn sample() -> Vec<u8> {
     let mut bytes = vec![0; 144 + 178 * SPECIES_STRIDE];
@@ -7,6 +8,83 @@ fn sample() -> Vec<u8> {
     bytes[12..16].copy_from_slice(&144u32.to_le_bytes());
     bytes[100] = 178;
     bytes
+}
+
+#[test]
+fn native_resource_paths_find_original_script_and_group_records_in_unopened_species_views() {
+    let mut bytes = sample();
+    let scripts = bytes.len();
+    bytes.resize(scripts + 43 * 8 + 2, 0);
+    put32(&mut bytes, 17 * 4, scripts);
+    bytes[96 + 24..96 + 26].copy_from_slice(&43_u16.to_le_bytes());
+    let script = scripts + 43 * 8;
+    bytes[script..script + 2].copy_from_slice(&[0xff, 3]);
+    for index in 0..43 {
+        bytes[scripts + index * 8] = if index == 42 { 132 } else { 255 };
+        put32(&mut bytes, scripts + index * 8 + 4, script);
+    }
+    let counts = bytes.len();
+    bytes.extend_from_slice(&[0, 0, 0, 0, 43, 0]);
+    let directories = bytes.len();
+    bytes.resize(directories + 12, 0);
+    let records = bytes.len();
+    bytes.resize(records + 43 * 32, 0);
+    put32(&mut bytes, 15 * 4, counts);
+    put32(&mut bytes, 16 * 4, directories);
+    put32(&mut bytes, directories + 8, records);
+    bytes[96 + 22..96 + 24].copy_from_slice(&3_u16.to_le_bytes());
+    for index in 0..43 {
+        let species = if index == 42 { 132_i16 } else { -1 };
+        bytes[records + index * 32 + 16..records + index * 32 + 18]
+            .copy_from_slice(&species.to_le_bytes());
+    }
+    let root = std::path::Path::new("dat");
+    let document = inspect("dat/mhfemd.bin", Arc::from(bytes));
+    assert!(document.nodes[species_node(&document, 132)].deferred);
+    let (document, record, context, _) =
+        crate::inspect::resource_path::tests::resolve(document, root, "mhfemd.bin#17/42");
+    assert_eq!(
+        document.nodes[record].range,
+        scripts + 42 * 8..scripts + 43 * 8
+    );
+    assert!(context.contains(&species_node(&document, 132)));
+    assert_eq!(
+        document
+            .resource_address(root, &context, None)
+            .unwrap()
+            .path
+            .to_string(),
+        "mhfemd.bin#17/42"
+    );
+    let (document, group, context, _) =
+        crate::inspect::resource_path::tests::resolve(document, root, "mhfemd.bin#16/2/42");
+    assert_eq!(
+        document.nodes[group].range,
+        records + 42 * 32..records + 43 * 32
+    );
+    assert_eq!(
+        document
+            .resource_address(root, &context, None)
+            .unwrap()
+            .path
+            .to_string(),
+        "mhfemd.bin#16/2/42"
+    );
+    let (mut document, script_node, context, _) =
+        crate::inspect::resource_path::tests::resolve(document, root, "mhfemd.bin#17/42/script");
+    assert_eq!(document.nodes[script_node].kind, Kind::EmdAiScript(42));
+    for node in &mut document.nodes {
+        node.name = "展示分组变化".into();
+    }
+    assert_eq!(
+        document
+            .resource_address(root, &context, None)
+            .unwrap()
+            .path
+            .to_string(),
+        "mhfemd.bin#17/42/script"
+    );
+    assert_eq!(document.source, std::path::Path::new("dat/mhfemd.bin"));
 }
 
 fn emd_root(document: &Document) -> usize {

@@ -1,4 +1,7 @@
 use super::*;
+use crate::field::{FieldReference, ReferenceCollection};
+use crate::inspect::NodeAddress;
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::{
     dat::EffectRecordKind,
     effect::{AttachmentDefinition, AttachmentGroup, ModelEffectBinding, ModelEffectDefinition},
@@ -288,10 +291,15 @@ impl Builder {
             } else {
                 "未使用定义槽"
             };
-            self.read::<u16>(node, format!("{label} {slot}"), fields_at + slot * 2)?;
+            let field = self.read::<u16>(node, format!("{label} {slot}"), fields_at + slot * 2)?;
             if slot >= active {
                 continue;
             }
+            self.document.nodes[node].fields[field].reference = Some(FieldReference::Indexed(
+                ReferenceCollection::EffectDefinitions,
+                u32::from(id),
+                None,
+            ));
             let target = table
                 .as_ref()
                 .map_err(|error| error.to_string())
@@ -305,14 +313,25 @@ impl Builder {
                     let buffer = self.document.nodes[node].buffer;
                     let Some(child) = self.child(
                         node,
-                        format!("绑定槽 {slot} · 特效定义 {id}"),
+                        format!("绑定槽 {slot}"),
                         Kind::DatRecord(dat::DATA_TABLES.len() + definition_table),
                         buffer,
                         base + offset..base + offset + bytes.len(),
                     ) else {
                         return Ok(());
                     };
+                    let owner = self.dat_owner(node)?;
+                    self.set_address(child, node, [Key("definitions".into()), Index(slot as u32)]);
+                    let reference = FieldReference::Address(NodeAddress {
+                        anchor: owner,
+                        segments: vec![
+                            Key(dat::EFFECT_TABLES[definition_table].id.into()),
+                            Index(u32::from(id)),
+                        ],
+                    });
+                    self.document.nodes[node].fields[field].reference = Some(reference.clone());
                     self.read::<u16>(child, "定义 ID", fields_at + slot * 2)?;
+                    self.document.nodes[child].fields[0].reference = Some(reference);
                     self.document.nodes[child].deferred = true;
                 }
                 Err(error) => self.fail(node, format!("特效定义 {id}：{error}")),

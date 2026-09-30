@@ -842,6 +842,8 @@ fn inspector_document(long: bool) -> crate::inspect::Document {
     use crate::field::Field;
     let mut bytes = vec![0];
     let mut fields = vec![Field {
+        reference: None,
+        key: None,
         name: "field-0".into(),
         value: if long {
             format!("READONLY {}", "a very long decoded value ".repeat(100))
@@ -861,6 +863,8 @@ fn inspector_document(long: bool) -> crate::inspect::Document {
         let start = bytes.len();
         bytes.extend_from_slice(&case.original);
         fields.push(Field {
+            reference: None,
+            key: None,
             name: format!("field-{}", index + 1),
             value: case.text,
             note: None,
@@ -1240,12 +1244,14 @@ impl DockHarness {
         fs::create_dir_all(&directory).unwrap();
         let worker = Arc::new(Worker::start(directory.clone(), directory.join("exports")).unwrap());
         let path = directory.join("dock.bin");
-        let mut document = crate::inspect::inspect(&path.to_string_lossy(), vec![0; 320].into());
+        let mut document = crate::inspect::inspect(&path, vec![0; 320].into());
         let node = &mut document.nodes[document.root];
         node.kind = crate::inspect::Kind::Block;
         node.children.clear();
         node.fields = (0..80)
             .map(|index| Field {
+                reference: None,
+                key: None,
                 name: format!("字段 {index:02}"),
                 value: "0".into(),
                 note: None,
@@ -1332,8 +1338,10 @@ impl DockHarness {
                         content = ui.max_rect();
                         // ScrollArea stores an IdSalt first, then salts the Ui
                         // with that value; passing the raw string hashes once less.
-                        scroll =
-                            ui.make_persistent_id(egui::IdSalt::new("workbench-inspector-content"));
+                        scroll = ui.make_persistent_id(egui::IdSalt::new((
+                            "workbench-inspector-content",
+                            self.workbench.tab,
+                        )));
                         font = ui
                             .style()
                             .button_style(

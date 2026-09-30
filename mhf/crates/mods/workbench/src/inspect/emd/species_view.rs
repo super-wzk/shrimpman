@@ -2,6 +2,7 @@ use super::{
     Builder, Emd, Kind, ROOT_LABELS, RecordKind, SpeciesTable, relations,
     script_links::ScriptSource,
 };
+use mhf_resource::PathSegment::{Field as Key, Index};
 
 impl Builder {
     pub(in crate::inspect) fn emd_species_contents(
@@ -68,6 +69,20 @@ impl Builder {
                 ) else {
                     break;
                 };
+                let (field, index) = match kind {
+                    SpeciesTable::ParameterBank(index) => ("parameter_banks", index),
+                    SpeciesTable::AngerProfile(index) => ("anger_profiles", index),
+                };
+                self.set_address(
+                    target,
+                    self.emd_root(target)?,
+                    [
+                        Index(3),
+                        Index(u32::from(species)),
+                        Key(field.into()),
+                        Index(u32::from(index)),
+                    ],
+                );
                 match table {
                     Ok(table) => self.emd_table_info(target, &table, base),
                     Err(error) => self.fail(target, error.to_string()),
@@ -83,6 +98,7 @@ impl Builder {
                     self.document.nodes[node].buffer,
                     base + table.range.start..base + table.range.end,
                 ) {
+                    self.set_address(directory, node, [Key("parameter_links".into())]);
                     self.emd_table_info(directory, &table, base);
                 }
             }

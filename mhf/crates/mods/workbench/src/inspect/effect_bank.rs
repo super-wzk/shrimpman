@@ -1,7 +1,8 @@
 //! Physical effect-bank tables and definition-to-curve references.
 
 use super::{Builder, Kind, hex, summary};
-use crate::field::{FieldType, ScalarType, formatted, typed};
+use crate::field::{FieldReference, FieldType, ScalarType, formatted, typed};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::effect_archive::{CurveKind, Definition56, EffectBank};
 
 #[cfg(test)]
@@ -30,6 +31,7 @@ impl Builder {
                 at..at + count * 140,
             )
         {
+            self.set_address(child, node, [Key("definitions_140".into())]);
             self.read::<u16>(child, "count", base + 12)?;
             self.field(
                 child,
@@ -61,6 +63,7 @@ impl Builder {
         ) else {
             return;
         };
+        self.set_address(parent, node, [Key("emitters".into())]);
         for (index, emitter) in bank.emitters.iter().enumerate() {
             let at = at + index * 112;
             let Some(child) = self.child(
@@ -72,6 +75,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, parent, [Index(index as u32)]);
             for (i, (name, bits)) in [
                 ("position", emitter.position_bits),
                 ("position_random", emitter.position_random_bits),
@@ -148,6 +152,12 @@ impl Builder {
         ) else {
             return Ok(());
         };
+        let key = match kind {
+            CurveKind::Vector => "vector_keys",
+            CurveKind::Color => "color_keys",
+            CurveKind::Integer => "integer_keys",
+        };
+        self.set_address(parent, node, [Key(key.into())]);
         self.read::<u16>(parent, "count", base + 2 + table * 2)?;
         for index in 0..count {
             let at = at + index * stride;
@@ -165,6 +175,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, parent, [Index(index as u32)]);
             match kind {
                 CurveKind::Vector => {
                     let field = self.read::<[f32; 3]>(child, "value", at)?;
@@ -228,6 +239,7 @@ impl Builder {
         ) else {
             return Ok(());
         };
+        self.set_address(parent, node, [Key("definitions_56".into())]);
         self.read::<u16>(parent, "count", base + 10)?;
         for (index, definition) in bank.definitions_56.iter().enumerate() {
             let at = at + index * Definition56::SIZE;
@@ -240,6 +252,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, parent, [Index(index as u32)]);
             self.read_as::<u32>(child, "flags", at, FieldType::Flags(ScalarType::U32))?;
             for (name, offset) in [
                 ("definition_id", 0x04),
@@ -261,32 +274,34 @@ impl Builder {
             self.read_as::<[u8; 16]>(child, "unknown_28", at + 0x28, FieldType::Bytes)?;
             for reference in definition.curve_references() {
                 let lookup = bank.curve_lookup(reference);
-                let (value, range) = if let Some(native) = lookup.native_range() {
+                let range = if let Some(native) = lookup.native_range() {
                     let start = base + bank.table_offsets[reference.kind.table_index()];
                     let stride = reference.kind.record_size();
-                    let difference = if lookup.is_contiguous() {
-                        ""
-                    } else {
-                        "；匹配位置与原生跨度不同"
-                    };
-                    (
-                        format!(
-                            "ID {} · 匹配 {} · 原生 {}..{}（不含上界）{difference}",
-                            reference.id,
-                            summary(&lookup.matching_indices),
-                            native.start,
-                            native.end
-                        ),
-                        start + native.start * stride..start + native.end * stride,
-                    )
+                    start + native.start * stride..start + native.end * stride
                 } else {
-                    (
-                        format!("ID {} · 无匹配记录", reference.id),
-                        at + reference.offset..at + reference.offset,
-                    )
+                    at + reference.offset..at + reference.offset
                 };
+                let table_key = match reference.kind {
+                    CurveKind::Vector => "vector_keys",
+                    CurveKind::Color => "color_keys",
+                    CurveKind::Integer => "integer_keys",
+                };
+                let target = self.document.nodes[node]
+                    .children
+                    .iter()
+                    .copied()
+                    .find(|&target| {
+                        self.document.nodes[target]
+                            .address
+                            .as_ref()
+                            .is_some_and(|address| {
+                                address.anchor == node
+                                    && address.segments == [Key(table_key.into())]
+                            })
+                    });
                 // References locate their real key-table span through a read-only
                 // field. The keys keep their physical table as their only parent.
+                let field = self.document.nodes[child].fields.len();
                 self.field(
                     child,
                     format!(
@@ -294,10 +309,15 @@ impl Builder {
                         reference.offset,
                         curve_name(reference.kind)
                     ),
-                    value,
+                    "",
                     range.start,
                     range.len(),
                 );
+                self.document.nodes[child].fields[field].reference = Some(FieldReference::Curve {
+                    reference,
+                    lookup,
+                    target,
+                });
             }
         }
         Ok(())

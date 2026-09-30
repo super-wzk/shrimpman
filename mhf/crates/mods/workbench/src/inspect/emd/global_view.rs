@@ -1,4 +1,5 @@
 use super::{Builder, Emd, Kind, ROOT_LABELS, relations};
+use mhf_resource::PathSegment::Index;
 
 impl Builder {
     pub(super) fn emd_global_table_node(
@@ -9,9 +10,6 @@ impl Builder {
         slot: usize,
     ) {
         let related = relations::global_records(file, slot);
-        if related.records.is_empty() && related.errors.is_empty() {
-            return;
-        }
         let range = file
             .root_table(slot)
             .ok()
@@ -26,6 +24,9 @@ impl Builder {
         ) else {
             return;
         };
+        if let Ok(root) = self.emd_root(node) {
+            self.set_address(node, root, [Index(slot as u32)]);
+        }
         self.field(node, "记录数", related.records.len(), base + slot * 4, 0);
         self.document.nodes[node].deferred = !related.records.is_empty();
         for error in related.errors {

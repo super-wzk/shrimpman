@@ -1,12 +1,89 @@
 use super::{Action, DebugSnapshot, NATIVE_WEAPON_NAMES};
-use crate::provider::action_definition::{ActionEvent, motion_location};
+use crate::provider::action_definition::ActionDefinition;
+use mhf_resource::action_definition::{ACTION_SIZE, Definition, NativeMotionRef};
+use mhf_ui::resource_reference::ResourceReference;
 
-fn event_label(event: &ActionEvent, weapon: u8) -> String {
-    let label = event.label(weapon);
-    if event.timing == 1 {
-        label
+fn event(
+    ui: &mut egui::Ui,
+    definition: &ActionDefinition,
+    data: &Definition,
+    index: usize,
+    columns: bool,
+) {
+    let event = &data.events[index];
+    let action = definition.action;
+    let reference = event.attack_reference(action.weapon);
+    let label = if reference.is_some() {
+        "生成攻击".into()
     } else {
-        format!("{} → {label}", event.when())
+        format!("操作 {} · 参数 {}", event.operation, event.argument)
+    };
+    let label = match event.timing {
+        1 => label,
+        2 => format!("步骤结束后 → {label}"),
+        _ if event.phase > 0 => format!("动作阶段 {} → {label}", event.phase),
+        _ => format!("帧条件 {} · 计数 {} → {label}", event.frame, event.count),
+    };
+    let response = if usize::from(event.step) < data.steps.len() {
+        field(ui, "事件", label, columns)
+    } else {
+        ui.add(egui::Label::new(format!("步骤 {} · {label}", event.step)).wrap())
+    };
+    response.on_hover_ui(|ui| {
+        if let Some((path, span)) = data
+            .event_path("mhfdat.bin", index)
+            .zip(data.event_span(index))
+        {
+            ui.weak("来源");
+            ResourceReference::new(path).source_range(span).show(ui);
+        }
+        ui.label(format!("所属步骤 {} · 时机 {}", event.step, event.timing));
+        ui.label(format!(
+            "阶段 {} · 帧条件 {} · 计数 {}",
+            event.phase, event.frame, event.count
+        ));
+        ui.label(format!(
+            "原始操作 {} · 参数 {}",
+            event.operation, event.argument
+        ));
+    });
+    let Some(reference) = reference else {
+        return;
+    };
+    let target = definition
+        .attacks
+        .as_deref()
+        .map(|directory| match directory {
+            Ok(directory) => directory
+                .resolve(reference)
+                .map_err(|error| format!("mhfsdt.bin：{error}"))?
+                .ok_or_else(|| {
+                    let subtype = reference
+                        .subtype
+                        .map_or_else(String::new, |key| format!("、子类别键 {key}"));
+                    format!(
+                        "mhfsdt.bin 未包含类别键 {}{subtype} 的攻击参数表",
+                        reference.category
+                    )
+                }),
+            Err(error) => Err(error.clone()),
+        });
+    let widget = ResourceReference::new(reference).id(egui::Id::new((
+        "debug-action-attack-resource",
+        action.group,
+        action.weapon,
+        action.id,
+        index,
+    )));
+    let widget = match target.as_ref() {
+        Some(Ok(path)) => widget.resolved_path(path),
+        Some(Err(error)) => widget.help(error),
+        None => widget,
+    };
+    ui.weak("攻击资源");
+    widget.show(ui);
+    if columns {
+        ui.end_row();
     }
 }
 
@@ -47,7 +124,6 @@ pub(super) fn show(
                 ui.label("正在读取招式定义…");
                 return;
             };
-            let weapon = action.weapon;
             let data = match &definition.data {
                 Ok(data) => data,
                 Err(error) => {
@@ -66,7 +142,15 @@ pub(super) fn show(
                 "{} 个步骤 · {} 个事件",
                 data.steps.len(),
                 data.events.len()
-            ));
+            ))
+            .on_hover_ui(|ui| {
+                if let Ok(path) = data.resource_path("mhfdat.bin") {
+                    ui.weak("来源");
+                    ResourceReference::new(path)
+                        .source_range(data.offset..data.offset + ACTION_SIZE)
+                        .show(ui);
+                }
+            });
             ui.separator();
             egui::ScrollArea::vertical()
                 .id_salt("debug-action-definition-body")
@@ -86,7 +170,17 @@ pub(super) fn show(
                                 2 => "调用招式切换",
                                 _ => "播放动画",
                             };
-                            ui.strong(format!("步骤 {index} · {label}"));
+                            ui.strong(format!("步骤 {index} · {label}"))
+                                .on_hover_ui(|ui| {
+                                    if let Some((path, span)) = data
+                                        .step_path("mhfdat.bin", index)
+                                        .zip(data.step_span(index))
+                                    {
+                                        ui.weak("来源");
+                                        ResourceReference::new(path).source_range(span).show(ui);
+                                    }
+                                    ui.monospace(format!("原始 WORD：{:04X?}", step.0));
+                                });
                             let width = ui.available_width();
                             let columns = width >= 440.0;
                             let fields = |ui: &mut egui::Ui| {
@@ -98,13 +192,24 @@ pub(super) fn show(
                                         field(ui, "调用参数", value.to_string(), columns);
                                     }
                                     _ => {
-                                        field(
-                                            ui,
-                                            "动画资源",
-                                            motion_location(weapon, definition.motion_style, value),
-                                            columns,
-                                        )
-                                        .on_hover_text(format!("原生动画编号 {value}"));
+                                        let motion = NativeMotionRef {
+                                            id: value,
+                                            weapon: action.weapon,
+                                            style: definition.motion_style,
+                                        };
+                                        ui.weak("动画资源");
+                                        ResourceReference::new(motion)
+                                            .id(egui::Id::new((
+                                                "debug-action-motion-resource",
+                                                action.group,
+                                                action.weapon,
+                                                action.id,
+                                                index,
+                                            )))
+                                            .show(ui);
+                                        if columns {
+                                            ui.end_row();
+                                        }
                                         field(
                                             ui,
                                             "动画参数",
@@ -122,12 +227,10 @@ pub(super) fn show(
                                 if let Some(wait) = wait {
                                     field(ui, "等待条件", wait, columns);
                                 }
-                                for event in data
-                                    .events
-                                    .iter()
-                                    .filter(|event| usize::from(event.step) == index)
-                                {
-                                    field(ui, "事件", event_label(event, weapon), columns);
+                                for (event_index, entry) in data.events.iter().enumerate() {
+                                    if usize::from(entry.step) == index {
+                                        event(ui, definition, data, event_index, columns);
+                                    }
                                 }
                             };
                             if columns {
@@ -142,19 +245,10 @@ pub(super) fn show(
                             }
                         });
                     }
-                    for event in data
-                        .events
-                        .iter()
-                        .filter(|event| usize::from(event.step) >= data.steps.len())
-                    {
-                        ui.add(
-                            egui::Label::new(format!(
-                                "步骤 {} · {}",
-                                event.step,
-                                event_label(event, weapon)
-                            ))
-                            .wrap(),
-                        );
+                    for (event_index, entry) in data.events.iter().enumerate() {
+                        if usize::from(entry.step) >= data.steps.len() {
+                            event(ui, definition, data, event_index, false);
+                        }
                     }
                 });
         });

@@ -1,4 +1,5 @@
 use super::super::{Builder, Kind, hex};
+use crate::field::FieldReference;
 use mhf_monster::ai::{
     Error, Result, bytecode,
     decompile::{Memory, extract_script},
@@ -84,13 +85,13 @@ impl Builder {
                 _ => None,
             };
             if let Some((table, index)) = target {
-                self.field(
-                    child,
-                    "子脚本引用",
-                    format!("DLL root[{table}][{index}]"),
-                    position,
-                    0,
-                );
+                let field = self.document.nodes[child].fields.len();
+                self.field(child, "子脚本引用", "", position, 0);
+                self.document.nodes[child].fields[field].reference =
+                    Some(FieldReference::NativeScript {
+                        table: table as u32,
+                        index: u32::from(index),
+                    });
             }
         }
         Ok(())
@@ -171,16 +172,13 @@ mod tests {
         assert_eq!(builder.document.nodes[node].range, at..at + script.len());
         let children = &builder.document.nodes[node].children;
         assert_eq!(children.len(), 4);
-        for (index, target) in ["root[1][7]", "root[18][4]", "root[9][9]"]
-            .into_iter()
-            .enumerate()
-        {
+        for (index, (table, record)) in [(1, 7), (18, 4), (9, 9)].into_iter().enumerate() {
             let instruction = &builder.document.nodes[children[index]];
             assert!(
                 instruction
                     .fields
                     .iter()
-                    .any(|field| field.value.contains(target))
+                    .any(|field| matches!(field.reference, Some(FieldReference::NativeScript { table: actual_table, index: actual_index }) if actual_table == table && actual_index == record))
             );
         }
         let first = &builder.document.nodes[children[0]];

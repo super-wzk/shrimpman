@@ -199,6 +199,9 @@ mod tests {
 
     fn node(kind: Kind, children: &[usize]) -> Node {
         Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: String::new(),
             kind,
             buffer: 0,
@@ -214,6 +217,8 @@ mod tests {
 
     fn document(nodes: Vec<Node>) -> Document {
         Document {
+            attack_directory: None,
+            source: Default::default(),
             nodes,
             root: 0,
             buffers: vec![Arc::from([])],

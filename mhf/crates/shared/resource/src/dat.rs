@@ -9,6 +9,7 @@ use crate::{Error, Result, binary::Reader};
 mod effects;
 mod schema;
 pub use effects::{EFFECT_TABLES, EffectRecordKind};
+pub(crate) use schema::fields;
 pub use schema::{DATA_TABLES, FieldLayout};
 
 pub const MAGIC: &[u8; 4] = b"mhf\x1a";

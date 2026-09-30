@@ -325,6 +325,7 @@ struct PanelUi {
     size: egui::Vec2,
     time: f64,
     texts: Vec<(String, Rect, Rect)>,
+    copied: Vec<String>,
 }
 
 impl PanelUi {
@@ -340,6 +341,7 @@ impl PanelUi {
             size,
             time: 0.0,
             texts: Vec::new(),
+            copied: Vec::new(),
         }
     }
 
@@ -354,6 +356,17 @@ impl PanelUi {
             },
             |ui| self.window.show(ui, &self.snapshot, &mut self.input),
         );
+        self.copied
+            .extend(
+                output
+                    .platform_output
+                    .commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                        _ => None,
+                    }),
+            );
         self.texts = output
             .shapes
             .iter()
@@ -380,7 +393,16 @@ impl PanelUi {
         self.texts
             .iter()
             .find(|(text, rect, clip)| text == label && clip.contains_rect(*rect))
-            .unwrap_or_else(|| panic!("missing fully visible text {label:?} at {:?}", self.size))
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing fully visible text {label:?} at {:?}: {:?}",
+                    self.size,
+                    self.texts
+                        .iter()
+                        .filter(|(text, _, _)| text == label)
+                        .collect::<Vec<_>>()
+                )
+            })
             .1
     }
 
@@ -580,44 +602,9 @@ fn wide_navigation_and_monster_controls_resize_with_native_handles() {
 }
 
 #[test]
-fn definition_field_labels_and_values_align_in_columns() {
-    use crate::provider::action_definition::{ActionDefinition, ActionStep, Definition};
-    let action = Action {
-        weapon: 4,
-        group: 1,
-        id: 2,
-    };
-    let mut snapshot = populated_snapshot(20);
-    snapshot.action_definition = Some(Arc::new(ActionDefinition {
-        action,
-        motion_style: Some(0),
-        data: Ok(Definition {
-            steps: vec![ActionStep([3, 1405, 0, 4, 0, 1])],
-            events: Vec::new(),
-        }),
-    }));
-    let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
-    ui.window.definition_action = Some(action);
-    for zoom in [1.0, 1.5] {
-        ui.context.set_zoom_factor(zoom);
-        ui.settle();
-        for (label, value) in [("动画参数", "0, 4"), ("等待条件", "等待计数 1")] {
-            let label = ui.visible_text(label);
-            let value = ui.visible_text(value);
-            assert!(
-                (label.center().y - value.center().y).abs() <= 1.0,
-                "{zoom}: field label/value are misaligned: {label:?}, {value:?}"
-            );
-            assert!(value.left() >= label.right() + 8.0);
-        }
-    }
-}
-
-#[test]
 fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() {
-    use crate::provider::action_definition::{
-        ActionDefinition, ActionEvent, ActionStep, Definition,
-    };
+    use crate::provider::action_definition::ActionDefinition;
+    use mhf_resource::action_definition::{ActionEvent, ActionStep, Definition};
     let action = Action {
         weapon: 11,
         group: 1,
@@ -627,7 +614,13 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
     snapshot.action_definition = Some(Arc::new(ActionDefinition {
         action,
         motion_style: Some(3),
+        attacks: Some(Arc::new(Err("mhfsdt.bin 测试目标尚未解析".into()))),
         data: Ok(Definition {
+            weapon: action.weapon,
+            action: u16::from(action.id),
+            offset: 0,
+            steps_range: 24..24 + 60 * 12,
+            events_range: 24 + 60 * 12..24 + 61 * 12,
             steps: (0..60)
                 .map(|_| ActionStep([4, 1405, 65535, 4, 20, 1]))
                 .collect(),
@@ -644,6 +637,8 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
     }));
     let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
     ui.window.definition_action = Some(action);
+    ui.context
+        .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
     ui.settle();
     let id = Id::new("debug-action-definition");
     let before = egui::AreaState::load(&ui.context, id).unwrap().rect();
@@ -675,14 +670,262 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
         ]);
         ui.settle();
         assert_eq!(ui.visible_text("60 个步骤 · 1 个事件"), summary);
-        ui.visible_text("步骤 59 · 播放动画");
+        ui.visible_text("motion/w11goku.mot#4/5");
         for (text, rect, clip) in &ui.texts {
-            if text.starts_with("motion/w11goku.mot") || text.contains("记录 12345") {
+            if text.starts_with("motion/w11goku.mot") || text.contains("12345") {
                 assert!(
                     rect.right() <= clip.right() + 1.0 && rect.left() >= clip.left() - 1.0,
                     "detail is horizontally clipped: {text}: {rect:?}, {clip:?}"
                 );
             }
+        }
+        let event = ui.visible_text("步骤结束后 → 生成攻击");
+        ui.frame(vec![Event::PointerMoved(event.center())]);
+        ui.settle();
+        for detail in [
+            "mhfdat.bin#389/11/2/events/0",
+            "原始操作 4 · 参数 12345",
+            "阶段 0 · 帧条件 20 · 计数 1",
+            "数据层偏移 0x2e8..0x2f4 · 12 字节",
+        ] {
+            assert!(
+                ui.texts.iter().any(|(text, _, _)| text == detail),
+                "missing event detail {detail}"
+            );
+        }
+        // The narrow stacked fields can make one complete step taller than
+        // the viewport. Its final event and header remain separately reachable.
+        ui.frame(vec![Event::PointerGone]);
+        ui.settle();
+        ui.frame(vec![
+            Event::PointerMoved(rect.center()),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                phase: egui::TouchPhase::Move,
+                delta: vec2(0.0, 100.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        ui.settle();
+        ui.visible_text("步骤 59 · 播放动画");
+        assert_eq!(ui.visible_text("60 个步骤 · 1 个事件"), summary);
+    }
+}
+
+#[test]
+fn definition_attack_and_motion_share_canonical_rows_and_copy_exact_targets() {
+    use crate::provider::action_definition::ActionDefinition;
+    use mhf_resource::{
+        action_definition::{ActionEvent, ActionStep, AttackDirectory, Definition},
+        sdt,
+    };
+    let mut bytes = vec![0; 0x100 + 24 * sdt::ATTACK_STRIDE];
+    for (index, kind) in [999_u16, 100, 0].into_iter().enumerate() {
+        let offset = index * sdt::DIRECTORY_STRIDE;
+        bytes[offset + 2..offset + 4].copy_from_slice(&kind.to_le_bytes());
+        if kind == 0 {
+            bytes[offset + 4..offset + 6].copy_from_slice(&24_u16.to_le_bytes());
+            bytes[offset + 8..offset + 12].copy_from_slice(&0x100_u32.to_le_bytes());
+        }
+    }
+    let end = 3 * sdt::DIRECTORY_STRIDE;
+    bytes[end + 2..end + 4].copy_from_slice(&u16::MAX.to_le_bytes());
+    let file = sdt::Sdt::parse(&bytes).unwrap();
+    let directory = AttackDirectory::from_sdt("mhfsdt.bin", &file).unwrap();
+    let action = Action {
+        weapon: 0,
+        group: 1,
+        id: 2,
+    };
+    let event = ActionEvent {
+        step: 0,
+        timing: 1,
+        phase: 0,
+        frame: 0,
+        count: 0,
+        operation: 16,
+        argument: 23,
+    };
+    let mut snapshot = populated_snapshot(4);
+    snapshot.action_definition = Some(Arc::new(ActionDefinition {
+        action,
+        motion_style: Some(0),
+        attacks: Some(Arc::new(Ok(directory))),
+        data: Ok(Definition {
+            weapon: action.weapon,
+            action: u16::from(action.id),
+            offset: 0,
+            steps_range: 24..36,
+            events_range: 36..48,
+            steps: vec![ActionStep([3, 1405, 0, 4, 0, 1])],
+            events: vec![event],
+        }),
+    }));
+    let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
+    ui.window.definition_action = Some(action);
+    for zoom in [1.0, 1.5] {
+        ui.context.set_zoom_factor(zoom);
+        ui.settle();
+        ui.visible_text("生成攻击");
+        for (label, value) in [
+            ("动画资源", "motion/w00.mot#4/5"),
+            ("动画参数", "0, 4"),
+            ("等待条件", "等待计数 1"),
+            ("攻击资源", "mhfsdt.bin#2/attacks/23"),
+        ] {
+            let label = ui.visible_text(label);
+            let value = ui.visible_text(value);
+            assert!(
+                (label.center().y - value.center().y).abs() <= 1.0,
+                "{zoom}: field label/value are misaligned: {label:?}, {value:?}"
+            );
+            assert!(value.left() >= label.right() + 8.0);
+        }
+        for (kind, expected) in [
+            ("motion", "motion/w00.mot#4/5"),
+            ("attack", "mhfsdt.bin#2/attacks/23"),
+        ] {
+            let id = Id::new((
+                format!("debug-action-{kind}-resource"),
+                action.group,
+                action.weapon,
+                action.id,
+                0_usize,
+            ))
+            .with("copy");
+            let copy = ui.context.read_response(id).unwrap();
+            assert!(copy.enabled());
+            assert!(ui.visible_text(expected).right() <= copy.rect.left());
+            ui.click_at(copy.rect.center());
+            assert_eq!(ui.copied.last().map(String::as_str), Some(expected));
+        }
+    }
+    assert!(ui.window.control.commands().is_empty());
+}
+
+#[test]
+fn definition_references_keep_unknown_targets_and_original_event_sources() {
+    use crate::provider::action_definition::ActionDefinition;
+    use mhf_resource::action_definition::{ActionEvent, ActionStep, Definition};
+    let action = Action {
+        weapon: 11,
+        group: 1,
+        id: 2,
+    };
+    let mut snapshot = populated_snapshot(4);
+    snapshot.action_definition = Some(Arc::new(ActionDefinition {
+        action,
+        motion_style: None,
+        attacks: Some(Arc::new(Err("mhfsdt.bin 测试文件缺失".into()))),
+        data: Ok(Definition {
+            weapon: action.weapon,
+            action: u16::from(action.id),
+            offset: 0x100,
+            steps_range: 0x180..0x18c,
+            events_range: 0x200..0x218,
+            steps: vec![ActionStep([4, 1405, 0xffff, 0x8000, 12, 2])],
+            // Display grouping puts event 1 before event 0, without changing
+            // their original indices or the byte spans in their source paths.
+            events: vec![
+                ActionEvent {
+                    step: 59,
+                    timing: 255,
+                    phase: -128,
+                    frame: 65533,
+                    count: 65532,
+                    operation: 65535,
+                    argument: 65534,
+                },
+                ActionEvent {
+                    step: 0,
+                    timing: 2,
+                    phase: -2,
+                    frame: 17,
+                    count: 9,
+                    operation: 4,
+                    argument: 12345,
+                },
+            ],
+        }),
+    }));
+    let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
+    ui.window.definition_action = Some(action);
+    ui.context
+        .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+    ui.settle();
+    assert!(
+        ui.texts
+            .iter()
+            .any(|(text, _, _)| text.contains("未解析") && text.contains("1405")),
+        "an unknown weapon style retains the raw motion selector"
+    );
+    assert!(
+        ui.texts
+            .iter()
+            .any(|(text, _, _)| text.contains("未解析") && text.contains("12345")),
+        "an attack query without SDT data remains unresolved"
+    );
+    assert!(
+        !ui.texts
+            .iter()
+            .any(|(text, _, _)| { text.contains("motion/w11") || text.contains("mhfsdt.bin#") })
+    );
+    let (_, target, clip) = ui
+        .texts
+        .iter()
+        .find(|(text, _, _)| text.contains("12345") && text.contains("未解析"))
+        .unwrap();
+    ui.frame(vec![Event::PointerMoved(target.intersect(*clip).center())]);
+    ui.settle();
+    assert!(
+        ui.texts
+            .iter()
+            .any(|(text, _, _)| text == "mhfsdt.bin 测试文件缺失"),
+        "an unresolved resource exposes its concrete source error in hover"
+    );
+    for (label, details) in [
+        (
+            "1 个步骤 · 2 个事件",
+            &["mhfdat.bin#389/11/2", "数据层偏移 0x100..0x118 · 24 字节"][..],
+        ),
+        (
+            "步骤 0 · 播放动画",
+            &[
+                "mhfdat.bin#389/11/2/steps/0",
+                "数据层偏移 0x180..0x18c · 12 字节",
+            ][..],
+        ),
+        (
+            "步骤结束后 → 生成攻击",
+            &[
+                "mhfdat.bin#389/11/2/events/1",
+                "数据层偏移 0x20c..0x218 · 12 字节",
+                "所属步骤 0 · 时机 2",
+                "阶段 -2 · 帧条件 17 · 计数 9",
+                "原始操作 4 · 参数 12345",
+            ][..],
+        ),
+        (
+            "步骤 59 · 帧条件 65533 · 计数 65532 → 操作 65535 · 参数 65534",
+            &[
+                "mhfdat.bin#389/11/2/events/0",
+                "数据层偏移 0x200..0x20c · 12 字节",
+                "所属步骤 59 · 时机 255",
+                "阶段 -128 · 帧条件 65533 · 计数 65532",
+                "原始操作 65535 · 参数 65534",
+            ][..],
+        ),
+    ] {
+        ui.frame(vec![Event::PointerGone]);
+        ui.settle();
+        let event = ui.visible_text(label);
+        ui.frame(vec![Event::PointerMoved(event.center())]);
+        ui.settle();
+        for detail in details {
+            assert!(
+                ui.texts.iter().any(|(text, _, _)| text == *detail),
+                "missing definition source or event detail {detail}"
+            );
         }
     }
 }
@@ -997,79 +1240,58 @@ fn runtime_hud_stays_at_bottom_left_without_capturing_input() {
 
 #[test]
 fn definition_window_keeps_move_rows_in_place() {
-    use crate::provider::action_definition::{ActionDefinition, ActionStep, Definition};
-    let context = context();
-    let mut window = DebugPanel::new(DebugControl::new());
-    window.page = Page::Actions;
-    let mut input = InputSettings::default();
-    let mut snapshot = populated_snapshot(8);
+    use crate::provider::action_definition::ActionDefinition;
+    use mhf_resource::action_definition::{ActionStep, Definition};
+    let mut ui = PanelUi::new(populated_snapshot(8), vec2(1200.0, 900.0), Page::Actions);
     let action = Action {
         weapon: 0,
         group: 1,
         id: 2,
     };
-    let mut frame = |window: &mut DebugPanel, snapshot: &DebugSnapshot, events| {
-        let output = context.run_ui(
-            RawInput {
-                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 900.0))),
-                events,
-                ..Default::default()
-            },
-            |ui| {
-                window.show(ui, snapshot, &mut input);
-            },
-        );
-        let texts: Vec<_> = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) => {
-                    Some((text.galley.job.text.clone(), text.pos, shape.clip_rect))
-                }
-                _ => None,
-            })
-            .collect();
-        output.drop_without_applying_deltas();
-        texts
-    };
-    for _ in 0..4 {
-        frame(&mut window, &snapshot, vec![]);
-    }
-    let initial = frame(&mut window, &snapshot, vec![]);
-    let list_clip = initial
+    ui.settle();
+    let list_clip = ui
+        .texts
         .iter()
         .find(|(text, _, _)| text.starts_with("武器招式 "))
         .unwrap()
         .2;
-    let rows = |texts: Vec<(String, egui::Pos2, Rect)>| {
+    let rows = |texts: &[(String, Rect, Rect)]| {
         texts
-            .into_iter()
+            .iter()
             .filter(|(text, _, clip)| text.starts_with("武器招式 ") && *clip == list_clip)
-            .map(|(text, position, _)| (text, position))
+            .map(|(text, rect, _)| (text.clone(), rect.min))
             .collect::<Vec<_>>()
     };
-    let before = rows(initial);
+    let before = rows(&ui.texts);
     assert!(!before.is_empty());
-    snapshot.action_definition = Some(Arc::new(ActionDefinition {
+    ui.snapshot.action_definition = Some(Arc::new(ActionDefinition {
         action,
         motion_style: Some(0),
+        attacks: None,
         data: Ok(Definition {
+            weapon: action.weapon,
+            action: u16::from(action.id),
+            offset: 0,
+            steps_range: 24..24 + 20 * 12,
+            events_range: 0..0,
             steps: (0..20).map(|_| ActionStep([3, 1405, 0, 4, 0, 1])).collect(),
             events: vec![],
         }),
     }));
-    window.definition_action = Some(action);
-    for _ in 0..4 {
-        frame(&mut window, &snapshot, vec![]);
-    }
-    let texts = frame(&mut window, &snapshot, vec![]);
+    ui.window.definition_action = Some(action);
+    ui.settle();
     assert!(
-        texts
+        ui.texts
+            .iter()
+            .any(|(text, _, _)| text == "motion/w00.mot#4/5")
+    );
+    assert!(
+        ui.texts
             .iter()
             .any(|(text, _, _)| text.starts_with("步骤 0 ·")),
         "definition is visible in its own window"
     );
-    assert_eq!(before, rows(texts));
+    assert_eq!(before, rows(&ui.texts));
 }
 
 fn monster_ui() -> DebugUi {

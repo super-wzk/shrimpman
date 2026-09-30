@@ -6,6 +6,9 @@ struct Tag(u8);
 
 fn fixture(extra_nodes: usize) -> Arc<Document> {
     let node = |kind, children| Node {
+        native_id: None,
+        material_slots: Vec::new(),
+        address: None,
         name: "resource".into(),
         kind,
         buffer: 0,
@@ -18,6 +21,8 @@ fn fixture(extra_nodes: usize) -> Arc<Document> {
         error: None,
     };
     let mut document = Document {
+        attack_directory: None,
+        source: Default::default(),
         root: 0,
         buffers: vec![Arc::from([0_u8; 16])],
         nodes: vec![

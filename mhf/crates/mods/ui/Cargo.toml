@@ -9,6 +9,8 @@ default = []
 headers = ["mhf-mod-sdk/headers"]
 provider = [
     "dep:egui",
+    "dep:egui-hunter",
+    "dep:mhf-resource",
     "dep:mhf-font",
     "dep:mhf-mod-host",
     "dep:mhf-hooks",
@@ -20,6 +22,8 @@ provider = [
 safer-ffi = { workspace = true, features = ["dyn-traits"] }
 mhf-mod-sdk = { path = "../../runtime/mod-sdk" }
 egui = { workspace = true, features = ["default_fonts"], optional = true }
+egui-hunter = { path = "../../shared/egui-hunter", optional = true }
+mhf-resource = { path = "../../shared/resource", optional = true }
 mhf-font = { path = "../font", features = ["provider"], optional = true }
 
 [target.'cfg(windows)'.dependencies]

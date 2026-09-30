@@ -332,7 +332,6 @@ pub(crate) struct DefinitionSnapshot {
 #[derive(Clone)]
 pub(crate) struct BindingSnapshot {
     pub id: u64,
-    pub name: String,
     pub definitions: Vec<DefinitionSnapshot>,
 }
 
@@ -675,7 +674,6 @@ impl Effects {
             }
             sample.bindings.push(BindingSnapshot {
                 id: binding.id,
-                name: binding.source.name(),
                 definitions: snapshots,
             });
         }

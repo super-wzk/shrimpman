@@ -67,7 +67,11 @@ impl ResourceRef {
         Self::at_context(document, node, context)
     }
 
-    fn at_context(document: Arc<Document>, node: usize, mut context: Vec<usize>) -> Self {
+    pub(crate) fn at_context(
+        document: Arc<Document>,
+        node: usize,
+        mut context: Vec<usize>,
+    ) -> Self {
         if let Some(target) = document.payload(node) {
             let mut current = node;
             while current != target {
@@ -84,6 +88,23 @@ impl ResourceRef {
 
     pub fn scope(&self) -> crate::metadata::Scope<'_, '_> {
         crate::metadata::Scope::new(&self.document, &self.context)
+    }
+
+    pub(crate) fn context(&self) -> &[usize] {
+        &self.context
+    }
+
+    pub(crate) fn resource_address(
+        &self,
+        root: &Path,
+        field: Option<usize>,
+    ) -> Option<crate::inspect::resource_path::Address> {
+        let context = if field.is_some() {
+            &self.context[..=self.context.iter().position(|node| *node == self.node)?]
+        } else {
+            &self.context
+        };
+        self.document.resource_address(root, context, field)
     }
 
     pub fn scope_source(&self, node: usize) -> Self {
@@ -113,7 +134,10 @@ impl ResourceRef {
     /// Follow a known child ordinal without searching a wide sibling list.
     pub(crate) fn child_at(&self, ordinal: usize) -> Option<Self> {
         let node = *self.document.nodes.get(self.node)?.children.get(ordinal)?;
-        let mut context = self.context.clone();
+        // The stored context already includes transparent payloads. Walking
+        // an explicit wrapper/reference child starts at that node itself.
+        let end = self.context.iter().position(|index| *index == self.node)?;
+        let mut context = self.context[..=end].to_vec();
         context.push(node);
         Some(Self::at_context(self.document.clone(), node, context))
     }
@@ -169,13 +193,50 @@ impl ResourceRef {
     }
 
     pub fn belongs_to(&self, path: &Path) -> bool {
-        Path::new(&self.document.nodes[self.document.root].name) == path
+        self.document.source == path
     }
 
-    /// Container member ordinals identify a loaded resource. Transparent
-    /// payload links are rebuilt, so adding or removing encoding layers does
-    /// not redirect an old payload path into the new resource's detail nodes.
+    /// Native addresses guard a rebuilt loading branch. Physical ownership
+    /// and EMD association identity remain separate from this navigation path.
     pub fn remap_path(&self, document: Arc<Document>) -> Result<Self, String> {
+        let native = self
+            .document
+            .resource_segments(&self.context)
+            .filter(|(_, exact)| *exact)
+            .map(|(segments, _)| segments);
+        let replacement = self
+            .remap_context(document.clone())
+            .ok()
+            .filter(|replacement| {
+                native.as_ref().is_none_or(|expected| {
+                    replacement
+                        .document
+                        .resource_segments(&replacement.context)
+                        .is_some_and(|(actual, exact)| exact && &actual == expected)
+                })
+            })
+            .or_else(|| {
+                let segments = native.as_ref()?;
+                let crate::inspect::resource_path::Location::Resolved {
+                    node,
+                    context,
+                    field: None,
+                } = document.locate_segments(segments)
+                else {
+                    return None;
+                };
+                Some(Self::at_context(document.clone(), node, context))
+            })
+            .ok_or_else(|| format!("编辑后找不到已加载资源：{}", self.short_name()))?;
+        if crate::edit::node_key(&self.document, self.node)
+            .is_some_and(|key| !key.matches_emd_identity(&document, replacement.node))
+        {
+            return Err("编辑后 EMD 关联条目已变化，请重新选择。".into());
+        }
+        Ok(replacement)
+    }
+
+    fn remap_context(&self, document: Arc<Document>) -> Result<Self, String> {
         let key = self.context_key().ok_or("已加载资源的原始路径失效")?;
         let selected_payload = self.document.payload(self.node) == Some(self.node);
         let mut replacement = Self::new(document.clone(), document.root);
@@ -197,11 +258,6 @@ impl ResourceRef {
                 .payload(replacement.node)
                 .unwrap_or(replacement.node);
         }
-        if crate::edit::node_key(&self.document, self.node)
-            .is_some_and(|key| !key.matches_emd_identity(&document, replacement.node))
-        {
-            return Err("编辑后 EMD 关联条目已变化，请重新选择。".into());
-        }
         Ok(replacement)
     }
 
@@ -215,12 +271,17 @@ impl ResourceRef {
     }
 
     pub fn same_origin(&self, other: &Self) -> bool {
-        self.document.nodes[self.document.root].name
-            == other.document.nodes[other.document.root].name
+        self.document.source == other.document.source
             && self.kind() == other.kind()
-            && self
-                .context_key()
-                .is_some_and(|key| other.context_key().as_ref() == Some(&key))
+            && match (
+                self.document.resource_segments(&self.context),
+                other.document.resource_segments(&other.context),
+            ) {
+                (Some((first, true)), Some((second, true))) => first == second,
+                _ => self
+                    .context_key()
+                    .is_some_and(|key| other.context_key().as_ref() == Some(&key)),
+            }
     }
 
     /// Enumerate the selected subtree, stopping at complete resource boundaries.
@@ -1390,6 +1451,9 @@ mod tests {
     #[test]
     fn resource_handles_resolve_wrappers_and_keep_raw_layers_and_errors() {
         let node = |name: &str, kind, buffer, children| crate::inspect::Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: name.into(),
             kind,
             buffer,
@@ -1402,6 +1466,8 @@ mod tests {
             error: None,
         };
         let document = metadata_fixture(Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![
                 Arc::from(*b"root"),
@@ -1464,6 +1530,9 @@ mod tests {
     #[test]
     fn directory_counts_keep_reference_owners_and_stop_at_resource_boundaries() {
         let node = |kind, children| crate::inspect::Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: String::new(),
             kind,
             buffer: 0,
@@ -1476,6 +1545,8 @@ mod tests {
             error: None,
         };
         let document = metadata_fixture(Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![Arc::from(*b"data")],
             nodes: vec![
@@ -1518,6 +1589,9 @@ mod tests {
     #[test]
     fn named_members_and_inner_geometry_expose_only_their_own_bundles() {
         let node = |name: &str, kind, children| crate::inspect::Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: name.into(),
             kind,
             buffer: 0,
@@ -1530,6 +1604,8 @@ mod tests {
             error: None,
         };
         let document = metadata_fixture(Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![Arc::from([0_u8; 16])],
             nodes: vec![
@@ -1590,6 +1666,9 @@ mod tests {
     #[test]
     fn txb_images_load_individually_and_missing_images_keep_their_original_slots() {
         let node = |kind, children| crate::inspect::Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: "resource".into(),
             kind,
             buffer: 0,
@@ -1602,6 +1681,8 @@ mod tests {
             error: None,
         };
         let document = metadata_fixture(Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![Arc::from([0u8; 16])],
             nodes: vec![
@@ -1663,6 +1744,9 @@ mod tests {
     #[test]
     fn distinct_archive_entries_stay_distinct_when_their_bytes_are_aliased() {
         let node = || crate::inspect::Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: "aliased".into(),
             kind: Kind::Fmod,
             buffer: 0,
@@ -1675,6 +1759,8 @@ mod tests {
             error: None,
         };
         let document = metadata_fixture(Document {
+            attack_directory: None,
+            source: Default::default(),
             buffers: vec![Arc::from([0u8; 8])],
             nodes: vec![node(), node()],
             root: 0,

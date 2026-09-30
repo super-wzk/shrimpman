@@ -1,9 +1,11 @@
 use super::{Builder, Kind, hex};
 use crate::field::{FieldType, ScalarType, TextEncoding, formatted, typed};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::dat::{self, Dat, RecordCount, RecordFormat, TableLayout};
 
 include!(concat!(env!("OUT_DIR"), "/dat_text.rs"));
 
+mod actions;
 #[cfg(test)]
 mod edit_tests;
 mod effects;
@@ -76,6 +78,7 @@ impl Builder {
                 ) else {
                     return;
                 };
+                self.set_address(child, node, [Key(layout.id.into())]);
                 self.field(child, "表标识", layout.id, base, 0);
                 self.field(child, "根字段路径", format!("{:X?}", layout.root), base, 0);
                 self.field(child, "记录步长", layout.stride, base, 0);
@@ -116,6 +119,7 @@ impl Builder {
                 }
             }
         }
+        self.dat_action_directory(node, &file, base);
         self.dat_roots(node, &file, base);
     }
 
@@ -159,6 +163,7 @@ impl Builder {
             ) else {
                 return;
             };
+            self.set_address(child, node, [Key("header".into()), Index(slot as u32)]);
             self.field(
                 child,
                 "原值",
@@ -222,15 +227,17 @@ impl Builder {
         };
         for record in 0..table.count {
             let (offset, bytes) = table.record(record).map_err(|error| error.to_string())?;
+            let original_index = layout.first_record as usize + record;
             let Some(child) = self.child(
                 node,
-                format!("记录 {record:05}"),
+                format!("记录 {original_index}"),
                 Kind::DatRecord(index),
                 buffer_index,
                 base + offset..base + offset + bytes.len(),
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(original_index as u32)]);
             if matches!(
                 layout.format,
                 RecordFormat::Effect(dat::EffectRecordKind::ModelBinding)
@@ -239,13 +246,13 @@ impl Builder {
                     .map_err(|error| error.to_string())?;
                 self.document.nodes[child].metadata.insert(binding);
             }
-            self.field(child, "记录索引", record, base + offset, 0);
+            self.field(child, "记录索引", original_index, base + offset, 0);
             if let Some(names) = names
                 && let Some(name) =
-                    self.dat_text_field(child, &file, names + record * 4, "名称", base)
+                    self.dat_text_field(child, &file, names + record * 4, "名称", "name", base)
                 && !name.is_empty()
             {
-                self.document.nodes[child].name = format!("{record:05} · {name}");
+                self.document.nodes[child].name = format!("{original_index} · {name}");
             }
             self.document.nodes[child].deferred = true;
         }
@@ -271,7 +278,8 @@ impl Builder {
                     let offset = usize::from(field.offset);
                     let size = field.scalar.size();
                     let at = range.start + offset;
-                    self.read_scalar(node, field.name, at, field.scalar)?;
+                    let index = self.read_scalar(node, field.name, at, field.scalar)?;
+                    self.document.nodes[node].fields[index].key = Some(field.key.into());
                     covered[offset..offset + size].fill(true);
                 }
             }
@@ -286,6 +294,7 @@ impl Builder {
                         &file,
                         range.start - base + offset,
                         &format!("文本 {part:02}"),
+                        &format!("text_{part}"),
                         base,
                     );
                     covered[offset..offset + 4].fill(true);
@@ -321,8 +330,10 @@ impl Builder {
         file: &Dat<'_>,
         cell: usize,
         label: &str,
+        key: &str,
         base: usize,
     ) -> Option<String> {
+        let index = self.document.nodes[node].fields.len();
         match file.u32(cell) {
             Ok(value) => self.field(
                 node,
@@ -336,9 +347,11 @@ impl Builder {
                 return None;
             }
         }
+        self.document.nodes[node].fields[index].key = Some(format!("{key}_offset"));
         match file.text(cell) {
             Ok(Some((offset, bytes))) => {
                 let text = source_text(bytes);
+                let index = self.document.nodes[node].fields.len();
                 self.field(
                     node,
                     label,
@@ -352,6 +365,7 @@ impl Builder {
                     base + offset,
                     bytes.len() + 1,
                 );
+                self.document.nodes[node].fields[index].key = Some(key.into());
                 Some(text)
             }
             Ok(None) => {

@@ -1984,10 +1984,12 @@ name = "mhf-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "egui-hunter",
  "mhf-font",
  "mhf-hooks",
  "mhf-mod-host",
  "mhf-mod-sdk",
+ "mhf-resource",
  "safer-ffi",
  "windows",
  "windows-numerics",

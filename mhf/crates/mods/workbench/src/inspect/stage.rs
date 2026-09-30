@@ -2,13 +2,28 @@
 
 mod render;
 
-use super::{Builder, Kind, hex, summary};
-use crate::field::{FieldType, ScalarType, formatted, typed};
+use super::{Builder, Kind, NativeId, hex, summary};
+use crate::field::{FieldReference, FieldType, ReferenceCollection, ScalarType, formatted, typed};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::stage::{
     Hits, KEffect, KEffectRecord, Lighting, Placement, PlacementTable, Record, RenderTables,
 };
 
 impl Builder {
+    pub(super) fn stage_resource_target(&self, node: usize, id: u32) -> Option<usize> {
+        let mut current = Some(node);
+        while let Some(index) = current {
+            let owner = self.document.nodes.get(index)?;
+            if owner.kind == Kind::Stage {
+                return owner.children.iter().copied().find(|&child| {
+                    self.document.nodes[child].native_id == Some(NativeId::Stage(id))
+                });
+            }
+            current = self.parents.get(index).copied().flatten();
+        }
+        None
+    }
+
     pub(super) fn has_stage_lighting_prefix(&self, node: usize) -> bool {
         let children = &self.document.nodes[node].children;
         children.len() >= 2
@@ -141,13 +156,16 @@ impl Builder {
         }
     }
 
-    fn stage_record(&mut self, node: usize, name: impl Into<String>, record: &Record, base: usize) {
+    fn stage_record(
+        &mut self,
+        node: usize,
+        name: impl Into<String>,
+        record: &Record,
+        base: usize,
+    ) -> Option<usize> {
         let buffer = self.document.nodes[node].buffer;
         let at = base + record.offset;
-        let Some(child) = self.child(node, name, Kind::Block, buffer, at..at + record.byte_len())
-        else {
-            return;
-        };
+        let child = self.child(node, name, Kind::Block, buffer, at..at + record.byte_len())?;
         for (index, &word) in record.words.iter().enumerate() {
             self.field(
                 child,
@@ -164,6 +182,7 @@ impl Builder {
                 4,
             );
         }
+        Some(child)
     }
 
     pub(super) fn hits_details(&mut self, node: usize, file: &Hits<'_>, base: usize) {
@@ -177,6 +196,7 @@ impl Builder {
         ) else {
             return;
         };
+        self.set_address(cells, node, [Key("cells".into())]);
         for cell in &file.cells {
             let at = base + cell.offset;
             let Some(child) = self.child(
@@ -188,6 +208,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, cells, [Index(cell.index as u32)]);
             self.field(
                 child,
                 "目录相对偏移",
@@ -229,6 +250,7 @@ impl Builder {
         ) else {
             return;
         };
+        self.set_address(records, node, [Key("records".into())]);
         for record in &file.records {
             let at = base + record.offset;
             let Some(child) = self.child(
@@ -240,6 +262,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, records, [Index(record.index as u32)]);
             self.field(
                 child,
                 "unknown_00",
@@ -284,13 +307,14 @@ impl Builder {
             let at = base + placement.offset;
             let Some(child) = self.child(
                 node,
-                format!("实例 {index} · 资源 {}", placement.resource_id),
+                format!("实例 {index}"),
                 Kind::Block,
                 buffer,
                 at..at + Placement::SIZE,
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(index as u32)]);
             for (offset, name, bits) in [
                 (0, "vector_00", placement.vector_00_bits.as_slice()),
                 (12, "vector_0c", placement.vector_0c_bits.as_slice()),
@@ -326,6 +350,15 @@ impl Builder {
                 (54, "resource_id", placement.resource_id),
             ] {
                 self.field(child, name, value, at + offset, 2);
+                if name == "resource_id" {
+                    let field = self.document.nodes[child].fields.len() - 1;
+                    self.document.nodes[child].fields[field].reference =
+                        Some(FieldReference::Indexed(
+                            ReferenceCollection::StageResources,
+                            u32::from(value),
+                            self.stage_resource_target(node, u32::from(value)),
+                        ));
+                }
             }
         }
     }
@@ -343,6 +376,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(index as u32)]);
             self.field(child, "kind", record.kind, at, 4);
             self.field(child, "target_id", record.target_id, at + 4, 4);
             self.field(
@@ -386,64 +420,163 @@ impl Builder {
     }
 
     pub(super) fn stage_lighting_details(&mut self, node: usize, file: &Lighting<'_>, base: usize) {
-        for (name, records) in [
-            ("点光源", &file.point_lights),
-            ("方向光 A", &file.directional_lights[0]),
-            ("方向光 B", &file.directional_lights[1]),
-            ("环境立方体光源", &file.cube_map_lights),
-            ("光照组", &file.light_groups),
+        for (key, name, group, records) in [
+            ("point_lights", "点光源", None, &file.point_lights),
+            (
+                "directional_lights",
+                "方向光 A",
+                Some(0),
+                &file.directional_lights[0],
+            ),
+            (
+                "directional_lights",
+                "方向光 B",
+                Some(1),
+                &file.directional_lights[1],
+            ),
+            (
+                "cube_map_lights",
+                "环境立方体光源",
+                None,
+                &file.cube_map_lights,
+            ),
+            ("light_groups", "光照组", None, &file.light_groups),
         ] {
             for (index, record) in records.iter().enumerate() {
-                self.stage_record(node, format!("{name} {index}"), record, base);
+                if let Some(child) =
+                    self.stage_record(node, format!("{name} {index}"), record, base)
+                {
+                    let mut segments = vec![Key(key.into())];
+                    if let Some(group) = group {
+                        segments.push(Index(group));
+                    }
+                    segments.push(Index(index as u32));
+                    self.set_address(child, node, segments);
+                }
             }
         }
         for (index, collision) in file.light_collisions.iter().enumerate() {
-            self.stage_record(node, format!("光照碰撞体 {index}"), &collision.header, base);
-            self.stage_record(
-                node,
-                format!("光照碰撞体 {index} 成员"),
-                &collision.members,
-                base,
-            );
-        }
-        for (index, animation) in file.light_animations.iter().enumerate() {
-            self.stage_record(node, format!("光照动画组 {index}"), &animation.header, base);
-            for (channel_index, channel) in animation.channels.iter().enumerate() {
-                self.stage_record(
-                    node,
-                    format!("动画组 {index} 通道 {channel_index}"),
-                    &channel.header,
-                    base,
-                );
-                for (key, record) in channel.keys.iter().enumerate() {
-                    self.stage_record(
+            for (key, label, record) in [
+                ("header", format!("光照碰撞体 {index}"), &collision.header),
+                (
+                    "members",
+                    format!("光照碰撞体 {index} 成员"),
+                    &collision.members,
+                ),
+            ] {
+                if let Some(child) = self.stage_record(node, label, record, base) {
+                    self.set_address(
+                        child,
                         node,
-                        format!("动画组 {index} 通道 {channel_index} 关键帧 {key}"),
-                        record,
-                        base,
+                        [
+                            Key("light_collisions".into()),
+                            Index(index as u32),
+                            Key(key.into()),
+                        ],
                     );
                 }
             }
         }
+        for (index, animation) in file.light_animations.iter().enumerate() {
+            if let Some(child) =
+                self.stage_record(node, format!("光照动画组 {index}"), &animation.header, base)
+            {
+                self.set_address(
+                    child,
+                    node,
+                    [
+                        Key("light_animations".into()),
+                        Index(index as u32),
+                        Key("header".into()),
+                    ],
+                );
+            }
+            for (channel_index, channel) in animation.channels.iter().enumerate() {
+                if let Some(child) = self.stage_record(
+                    node,
+                    format!("动画组 {index} 通道 {channel_index}"),
+                    &channel.header,
+                    base,
+                ) {
+                    self.set_address(
+                        child,
+                        node,
+                        [
+                            Key("light_animations".into()),
+                            Index(index as u32),
+                            Key("channels".into()),
+                            Index(channel_index as u32),
+                            Key("header".into()),
+                        ],
+                    );
+                }
+                for (key, record) in channel.keys.iter().enumerate() {
+                    if let Some(child) = self.stage_record(
+                        node,
+                        format!("动画组 {index} 通道 {channel_index} 关键帧 {key}"),
+                        record,
+                        base,
+                    ) {
+                        self.set_address(
+                            child,
+                            node,
+                            [
+                                Key("light_animations".into()),
+                                Index(index as u32),
+                                Key("channels".into()),
+                                Index(channel_index as u32),
+                                Key("keys".into()),
+                                Index(key as u32),
+                            ],
+                        );
+                    }
+                }
+            }
+        }
         let post = &file.post_process;
-        for (name, record) in [
-            ("光束", &post.god_rays),
-            ("高度雾", &post.height_fog),
-            ("深度雾", &post.depth_fog),
-            ("景深", &post.depth_of_field),
-            ("辉光", &post.bloom),
-            ("阴影", &post.shadows),
-            ("环境光遮蔽", &post.ssao),
-            ("高斯模糊", &post.gaussian_blur),
+        for (key, name, record) in [
+            ("god_rays", "光束", &post.god_rays),
+            ("height_fog", "高度雾", &post.height_fog),
+            ("depth_fog", "深度雾", &post.depth_fog),
+            ("depth_of_field", "景深", &post.depth_of_field),
+            ("bloom", "辉光", &post.bloom),
+            ("shadows", "阴影", &post.shadows),
+            ("ssao", "环境光遮蔽", &post.ssao),
+            ("gaussian_blur", "高斯模糊", &post.gaussian_blur),
         ] {
-            self.stage_record(node, name, record, base);
+            if let Some(child) = self.stage_record(node, name, record, base) {
+                self.set_address(child, node, [Key("post_process".into()), Key(key.into())]);
+            }
         }
         let tone = &post.tone_mapping;
         self.field(node, "色调映射点数", tone.count, base + tone.offset, 1);
         for (index, record) in tone.points.iter().enumerate() {
-            self.stage_record(node, format!("色调映射点 {index}"), record, base);
+            if let Some(child) =
+                self.stage_record(node, format!("色调映射点 {index}"), record, base)
+            {
+                self.set_address(
+                    child,
+                    node,
+                    [
+                        Key("post_process".into()),
+                        Key("tone_mapping".into()),
+                        Key("points".into()),
+                        Index(index as u32),
+                    ],
+                );
+            }
         }
-        self.stage_record(node, "色调映射标记", &tone.flags, base);
+        if let Some(child) = self.stage_record(node, "色调映射标记", &tone.flags, base) {
+            self.set_address(
+                child,
+                node,
+                [
+                    Key("post_process".into()),
+                    Key("tone_mapping".into()),
+                    Key("flags".into()),
+                ],
+            );
+        }
     }
 }
 

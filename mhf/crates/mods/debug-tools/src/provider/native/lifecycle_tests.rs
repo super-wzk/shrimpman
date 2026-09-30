@@ -53,8 +53,14 @@ fn supported_client_keeps_quest_and_debug_hook_lifetimes_separate() {
 
         // Keep the selected provider alive until the debug guard and its
         // retired native state have been dropped at the end of this loop.
-        let mut tools = unsafe { debug::install(module, control, debug::DebugControl::new()) }
-            .expect("add optional debug hooks to the running offline group");
+        let attack_path = std::path::Path::new(&path)
+            .parent()
+            .unwrap()
+            .join("dat")
+            .join("mhfsdt.bin");
+        let mut tools =
+            unsafe { debug::install(module, control, debug::DebugControl::new(), attack_path) }
+                .expect("add optional debug hooks to the running offline group");
         assert!(
             !control.snapshot().hunter_initialized,
             "install must not bootstrap the hunter or read the catalog"

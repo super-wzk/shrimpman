@@ -1,17 +1,7 @@
 //! Category-specific SDT parameter consumers; unrecognized records stay raw.
 
-use super::FieldLayout;
 use crate::binary::ScalarType;
-
-macro_rules! field {
-    ($offset:literal => $name:literal : $scalar:ident) => {
-        FieldLayout {
-            name: $name,
-            offset: $offset,
-            scalar: ScalarType::$scalar,
-        }
-    };
-}
+use crate::dat::{FieldLayout, fields};
 
 pub(super) fn fields(kind: u16, index: usize, bank: &[u8]) -> Option<&'static [FieldLayout]> {
     match kind {
@@ -95,11 +85,17 @@ fn status_fields(index: usize) -> Option<&'static [FieldLayout]> {
 const fn variant_modifier(name: &'static str) -> [FieldLayout; 2] {
     [
         FieldLayout {
+            key: "field_04",
             name,
             offset: 0x04,
             scalar: ScalarType::F32,
         },
-        field!(0x14 => "修正操作（1替换／2相加／3相乘）" : I32),
+        FieldLayout {
+            key: "field_14",
+            name: "修正操作（1替换／2相加／3相乘）",
+            offset: 0x14,
+            scalar: ScalarType::I32,
+        },
     ]
 }
 
@@ -131,247 +127,248 @@ const ATTACK_MODIFIERS: [[FieldLayout; 2]; 25] = [
     variant_modifier("辅助参数 +0x08修正值（变体 2）"),
 ];
 
-const POWER_12_14_27_28: &[FieldLayout] = &[
-    field!(0x00 => "攻击 12 的基础威力修正值" : F32),
-    field!(0x04 => "攻击 14 的基础威力修正值" : F32),
-    field!(0x08 => "攻击 27 的基础威力修正值" : F32),
-    field!(0x0c => "攻击 28 的基础威力修正值" : F32),
-    field!(0x10 => "攻击 12 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 14 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x18 => "攻击 27 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x1c => "攻击 28 的操作（1替换／2相加／3相乘）" : I32),
+const POWER_12_14_27_28: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 12 的基础威力修正值" : F32,
+    0x04 => "field_04", "攻击 14 的基础威力修正值" : F32,
+    0x08 => "field_08", "攻击 27 的基础威力修正值" : F32,
+    0x0c => "field_0c", "攻击 28 的基础威力修正值" : F32,
+    0x10 => "field_10", "攻击 12 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 14 的操作（1替换／2相加／3相乘）" : I32,
+    0x18 => "field_18", "攻击 27 的操作（1替换／2相加／3相乘）" : I32,
+    0x1c => "field_1c", "攻击 28 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const STUN_12_14_27_28: &[FieldLayout] = &[
-    field!(0x00 => "攻击 12 的眩晕修正值" : F32),
-    field!(0x04 => "攻击 14 的眩晕修正值" : F32),
-    field!(0x08 => "攻击 27 的眩晕修正值" : F32),
-    field!(0x0c => "攻击 28 的眩晕修正值" : F32),
-    field!(0x10 => "攻击 12 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 14 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x18 => "攻击 27 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x1c => "攻击 28 的操作（1替换／2相加／3相乘）" : I32),
+const STUN_12_14_27_28: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 12 的眩晕修正值" : F32,
+    0x04 => "field_04", "攻击 14 的眩晕修正值" : F32,
+    0x08 => "field_08", "攻击 27 的眩晕修正值" : F32,
+    0x0c => "field_0c", "攻击 28 的眩晕修正值" : F32,
+    0x10 => "field_10", "攻击 12 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 14 的操作（1替换／2相加／3相乘）" : I32,
+    0x18 => "field_18", "攻击 27 的操作（1替换／2相加／3相乘）" : I32,
+    0x1c => "field_1c", "攻击 28 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const POWER_47_48_53_54: &[FieldLayout] = &[
-    field!(0x00 => "攻击 47 的基础威力修正值" : F32),
-    field!(0x04 => "攻击 48 的基础威力修正值" : F32),
-    field!(0x08 => "攻击 53 的基础威力修正值" : F32),
-    field!(0x0c => "攻击 54 的基础威力修正值" : F32),
-    field!(0x10 => "攻击 47 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 48 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x18 => "攻击 53 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x1c => "攻击 54 的操作（1替换／2相加／3相乘）" : I32),
+const POWER_47_48_53_54: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 47 的基础威力修正值" : F32,
+    0x04 => "field_04", "攻击 48 的基础威力修正值" : F32,
+    0x08 => "field_08", "攻击 53 的基础威力修正值" : F32,
+    0x0c => "field_0c", "攻击 54 的基础威力修正值" : F32,
+    0x10 => "field_10", "攻击 47 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 48 的操作（1替换／2相加／3相乘）" : I32,
+    0x18 => "field_18", "攻击 53 的操作（1替换／2相加／3相乘）" : I32,
+    0x1c => "field_1c", "攻击 54 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const POWER_68_69_70: &[FieldLayout] = &[
-    field!(0x00 => "攻击 68 的基础威力修正值" : F32),
-    field!(0x04 => "攻击 69 的基础威力修正值" : F32),
-    field!(0x08 => "攻击 70 的基础威力修正值" : F32),
-    field!(0x10 => "攻击 68 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 69 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x18 => "攻击 70 的操作（1替换／2相加／3相乘）" : I32),
+const POWER_68_69_70: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 68 的基础威力修正值" : F32,
+    0x04 => "field_04", "攻击 69 的基础威力修正值" : F32,
+    0x08 => "field_08", "攻击 70 的基础威力修正值" : F32,
+    0x10 => "field_10", "攻击 68 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 69 的操作（1替换／2相加／3相乘）" : I32,
+    0x18 => "field_18", "攻击 70 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const POWER_32_33_34_35: &[FieldLayout] = &[
-    field!(0x00 => "攻击 32 的基础威力修正值" : F32),
-    field!(0x04 => "攻击 33 的基础威力修正值" : F32),
-    field!(0x08 => "攻击 34 的基础威力修正值" : F32),
-    field!(0x0c => "攻击 35 的基础威力修正值" : F32),
-    field!(0x10 => "攻击 32 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 33 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x18 => "攻击 34 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x1c => "攻击 35 的操作（1替换／2相加／3相乘）" : I32),
+const POWER_32_33_34_35: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 32 的基础威力修正值" : F32,
+    0x04 => "field_04", "攻击 33 的基础威力修正值" : F32,
+    0x08 => "field_08", "攻击 34 的基础威力修正值" : F32,
+    0x0c => "field_0c", "攻击 35 的基础威力修正值" : F32,
+    0x10 => "field_10", "攻击 32 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 33 的操作（1替换／2相加／3相乘）" : I32,
+    0x18 => "field_18", "攻击 34 的操作（1替换／2相加／3相乘）" : I32,
+    0x1c => "field_1c", "攻击 35 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const POWER_64_65: &[FieldLayout] = &[
-    field!(0x00 => "攻击 64 的基础威力修正值" : F32),
-    field!(0x04 => "攻击 65 的基础威力修正值" : F32),
-    field!(0x10 => "攻击 64 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 65 的操作（1替换／2相加／3相乘）" : I32),
+const POWER_64_65: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 64 的基础威力修正值" : F32,
+    0x04 => "field_04", "攻击 65 的基础威力修正值" : F32,
+    0x10 => "field_10", "攻击 64 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 65 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const POWER_105_106_107_114: &[FieldLayout] = &[
-    field!(0x00 => "攻击 105 的基础威力修正值" : F32),
-    field!(0x04 => "攻击 106 的基础威力修正值" : F32),
-    field!(0x08 => "攻击 107 的基础威力修正值" : F32),
-    field!(0x0c => "攻击 114 的基础威力修正值" : F32),
-    field!(0x10 => "攻击 105 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 106 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x18 => "攻击 107 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x1c => "攻击 114 的操作（1替换／2相加／3相乘）" : I32),
+const POWER_105_106_107_114: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 105 的基础威力修正值" : F32,
+    0x04 => "field_04", "攻击 106 的基础威力修正值" : F32,
+    0x08 => "field_08", "攻击 107 的基础威力修正值" : F32,
+    0x0c => "field_0c", "攻击 114 的基础威力修正值" : F32,
+    0x10 => "field_10", "攻击 105 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 106 的操作（1替换／2相加／3相乘）" : I32,
+    0x18 => "field_18", "攻击 107 的操作（1替换／2相加／3相乘）" : I32,
+    0x1c => "field_1c", "攻击 114 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const STUN_105_106_107_114: &[FieldLayout] = &[
-    field!(0x00 => "攻击 105 的眩晕修正值" : F32),
-    field!(0x04 => "攻击 106 的眩晕修正值" : F32),
-    field!(0x08 => "攻击 107 的眩晕修正值" : F32),
-    field!(0x0c => "攻击 114 的眩晕修正值" : F32),
-    field!(0x10 => "攻击 105 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x14 => "攻击 106 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x18 => "攻击 107 的操作（1替换／2相加／3相乘）" : I32),
-    field!(0x1c => "攻击 114 的操作（1替换／2相加／3相乘）" : I32),
+const STUN_105_106_107_114: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击 105 的眩晕修正值" : F32,
+    0x04 => "field_04", "攻击 106 的眩晕修正值" : F32,
+    0x08 => "field_08", "攻击 107 的眩晕修正值" : F32,
+    0x0c => "field_0c", "攻击 114 的眩晕修正值" : F32,
+    0x10 => "field_10", "攻击 105 的操作（1替换／2相加／3相乘）" : I32,
+    0x14 => "field_14", "攻击 106 的操作（1替换／2相加／3相乘）" : I32,
+    0x18 => "field_18", "攻击 107 的操作（1替换／2相加／3相乘）" : I32,
+    0x1c => "field_1c", "攻击 114 的操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const PART_ACCUMULATION_MODIFIER: &[FieldLayout] = &[
-    field!(0x00 => "按部位累积量修正值" : F32),
-    field!(0x10 => "修正操作（1替换／2相加／3相乘）" : I32),
+const PART_ACCUMULATION_MODIFIER: &[FieldLayout] = fields![
+    0x00 => "field_00", "按部位累积量修正值" : F32,
+    0x10 => "field_10", "修正操作（1替换／2相加／3相乘）" : I32,
 ];
 
-const CHAIN_INCREMENTS: &[FieldLayout] = &[
-    field!(0x10 => "每连段基础威力增量" : I32),
-    field!(0x14 => "每连段眩晕增量" : I32),
-    field!(0x18 => "每连段部位累积量增量" : I32),
-    field!(0x1c => "每连段辅助参数 +0x08 增量" : I32),
+const CHAIN_INCREMENTS: &[FieldLayout] = fields![
+    0x10 => "field_10", "每连段基础威力增量" : I32,
+    0x14 => "field_14", "每连段眩晕增量" : I32,
+    0x18 => "field_18", "每连段部位累积量增量" : I32,
+    0x1c => "field_1c", "每连段辅助参数 +0x08 增量" : I32,
 ];
 
-const PART_ACCUMULATION_TIMER: &[FieldLayout] = &[field!(0x10 => "部位积累触发后持续计数" : I32)];
+const PART_ACCUMULATION_TIMER: &[FieldLayout] =
+    fields![0x10 => "field_10", "部位积累触发后持续计数" : I32];
 
-const SKILL_POWER_OVERRIDE: &[FieldLayout] = &[
-    field!(0x10 => "技能 219/359：攻击 4 基础威力" : U16),
-    field!(0x14 => "技能 219/359：攻击 5 基础威力" : U16),
-    field!(0x18 => "技能 219/359：攻击 96/97 基础威力" : U16),
+const SKILL_POWER_OVERRIDE: &[FieldLayout] = fields![
+    0x10 => "field_10", "技能 219/359：攻击 4 基础威力" : U16,
+    0x14 => "field_14", "技能 219/359：攻击 5 基础威力" : U16,
+    0x18 => "field_18", "技能 219/359：攻击 96/97 基础威力" : U16,
 ];
 
-const SHARPNESS_RANGE: &[FieldLayout] = &[
-    field!(0x10 => "斩味修正表起始记录" : I32),
-    field!(0x14 => "斩味修正表末尾记录（含）" : I32),
+const SHARPNESS_RANGE: &[FieldLayout] = fields![
+    0x10 => "field_10", "斩味修正表起始记录" : I32,
+    0x14 => "field_14", "斩味修正表末尾记录（含）" : I32,
 ];
 
-const PART_ACCUMULATION_RANGE: &[FieldLayout] = &[
-    field!(0x10 => "部位累积连段倍率表起始记录" : I32),
-    field!(0x14 => "部位累积连段倍率表末尾记录（含）" : I32),
+const PART_ACCUMULATION_RANGE: &[FieldLayout] = fields![
+    0x10 => "field_10", "部位累积连段倍率表起始记录" : I32,
+    0x14 => "field_14", "部位累积连段倍率表末尾记录（含）" : I32,
 ];
 
-const WEAPON_VALUE_RANGE: &[FieldLayout] = &[
-    field!(0x10 => "武器数值连段倍率表起始记录" : I32),
-    field!(0x14 => "武器数值连段倍率表末尾记录（含）" : I32),
+const WEAPON_VALUE_RANGE: &[FieldLayout] = fields![
+    0x10 => "field_10", "武器数值连段倍率表起始记录" : I32,
+    0x14 => "field_14", "武器数值连段倍率表末尾记录（含）" : I32,
 ];
 
-const SHARPNESS_SLOTS: &[FieldLayout] = &[
-    field!(0x00 => "攻击索引槽 0" : F32),
-    field!(0x04 => "攻击索引槽 1" : F32),
-    field!(0x08 => "攻击索引槽 2" : F32),
-    field!(0x0c => "攻击索引槽 3" : F32),
-    field!(0x10 => "攻击索引槽 0 的斩味增量" : I32),
-    field!(0x14 => "攻击索引槽 1 的斩味增量" : I32),
-    field!(0x18 => "攻击索引槽 2 的斩味增量" : I32),
-    field!(0x1c => "攻击索引槽 3 的斩味增量" : I32),
+const SHARPNESS_SLOTS: &[FieldLayout] = fields![
+    0x00 => "field_00", "攻击索引槽 0" : F32,
+    0x04 => "field_04", "攻击索引槽 1" : F32,
+    0x08 => "field_08", "攻击索引槽 2" : F32,
+    0x0c => "field_0c", "攻击索引槽 3" : F32,
+    0x10 => "field_10", "攻击索引槽 0 的斩味增量" : I32,
+    0x14 => "field_14", "攻击索引槽 1 的斩味增量" : I32,
+    0x18 => "field_18", "攻击索引槽 2 的斩味增量" : I32,
+    0x1c => "field_1c", "攻击索引槽 3 的斩味增量" : I32,
 ];
 
-const CHAIN_PERCENTAGES: &[FieldLayout] = &[
-    field!(0x00 => "连段倍率槽 0（百分数）" : F32),
-    field!(0x04 => "连段倍率槽 1（百分数）" : F32),
-    field!(0x08 => "连段倍率槽 2（百分数）" : F32),
-    field!(0x0c => "连段倍率槽 3（百分数）" : F32),
-    field!(0x10 => "连段倍率槽 4（百分数）" : I32),
-    field!(0x14 => "连段倍率槽 5（百分数）" : I32),
-    field!(0x18 => "连段倍率槽 6（百分数）" : I32),
-    field!(0x1c => "连段倍率槽 7（百分数）" : I32),
+const CHAIN_PERCENTAGES: &[FieldLayout] = fields![
+    0x00 => "field_00", "连段倍率槽 0（百分数）" : F32,
+    0x04 => "field_04", "连段倍率槽 1（百分数）" : F32,
+    0x08 => "field_08", "连段倍率槽 2（百分数）" : F32,
+    0x0c => "field_0c", "连段倍率槽 3（百分数）" : F32,
+    0x10 => "field_10", "连段倍率槽 4（百分数）" : I32,
+    0x14 => "field_14", "连段倍率槽 5（百分数）" : I32,
+    0x18 => "field_18", "连段倍率槽 6（百分数）" : I32,
+    0x1c => "field_1c", "连段倍率槽 7（百分数）" : I32,
 ];
 
-const ELEMENT_STATUS_THRESHOLDS: &[FieldLayout] = &[
-    field!(0x00 => "异常抗性阈值" : F32),
-    field!(0x04 => "强弱异常分界抗性" : F32),
-    field!(0x10 => "强异常初始计数" : I32),
-    field!(0x14 => "弱异常初始计数" : I32),
+const ELEMENT_STATUS_THRESHOLDS: &[FieldLayout] = fields![
+    0x00 => "field_00", "异常抗性阈值" : F32,
+    0x04 => "field_04", "强弱异常分界抗性" : F32,
+    0x10 => "field_10", "强异常初始计数" : I32,
+    0x14 => "field_14", "弱异常初始计数" : I32,
 ];
 
-const ELEMENT_STATUS_RECOVERY: &[FieldLayout] = &[
-    field!(0x00 => "异常抗性阈值" : F32),
-    field!(0x04 => "强弱异常分界抗性" : F32),
-    field!(0x08 => "弱异常数值恢复倍率" : F32),
-    field!(0x0c => "强异常数值恢复倍率" : F32),
-    field!(0x10 => "强异常初始计数" : I32),
-    field!(0x14 => "弱异常初始计数" : I32),
+const ELEMENT_STATUS_RECOVERY: &[FieldLayout] = fields![
+    0x00 => "field_00", "异常抗性阈值" : F32,
+    0x04 => "field_04", "强弱异常分界抗性" : F32,
+    0x08 => "field_08", "弱异常数值恢复倍率" : F32,
+    0x0c => "field_0c", "强异常数值恢复倍率" : F32,
+    0x10 => "field_10", "强异常初始计数" : I32,
+    0x14 => "field_14", "弱异常初始计数" : I32,
 ];
 
-const ELEMENT_STATUS_TIMERS: &[FieldLayout] = &[
-    field!(0x00 => "异常抗性阈值" : F32),
-    field!(0x04 => "强弱异常分界抗性" : F32),
-    field!(0x10 => "强异常初始计数" : I32),
-    field!(0x14 => "弱异常初始计数" : I32),
+const ELEMENT_STATUS_TIMERS: &[FieldLayout] = fields![
+    0x00 => "field_00", "异常抗性阈值" : F32,
+    0x04 => "field_04", "强弱异常分界抗性" : F32,
+    0x10 => "field_10", "强异常初始计数" : I32,
+    0x14 => "field_14", "弱异常初始计数" : I32,
 ];
 
-const PERIODIC_STATUS: &[FieldLayout] = &[
-    field!(0x10 => "状态持续计数" : I32),
-    field!(0x14 => "状态辅助值（写玩家扩展 +1810）" : U16),
-    field!(0x18 => "周期扣血开始延迟" : I32),
-    field!(0x1c => "扣血间隔计数" : I32),
+const PERIODIC_STATUS: &[FieldLayout] = fields![
+    0x10 => "field_10", "状态持续计数" : I32,
+    0x14 => "field_14", "状态辅助值（写玩家扩展 +1810）" : U16,
+    0x18 => "field_18", "周期扣血开始延迟" : I32,
+    0x1c => "field_1c", "扣血间隔计数" : I32,
 ];
 
-const PERIODIC_STATUS_COST: &[FieldLayout] = &[
-    field!(0x10 => "斩味变化间隔计数" : I32),
-    field!(0x14 => "每次斩味增量" : I16),
-    field!(0x18 => "周期处理间隔" : I32),
-    field!(0x1c => "周期处理开始延迟" : I32),
+const PERIODIC_STATUS_COST: &[FieldLayout] = fields![
+    0x10 => "field_10", "斩味变化间隔计数" : I32,
+    0x14 => "field_14", "每次斩味增量" : I16,
+    0x18 => "field_18", "周期处理间隔" : I32,
+    0x1c => "field_1c", "周期处理开始延迟" : I32,
 ];
 
-const SEVERE_ELEMENT_STATUS: &[FieldLayout] = &[
-    field!(0x00 => "异常抗性阈值" : F32),
-    field!(0x10 => "异常初始计数" : I32),
+const SEVERE_ELEMENT_STATUS: &[FieldLayout] = fields![
+    0x00 => "field_00", "异常抗性阈值" : F32,
+    0x10 => "field_10", "异常初始计数" : I32,
 ];
 
-const SEVERE_STATUS_RECOVERY: &[FieldLayout] = &[
-    field!(0x00 => "异常抗性阈值" : F32),
-    field!(0x08 => "异常期间数值恢复倍率" : F32),
-    field!(0x10 => "异常初始计数" : I32),
+const SEVERE_STATUS_RECOVERY: &[FieldLayout] = fields![
+    0x00 => "field_00", "异常抗性阈值" : F32,
+    0x08 => "field_08", "异常期间数值恢复倍率" : F32,
+    0x10 => "field_10", "异常初始计数" : I32,
 ];
 
-const SEVERE_STATUS_PHASES: &[FieldLayout] = &[
-    field!(0x00 => "异常抗性阈值" : F32),
-    field!(0x10 => "异常初始计数" : I32),
-    field!(0x1c => "异常结束后等待计数" : U16),
+const SEVERE_STATUS_PHASES: &[FieldLayout] = fields![
+    0x00 => "field_00", "异常抗性阈值" : F32,
+    0x10 => "field_10", "异常初始计数" : I32,
+    0x1c => "field_1c", "异常结束后等待计数" : U16,
 ];
 
-const SEVERE_STATUS_DAMAGE: &[FieldLayout] = &[
-    field!(0x00 => "异常抗性阈值" : F32),
-    field!(0x04 => "状态触发时生命增量" : F32),
-    field!(0x10 => "异常初始计数" : I32),
+const SEVERE_STATUS_DAMAGE: &[FieldLayout] = fields![
+    0x00 => "field_00", "异常抗性阈值" : F32,
+    0x04 => "field_04", "状态触发时生命增量" : F32,
+    0x10 => "field_10", "异常初始计数" : I32,
 ];
 
-const PERIODIC_DAMAGE_WITH_VARIANT: &[FieldLayout] = &[
-    field!(0x14 => "扣血间隔计数" : U16),
-    field!(0x1c => "变体间隔倍率" : U16),
+const PERIODIC_DAMAGE_WITH_VARIANT: &[FieldLayout] = fields![
+    0x14 => "field_14", "扣血间隔计数" : U16,
+    0x1c => "field_1c", "变体间隔倍率" : U16,
 ];
 
-const PERIODIC_DAMAGE: &[FieldLayout] = &[field!(0x14 => "扣血间隔计数" : U16)];
+const PERIODIC_DAMAGE: &[FieldLayout] = fields![0x14 => "field_14", "扣血间隔计数" : U16];
 
-const STATUS_PROTECTION: &[FieldLayout] = &[
-    field!(0x00 => "状态期间输入数值倍率" : F32),
-    field!(0x10 => "状态特效刷新间隔" : I32),
+const STATUS_PROTECTION: &[FieldLayout] = fields![
+    0x00 => "field_00", "状态期间输入数值倍率" : F32,
+    0x10 => "field_10", "状态特效刷新间隔" : I32,
 ];
 
-const PROGRESS_STATUS_TIMERS: &[FieldLayout] = &[
-    field!(0x10 => "初始状态倒计时" : I32),
-    field!(0x14 => "状态 2 倒计时" : U16),
-    field!(0x18 => "状态 1 倒计时" : U16),
+const PROGRESS_STATUS_TIMERS: &[FieldLayout] = fields![
+    0x10 => "field_10", "初始状态倒计时" : I32,
+    0x14 => "field_14", "状态 2 倒计时" : U16,
+    0x18 => "field_18", "状态 1 倒计时" : U16,
 ];
 
-const PROGRESS_STATUS_THRESHOLDS: &[FieldLayout] = &[
-    field!(0x10 => "累积目标值 A" : I32),
-    field!(0x14 => "累积目标值 B" : I32),
+const PROGRESS_STATUS_THRESHOLDS: &[FieldLayout] = fields![
+    0x10 => "field_10", "累积目标值 A" : I32,
+    0x14 => "field_14", "累积目标值 B" : I32,
 ];
 
-const PROGRESS_STATUS_RECOVERY: &[FieldLayout] = &[
-    field!(0x00 => "倒计时恢复比例" : F32),
-    field!(0x10 => "状态 2 第一阶段会心增量" : I16),
-    field!(0x14 => "状态 2 第二阶段会心增量" : I16),
+const PROGRESS_STATUS_RECOVERY: &[FieldLayout] = fields![
+    0x00 => "field_00", "倒计时恢复比例" : F32,
+    0x10 => "field_10", "状态 2 第一阶段会心增量" : I16,
+    0x14 => "field_14", "状态 2 第二阶段会心增量" : I16,
 ];
 
-const PROGRESS_STATUS_HEALTH: &[FieldLayout] = &[
-    field!(0x10 => "状态 1 扣血间隔" : I32),
-    field!(0x18 => "状态 2 第二阶段回复间隔" : I32),
-    field!(0x1c => "每次回复上限" : I32),
+const PROGRESS_STATUS_HEALTH: &[FieldLayout] = fields![
+    0x10 => "field_10", "状态 1 扣血间隔" : I32,
+    0x18 => "field_18", "状态 2 第二阶段回复间隔" : I32,
+    0x1c => "field_1c", "每次回复上限" : I32,
 ];
 
-const SEVERE_STATUS_BREAKS_A: &[FieldLayout] = &[
-    field!(0x10 => "阈值大于 0 时触发参数" : U16),
-    field!(0x14 => "阈值低于 300 时触发参数" : U16),
-    field!(0x18 => "阈值低于 225 时触发参数" : U16),
+const SEVERE_STATUS_BREAKS_A: &[FieldLayout] = fields![
+    0x10 => "field_10", "阈值大于 0 时触发参数" : U16,
+    0x14 => "field_14", "阈值低于 300 时触发参数" : U16,
+    0x18 => "field_18", "阈值低于 225 时触发参数" : U16,
 ];
 
-const SEVERE_STATUS_BREAKS_B: &[FieldLayout] = &[
-    field!(0x10 => "阈值低于 150 时触发参数" : U16),
-    field!(0x14 => "阈值低于 75 时触发参数" : U16),
+const SEVERE_STATUS_BREAKS_B: &[FieldLayout] = fields![
+    0x10 => "field_10", "阈值低于 150 时触发参数" : U16,
+    0x14 => "field_14", "阈值低于 75 时触发参数" : U16,
 ];

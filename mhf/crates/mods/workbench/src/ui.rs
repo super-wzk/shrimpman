@@ -24,6 +24,8 @@ mod fields;
 mod inspector;
 #[cfg(test)]
 mod popup_scroll_tests;
+mod resource_path;
+mod resource_reference;
 #[cfg(test)]
 mod resource_scope_tests;
 use editing::Editing;
@@ -66,6 +68,12 @@ pub(crate) struct Workbench {
     resource_counts: Vec<usize>,
     node: usize,
     selection: Option<ResourceRef>,
+    address_input: String,
+    address_error: String,
+    address_field: Option<usize>,
+    navigation: Option<mhf_resource::ResourcePath>,
+    reveal_resource: bool,
+    reveal_field: bool,
     hex_start: usize,
     hex_buffer: bool,
     hex_selection: Option<std::ops::Range<usize>>,
@@ -108,6 +116,12 @@ impl Workbench {
             document: None,
             node: 0,
             selection: None,
+            address_input: String::new(),
+            address_error: String::new(),
+            address_field: None,
+            navigation: None,
+            reveal_resource: false,
+            reveal_field: false,
             hex_start: 0,
             resource_counts: Vec::new(),
             hex_buffer: false,
@@ -146,6 +160,7 @@ impl Workbench {
             match catalog {
                 Ok(catalog) => {
                     self.catalog = catalog;
+                    self.ensure_catalog_source();
                     self.filter_files();
                 }
                 Err(error) => self.error = error,
@@ -170,6 +185,9 @@ impl Workbench {
                     self.loaded_document(document);
                 }
                 Err(error) => {
+                    if self.navigation.take().is_some() {
+                        self.address_error.clone_from(&error);
+                    }
                     self.document = None;
                     self.selection = None;
                     self.resource_counts.clear();
@@ -183,7 +201,12 @@ impl Workbench {
             self.expanding = None;
             match expanded.document {
                 Ok(document) => self.refresh_document(document),
-                Err(error) => self.error = error,
+                Err(error) => {
+                    if self.navigation.take().is_some() {
+                        self.address_error.clone_from(&error);
+                    }
+                    self.error = error;
+                }
             }
         }
         if let Some(result) = updates.exported {
@@ -198,9 +221,11 @@ impl Workbench {
         if let Some(packed) = updates.packed {
             self.finish_pack(packed);
         }
+        self.advance_navigation();
     }
 
     fn loaded_document(&mut self, document: Arc<Document>) {
+        self.address_field = None;
         self.node = visible_node(&document, document.root, self.view.show_encoding_layers);
         self.selection = Some(ResourceRef::new(document.clone(), self.node));
         self.refresh_document(document);
@@ -384,6 +409,8 @@ impl Workbench {
                             self.hex_start = 0;
                             self.hex_buffer = false;
                             self.hex_selection = None;
+                            self.address_field = None;
+                            self.sync_address();
                         }
                         ui.checkbox(&mut self.view.show_inspector, "检查器");
                         ui.checkbox(&mut self.view.show_log, "输出日志");
@@ -687,6 +714,7 @@ impl Workbench {
     }
 
     fn resources(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        self.address_bar(ui);
         let root = self.root.display().to_string();
         ui.add(egui::Label::new(&root).truncate())
             .on_hover_text(root);
@@ -724,9 +752,23 @@ impl Workbench {
             }
         });
         let before = self.node;
+        let before_context = self
+            .selection
+            .as_ref()
+            .map(|source| source.context().to_vec());
         let mut load = None;
         let mut load_node = None;
         let mut details = None;
+        if self.reveal_resource
+            && let Some(source) = &self.selection
+        {
+            ui.data_mut(|data| {
+                data.insert_temp(
+                    resource_path::reveal_id(),
+                    (source.document.source.clone(), source.context().to_vec()),
+                )
+            });
+        }
         let browser = egui::ScrollArea::both()
             .id_salt("workbench-files")
             .auto_shrink([false, false])
@@ -737,6 +779,7 @@ impl Workbench {
                     &self.catalog,
                     self.path.as_ref(),
                     self.document.as_ref(),
+                    &self.editing.source_root,
                     &self.resource_counts,
                     self.view.show_encoding_layers,
                     &mut self.node,
@@ -750,11 +793,18 @@ impl Workbench {
                     ui.weak("此目录没有可读取的文件。");
                 }
             });
-        if before != self.node {
+        if before != self.node
+            || before_context.as_deref() != self.selection.as_ref().map(ResourceRef::context)
+        {
             self.hex_start = 0;
             self.hex_buffer = false;
             self.hex_selection = None;
+            self.address_field = None;
+            self.navigation = None;
+            self.sync_address();
         }
+        self.reveal_resource = false;
+        ui.data_mut(|data| data.remove::<(PathBuf, Vec<usize>)>(resource_path::reveal_id()));
         if let Some(index) = details {
             self.expand_node(index);
         }
@@ -822,11 +872,21 @@ impl Workbench {
     }
 
     fn select_source(&mut self, source: ResourceRef) {
+        if self.node != source.node
+            || self
+                .selection
+                .as_ref()
+                .is_none_or(|selected| !selected.same_origin(&source))
+        {
+            self.address_field = None;
+        }
         self.node = source.node;
         self.selection = Some(source);
+        self.sync_address();
     }
 
     fn load_source(&mut self, source: ResourceRef) {
+        self.navigation = None;
         self.select_source(source.clone());
         self.tab = InspectorTab::Loaded;
         self.send(Command::LoadResource(source));
@@ -847,11 +907,7 @@ impl Workbench {
                         if ui.small_button("卸载").clicked() {
                             self.send(Command::RemoveEffect(effect.id));
                         }
-                        ui.add_sized(
-                            [ui.available_width(), ui.spacing().interact_size.y],
-                            egui::Label::new(effect.source.short_name()).truncate(),
-                        )
-                        .on_hover_text(effect.source.name());
+                        self.show_source_reference(ui, &effect.source, None, "");
                     });
                 });
                 let previous = if effect.automatic {
@@ -860,22 +916,20 @@ impl Workbench {
                     Some(effect.manual_target)
                 };
                 let mut target = previous;
-                let name = (if effect.automatic {
+                let model = (if effect.automatic {
                     effect.model
                 } else {
                     effect.manual_target
                 })
-                .and_then(|id| snapshot.models.iter().find(|model| model.id == id))
-                .map_or("未绑定", |model| model.name.as_ref());
-                let short_name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                .and_then(|id| snapshot.models.iter().find(|model| model.id == id));
                 let target_width = ui.available_width();
                 egui::ComboBox::from_id_salt(("effect-target", effect.id))
                     .width(target_width)
                     .truncate()
                     .selected_text(if effect.automatic {
-                        format!("自动 · {short_name}")
+                        "自动匹配"
                     } else {
-                        short_name.to_owned()
+                        "手动绑定"
                     })
                     .show_ui(ui, |ui| {
                         ui.set_max_width(target_width);
@@ -890,20 +944,35 @@ impl Workbench {
                         );
                         ui.selectable_value(&mut target, Some(None), "未绑定");
                         for model in snapshot.models.iter().filter(|model| model.error.is_none()) {
-                            ui.selectable_value(
-                                &mut target,
-                                Some(Some(model.id)),
-                                model
-                                    .name
-                                    .rsplit(['/', '\\'])
-                                    .next()
-                                    .unwrap_or(model.name.as_ref()),
-                            )
-                            .on_hover_text(model.name.as_ref());
+                            ui.push_id(model.id, |ui| {
+                                let output = resource_reference::show_source(
+                                    ui,
+                                    &model.resources.model,
+                                    &self.editing.source_root,
+                                    Some(model.name.as_ref()),
+                                    "",
+                                    true,
+                                );
+                                let response = output.response.interact(egui::Sense::click());
+                                if response.clicked() {
+                                    target = Some(Some(model.id));
+                                    ui.close();
+                                }
+                            });
                         }
                     })
                     .response
-                    .on_hover_text(format!("{name}\n{}", effect.message));
+                    .on_hover_text(effect.message.as_ref());
+                if let Some(model) = model {
+                    self.show_source_reference(
+                        ui,
+                        &model.resources.model,
+                        Some(model.name.as_ref()),
+                        &effect.message,
+                    );
+                } else {
+                    ui.weak("未绑定");
+                }
                 if target != previous {
                     self.send(match target {
                         None => Command::AutoBindEffect(effect.id),
@@ -917,6 +986,10 @@ impl Workbench {
                     self.effect_definition_controls(
                         ui,
                         &effect.binding,
+                        &effect.source,
+                        effect
+                            .model
+                            .and_then(|id| snapshot.models.iter().find(|model| model.id == id)),
                         entry,
                         effect.enabled && effect.model.is_some(),
                     );
@@ -930,6 +1003,8 @@ impl Workbench {
         &mut self,
         ui: &mut egui::Ui,
         binding: &effects::BindingSnapshot,
+        source: &ResourceRef,
+        model: Option<&LoadedModel>,
         entry: &effects::DefinitionSnapshot,
         bound: bool,
     ) {
@@ -940,55 +1015,97 @@ impl Workbench {
                 false,
             )
             .show_header(ui, |ui| {
-                ui.strong(format!("定义 {}", entry.id));
-                if ui
-                    .add_enabled(
-                        bound,
-                        egui::Button::new(if entry.frame.is_some() {
-                            "重播"
-                        } else {
-                            "触发"
-                        })
-                        .small(),
-                    )
-                    .clicked()
-                {
-                    self.send(Command::TriggerEffectDefinition {
-                        binding: binding.id,
-                        slot: entry.slot,
-                    });
-                }
-                if ui
-                    .add_enabled(
-                        bound && entry.frame.is_some(),
-                        egui::Button::new("停止").small(),
-                    )
-                    .clicked()
-                {
-                    self.send(Command::StopEffectDefinition {
-                        binding: binding.id,
-                        slot: entry.slot,
-                    });
-                }
-                if ui.small_button("移除").clicked() {
-                    self.send(Command::RemoveEffectDefinition {
-                        binding: binding.id,
-                        slot: entry.slot,
-                    });
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            bound,
+                            egui::Button::new(if entry.frame.is_some() {
+                                "重播"
+                            } else {
+                                "触发"
+                            })
+                            .small(),
+                        )
+                        .clicked()
+                    {
+                        self.send(Command::TriggerEffectDefinition {
+                            binding: binding.id,
+                            slot: entry.slot,
+                        });
+                    }
+                    if ui
+                        .add_enabled(
+                            bound && entry.frame.is_some(),
+                            egui::Button::new("停止").small(),
+                        )
+                        .clicked()
+                    {
+                        self.send(Command::StopEffectDefinition {
+                            binding: binding.id,
+                            slot: entry.slot,
+                        });
+                    }
+                    if ui.small_button("移除").clicked() {
+                        self.send(Command::RemoveEffectDefinition {
+                            binding: binding.id,
+                            slot: entry.slot,
+                        });
+                    }
+                    self.show_effect_definition_reference(ui, source, entry);
+                });
             })
             .body(|ui| {
-                let target = entry.draw.map_or_else(
-                    || "附着点".into(),
-                    |(group, item)| format!("绘制组 {group} / 材质槽 {item}"),
+                let skeleton = model
+                    .and_then(|model| model.resources.skeleton.as_ref())
+                    .unwrap_or(source);
+                let geometry = model.map(|model| &model.resources.model).unwrap_or(source);
+                self.show_reference(
+                    ui,
+                    skeleton,
+                    &crate::field::FieldReference::Indexed(
+                        crate::field::ReferenceCollection::SkeletonNodes,
+                        entry.node as u32,
+                        None,
+                    ),
+                    None,
+                    false,
                 );
+                if let Some((group, item)) = entry.draw {
+                    self.show_reference(
+                        ui,
+                        geometry,
+                        &crate::field::FieldReference::Indexed(
+                            crate::field::ReferenceCollection::ModelMeshes,
+                            group as u32,
+                            None,
+                        ),
+                        None,
+                        false,
+                    );
+                    let mesh = resource_reference::indexed_source(
+                        geometry,
+                        crate::field::ReferenceCollection::ModelMeshes,
+                        group as u32,
+                    );
+                    self.show_reference(
+                        ui,
+                        mesh.as_ref().unwrap_or(geometry),
+                        &crate::field::FieldReference::Indexed(
+                            crate::field::ReferenceCollection::ModelMaterialSlots,
+                            item as u32,
+                            None,
+                        ),
+                        None,
+                        false,
+                    );
+                }
                 ui.label(format!(
-                    "节点 {} · {target} · 延迟 {} 步 · 原条件 {}",
-                    entry.node, entry.delay, entry.condition
+                    "延迟 {} 步 · 原条件 {}",
+                    entry.delay, entry.condition
                 ));
                 ui.label(&entry.message);
             });
-            self.effect_entry_track(ui, binding, entry);
+            self.effect_entry_track(ui, binding, source, entry);
         });
     }
 
@@ -1007,25 +1124,18 @@ impl Workbench {
                         if ui.small_button("卸载").clicked() {
                             self.send(Command::RemoveMotion(motion.id));
                         }
-                        let target = motion
-                            .skeleton
-                            .and_then(|id| snapshot.resources.iter().find(|entry| entry.id == id))
-                            .map(|entry| entry.source.short_name())
-                            .unwrap_or_else(|| "未绑定".into());
-                        ui.add_sized(
-                            [ui.available_width(), ui.spacing().interact_size.y],
-                            egui::Label::new(motion.source.short_name()).truncate(),
-                        )
-                        .on_hover_text(format!(
-                            "{}\n{}",
-                            motion.source.name(),
-                            target
-                        ));
+                        self.show_source_reference(ui, &motion.source, None, "");
                     });
                 });
+                if let Some(target) = motion
+                    .skeleton
+                    .and_then(|id| snapshot.resources.iter().find(|entry| entry.id == id))
+                {
+                    self.show_source_reference(ui, &target.source, None, "绑定骨架");
+                }
                 self.track_row(
                     ui,
-                    &motion.source.name(),
+                    &motion.source,
                     TimelineTrack {
                         target: PlaybackTrack::Motion(motion.id),
                         range: [0.0, motion.frames],
@@ -1041,11 +1151,12 @@ impl Workbench {
         &mut self,
         ui: &mut egui::Ui,
         binding: &effects::BindingSnapshot,
+        source: &ResourceRef,
         entry: &effects::DefinitionSnapshot,
     ) {
         self.track_row(
             ui,
-            &binding.name,
+            source,
             TimelineTrack {
                 target: PlaybackTrack::Effect {
                     binding: binding.id,
@@ -1075,7 +1186,7 @@ impl Workbench {
     fn track_row(
         &mut self,
         ui: &mut egui::Ui,
-        label: &str,
+        source: &ResourceRef,
         track: TimelineTrack,
         color: Color32,
     ) -> egui::Response {
@@ -1146,7 +1257,9 @@ impl Workbench {
             .inner
         })
         .inner
-        .on_hover_text(label)
+        .on_hover_ui(|ui| {
+            resource_reference::show_source(ui, source, &self.editing.source_root, None, "", false);
+        })
     }
 
     fn draw_effects(&self, ui: &egui::Ui, snapshot: &Snapshot) {
@@ -1179,7 +1292,7 @@ impl Workbench {
                 painter.text(
                     point + egui::vec2(9.0, 0.0),
                     egui::Align2::LEFT_CENTER,
-                    format!("{}:{} 定义 {}", binding_index + 1, entry.slot, entry.id),
+                    format!("特效 {}:{}", binding_index + 1, entry.slot),
                     egui::FontId::monospace(12.0),
                     color,
                 );
@@ -1247,16 +1360,12 @@ impl Workbench {
                                     if ui.small_button("卸载").clicked() {
                                         self.send(Command::RemoveAsset(model.id));
                                     }
-                                    let name = model
-                                        .name
-                                        .rsplit(['/', '\\'])
-                                        .next()
-                                        .unwrap_or(model.name.as_ref());
-                                    ui.add_sized(
-                                        [ui.available_width(), ui.spacing().interact_size.y],
-                                        egui::Label::new(name).truncate(),
-                                    )
-                                    .on_hover_text(model.name.as_ref());
+                                    self.show_source_reference(
+                                        ui,
+                                        &model.resources.model,
+                                        Some(model.name.as_ref()),
+                                        "",
+                                    );
                                 },
                             );
                         })
@@ -1354,7 +1463,7 @@ impl Workbench {
                             .iter()
                             .find(|skeleton| skeleton.id == entry.id)
                         {
-                            self.bones(ui, skeleton, entry.enabled);
+                            self.bones(ui, skeleton, &entry.source, entry.enabled);
                         }
                     });
                 } else {
@@ -1386,11 +1495,7 @@ impl Workbench {
                 .iter()
                 .filter(|model| model.resources.contains(&entry.source))
                 .count();
-            ui.add_sized(
-                [ui.available_width(), ui.spacing().interact_size.y],
-                egui::Label::new(entry.source.short_name()).truncate(),
-            )
-            .on_hover_text(format!("{}\n绑定 {bound} 个模型", entry.source.name()));
+            self.show_source_reference(ui, &entry.source, None, &format!("绑定 {bound} 个模型"));
         });
     }
 
@@ -1486,6 +1591,7 @@ impl Workbench {
         &mut self,
         ui: &mut egui::Ui,
         skeleton: &crate::preview::LoadedSkeleton,
+        resource: &ResourceRef,
         enabled: bool,
     ) {
         if let Some(error) = &skeleton.error {
@@ -1520,15 +1626,31 @@ impl Workbench {
             .show(ui, |ui| {
                 for bone in skeleton.bones.iter() {
                     let key = (skeleton.id, bone.index);
-                    let response = ui.selectable_label(
-                        self.bone == Some(key),
-                        format!(
-                            "节点 {} · 父节点 {}",
-                            bone.index,
-                            bone.parent
-                                .map_or_else(|| "—".into(), |parent| parent.to_string())
-                        ),
-                    );
+                    let response = ui
+                        .horizontal(|ui| {
+                            let response = ui.selectable_label(
+                                self.bone == Some(key),
+                                format!("节点 {}", bone.index),
+                            );
+                            ui.weak("父节点");
+                            if let Some(parent) = bone.parent {
+                                self.show_reference(
+                                    ui,
+                                    resource,
+                                    &crate::field::FieldReference::Indexed(
+                                        crate::field::ReferenceCollection::SkeletonNodes,
+                                        parent as u32,
+                                        None,
+                                    ),
+                                    None,
+                                    false,
+                                );
+                            } else {
+                                ui.weak("—");
+                            }
+                            response
+                        })
+                        .inner;
                     if response.clicked() {
                         self.bone = (self.bone != Some(key)).then_some(key);
                     }
@@ -1561,7 +1683,9 @@ impl Workbench {
                                     });
                                     ui.add_space(4.0);
                                     ui.add_enabled_ui(enabled, |ui| {
-                                        self.bone_binding_controls(ui, skeleton, bone.index)
+                                        self.bone_binding_controls(
+                                            ui, skeleton, resource, bone.index,
+                                        )
                                     });
                                 });
                         });
@@ -1574,6 +1698,7 @@ impl Workbench {
         &mut self,
         ui: &mut egui::Ui,
         skeleton: &crate::preview::LoadedSkeleton,
+        resource: &ResourceRef,
         node: usize,
     ) {
         let previous = skeleton.bone_bindings.get(node).copied().flatten();
@@ -1581,23 +1706,63 @@ impl Workbench {
         ui.label("姿态跟随");
         egui::ComboBox::from_id_salt(("workbench-bone-binding", skeleton.id, node))
             .width(ui.available_width())
-            .selected_text(
-                source.map_or_else(|| "原始骨架姿态".into(), |index| format!("节点 {index}")),
-            )
+            .selected_text(if source.is_some() {
+                "跟随来源节点"
+            } else {
+                "原始骨架姿态"
+            })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut source, None, "原始骨架姿态");
                 for bone in skeleton.bones.iter().filter(|bone| bone.index != node) {
-                    ui.selectable_value(
-                        &mut source,
-                        Some(bone.index),
-                        format!("节点 {}", bone.index),
-                    );
+                    let path = resource_reference::indexed_source(
+                        resource,
+                        crate::field::ReferenceCollection::SkeletonNodes,
+                        bone.index as u32,
+                    )
+                    .and_then(|source| source.resource_address(&self.editing.source_root, None))
+                    .filter(|address| address.exact)
+                    .map(|address| address.path);
+                    let label = format!("节点 {}", bone.index);
+                    let mut widget = mhf_ui::resource_reference::ResourceReference::new(
+                        mhf_ui::resource_reference::ResourceTarget::Index {
+                            collection: "skeleton.nodes",
+                            index: bone.index as u32,
+                        },
+                    )
+                    .label(&label)
+                    .compact(true)
+                    .activate(true);
+                    if let Some(path) = &path {
+                        widget = widget.resolved_path(path);
+                    }
+                    if widget
+                        .show(ui)
+                        .response
+                        .interact(egui::Sense::click())
+                        .clicked()
+                    {
+                        source = Some(bone.index);
+                        ui.close();
+                    }
                 }
             })
             .response
             .on_hover_text(
                 "使用来源节点的世界姿态，保留当前节点自身的逆绑定矩阵；作用于此骨架及其关联模型。",
             );
+        if let Some(index) = source {
+            self.show_reference(
+                ui,
+                resource,
+                &crate::field::FieldReference::Indexed(
+                    crate::field::ReferenceCollection::SkeletonNodes,
+                    index as u32,
+                    None,
+                ),
+                None,
+                false,
+            );
+        }
 
         if source != previous {
             self.send(Command::BoneBinding {
@@ -1798,6 +1963,15 @@ struct Directory {
 }
 
 impl Directory {
+    fn contains_path(&self, catalog: &Catalog, path: &std::path::Path) -> bool {
+        self.files
+            .iter()
+            .any(|index| catalog.entries[*index].path == path)
+            || self
+                .folders
+                .values()
+                .any(|folder| folder.contains_path(catalog, path))
+    }
     fn build(catalog: &Catalog, filtered: &[usize]) -> Self {
         let mut root = Self::default();
         for &index in filtered {
@@ -1824,6 +1998,7 @@ fn directory(
     catalog: &Catalog,
     path: Option<&PathBuf>,
     document: Option<&Arc<Document>>,
+    dat_root: &std::path::Path,
     resource_counts: &[usize],
     show_encoding_layers: bool,
     node: &mut usize,
@@ -1835,8 +2010,12 @@ fn directory(
 ) {
     for (name, child) in &folder.folders {
         ui.push_id(name, |ui| {
+            let reveal = ui
+                .data(|data| data.get_temp::<(PathBuf, Vec<usize>)>(resource_path::reveal_id()))
+                .is_some_and(|(path, _)| child.contains_path(catalog, &path));
             egui::CollapsingHeader::new(name)
                 .default_open(expand)
+                .open(reveal.then_some(true))
                 .show(ui, |ui| {
                     directory(
                         ui,
@@ -1844,6 +2023,7 @@ fn directory(
                         catalog,
                         path,
                         document,
+                        dat_root,
                         resource_counts,
                         show_encoding_layers,
                         node,
@@ -1869,6 +2049,7 @@ fn directory(
                 let _ = tree(
                     ui,
                     &ResourceRef::new(document.clone(), document.root),
+                    dat_root,
                     resource_counts,
                     show_encoding_layers,
                     node,
@@ -1881,7 +2062,7 @@ fn directory(
             let response = ui
                 .horizontal(|ui| {
                     ui.add_space(ui.spacing().indent);
-                    tree_row(ui, name.as_ref(), selected, 0, None).0
+                    tree_row(ui, name.as_ref(), selected, 0, None, None).0
                 })
                 .inner;
             if response.clicked() && !selected {
@@ -1896,6 +2077,7 @@ fn directory(
 fn tree(
     ui: &mut egui::Ui,
     source: &ResourceRef,
+    dat_root: &std::path::Path,
     resource_counts: &[usize],
     show_encoding_layers: bool,
     selected: &mut usize,
@@ -1930,21 +2112,43 @@ fn tree(
             .as_ref()
             .filter(|source| source.node == *selected)
             .is_none_or(|selected| selected.same_origin(&source));
+    let reveal = ui
+        .data(|data| data.get_temp::<(PathBuf, Vec<usize>)>(resource_path::reveal_id()))
+        .filter(|(path, context)| {
+            *path == document.source && context.starts_with(source.context())
+        });
     let response = if node.children.is_empty() && !node.deferred {
         ui.horizontal(|ui| {
             ui.add_space(ui.spacing().indent);
-            tree_row(ui, &label, selected_row, resource_count, Some(kind))
+            tree_row(
+                ui,
+                &label,
+                selected_row,
+                resource_count,
+                Some(kind),
+                (original.kind == Kind::StageResourceReference).then_some((&source, dat_root)),
+            )
         })
         .inner
     } else {
         let mut clicked = false;
-        let mut header = egui::collapsing_header::CollapsingState::load_with_default_open(
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(),
             ui.make_persistent_id(("resource-node", index)),
             root,
-        )
-        .show_header(ui, |ui| {
-            let response = tree_row(ui, &label, selected_row, resource_count, Some(kind));
+        );
+        if reveal.is_some() {
+            state.set_open(true);
+        }
+        let mut header = state.show_header(ui, |ui| {
+            let response = tree_row(
+                ui,
+                &label,
+                selected_row,
+                resource_count,
+                Some(kind),
+                (original.kind == Kind::StageResourceReference).then_some((&source, dat_root)),
+            );
             clicked = response.0.clicked();
             response
         });
@@ -1963,6 +2167,13 @@ fn tree(
                 let context = ui.ctx().clone();
                 let parent_id = ui.id();
                 let is_leaf = |child: usize| {
+                    if reveal.as_ref().is_some_and(|(_, context)| {
+                        source
+                            .related(child)
+                            .is_some_and(|branch| context.starts_with(branch.context()))
+                    }) {
+                        return false;
+                    }
                     let row_id = parent_id.with(("resource-row", child));
                     let child = visible_node(document, child, show_encoding_layers);
                     let node = &document.nodes[child];
@@ -1993,6 +2204,7 @@ fn tree(
                                 tree(
                                     ui,
                                     &child,
+                                    dat_root,
                                     resource_counts,
                                     show_encoding_layers,
                                     selected,
@@ -2014,6 +2226,9 @@ fn tree(
         });
         header.inner
     };
+    if selected_row && reveal.is_some() {
+        response.0.scroll_to_me(Some(egui::Align::Center));
+    }
     if response.0.clicked() {
         *selected = index;
         *selection = Some(source.clone());
@@ -2109,6 +2324,7 @@ fn tree_row(
     selected: bool,
     resource_count: usize,
     kind: Option<Kind>,
+    reference: Option<(&ResourceRef, &std::path::Path)>,
 ) -> (egui::Response, Option<egui::Response>) {
     let help = match kind {
         Some(kind) if effects::is_binding(kind) || effects::is_definition(kind) => {
@@ -2133,14 +2349,33 @@ fn tree_row(
     } else {
         width
     };
-    let label = ui
-        .add_sized(
+    let label = if let Some((source, root)) = reference {
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(name_width, height), egui::Sense::hover());
+        if selected {
+            ui.painter().rect_filled(
+                rect,
+                ui.visuals().widgets.active.corner_radius,
+                ui.visuals().selection.bg_fill,
+            );
+        }
+        let mut row = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("reference-value")
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        row.set_clip_rect(rect.intersect(ui.clip_rect()));
+        resource_reference::show_source(&mut row, source, root, Some(label), "", false).response
+    } else {
+        ui.add_sized(
             [name_width, height],
             egui::Button::selectable(selected, ())
                 .left_text(label)
                 .truncate(),
         )
-        .on_hover_text(label);
+        .on_hover_text(label)
+    };
     let button = help.map(|help| {
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(action_width, height), egui::Sense::hover());
@@ -2197,7 +2432,7 @@ mod tests {
                                     assert!(!range.is_empty());
                                     for row in range {
                                         ui.horizontal(|ui| {
-                                            tree_row(ui, &row.to_string(), false, 0, None);
+                                            tree_row(ui, &row.to_string(), false, 0, None, None);
                                         });
                                     }
                                 });
@@ -2263,7 +2498,8 @@ mod tests {
             let time = std::cell::Cell::new(0.0);
             let draw = |workbench: &mut Workbench, events| {
                 time.set(time.get() + 0.016);
-                context.run_ui(
+                let mut fits = false;
+                let output = context.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -2277,45 +2513,62 @@ mod tests {
                         ui.set_width(width);
                         let right = ui.max_rect().right();
                         workbench.effect_controls(ui, &snapshot);
-                        assert!(
-                            ui.min_rect().right() <= right + 1.0,
-                            "binding content expanded the panel"
-                        );
+                        fits = ui.min_rect().right() <= right + 1.0;
                     },
-                )
+                );
+                (output, fits)
             };
             let mut target = None;
             for _ in 0..4 {
-                let output = draw(&mut workbench, vec![]);
-                for shape in &output.shapes {
-                    if let egui::Shape::Text(text) = &shape.shape
-                        && text.galley.text().contains("long-model-name")
-                    {
-                        assert!(text.galley.elided);
-                        assert!(text.galley.size().x <= width);
-                        target = Some(text.pos + text.galley.rect.center().to_vec2());
-                    }
-                }
+                let (output, fits) = draw(&mut workbench, vec![]);
+                let elided = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.text().contains("long-model-name") =>
+                        {
+                            Some(text.galley.elided && text.galley.size().x <= width)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                target = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "手动绑定" => {
+                            Some(text.pos + text.galley.rect.center().to_vec2())
+                        }
+                        _ => None,
+                    })
+                    .or(target);
                 output.drop_without_applying_deltas();
+                assert!(fits, "binding content expanded the panel");
+                assert!(!elided.is_empty(), "selected model must remain visible");
+                assert!(elided.into_iter().all(|elided| elided));
             }
             let target = target.unwrap();
             for pressed in [true, false] {
-                draw(&mut workbench, pointer(target, pressed)).drop_without_applying_deltas();
+                draw(&mut workbench, pointer(target, pressed))
+                    .0
+                    .drop_without_applying_deltas();
             }
-            let output = draw(&mut workbench, vec![]);
+            let (output, fits) = draw(&mut workbench, vec![]);
             let names = output
                 .shapes
                 .iter()
                 .filter_map(|shape| match &shape.shape {
                     egui::Shape::Text(text) if text.galley.text().contains("long-model-name") => {
-                        Some(text)
+                        Some(text.galley.size().x)
                     }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(names.len(), 2, "the popup must be open");
-            assert!(names.iter().all(|text| text.galley.size().x <= width));
             output.drop_without_applying_deltas();
+            assert!(fits, "binding content expanded the panel");
+            assert_eq!(names.len(), 2, "the popup must be open");
+            assert!(names.iter().all(|size| *size <= width));
             assert!(workbench.control.commands().is_empty());
         }
     }
@@ -2351,7 +2604,6 @@ mod tests {
         effect.automatic = true;
         effect.manual_target = None;
         effect.model_id = Some(44);
-        let first_name = snapshot.models[0].name.to_string();
         let second_name = snapshot.models[1].name.to_string();
         let mut workbench = preview_fixture();
         workbench.loaded_document(multiple_models());
@@ -2387,24 +2639,21 @@ mod tests {
                       selected: &str,
                       option: &str| {
             let output = draw(workbench, snapshot, vec![]);
-            let button = caption(&output, selected).expect("selected target must remain visible");
+            let button = caption(&output, selected);
             output.drop_without_applying_deltas();
+            let button = button.expect("selected target must remain visible");
             for pressed in [true, false] {
                 draw(workbench, snapshot, pointer(button, pressed)).drop_without_applying_deltas();
             }
             let output = draw(workbench, snapshot, vec![]);
-            let option = caption(&output, option).expect("target option must be selectable");
+            let option = caption(&output, option);
             output.drop_without_applying_deltas();
+            let option = option.expect("target option must be selectable");
             for pressed in [true, false] {
                 draw(workbench, snapshot, pointer(option, pressed)).drop_without_applying_deltas();
             }
         };
-        choose(
-            &mut workbench,
-            &snapshot,
-            &format!("自动 · {first_name}"),
-            &second_name,
-        );
+        choose(&mut workbench, &snapshot, "自动匹配", &second_name);
         assert!(matches!(
             workbench.control.commands().as_slice(),
             [Command::BindEffect { binding: id, model: Some(42) }] if *id == binding
@@ -2416,13 +2665,18 @@ mod tests {
         effect.model = None;
         // Disabled effects have no resolved model, but must retain the manual
         // choice so explicitly selecting "unbound" can clear that request.
-        choose(&mut workbench, &snapshot, &second_name, "未绑定");
+        choose(&mut workbench, &snapshot, "手动绑定", "未绑定");
         assert!(matches!(
             workbench.control.commands().as_slice(),
             [Command::BindEffect { binding: id, model: None }] if *id == binding
         ));
         Arc::make_mut(&mut snapshot.loaded_effects)[0].manual_target = None;
-        choose(&mut workbench, &snapshot, "未绑定", "自动匹配 · 模型 ID 44");
+        choose(
+            &mut workbench,
+            &snapshot,
+            "手动绑定",
+            "自动匹配 · 模型 ID 44",
+        );
         assert!(matches!(
             workbench.control.commands().as_slice(),
             [Command::AutoBindEffect(id)] if *id == binding
@@ -2458,17 +2712,14 @@ mod tests {
         };
         for (caption, stop) in [("触发", false), ("停止", true)] {
             let output = draw(&mut workbench, &snapshot, vec![]);
-            let point = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == caption => {
-                        Some(text.pos + text.galley.rect.center().to_vec2())
-                    }
-                    _ => None,
-                })
-                .unwrap();
+            let point = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == caption => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            });
             output.drop_without_applying_deltas();
+            let point = point.expect("definition action must remain visible");
             draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
             draw(&mut workbench, &snapshot, pointer(point, false)).drop_without_applying_deltas();
             let commands = workbench.control.commands();
@@ -2569,7 +2820,12 @@ mod tests {
                     workbench.motion_list(ui, snapshot);
                     for effect in snapshot.loaded_effects.iter() {
                         for entry in &effect.binding.definitions {
-                            workbench.effect_entry_track(ui, &effect.binding, entry);
+                            workbench.effect_entry_track(
+                                ui,
+                                &effect.binding,
+                                &effect.source,
+                                entry,
+                            );
                         }
                     }
                 },
@@ -2855,7 +3111,7 @@ mod tests {
             })
         };
         let output = draw(&mut workbench, vec![]);
-        assert!(caption(&output, "节点 1 · 父节点 0").is_none());
+        let initially_collapsed = caption(&output, "节点 1").is_none();
         let expand = output
             .shapes
             .iter()
@@ -2869,30 +3125,36 @@ mod tests {
                 }
                 _ => None,
             })
-            .nth(1)
-            .unwrap();
+            .nth(1);
         output.drop_without_applying_deltas();
+        assert!(initially_collapsed);
+        let expand = expand.expect("the second skeleton must have its own expansion button");
         for pressed in [true, false] {
             draw(&mut workbench, pointer(expand, pressed)).drop_without_applying_deltas();
         }
         workbench.loaded_document(multiple_models());
         let output = draw(&mut workbench, vec![]);
-        let focus = caption(&output, "聚焦全部").unwrap();
-        let clear = caption(&output, "清除姿态跟随").unwrap();
-        let bone = caption(&output, "节点 1 · 父节点 0").unwrap();
-        assert_eq!(
-            output
-                .shapes
-                .iter()
-                .filter(|shape| matches!(
+        let focus = caption(&output, "聚焦全部");
+        let clear = caption(&output, "清除姿态跟随");
+        let bone = caption(&output, "节点 1");
+        let bone_count = output
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(
                     &shape.shape,
-                    egui::Shape::Text(text) if text.galley.text() == "节点 1 · 父节点 0"
-                ))
-                .count(),
-            1,
+                    egui::Shape::Text(text) if text.galley.text() == "节点 1"
+                )
+            })
+            .count();
+        output.drop_without_applying_deltas();
+        assert_eq!(
+            bone_count, 1,
             "opening the second skeleton must leave the first skeleton collapsed"
         );
-        output.drop_without_applying_deltas();
+        let focus = focus.expect("focus action must be visible");
+        let clear = clear.expect("clear binding action must be visible");
+        let bone = bone.expect("second skeleton bone must be visible");
         assert!(workbench.control.commands().is_empty());
         for pressed in [true, false] {
             draw(&mut workbench, pointer(focus, pressed)).drop_without_applying_deltas();
@@ -2926,14 +3188,16 @@ mod tests {
             }]
         ));
         let output = draw(&mut workbench, vec![]);
-        let binding = caption(&output, "节点 0").unwrap();
+        let binding = caption(&output, "跟随来源节点");
         output.drop_without_applying_deltas();
+        let binding = binding.expect("source binding chooser must remain visible");
         for pressed in [true, false] {
             draw(&mut workbench, pointer(binding, pressed)).drop_without_applying_deltas();
         }
         let output = draw(&mut workbench, vec![]);
-        let original_pose = caption(&output, "原始骨架姿态").unwrap();
+        let original_pose = caption(&output, "原始骨架姿态");
         output.drop_without_applying_deltas();
+        let original_pose = original_pose.expect("original pose must be selectable");
         for pressed in [true, false] {
             draw(&mut workbench, pointer(original_pose, pressed)).drop_without_applying_deltas();
         }
@@ -2947,19 +3211,22 @@ mod tests {
         ));
         time.set(time.get() + 1.0);
         let output = draw(&mut workbench, vec![]);
-        assert!(caption(&output, "姿态跟随").is_some());
-        assert!(caption(&output, "X").is_some());
-        let bone = caption(&output, "节点 1 · 父节点 0").unwrap();
+        let properties_visible =
+            caption(&output, "姿态跟随").is_some() && caption(&output, "X").is_some();
+        let bone = caption(&output, "节点 1");
         output.drop_without_applying_deltas();
+        assert!(properties_visible);
+        let bone = bone.expect("selected bone must remain visible");
         for pressed in [true, false] {
             draw(&mut workbench, pointer(bone, pressed)).drop_without_applying_deltas();
         }
         assert_eq!(workbench.bone, None);
         let output = draw(&mut workbench, vec![]);
-        assert!(caption(&output, "节点 1 · 父节点 0").is_some());
-        assert!(caption(&output, "姿态跟随").is_none());
-        assert!(caption(&output, "X").is_none());
+        let closed_properties = caption(&output, "节点 1").is_some()
+            && caption(&output, "姿态跟随").is_none()
+            && caption(&output, "X").is_none();
         output.drop_without_applying_deltas();
+        assert!(closed_properties);
         assert!(workbench.control.commands().is_empty());
         assert!(Arc::ptr_eq(
             &snapshot.resources[1].source.document,
@@ -2967,7 +3234,7 @@ mod tests {
         ));
     }
 
-    fn preview_fixture() -> Workbench {
+    pub(super) fn preview_fixture() -> Workbench {
         let root = std::env::temp_dir().join("mhf-workbench-multiple-model-fixture");
         let mut worker = Worker::start(root.clone(), root.clone()).unwrap();
         worker.stop();
@@ -2986,6 +3253,9 @@ mod tests {
 
     fn multiple_models() -> Arc<Document> {
         let node = |name: &str, kind, children| Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: name.into(),
             kind,
             buffer: 0,
@@ -2998,6 +3268,8 @@ mod tests {
             metadata: Default::default(),
         };
         let mut document = Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![Arc::from([0_u8; 16])],
             nodes: vec![
@@ -3247,6 +3519,7 @@ mod tests {
                     responses = tree(
                         ui,
                         &ResourceRef::new(workbench.document.as_ref().unwrap().clone(), index),
+                        &workbench.editing.source_root,
                         &workbench.resource_counts,
                         workbench.view.show_encoding_layers,
                         &mut workbench.node,
@@ -3311,6 +3584,7 @@ mod tests {
                     tree(
                         ui,
                         &ResourceRef::new(document.clone(), document.root),
+                        &workbench.editing.source_root,
                         &workbench.resource_counts,
                         false,
                         &mut workbench.node,
@@ -3372,7 +3646,14 @@ mod tests {
                     ui.spacing_mut().interact_size.y = size + 6.0;
                     let (name, button) = ui
                         .horizontal(|ui| {
-                            tree_row(ui, &"long-resource-name".repeat(8), false, count, None)
+                            tree_row(
+                                ui,
+                                &"long-resource-name".repeat(8),
+                                false,
+                                count,
+                                None,
+                                None,
+                            )
                         })
                         .inner;
                     rectangles = Some((name.rect, button.unwrap().rect));
@@ -3883,6 +4164,8 @@ mod tests {
         let mut document = (*multiple_models()).clone();
         document.nodes[0].name = "long-resource-file-name".repeat(12);
         document.nodes[0].fields.push(Field {
+            reference: None,
+            key: None,
             writable: false,
             binding: crate::field::Binding {
                 buffer: 0,
@@ -4247,12 +4530,17 @@ mod tests {
         );
         workbench.scanning = false;
         workbench.refresh_document(Arc::new(Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0, buffers: vec![Arc::from([0_u8; 16])],
             nodes: vec![Node {
+                native_id: None,
+                material_slots: Vec::new(),
+                address: None,
                 name: "Z:\\game\\dat\\model\\long-resource-file-name.bin".into(),
                 kind: Kind::Unknown, buffer: 0, range: 0..16, children: vec![], action: None, deferred: false, error: None,
                 metadata: Default::default(),
-                fields: vec![Field {writable: false, binding: crate::field::Binding { buffer: 0, range: 0..16, format: crate::field::FieldType::ReadOnly, endian: mhf_resource::binary::Endian::Little }, note: None, name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3)}],
+                fields: vec![Field {reference: None, key: None, writable: false, binding: crate::field::Binding { buffer: 0, range: 0..16, format: crate::field::FieldType::ReadOnly, endian: mhf_resource::binary::Endian::Little }, note: None, name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3)}],
             }],
         }));
         let context = egui::Context::default();
@@ -4279,12 +4567,23 @@ mod tests {
                         .show(ui.ctx(), |ui| workbench.resources(ui))
                         .unwrap();
                     widths.push(window.response.rect.width());
-                    directories.push(window.inner.unwrap());
+                    let address_height = ui
+                        .ctx()
+                        .read_response(egui::Id::new("workbench-resource-path"))
+                        .map_or(0.0, |response| response.rect.height());
+                    directories.push((
+                        window.inner.unwrap(),
+                        address_height + ui.spacing().item_spacing.y,
+                    ));
                 })
                 .drop_without_applying_deltas();
         }
         assert!(
-            directories[5..].iter().all(|rect| rect.height() > 500.0),
+            // The address row now shares the original directory height budget.
+            // Include its measured height without relaxing the total allocation.
+            directories[5..].iter().all(
+                |(rect, address_row)| *address_row > 0.0 && rect.height() + address_row > 500.0
+            ),
             "directory rectangles: {directories:?}"
         );
         assert!(

@@ -3,5 +3,3 @@ name = "mhf-resource"
 version.workspace = true
 edition.workspace = true
 publish = false
-
-[dependencies]

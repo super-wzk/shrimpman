@@ -1,6 +1,90 @@
 use super::*;
 use crate::inspect::Kind;
 use std::fs;
+
+#[test]
+fn background_attack_directory_uses_source_root_and_preserves_edits() {
+    use mhf_resource::{action_definition::AttackReference, dat, sdt};
+    use std::time::{Duration, Instant};
+
+    let directory = std::env::temp_dir().join(format!(
+        "mhf-workbench-attack-directory-{}",
+        std::process::id()
+    ));
+    let data = directory.join("dat");
+    let scan = data.join("stage");
+    fs::create_dir_all(&scan).unwrap();
+    let source = data.join("mhfdat.bin");
+    let mut bytes = vec![0; dat::HEADER_SIZE];
+    bytes[..4].copy_from_slice(dat::MAGIC);
+    bytes[4..8].copy_from_slice(&dat::VERSION.to_le_bytes());
+    bytes[12..16].copy_from_slice(&(dat::HEADER_SIZE as u32).to_le_bytes());
+    fs::write(&source, bytes).unwrap();
+    let mut sdt = vec![0; 64 + 24 * sdt::ATTACK_STRIDE];
+    for (index, subtype) in [2_u16, 1].into_iter().enumerate() {
+        let offset = index * sdt::DIRECTORY_STRIDE;
+        sdt[offset..offset + 2].copy_from_slice(&subtype.to_le_bytes());
+        sdt[offset + 4..offset + 6].copy_from_slice(&24_u16.to_le_bytes());
+        sdt[offset + 8..offset + 12].copy_from_slice(&64_u32.to_le_bytes());
+    }
+    sdt[58..60].copy_from_slice(&u16::MAX.to_le_bytes());
+    let sdt_path = data.join("mhfsdt.bin");
+    fs::write(&sdt_path, sdt).unwrap();
+    let reference = AttackReference {
+        category: 0,
+        subtype: None,
+        record: 23,
+    };
+    let mut worker = Worker::start(scan, directory.join("exports")).unwrap();
+    worker.load(17, source.clone(), data);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let loaded = loop {
+        if let Some(loaded) = worker.updates().loaded {
+            break loaded;
+        }
+        assert!(Instant::now() < deadline, "background load did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    worker.stop();
+    assert_eq!(loaded.request, 17);
+    assert_eq!(loaded.path, source);
+    let document = loaded.document.unwrap();
+    let cached = document.attack_directory.as_ref().unwrap();
+    assert_eq!(
+        cached
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .resolve(reference)
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        "mhfsdt.bin#1/attacks/23"
+    );
+    let edited = edit::apply(&document, 0, 8..12, &1_u32.to_le_bytes()).unwrap();
+    assert!(Arc::ptr_eq(
+        edited.attack_directory.as_ref().unwrap(),
+        cached
+    ));
+
+    let sdt_document = read_document(&sdt_path).unwrap();
+    let edited = edit::apply(&sdt_document, 0, 0..2, &0_u16.to_le_bytes()).unwrap();
+    assert_eq!(
+        edited
+            .attack_directory
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .resolve(reference)
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        "mhfsdt.bin#0/attacks/23"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
 #[test]
 fn stopping_drains_an_accepted_save_including_pending_field_input() {
     let directory =

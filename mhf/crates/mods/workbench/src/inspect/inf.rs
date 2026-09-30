@@ -1,5 +1,6 @@
 use super::{Builder, Kind, hex};
 use crate::field::{FieldType, ScalarType, TextEncoding, typed};
+use mhf_resource::PathSegment::Index;
 use mhf_resource::inf::{self, Inf};
 
 include!(concat!(env!("OUT_DIR"), "/inf_layout.rs"));
@@ -46,6 +47,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(index as u32)]);
             self.read::<u16>(child, "quest_id_limit", at)?;
             self.read::<u16>(
                 child,
@@ -111,6 +113,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(index as u32)]);
             self.read::<u32>(child, "slot_offset", base + slot.field)?;
             match quest {
                 Some(Ok(_)) => self.document.nodes[child].deferred = true,
@@ -180,6 +183,7 @@ impl Builder {
         for part in 0..usize::from(QUEST_LAYOUT.parts) {
             let field = table.start + part * 4;
             self.read::<u32>(node, format!("text_{part}_offset"), base + field)?;
+            let index = self.document.nodes[node].fields.len();
             match file.text(&quest, part) {
                 Ok(Some(text)) => {
                     let value = encoding_rs::SHIFT_JIS
@@ -201,8 +205,12 @@ impl Builder {
                     );
                 }
                 Ok(None) => self.field(node, format!("文本 {part}"), "空引用", base + field, 0),
-                Err(error) => self.fail(node, format!("文本 {part}：{error}")),
+                Err(error) => {
+                    self.fail(node, format!("文本 {part}：{error}"));
+                    continue;
+                }
             }
+            self.document.nodes[node].fields[index].key = Some(format!("text_{part}"));
         }
         Ok(())
     }
@@ -304,6 +312,17 @@ mod tests {
             200..204
         );
         assert_eq!(document.bytes(slots[1]).unwrap(), &inf_bytes[220..268]);
+        for (index, &slot) in slots.iter().enumerate() {
+            let address = document
+                .resource_address(
+                    std::path::Path::new(""),
+                    &[document.root, root, categories[0], slot],
+                    None,
+                )
+                .unwrap();
+            assert!(address.exact);
+            assert_eq!(address.path.to_string(), format!("outer.bin#0/0/{index}"));
+        }
         let document = inspect::expand(&document, slots[1]).unwrap();
         assert!(document.nodes[slots[1]].error.is_none());
         assert!(document.nodes[slots[2]].deferred);
@@ -332,6 +351,20 @@ mod tests {
         );
         assert!(text.writable);
         assert_eq!(text.read(&document.buffers).unwrap(), "あい");
+        let address = "outer.bin#0/0/1/text_0".parse().unwrap();
+        let inspect::resource_path::Location::Resolved {
+            node,
+            field: Some(index),
+            ..
+        } = document.locate_resource(std::path::Path::new(""), &address)
+        else {
+            panic!("INF text reference must retain its original slot address");
+        };
+        assert_eq!(node, slots[1]);
+        assert_eq!(
+            document.nodes[node].fields[index].binding.range,
+            text.binding.range
+        );
         assert_eq!(
             field(&document, slots[1], "文本 3").binding.range,
             text.binding.range

@@ -26,6 +26,27 @@ panel.close()?;
 UI 的安装失败会保留未能回滚的 Hook；stop 失败可重试，成功后清除共享捕获句柄。
 `HostIme` 保留为可选协作接口，当前应用不安装 Unicode 游戏 IME 适配器。
 
+## 资源引用组件
+
+`provider` 的 `resource_reference::ResourceReference` 是 Rust egui 公共组件。
+`ResourceTarget` 接收规范 `ResourcePath`、原生动画／攻击引用、DLL AI 根引用、
+曲线与 `CurveLookup`、生产者声明的集合索引及真实 `Path` 来源。
+
+已解析目标统一显示并复制 `文件#内部路径`；`.label(name)` 可保留来源名称，
+完整路径与原始引用信息在 hover 中显示。动画使用已确认的资源层映射；攻击通过
+`AttackDirectory` 解析原 SDT 目录后传入 `.resolved_path(&path)`。缺少资源或解析失败时
+保留原始来源及选择键，禁用规范路径复制与激活。DLL AI 根、曲线的有符号 ID、匹配位置
+和原生键索引跨度均保留其原始含义；`.source_range(range)` 单独表示数据层字节范围。
+
+`.show(ui)` 返回主值 `response`；`.activate(true)` 可产生由应用处理的 `activated` 路径。
+选择器可对主值调用 `response.interact(Sense::click())` 来选择真实来源，复制按钮保持独立。
+`.help(text)` 添加 hover 上下文；`.compact(true)` 使用紧凑尺寸，并将字节范围留在 hover。
+主值左对齐，复制按钮在右侧，行宽与 Popup 尺寸受父布局约束。
+
+`ResourceReference::editor(id, draft)` 复用相同呈现，合法草稿可复制规范路径；
+应用拥有草稿改写、Enter 提交、错误提示、文件加载与异步导航。
+该组件仅属于 Rust provider；默认 C/SDK API 保持独立，剪贴板由主机处理 egui `PlatformOutput`。
+
 ## Rendering backend
 
 `D3d9Hook` installs process-local Direct3D 9 `Present` and `Reset` hooks and renders

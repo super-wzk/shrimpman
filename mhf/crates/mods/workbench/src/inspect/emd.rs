@@ -1,5 +1,7 @@
 use super::{Builder, Kind, hex};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::{
+    PathSegment,
     emd::{Emd, ROOT_LABELS, ROOT_SIZE, RecordKind, SPECIES_STRIDE, SpeciesTable, Table},
     species,
 };
@@ -12,6 +14,68 @@ mod script_links;
 mod species_view;
 
 use relations::RecordRef;
+
+/// Associated records can live in an unopened species branch. Locate the
+/// owning branch from native references, without treating its UI ordinal as
+/// part of the address or opening every species.
+pub(super) fn resource_expansion(
+    document: &super::Document,
+    node: usize,
+    target: &[PathSegment],
+) -> Option<usize> {
+    let [Index(slot), Index(first), rest @ ..] = target else {
+        return None;
+    };
+    let root = document.nodes.get(node)?;
+    let file = Emd::parse(document.bytes(node)?).ok()?;
+    let slot = *slot as usize;
+    let first = *first as usize;
+    let species = match slot {
+        2 | 5 | 11 | 12 | 21 => vec![u8::try_from(first).ok()?],
+        1 | 4 | 10 => {
+            let Index(record) = rest.first()? else {
+                return None;
+            };
+            vec![u8::try_from(*record).ok()?]
+        }
+        9 => relations::script_links(&file)
+            .records
+            .iter()
+            .filter(|record| record.reference.slot == slot && record.reference.record == first)
+            .flat_map(|record| record.links.iter().map(|link| link.species))
+            .collect(),
+        7 | 13 | 16 | 17 | 18 | 19 | 22 => {
+            let table = if slot == 16 {
+                file.directory_table(slot, first).ok()??
+            } else {
+                file.root_table(slot).ok()??
+            };
+            let index = if slot == 16 {
+                let Index(index) = rest.first()? else {
+                    return None;
+                };
+                *index as usize
+            } else {
+                first
+            };
+            let (_, bytes) = table.record(index).ok()?;
+            let reader = mhf_resource::binary::Reader::new(bytes);
+            let species = match slot {
+                7 | 17 => u16::from(reader.read_at::<u8>(0).ok()?.value),
+                18 => u16::from(reader.read_at::<u8>(16).ok()?.value),
+                16 => u16::try_from(reader.read_at::<i16>(16).ok()?.value).ok()?,
+                19 => reader.read_at::<u16>(2).ok()?.value,
+                _ => reader.read_at::<u16>(0).ok()?.value,
+            };
+            vec![u8::try_from(species).ok()?]
+        }
+        _ => return None,
+    };
+    root.children.iter().copied().find(|&child| {
+        let value = &document.nodes[child];
+        matches!(value.kind, Kind::EmdSpecies(id) if species.contains(&id)) && value.deferred
+    })
+}
 
 impl Builder {
     pub(super) fn inspect_emd(&mut self, node: usize, bytes: &[u8], base: usize) {
@@ -38,6 +102,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(3), Index(u32::from(species.id))]);
             self.document.nodes[child].deferred = true;
         }
         let global_group = self.emd_group(node, "全局数据").ok_or("无法创建全局目录")?;
@@ -92,6 +157,9 @@ impl Builder {
         ) else {
             return;
         };
+        if let Ok(root) = self.emd_root(child) {
+            self.set_address(child, root, [Index(slot as u32)]);
+        }
         if let Err(error) = self.read::<u32>(child, "root_offset", base + slot * 4) {
             self.fail(child, error);
         }
@@ -182,6 +250,23 @@ impl Builder {
                 base + at..base + at + bytes.len(),
             )
             .ok_or("无法创建 EMD 记录节点")?;
+        let mut coordinate = vec![Index(slot as u32)];
+        if let Some(directory) = directory {
+            coordinate.push(Index(directory as u32));
+            if let Some(field) = match slot {
+                3 => Some("parameter_links"),
+                6 => Some("weighted_pairs"),
+                7 => Some("probability_rows"),
+                19 => Some("action_rules"),
+                _ => None,
+            } {
+                coordinate.push(Key(field.into()));
+            }
+        }
+        if slot != 0 {
+            coordinate.push(Index(record as u32));
+        }
+        self.set_address(child, self.emd_root(child)?, coordinate);
         self.document.nodes[child].deferred = true;
         if fallback {
             self.field(child, "匹配方式", "默认回退", base + at, 0);
@@ -203,6 +288,7 @@ impl Builder {
                 buffer,
                 base + offset..base + offset + 1,
             ) {
+                self.set_address(script, child, [Key("script".into())]);
                 self.document.nodes[script].deferred = true;
             }
         }
@@ -230,6 +316,17 @@ impl Builder {
                         buffer,
                         base + target.range.start..base + target.range.end,
                     ) {
+                        self.set_address(
+                            target_node,
+                            child,
+                            [Key(match slot {
+                                6 => "weighted_pairs",
+                                7 => "probability_rows",
+                                19 => "action_rules",
+                                _ => unreachable!(),
+                            }
+                            .into())],
+                        );
                         self.emd_table_info(target_node, &target, base);
                     }
                 }
@@ -290,6 +387,11 @@ impl Builder {
             ) else {
                 break;
             };
+            if matches!(kind, SpeciesTable::AngerProfile(_)) {
+                self.set_address(child, node, []);
+            } else {
+                self.set_address(child, node, [Index(record as u32)]);
+            }
             self.document.nodes[child].deferred = true;
         }
         Ok(())

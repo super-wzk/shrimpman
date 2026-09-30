@@ -7,6 +7,9 @@ struct Tag(u8);
 
 fn document(extra_nodes: usize) -> Arc<Document> {
     let node = |name: &str, kind, children| Node {
+        native_id: None,
+        material_slots: Vec::new(),
+        address: None,
         name: name.into(),
         kind,
         buffer: 0,
@@ -19,6 +22,8 @@ fn document(extra_nodes: usize) -> Arc<Document> {
         error: None,
     };
     let mut document = Document {
+        attack_directory: None,
+        source: Default::default(),
         root: 0,
         buffers: vec![Arc::from([0_u8; 16])],
         nodes: vec![
@@ -126,6 +131,7 @@ impl Harness {
                     tree(
                         ui,
                         &ResourceRef::new(document.clone(), document.root),
+                        &self.workbench.editing.source_root,
                         &self.workbench.resource_counts,
                         self.workbench.view.show_encoding_layers,
                         &mut self.workbench.node,

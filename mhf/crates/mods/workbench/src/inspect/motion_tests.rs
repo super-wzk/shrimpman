@@ -1,4 +1,89 @@
+use super::resource_path::Location;
 use super::*;
+
+#[test]
+fn native_resource_paths_keep_motion_holes_aliases_groups_and_real_sources() {
+    let words = |values: &[u32]| {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>()
+    };
+    let channel = words(&[0x8021_0001, 1, 20, 1.0_f32.to_bits(), 0.0_f32.to_bits()]);
+    let mut track = words(&[0x38, 1, 12 + channel.len() as u32]);
+    track.extend(channel);
+    let mut clip = words(&[1, 1, 20 + track.len() as u32, 0, 0]);
+    clip.extend(track);
+    let mut bytes = words(&[3, 19, 0, 28, u32::MAX, 28, 28]);
+    bytes.extend_from_slice(&clip);
+    let root = Path::new("dat");
+    let document = inspect("dat/motion/玩家 %#.mot", Arc::from(bytes));
+    assert_eq!(document.source, Path::new("dat/motion/玩家 %#.mot"));
+    assert_eq!(document.nodes[document.root].name, "dat/motion/玩家 %#.mot");
+    let path = |text: &str| text.parse().unwrap();
+    let Location::Resolved { node: empty, .. } =
+        document.locate_resource(root, &path("motion/玩家 %25%23.mot#0/0"))
+    else {
+        panic!("empty native slot must resolve")
+    };
+    assert_eq!(document.nodes[empty].kind, Kind::Empty);
+    let Location::Resolved {
+        node: first,
+        context,
+        ..
+    } = document.locate_resource(root, &path("motion/玩家 %25%23.mot#0/1"))
+    else {
+        panic!("motion must resolve")
+    };
+    let Location::Resolved { node: alias, .. } =
+        document.locate_resource(root, &path("motion/玩家 %25%23.mot#0/2"))
+    else {
+        panic!("alias must resolve")
+    };
+    assert_ne!(first, alias);
+    assert_eq!(document.bytes(first), Some(clip.as_slice()));
+    assert_eq!(document.bytes(first), document.bytes(alias));
+    assert_eq!(document.nodes[first].range, document.nodes[alias].range);
+    assert_eq!(
+        document
+            .resource_address(root, &context, None)
+            .unwrap()
+            .path
+            .to_string(),
+        "motion/玩家 %25%23.mot#0/1"
+    );
+    let mut renamed = document.clone();
+    for node in &mut renamed.nodes {
+        node.name = "随意的中文显示名称".into();
+    }
+    renamed.nodes[document.root].children.reverse();
+    assert_eq!(
+        renamed.locate_resource(root, &path("motion/玩家 %25%23.mot#0/1")),
+        Location::Resolved {
+            node: first,
+            context: context.clone(),
+            field: None
+        }
+    );
+    let (expanded, channel, context, _) = super::resource_path::tests::resolve(
+        renamed,
+        root,
+        "motion/玩家 %25%23.mot#0/1/tracks/0/channels/0",
+    );
+    assert_eq!(expanded.nodes[channel].kind, Kind::Channel);
+    assert_eq!(
+        expanded
+            .resource_address(root, &context, None)
+            .unwrap()
+            .path
+            .to_string(),
+        "motion/玩家 %25%23.mot#0/1/tracks/0/channels/0"
+    );
+    assert_eq!(
+        expanded.locate_resource(root, &path("motion/玩家 %25%23.mot#0/3")),
+        Location::Missing
+    );
+}
 
 fn encoded_camera() -> Vec<u8> {
     let mut bytes = vec![0; EventCamera::HEADER_SIZE];
@@ -146,7 +231,7 @@ fn original_motion_directory_and_mytra_resolve_and_expand_every_animation() {
     let mut text_files = 0;
     for path in paths {
         let source: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-        let document = inspect(&path.to_string_lossy(), source.clone());
+        let document = inspect(&path, source.clone());
         assert!(Arc::ptr_eq(&document.buffers[0], &source));
         for (index, node) in document.nodes.iter().enumerate() {
             assert!(

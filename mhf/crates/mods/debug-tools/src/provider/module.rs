@@ -31,6 +31,11 @@ impl DebugToolsMod {
 
 impl Module for DebugToolsMod {
     fn attach(&mut self, context: &Context) -> Result<()> {
+        // The game host enters the configured game directory before attaching
+        // modules. Capture it now; the builtin Mod's resource root is the launcher.
+        let attack_path = std::env::current_dir()
+            .map_err(|error| format!("无法确定客户端资源目录：{error}"))?
+            .join("dat/mhfsdt.bin");
         let session = unsafe {
             mhf_quest::bind_control(
                 context
@@ -43,6 +48,7 @@ impl Module for DebugToolsMod {
                 HMODULE(context.game().module_base),
                 session,
                 self.control.clone(),
+                attack_path,
             )
         }?);
         let desktop = DebugDesktop::start(self.control.clone())?;

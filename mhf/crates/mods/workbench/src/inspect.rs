@@ -1,20 +1,27 @@
 //! Owned inspection documents for the I/O worker and UI. Archive entries refer
 //! to ranges in shared buffers; only decoded envelopes allocate another buffer.
 
-use std::{fmt, ops::Range, path::Path, sync::Arc};
+use mhf_resource::PathSegment::{Field as Key, Index};
+use std::{
+    fmt,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::action::NodeAction;
 use crate::metadata::{self, Metadata};
 
 pub use crate::field::Field;
 use crate::field::{
-    Binding, Endian, FieldType, FieldValue, IntoFieldValue, ScalarType, TextEncoding, formatted,
-    typed,
+    Binding, Endian, FieldReference, FieldType, FieldValue, IntoFieldValue, ReferenceCollection,
+    ScalarType, TextEncoding, formatted, typed,
 };
 pub use labels::field_label;
 
 #[cfg(test)]
 mod archive_tests;
+mod attack_directory;
 mod dat;
 mod effect_bank;
 mod emd;
@@ -24,13 +31,14 @@ mod legacy_stage;
 mod mha;
 #[cfg(test)]
 mod motion_tests;
+pub mod resource_path;
 mod sdt;
 mod stage;
 mod stage_camera;
 mod stage_objects;
 
 use mhf_resource::{
-    Decoded,
+    Decoded, PathSegment,
     binary::{BinaryValue, Reader},
     container::{MhaArchive, SimpleArchive, StageArchive},
     crypto::{Ecd, Exf},
@@ -58,6 +66,8 @@ pub enum Kind {
     Dat,
     DatTable(usize),
     DatRecord(usize),
+    DatWeaponActions(u8),
+    DatAction(u8, u16),
     Emd,
     EmdGroup,
     EmdSpecies(u8),
@@ -142,6 +152,8 @@ impl Kind {
             Self::Dat => "DAT 游戏数据",
             Self::DatTable(_) => "DAT 数据表",
             Self::DatRecord(_) => "DAT 记录",
+            Self::DatWeaponActions(_) => "武器招式目录",
+            Self::DatAction(..) => "招式定义",
             Self::Emd => "EMD 物种资源",
             Self::EmdGroup => "EMD 分组",
             Self::EmdSpecies(_) => "EMD 物种记录",
@@ -254,9 +266,29 @@ const RENDERING_PARAMETERS: [(usize, &str, &str); 14] = [
     (fmod::ADDRESS_WORD, "UV 寻址", "0 重复 · 1 钳制 · 2 镜像"),
 ];
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeAddress {
+    /// The native resource whose schema owns these coordinates. This is a
+    /// document-local anchor, not an index serialized in the resource path.
+    pub anchor: usize,
+    pub segments: Vec<PathSegment>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeId {
+    Stage(u32),
+    Skeleton(i32),
+    Effect(u16),
+}
+
 #[derive(Clone, Debug)]
 pub struct Node {
+    pub native_id: Option<NativeId>,
+    pub material_slots: Vec<u32>,
     pub name: String,
+    /// Native schema coordinates. Helper groups and unverified details have
+    /// no independent address; their children can still name a native anchor.
+    pub address: Option<NodeAddress>,
     pub kind: Kind,
     pub buffer: usize,
     pub range: Range<usize>,
@@ -277,6 +309,10 @@ pub struct Node {
 
 #[derive(Clone, Debug)]
 pub struct Document {
+    pub attack_directory:
+        Option<Arc<Result<mhf_resource::action_definition::AttackDirectory, String>>>,
+    /// The source file is independent of labels and decoded buffer ownership.
+    pub source: PathBuf,
     pub buffers: Vec<Arc<[u8]>>,
     pub nodes: Vec<Node>,
     pub root: usize,
@@ -306,11 +342,18 @@ impl Document {
     }
 }
 
-pub fn inspect(name: &str, source: Arc<[u8]>) -> Document {
+pub fn inspect(path: impl AsRef<Path>, source: Arc<[u8]>) -> Document {
+    let path = path.as_ref();
+    let name = path.to_string_lossy();
     let mut builder = Builder {
         document: Document {
+            attack_directory: None,
+            source: path.to_path_buf(),
             nodes: vec![Node {
-                name: name.into(),
+                native_id: None,
+                material_slots: Vec::new(),
+                name: name.to_string(),
+                address: None,
                 kind: Kind::Unknown,
                 buffer: 0,
                 range: 0..source.len(),
@@ -327,10 +370,10 @@ pub fn inspect(name: &str, source: Arc<[u8]>) -> Document {
         parents: vec![None],
         work: Vec::new(),
     };
-    if let Some(value) = metadata::from_filename(name) {
+    if let Some(value) = metadata::from_filename(&name) {
         builder.document.nodes[0].metadata.insert(value);
     }
-    builder.inspect_node(0, Hint::from_path(name));
+    builder.inspect_node(0, Hint::from_path(&name));
     builder.finish();
     builder.document
 }
@@ -369,6 +412,8 @@ pub fn expand(document: &Document, node: usize) -> Result<Document, String> {
         }
         Kind::DatTable(index) => builder.dat_table_records(node, index)?,
         Kind::DatRecord(index) => builder.dat_record_fields(node, index)?,
+        Kind::DatWeaponActions(weapon) => builder.dat_weapon_actions(node, weapon)?,
+        Kind::DatAction(weapon, action) => builder.dat_action_contents(node, weapon, action)?,
         Kind::InfCategory(index) => builder.inf_category_records(node, index)?,
         Kind::InfQuest => builder.inf_quest_fields(node)?,
         Kind::EmdSpecies(species) => builder.emd_species_contents(node, species)?,
@@ -523,6 +568,21 @@ enum InspectionTask {
 }
 
 impl Builder {
+    /// Coordinates come from the format reader, never from UI child positions
+    /// or the node's display name. Anchoring allows alternate EMD views to point
+    /// to the same native table without including helper groups in the address.
+    fn set_address(
+        &mut self,
+        node: usize,
+        anchor: usize,
+        segments: impl IntoIterator<Item = PathSegment>,
+    ) {
+        self.document.nodes[node].address = Some(NodeAddress {
+            anchor,
+            segments: segments.into_iter().collect(),
+        });
+    }
+
     fn finish(&mut self) {
         self.run();
         self.resolve_stage_references();
@@ -645,8 +705,11 @@ impl Builder {
     ) {
         let value = value.into_field_value(size);
         let current = &mut self.document.nodes[node];
+        let name = name.into();
         current.fields.push(Field {
-            name: name.into(),
+            key: crate::field::schema_key(&name),
+            reference: None,
+            name,
             value: value.display,
             note,
             writable: size != 0 && value.edit != FieldType::ReadOnly,
@@ -755,7 +818,10 @@ impl Builder {
         }
         let node = self.document.nodes.len();
         self.document.nodes.push(Node {
+            native_id: None,
+            material_slots: Vec::new(),
             name: name.into(),
+            address: None,
             kind,
             buffer,
             range,
@@ -1142,6 +1208,7 @@ impl Builder {
                         ) else {
                             break;
                         };
+                        self.set_address(child, node, [Index(entry.index as u32)]);
                         let meta = base + archive.table_offset + entry.index * 8;
                         self.field(
                             child,
@@ -1150,7 +1217,11 @@ impl Builder {
                             meta,
                             4,
                         );
+                        self.document.nodes[child].fields.last_mut().unwrap().key =
+                            Some("entry_offset".into());
                         self.field(child, "size", entry.size, meta + 4, 4);
+                        self.document.nodes[child].fields.last_mut().unwrap().key =
+                            Some("entry_size".into());
                         self.inspect_node(
                             child,
                             Hint {
@@ -1198,6 +1269,7 @@ impl Builder {
                 ) else {
                     break;
                 };
+                self.set_address(child, node, [Index(entry.index as u32)]);
                 let meta = base
                     + if entry.index < 3 {
                         entry.index * 8
@@ -1206,6 +1278,7 @@ impl Builder {
                     };
                 let location = if let Some(resource_id) = item.resource_id {
                     self.field(child, "resource_id", resource_id, meta, 4);
+                    self.document.nodes[child].native_id = Some(NativeId::Stage(resource_id));
                     meta + 4
                 } else {
                     meta
@@ -1217,7 +1290,11 @@ impl Builder {
                     location,
                     4,
                 );
+                self.document.nodes[child].fields.last_mut().unwrap().key =
+                    Some("entry_offset".into());
                 self.field(child, "size", entry.size, location + 4, 4);
+                self.document.nodes[child].fields.last_mut().unwrap().key =
+                    Some("entry_size".into());
                 self.inspect_node(
                     child,
                     Hint {
@@ -1272,7 +1349,7 @@ impl Builder {
                     if let Err(error) = file.validate() {
                         self.fail(node, error.to_string());
                     }
-                    for chunk in &file.chunks {
+                    for (chunk_index, chunk) in file.chunks.iter().enumerate() {
                         let at = base + chunk.offset;
                         let Some(child) = self.child(
                             node,
@@ -1283,6 +1360,11 @@ impl Builder {
                         ) else {
                             break;
                         };
+                        self.set_address(
+                            child,
+                            node,
+                            [Key("chunks".into()), Index(chunk_index as u32)],
+                        );
                         if let Err(error) =
                             self.read_endian::<u32>(child, "length", at, Endian::Big)
                         {
@@ -1484,7 +1566,8 @@ impl Builder {
 
     fn model(&mut self, node: usize, file: &Fmod<'_>, base: usize) {
         self.block_fields(node, file.root, base);
-        for section in &file.sections {
+        for (section_index, section) in file.sections.iter().enumerate() {
+            let first_child = self.document.nodes[node].children.len();
             match section {
                 Section::Init(value) => {
                     self.block_child(node, "初始化索引", Kind::Block, value.block, base);
@@ -1516,11 +1599,16 @@ impl Builder {
                                 ) else {
                                     break;
                                 };
+                                self.set_address(
+                                    child,
+                                    parent,
+                                    [Key("objects".into()), Index(index as u32)],
+                                );
                                 if let Err(error) = object.validate_geometry() {
                                     self.fail(child, error.to_string());
                                 }
-                                for component in &object.components {
-                                    self.component(child, component, base);
+                                for (index, component) in object.components.iter().enumerate() {
+                                    self.component(child, index, component, base);
                                 }
                                 if !object.components.iter().any(|component| {
                                     component.block().header.kind == fmod::RENDERING
@@ -1529,13 +1617,19 @@ impl Builder {
                                 }
                             }
                             ObjectEntry::Unknown(block) => {
-                                self.block_child(
+                                if let Some(child) = self.block_child(
                                     parent,
                                     format!("未知对象 {index}"),
                                     Kind::Block,
                                     *block,
                                     base,
-                                );
+                                ) {
+                                    self.set_address(
+                                        child,
+                                        parent,
+                                        [Key("objects".into()), Index(index as u32)],
+                                    );
+                                }
                             }
                         }
                     }
@@ -1558,6 +1652,11 @@ impl Builder {
                                 ) else {
                                     break;
                                 };
+                                self.set_address(
+                                    child,
+                                    parent,
+                                    [Key("materials".into()), Index(index as u32)],
+                                );
                                 let at = base + material.block.offset() + 12;
                                 self.field(
                                     child,
@@ -1620,6 +1719,23 @@ impl Builder {
                                     at + 256,
                                     material.texture_indices.len() * 4,
                                 );
+                                self.document.nodes[child]
+                                    .fields
+                                    .last_mut()
+                                    .unwrap()
+                                    .reference = Some(FieldReference::Many(
+                                    material
+                                        .texture_indices
+                                        .iter()
+                                        .map(|&index| {
+                                            FieldReference::Indexed(
+                                                ReferenceCollection::ModelTextures,
+                                                index,
+                                                None,
+                                            )
+                                        })
+                                        .collect(),
+                                ));
                                 self.field(
                                     child,
                                     "unknown_38",
@@ -1629,13 +1745,19 @@ impl Builder {
                                 );
                             }
                             MaterialEntry::Unknown(block) => {
-                                self.block_child(
+                                if let Some(child) = self.block_child(
                                     parent,
                                     format!("未知材质 {index}"),
                                     Kind::Block,
                                     *block,
                                     base,
-                                );
+                                ) {
+                                    self.set_address(
+                                        child,
+                                        parent,
+                                        [Key("materials".into()), Index(index as u32)],
+                                    );
+                                }
                             }
                         }
                     }
@@ -1658,8 +1780,22 @@ impl Builder {
                                 ) else {
                                     break;
                                 };
+                                self.set_address(
+                                    child,
+                                    parent,
+                                    [Key("textures".into()), Index(index as u32)],
+                                );
                                 let at = base + texture.block.offset() + 12;
                                 self.field(child, "image_id", texture.image_id, at, 4);
+                                self.document.nodes[child]
+                                    .fields
+                                    .last_mut()
+                                    .unwrap()
+                                    .reference = Some(FieldReference::Indexed(
+                                    ReferenceCollection::TextureImages,
+                                    texture.image_id,
+                                    None,
+                                ));
                                 self.field(child, "width", texture.width, at + 4, 4);
                                 self.field(child, "height", texture.height, at + 8, 4);
                                 self.field(
@@ -1671,17 +1807,30 @@ impl Builder {
                                 );
                             }
                             TextureEntry::Unknown(block) => {
-                                self.block_child(
+                                if let Some(child) = self.block_child(
                                     parent,
                                     format!("未知贴图 {index}"),
                                     Kind::Block,
                                     *block,
                                     base,
-                                );
+                                ) {
+                                    self.set_address(
+                                        child,
+                                        parent,
+                                        [Key("textures".into()), Index(index as u32)],
+                                    );
+                                }
                             }
                         }
                     }
                 }
+            }
+            if let Some(&child) = self.document.nodes[node].children.get(first_child) {
+                self.set_address(
+                    child,
+                    node,
+                    [Key("sections".into()), Index(section_index as u32)],
+                );
             }
         }
     }
@@ -1699,7 +1848,7 @@ impl Builder {
         self.document.nodes[node].action = Some(NodeAction::InitializeRenderingBlock);
     }
 
-    fn component(&mut self, parent: usize, component: &Component<'_>, base: usize) {
+    fn component(&mut self, parent: usize, index: usize, component: &Component<'_>, base: usize) {
         let name = match component {
             Component::Faces(_) => "面",
             Component::MaterialList(_) => "材质索引",
@@ -1719,6 +1868,12 @@ impl Builder {
         let Some(node) = self.block_child(parent, name, Kind::Block, block, base) else {
             return;
         };
+        self.set_address(
+            node,
+            parent,
+            [Key("components".into()), Index(index as u32)],
+        );
+        let first_field = self.document.nodes[node].fields.len();
         let at = base + block.offset() + 12;
         let length = block.payload().len();
         match component {
@@ -1745,13 +1900,34 @@ impl Builder {
             ),
             Component::MaterialList(value)
             | Component::MaterialMap(value)
-            | Component::BoneMap(value) => self.field(
-                node,
-                name,
-                typed(summary(&value.values), FieldType::Array(ScalarType::U32)),
-                at,
-                value.values.len() * 4,
-            ),
+            | Component::BoneMap(value) => {
+                self.field(
+                    node,
+                    name,
+                    typed(summary(&value.values), FieldType::Array(ScalarType::U32)),
+                    at,
+                    value.values.len() * 4,
+                );
+                let collection = match component {
+                    Component::MaterialList(_) => ReferenceCollection::ModelMaterials,
+                    Component::MaterialMap(_) => ReferenceCollection::ModelMaterialSlots,
+                    _ => ReferenceCollection::SkeletonNodeIds,
+                };
+                if matches!(component, Component::MaterialList(_)) {
+                    self.document.nodes[parent].material_slots = value.values.clone();
+                }
+                self.document.nodes[node]
+                    .fields
+                    .last_mut()
+                    .unwrap()
+                    .reference = Some(FieldReference::Many(
+                    value
+                        .values
+                        .iter()
+                        .map(|&index| FieldReference::Indexed(collection, index, None))
+                        .collect(),
+                ));
+            }
             Component::Weights(value) => self.field(
                 node,
                 "原始权重",
@@ -1768,7 +1944,8 @@ impl Builder {
                 length,
             ),
             Component::Faces(value) => {
-                for group in &value.groups {
+                for (index, group) in value.groups.iter().enumerate() {
+                    let first_child = self.document.nodes[node].children.len();
                     match group {
                         fmod::FaceGroup::Strips(strips) => {
                             if let Some(child) =
@@ -1795,6 +1972,9 @@ impl Builder {
                             self.block_child(node, "未知面数据", Kind::Block, *block, base);
                         }
                     }
+                    if let Some(&child) = self.document.nodes[node].children.get(first_child) {
+                        self.set_address(child, node, [Key("groups".into()), Index(index as u32)]);
+                    }
                 }
             }
             Component::WordGroups(value) => {
@@ -1810,6 +1990,7 @@ impl Builder {
                     ) else {
                         break;
                     };
+                    self.set_address(child, node, [Key("groups".into()), Index(index as u32)]);
                     self.field(child, "count", group.words.len(), at, 4);
                     self.field(
                         child,
@@ -1818,6 +1999,8 @@ impl Builder {
                         at + 4,
                         group.words.len() * 4,
                     );
+                    self.document.nodes[child].fields.last_mut().unwrap().key =
+                        Some("words".into());
                 }
                 if !value.trailing.is_empty() {
                     self.field(
@@ -1848,6 +2031,7 @@ impl Builder {
                             format!("{word:#010X}"),
                         ),
                     };
+                    let field_index = self.document.nodes[node].fields.len();
                     self.field_with_note(
                         node,
                         name,
@@ -1856,6 +2040,24 @@ impl Builder {
                         4,
                         note,
                     );
+                    let key = match index {
+                        fmod::VERSION_WORD => "version",
+                        fmod::COLOR_SOURCE_WORD => "color_source",
+                        fmod::SPECULAR_WORD => "specular",
+                        fmod::CULL_WORD => "cull",
+                        fmod::LIGHTING_WORD => "lighting",
+                        fmod::UV_MATRIX_WORD => "uv_matrix",
+                        fmod::FOG_WORD => "fog",
+                        fmod::TINT_WORD => "tint",
+                        fmod::SCHEME_WORD => "scheme",
+                        fmod::SRC_BLEND_WORD => "src_blend",
+                        fmod::DEST_BLEND_WORD => "dest_blend",
+                        fmod::BLEND_OP_WORD => "blend_op",
+                        fmod::FILTER_WORD => "filter",
+                        fmod::ADDRESS_WORD => "address",
+                        _ => continue,
+                    };
+                    self.document.nodes[node].fields[field_index].key = Some(key.into());
                 }
                 if !value.trailing.is_empty() {
                     self.field(
@@ -1869,6 +2071,21 @@ impl Builder {
             }
             Component::Unknown(_) => self.field(node, "原始数据", hex(block.payload()), at, length),
         }
+        let key = match component {
+            Component::Positions(_)
+            | Component::Normals(_)
+            | Component::Uvs(_)
+            | Component::Colors(_)
+            | Component::Attribute12(_)
+            | Component::MaterialList(_)
+            | Component::MaterialMap(_)
+            | Component::BoneMap(_) => Some("values"),
+            Component::Weights(_) => Some("vertices"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            self.document.nodes[node].fields[first_field].key = Some(key.into());
+        }
     }
 
     fn skeleton(&mut self, node: usize, file: &Fskl<'_>, base: usize) {
@@ -1878,7 +2095,7 @@ impl Builder {
         }
         // File order is preserved. Hierarchy links remain properties, so cycles
         // or a corrupt link cannot make the UI's tree recursive.
-        let mut root_tables = file.root_tables.iter().peekable();
+        let mut root_tables = file.root_tables.iter().enumerate().peekable();
         let mut bones = file
             .nodes
             .iter()
@@ -1888,11 +2105,17 @@ impl Builder {
                 NodeEntry::Unknown(_) => None,
             })
             .peekable();
-        for block in &file.blocks {
-            if let Some(table) = root_tables.next_if(|table| table.block.offset() == block.offset())
+        for (block_index, block) in file.blocks.iter().enumerate() {
+            if let Some((table_index, table)) =
+                root_tables.next_if(|(_, table)| table.block.offset() == block.offset())
             {
                 if let Some(child) = self.block_child(node, "根节点索引", Kind::Block, *block, base)
                 {
+                    self.set_address(
+                        child,
+                        node,
+                        [Key("root_tables".into()), Index(table_index as u32)],
+                    );
                     self.field(
                         child,
                         "indices",
@@ -1900,6 +2123,23 @@ impl Builder {
                         base + block.offset() + 12,
                         table.values.len() * 4,
                     );
+                    self.document.nodes[child]
+                        .fields
+                        .last_mut()
+                        .unwrap()
+                        .reference = Some(FieldReference::Many(
+                        table
+                            .values
+                            .iter()
+                            .map(|&index| {
+                                FieldReference::Indexed(
+                                    ReferenceCollection::SkeletonNodes,
+                                    index,
+                                    None,
+                                )
+                            })
+                            .collect(),
+                    ));
                 }
                 continue;
             }
@@ -1915,7 +2155,9 @@ impl Builder {
                 ) else {
                     break;
                 };
+                self.set_address(child, node, [Key("nodes".into()), Index(index as u32)]);
                 let at = base + block.offset() + 12;
+                self.document.nodes[child].native_id = Some(NativeId::Skeleton(bone.node_id));
                 for (name, value, offset) in [
                     ("node_id", bone.node_id, 0),
                     ("parent_index", bone.parent_index, 4),
@@ -1923,6 +2165,17 @@ impl Builder {
                     ("next_sibling_index", bone.next_sibling_index, 12),
                 ] {
                     self.field(child, name, value, at + offset, 4);
+                    if offset != 0 && value >= 0 {
+                        self.document.nodes[child]
+                            .fields
+                            .last_mut()
+                            .unwrap()
+                            .reference = Some(FieldReference::Indexed(
+                            ReferenceCollection::SkeletonNodes,
+                            value as u32,
+                            None,
+                        ));
+                    }
                 }
                 self.field(
                     child,
@@ -1974,6 +2227,8 @@ impl Builder {
                     at + 68,
                     4,
                 );
+                self.document.nodes[child].fields.last_mut().unwrap().key =
+                    Some("motion_tag".into());
                 self.field(
                     child,
                     "unknown_48",
@@ -1982,13 +2237,21 @@ impl Builder {
                     bone.unknown_48.len(),
                 );
             } else {
-                self.block_child(
+                if let Some(child) = self.block_child(
                     node,
                     format!("未知骨架块 {:#X}", block.header.kind),
                     Kind::Block,
                     *block,
                     base,
-                );
+                ) {
+                    let native_node = file.nodes.iter().position(|entry| match entry {
+                        NodeEntry::Bone(bone) => bone.block.offset() == block.offset(),
+                        NodeEntry::Unknown(value) => value.offset() == block.offset(),
+                    });
+                    let (key, index) =
+                        native_node.map_or(("blocks", block_index), |index| ("nodes", index));
+                    self.set_address(child, node, [Key(key.into()), Index(index as u32)]);
+                }
             }
         }
     }
@@ -2010,6 +2273,7 @@ impl Builder {
             buffer,
             at..at + file.index.as_bytes().len(),
         ) {
+            self.set_address(index, node, [Index(0)]);
             self.field(index, "unknown_00", file.index.unknown_00, at, 2);
             self.field(index, "count", file.index.count, at + 2, 2);
             for (i, reference) in file.index.entries.iter().enumerate() {
@@ -2027,6 +2291,14 @@ impl Builder {
                     at + 6 + i * 4,
                     2,
                 );
+                self.document.nodes[index]
+                    .fields
+                    .last_mut()
+                    .unwrap()
+                    .reference = Some(FieldReference::Address(NodeAddress {
+                    anchor: node,
+                    segments: vec![Index(i as u32 + 1)],
+                }));
             }
             if !file.index.trailing_bytes.is_empty() {
                 self.field(
@@ -2057,6 +2329,9 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(member.index as u32)]);
+            self.document.nodes[child].native_id =
+                Some(NativeId::Effect(member.reference.resource_id));
             let meta = base + file.directory.table_offset + member.index * 8;
             self.field(
                 child,
@@ -2065,7 +2340,9 @@ impl Builder {
                 meta,
                 4,
             );
+            self.document.nodes[child].fields.last_mut().unwrap().key = Some("entry_offset".into());
             self.field(child, "size", member.size, meta + 4, 4);
+            self.document.nodes[child].fields.last_mut().unwrap().key = Some("entry_size".into());
             let descriptor = base + file.index.offset as usize + 4 + (member.index - 1) * 4;
             self.field(child, "kind", member.reference.kind, descriptor, 2);
             self.field(
@@ -2133,6 +2410,7 @@ impl Builder {
             self.document.nodes[node].buffer,
             at..at + 4 + count * 4,
         ) {
+            self.set_address(child, node, [Key("lookup".into())]);
             self.field(child, "start", lookup.start, at, 2);
             self.field(child, "end（不含）", lookup.end, at + 2, 2);
             self.field(
@@ -2150,6 +2428,23 @@ impl Builder {
                 at + 4,
                 count * 4,
             );
+            self.document.nodes[child]
+                .fields
+                .last_mut()
+                .unwrap()
+                .reference = Some(FieldReference::Many(
+                lookup
+                    .event_indices
+                    .iter()
+                    .flatten()
+                    .map(|&index| {
+                        FieldReference::Address(NodeAddress {
+                            anchor: node,
+                            segments: vec![Key("events".into()), Index(index)],
+                        })
+                    })
+                    .collect(),
+            ));
         }
     }
 
@@ -2169,6 +2464,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Key("events".into()), Index(index as u32)]);
             self.field(
                 child,
                 "position",
@@ -2191,6 +2487,20 @@ impl Builder {
                 ("resource_id", event.resource_id, 20),
             ] {
                 self.field(child, name, value, at + offset, 2);
+                let collection = match name {
+                    "motion_id" => Some(ReferenceCollection::Motions),
+                    "node_index" => Some(ReferenceCollection::SkeletonNodes),
+                    "emitter_id" => Some(ReferenceCollection::Emitters),
+                    "resource_id" => Some(ReferenceCollection::EffectResources),
+                    _ => None,
+                };
+                if let Some(collection) = collection.filter(|_| value >= 0) {
+                    self.document.nodes[child]
+                        .fields
+                        .last_mut()
+                        .unwrap()
+                        .reference = Some(FieldReference::Indexed(collection, value as u32, None));
+                }
             }
             self.field(
                 child,
@@ -2245,6 +2555,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(parent, node, [Key("groups".into()), Index(index as u32)]);
             self.field(parent, "count", group.header.count, at, 1);
             self.field(
                 parent,
@@ -2265,6 +2576,7 @@ impl Builder {
                 ) else {
                     break;
                 };
+                self.set_address(child, parent, [Key("records".into()), Index(index as u32)]);
                 for (name, color, offset) in [
                     ("color_00", record.color_00, 0),
                     ("color_10", record.color_10, 16),
@@ -2323,6 +2635,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(parent, node, [Index(group_index as u32)]);
             self.field(
                 parent,
                 "count",
@@ -2354,6 +2667,7 @@ impl Builder {
                         ) else {
                             break;
                         };
+                        self.set_address(child, parent, [Index(slot as u32)]);
                         self.field(
                             child,
                             "motion_offset",
@@ -2361,6 +2675,14 @@ impl Builder {
                             table + slot * 4,
                             4,
                         );
+                        self.document.nodes[child]
+                            .fields
+                            .last_mut()
+                            .unwrap()
+                            .reference = Some(FieldReference::Address(NodeAddress {
+                            anchor: child,
+                            segments: Vec::new(),
+                        }));
                         self.motion_summary(child, &motion, base);
                         self.document.nodes[child].deferred = !motion.tracks.is_empty();
                     }
@@ -2374,6 +2696,7 @@ impl Builder {
                         ) else {
                             break;
                         };
+                        self.set_address(child, parent, [Index(slot as u32)]);
                         self.field(
                             child,
                             "motion_offset",
@@ -2392,6 +2715,7 @@ impl Builder {
                         ) else {
                             break;
                         };
+                        self.set_address(child, parent, [Index(slot as u32)]);
                         self.fail(child, error.to_string());
                     }
                 }
@@ -2445,6 +2769,7 @@ impl Builder {
             else {
                 break;
             };
+            self.set_address(child, node, [Key("arrays".into()), Index(index as u32)]);
             let stride = EventCamera::STRIDES[index];
             for (frame, value) in bytes.chunks_exact(stride).enumerate() {
                 let values = value
@@ -2493,6 +2818,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Key("tracks".into()), Index(index as u32)]);
             self.motion_header(child, track.header, at);
             for (index, channel) in track.channels.iter().enumerate() {
                 let at = base + channel.offset;
@@ -2505,6 +2831,7 @@ impl Builder {
                 ) else {
                     break;
                 };
+                self.set_address(leaf, child, [Key("channels".into()), Index(index as u32)]);
                 self.motion_header(leaf, channel.header, at);
                 self.field(leaf, "encoding", format!("{:?}", channel.encoding()), at, 4);
                 self.field(
@@ -3129,7 +3456,7 @@ mod tests {
         ] {
             let path = root.join(name);
             let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-            let document = inspect(&path.to_string_lossy(), bytes);
+            let document = inspect(&path, bytes);
             all_ranges_are_in_owned_buffers(&document);
             let errors: Vec<_> = document
                 .nodes

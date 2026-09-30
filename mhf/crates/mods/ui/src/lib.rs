@@ -4,6 +4,9 @@ pub mod api;
 pub use api::*;
 
 #[cfg(feature = "provider")]
+pub mod resource_reference;
+
+#[cfg(feature = "provider")]
 mod backend;
 #[cfg(feature = "provider")]
 pub use backend::{

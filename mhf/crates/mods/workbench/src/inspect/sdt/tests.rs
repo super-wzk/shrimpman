@@ -6,6 +6,66 @@ use crate::{
 };
 use mhf_resource::{container::SimpleArchive, crypto::Ecd, jkr::Jkr};
 
+#[test]
+fn native_resource_paths_locate_original_alias_records_and_schema_fields_after_expansion() {
+    let root = std::path::Path::new("dat");
+    let document = inspect::inspect("dat/mhfsdt.bin", Arc::from(sample()));
+    let (document, first, first_context, first_field) =
+        crate::inspect::resource_path::tests::resolve(
+            document,
+            root,
+            "mhfsdt.bin#0/attacks/1/power",
+        );
+    let first_field = first_field.unwrap();
+    assert_eq!(
+        document.nodes[first].fields[first_field].binding.range,
+        172..174
+    );
+    assert_eq!(
+        document.nodes[first].fields[first_field].key.as_deref(),
+        Some("power")
+    );
+    let (mut document, alias, context, field) = crate::inspect::resource_path::tests::resolve(
+        document,
+        root,
+        "mhfsdt.bin#1/attacks/1/power",
+    );
+    let field = field.unwrap();
+    assert_ne!(first, alias);
+    assert_eq!(
+        document.nodes[alias].fields[field].binding.range,
+        document.nodes[first].fields[first_field].binding.range
+    );
+    assert_eq!(
+        document
+            .resource_address(root, &first_context, Some(first_field))
+            .unwrap()
+            .path
+            .to_string(),
+        "mhfsdt.bin#0/attacks/1/power"
+    );
+    assert_eq!(
+        document
+            .resource_address(root, &context, Some(field))
+            .unwrap()
+            .path
+            .to_string(),
+        "mhfsdt.bin#1/attacks/1/power"
+    );
+    document.nodes[document.root].name = "显示标签".into();
+    document.nodes[alias].fields[field].name = "中文标签变化".into();
+    assert!(
+        matches!(document.locate_resource(root, &"mhfsdt.bin#1/attacks/1/power".parse().unwrap()), crate::inspect::resource_path::Location::Resolved { node, field: Some(index), .. } if node == alias && index == field)
+    );
+    assert_eq!(
+        document.locate_resource(
+            root,
+            &"mhfsdt.bin#1/attacks/1/future_field".parse().unwrap()
+        ),
+        crate::inspect::resource_path::Location::Missing
+    );
+}
+
 fn word(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }

@@ -249,6 +249,9 @@ mod tests {
 
     fn node(kind: Kind, children: &[usize]) -> Node {
         Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: String::new(),
             kind,
             buffer: 0,
@@ -264,6 +267,8 @@ mod tests {
 
     fn document() -> Document {
         Document {
+            attack_directory: None,
+            source: Default::default(),
             buffers: vec![Arc::from([])],
             root: 0,
             nodes: vec![
@@ -418,6 +423,8 @@ mod tests {
     #[test]
     fn container_children_override_reference_defaults_across_transparent_wrappers() {
         let mut document = Document {
+            attack_directory: None,
+            source: Default::default(),
             buffers: vec![Arc::from([])],
             root: 0,
             nodes: vec![

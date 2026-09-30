@@ -1,6 +1,6 @@
 use crate::{
     edit::{apply_many, locate, node_key, prepare_pack, replace},
-    field::{Field, FieldType, ScalarType},
+    field::{Field, FieldReference, FieldType, ScalarType},
     inspect::{self, Document, Kind},
 };
 use mhf_resource::{container::SimpleArchive, effect_archive::EffectBank, jkr::Jkr};
@@ -105,14 +105,30 @@ fn definition_references_locate_native_spans_without_reparenting_physical_keys()
         let reference = field(&document, definition, "+0E 三分量曲线引用");
         assert_eq!(reference.binding.range, base + 28..base + 28 + 48);
         assert_eq!(reference.binding.buffer, document.nodes[vectors].buffer);
-        assert!(reference.value.contains("[0, 2]"));
-        assert!(reference.value.contains("原生 0..2"));
-        assert!(reference.value.contains("匹配位置与原生跨度不同"));
+        let Some(FieldReference::Curve { lookup, target, .. }) = &reference.reference else {
+            panic!("curve reference must retain its typed lookup");
+        };
+        assert_eq!(lookup.matching_indices, [0, 2]);
+        assert_eq!(lookup.native_range(), Some(0..2));
+        assert!(!lookup.is_contiguous());
+        assert_eq!(*target, Some(vectors));
         assert_eq!(reference.binding.format, FieldType::ReadOnly);
         assert!(reference.write(&document.buffers, "7").is_err());
         for name in ["+10 三分量曲线引用", "+24 整数曲线引用"] {
             let reference = field(&document, definition, name);
-            assert!(reference.value.contains("无匹配记录"));
+            let Some(FieldReference::Curve {
+                reference: query,
+                lookup,
+                ..
+            }) = &reference.reference
+            else {
+                panic!("unmatched curve must retain its typed query");
+            };
+            assert!(lookup.matching_indices.is_empty());
+            assert!(lookup.native_range().is_none());
+            if name == "+24 整数曲线引用" {
+                assert_eq!(query.id, -1);
+            }
             assert!(reference.binding.range.is_empty());
         }
     }
@@ -233,11 +249,12 @@ fn typed_definition_and_curve_edits_rebuild_jkr_and_preserve_adjacent_bytes() {
             .unwrap(),
         "400"
     );
-    assert!(
-        field(&updated, definition, "+0E 三分量曲线引用")
-            .value
-            .contains("无匹配记录")
-    );
+    let Some(FieldReference::Curve { lookup, .. }) =
+        &field(&updated, definition, "+0E 三分量曲线引用").reference
+    else {
+        panic!("edited curve keeps a typed reference");
+    };
+    assert!(lookup.matching_indices.is_empty());
     assert!(replace(&updated, definition, &[0; 57]).is_err());
     let packed = prepare_pack(&updated, &[]).unwrap();
     let envelope = Jkr::parse(&packed.buffers[0]).unwrap();

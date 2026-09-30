@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for path in paths {
         let source: Arc<[u8]> = fs::read(&path)?.into();
-        let document = inspect::inspect(&path.to_string_lossy(), source);
+        let document = inspect::inspect(&path, source);
         let count = |kind| {
             document
                 .nodes

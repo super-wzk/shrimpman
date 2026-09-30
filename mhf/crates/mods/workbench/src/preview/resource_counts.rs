@@ -180,6 +180,9 @@ mod tests {
 
     fn node(kind: Kind, children: Vec<usize>) -> Node {
         Node {
+            native_id: None,
+            material_slots: Vec::new(),
+            address: None,
             name: String::new(),
             kind,
             buffer: 0,
@@ -223,6 +226,8 @@ mod tests {
             Kind::DatRecord(effect + 3),
         ];
         let mut document = Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![Arc::from(*b"data")],
             nodes: vec![
@@ -257,6 +262,8 @@ mod tests {
     #[test]
     fn complete_resources_hide_details_and_broken_wrappers_stay_empty() {
         let document = Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![Arc::from(*b"data")],
             nodes: vec![
@@ -273,6 +280,8 @@ mod tests {
     #[test]
     fn shared_reachability_converges_even_for_invalid_container_cycles() {
         let document = Document {
+            attack_directory: None,
+            source: Default::default(),
             root: 0,
             buffers: vec![Arc::from(*b"data")],
             nodes: vec![

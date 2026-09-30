@@ -3,100 +3,104 @@ use crate::binary::ScalarType;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FieldLayout {
+    /// Stable schema identity, independent of the display label.
+    pub key: &'static str,
+    /// Presentation label; never parsed to construct a resource identity.
     pub name: &'static str,
     pub offset: u16,
     pub scalar: ScalarType,
 }
 
 macro_rules! fields {
-    ($($offset:literal => $name:literal : $scalar:ident),* $(,)?) => {
-        &[$(FieldLayout { name: $name, offset: $offset, scalar: ScalarType::$scalar }),*]
+    ($($offset:literal => $key:literal, $name:literal : $scalar:ident),* $(,)?) => {
+        &[$($crate::dat::FieldLayout { key: $key, name: $name, offset: $offset, scalar: $crate::binary::ScalarType::$scalar }),*]
     };
 }
+pub(crate) use fields;
 
 // All values are stored values: rarity, element damage and cost are not
 // converted to menu units. Unestablished fields remain unknown/raw bytes.
 const ARMOR: &[FieldLayout] = fields![
-    0x00 => "男性模型 ID": I16, 0x02 => "女性模型 ID": I16,
-    0x04 => "可装备标志": U8, 0x05 => "稀有度原值": U8,
-    0x06 => "最高等级": U8, 0x0c => "费用原值": U32,
-    0x12 => "基础防御力": U16,
-    0x14 => "火耐性": I8, 0x15 => "水耐性": I8,
-    0x16 => "雷耐性": I8, 0x17 => "龙耐性": I8, 0x18 => "冰耐性": I8,
-    0x19 => "强化系数索引": U8,
-    0x1b => "初始孔数": U8, 0x1c => "最大孔数": U8,
-    0x20 => "派生装备 ID 1": U16, 0x22 => "派生装备 ID 2": U16,
-    0x24 => "派生装备 ID 3": U16, 0x26 => "特效 ID": U16,
-    0x28 => "强化素材表索引": U16,
-    0x2a => "技能 ID 1": U8, 0x2b => "技能点 1": I8,
-    0x2c => "技能 ID 2": U8, 0x2d => "技能点 2": I8,
-    0x2e => "技能 ID 3": U8, 0x2f => "技能点 3": I8,
-    0x30 => "技能 ID 4": U8, 0x31 => "技能点 4": I8,
-    0x32 => "技能 ID 5": U8, 0x33 => "技能点 5": I8,
-    0x34 => "防具类型标志": U32,
-    0x46 => "辿异技能 ID": U16,
+    0x00 => "field_00", "男性模型 ID": I16, 0x02 => "field_02", "女性模型 ID": I16,
+    0x04 => "field_04", "可装备标志": U8, 0x05 => "field_05", "稀有度原值": U8,
+    0x06 => "field_06", "最高等级": U8, 0x0c => "field_0c", "费用原值": U32,
+    0x12 => "field_12", "基础防御力": U16,
+    0x14 => "field_14", "火耐性": I8, 0x15 => "field_15", "水耐性": I8,
+    0x16 => "field_16", "雷耐性": I8, 0x17 => "field_17", "龙耐性": I8, 0x18 => "field_18", "冰耐性": I8,
+    0x19 => "field_19", "强化系数索引": U8,
+    0x1b => "field_1b", "初始孔数": U8, 0x1c => "field_1c", "最大孔数": U8,
+    0x20 => "field_20", "派生装备 ID 1": U16, 0x22 => "field_22", "派生装备 ID 2": U16,
+    0x24 => "field_24", "派生装备 ID 3": U16, 0x26 => "field_26", "特效 ID": U16,
+    0x28 => "field_28", "强化素材表索引": U16,
+    0x2a => "field_2a", "技能 ID 1": U8, 0x2b => "field_2b", "技能点 1": I8,
+    0x2c => "field_2c", "技能 ID 2": U8, 0x2d => "field_2d", "技能点 2": I8,
+    0x2e => "field_2e", "技能 ID 3": U8, 0x2f => "field_2f", "技能点 3": I8,
+    0x30 => "field_30", "技能 ID 4": U8, 0x31 => "field_31", "技能点 4": I8,
+    0x32 => "field_32", "技能 ID 5": U8, 0x33 => "field_33", "技能点 5": I8,
+    0x34 => "field_34", "防具类型标志": U32,
+    0x46 => "field_46", "辿异技能 ID": U16,
 ];
 
 const MELEE: &[FieldLayout] = fields![
-    0x00 => "模型 ID": U16, 0x02 => "稀有度原值": U8,
-    0x03 => "武器种类 ID": U8, 0x04 => "费用原值": U32,
-    0x08 => "斩味索引": U8, 0x09 => "斩味上限原值": U8,
-    0x0a => "基础攻击力": U16, 0x0c => "防御力": U16,
-    0x0e => "会心率": I8, 0x0f => "属性 ID": U8,
-    0x10 => "属性值原值": U8, 0x11 => "异常状态 ID": U8,
-    0x12 => "异常状态值原值": U8, 0x13 => "孔数": U8,
-    0x18 => "附加模型 ID": U16, 0x1a => "装备类型原值": U8,
-    0x1c => "长度原值": U32, 0x20 => "武器类型标志": U32,
-    0x24 => "特效 ID": U16, 0x26 => "天廊／G50 参数索引": U16,
-    0x28 => "G 等级原值": U8, 0x30 => "辿异技能 ID": U16,
+    0x00 => "field_00", "模型 ID": U16, 0x02 => "field_02", "稀有度原值": U8,
+    0x03 => "field_03", "武器种类 ID": U8, 0x04 => "field_04", "费用原值": U32,
+    0x08 => "field_08", "斩味索引": U8, 0x09 => "field_09", "斩味上限原值": U8,
+    0x0a => "field_0a", "基础攻击力": U16, 0x0c => "field_0c", "防御力": U16,
+    0x0e => "field_0e", "会心率": I8, 0x0f => "field_0f", "属性 ID": U8,
+    0x10 => "field_10", "属性值原值": U8, 0x11 => "field_11", "异常状态 ID": U8,
+    0x12 => "field_12", "异常状态值原值": U8, 0x13 => "field_13", "孔数": U8,
+    0x18 => "field_18", "附加模型 ID": U16, 0x1a => "field_1a", "装备类型原值": U8,
+    0x1c => "field_1c", "长度原值": U32, 0x20 => "field_20", "武器类型标志": U32,
+    0x24 => "field_24", "特效 ID": U16, 0x26 => "field_26", "天廊／G50 参数索引": U16,
+    0x28 => "field_28", "G 等级原值": U8, 0x30 => "field_30", "辿异技能 ID": U16,
 ];
 
 const RANGED: &[FieldLayout] = fields![
-    0x00 => "模型 ID": U16, 0x02 => "稀有度原值": U8,
-    0x04 => "武器种类 ID": U8, 0x06 => "装备类型原值": U8,
-    0x0c => "武器类型标志": U32, 0x14 => "费用原值": U32,
-    0x18 => "基础攻击力": U16, 0x1a => "防御力": U16,
-    0x1c => "反动原值": U8, 0x1d => "孔数": U8,
-    0x1e => "会心率": I8, 0x21 => "属性 ID": U8,
-    0x22 => "属性值原值": U8, 0x23 => "装填速度原值": U8,
-    0x28 => "弹药配置原值": U32, 0x2c => "天廊／G50 参数索引": U16,
-    0x30 => "G 等级原值": U8, 0x36 => "辿异技能 ID": U16,
+    0x00 => "field_00", "模型 ID": U16, 0x02 => "field_02", "稀有度原值": U8,
+    0x04 => "field_04", "武器种类 ID": U8, 0x06 => "field_06", "装备类型原值": U8,
+    0x0c => "field_0c", "武器类型标志": U32, 0x14 => "field_14", "费用原值": U32,
+    0x18 => "field_18", "基础攻击力": U16, 0x1a => "field_1a", "防御力": U16,
+    0x1c => "field_1c", "反动原值": U8, 0x1d => "field_1d", "孔数": U8,
+    0x1e => "field_1e", "会心率": I8, 0x21 => "field_21", "属性 ID": U8,
+    0x22 => "field_22", "属性值原值": U8, 0x23 => "field_23", "装填速度原值": U8,
+    0x28 => "field_28", "弹药配置原值": U32, 0x2c => "field_2c", "天廊／G50 参数索引": U16,
+    0x30 => "field_30", "G 等级原值": U8, 0x36 => "field_36", "辿异技能 ID": U16,
 ];
 
 const ITEM: &[FieldLayout] = fields![
-    0x00 => "交互类型原值": U8, 0x01 => "使用标志": U8,
-    0x02 => "稀有度原值": U8, 0x03 => "叠放上限": U8,
-    0x04 => "物品标志": U8, 0x05 => "图标 ID": U8,
-    0x06 => "图标颜色 ID": U8, 0x08 => "瓶配置原值": U16,
-    0x0c => "买入价格": U32, 0x10 => "卖出价格": U32,
-    0x14 => "分类原值": U16, 0x16 => "装饰品 ID": U16,
-    0x1c => "装备类型原值": U16,
+    0x00 => "field_00", "交互类型原值": U8, 0x01 => "field_01", "使用标志": U8,
+    0x02 => "field_02", "稀有度原值": U8, 0x03 => "field_03", "叠放上限": U8,
+    0x04 => "field_04", "物品标志": U8, 0x05 => "field_05", "图标 ID": U8,
+    0x06 => "field_06", "图标颜色 ID": U8, 0x08 => "field_08", "瓶配置原值": U16,
+    0x0c => "field_0c", "买入价格": U32, 0x10 => "field_10", "卖出价格": U32,
+    0x14 => "field_14", "分类原值": U16, 0x16 => "field_16", "装饰品 ID": U16,
+    0x1c => "field_1c", "装备类型原值": U16,
 ];
 
 const PRODUCTION: &[FieldLayout] = fields![
-    0x00 => "装备部位／种类 ID": U8, 0x01 => "购买标志原值": U8,
-    0x02 => "装备 ID": U16,
-    0x04 => "素材 ID 1": U16, 0x06 => "素材数量 1": U16,
-    0x0c => "素材 ID 2": U16, 0x0e => "素材数量 2": U16,
-    0x14 => "素材 ID 3": U16, 0x16 => "素材数量 3": U16,
-    0x1c => "素材 ID 4": U16, 0x1e => "素材数量 4": U16,
-    0x28 => "HR 要求原值": U16, 0x2c => "预览标志原值": U8,
+    0x00 => "field_00", "装备部位／种类 ID": U8, 0x01 => "field_01", "购买标志原值": U8,
+    0x02 => "field_02", "装备 ID": U16,
+    0x04 => "field_04", "素材 ID 1": U16, 0x06 => "field_06", "素材数量 1": U16,
+    0x0c => "field_0c", "素材 ID 2": U16, 0x0e => "field_0e", "素材数量 2": U16,
+    0x14 => "field_14", "素材 ID 3": U16, 0x16 => "field_16", "素材数量 3": U16,
+    0x1c => "field_1c", "素材 ID 4": U16, 0x1e => "field_1e", "素材数量 4": U16,
+    0x28 => "field_28", "HR 要求原值": U16, 0x2c => "field_2c", "预览标志原值": U8,
 ];
 
 const UPGRADE: &[FieldLayout] = fields![
-    0x00 => "素材 ID 1": U16, 0x02 => "素材数量 1": U16,
-    0x08 => "素材 ID 2": U16, 0x0a => "素材数量 2": U16,
-    0x10 => "素材 ID 3": U16, 0x12 => "素材数量 3": U16,
-    0x18 => "派生武器 ID 1": U16, 0x1a => "派生武器 ID 2": U16,
-    0x1c => "派生武器 ID 3": U16, 0x1e => "派生武器 ID 4": U16,
+    0x00 => "field_00", "素材 ID 1": U16, 0x02 => "field_02", "素材数量 1": U16,
+    0x08 => "field_08", "素材 ID 2": U16, 0x0a => "field_0a", "素材数量 2": U16,
+    0x10 => "field_10", "素材 ID 3": U16, 0x12 => "field_12", "素材数量 3": U16,
+    0x18 => "field_18", "派生武器 ID 1": U16, 0x1a => "field_1a", "派生武器 ID 2": U16,
+    0x1c => "field_1c", "派生武器 ID 3": U16, 0x1e => "field_1e", "派生武器 ID 4": U16,
 ];
 
 const DECORATION: &[FieldLayout] = fields![
-    0x00 => "物品 ID": U16, 0x02 => "配方分类原值": U16,
-    0x04 => "素材 ID 1": U16, 0x06 => "素材数量 1": U8, 0x07 => "解锁标志 1": U8,
-    0x08 => "素材 ID 2": U16, 0x0a => "素材数量 2": U8, 0x0b => "解锁标志 2": U8,
-    0x0c => "素材 ID 3": U16, 0x0e => "素材数量 3": U8, 0x0f => "解锁标志 3": U8,
-    0x10 => "素材 ID 4": U16, 0x12 => "素材数量 4": U8, 0x13 => "解锁标志 4": U8,
+    0x00 => "field_00", "物品 ID": U16, 0x02 => "field_02", "配方分类原值": U16,
+    0x04 => "field_04", "素材 ID 1": U16, 0x06 => "field_06", "素材数量 1": U8, 0x07 => "field_07", "解锁标志 1": U8,
+    0x08 => "field_08", "素材 ID 2": U16, 0x0a => "field_0a", "素材数量 2": U8, 0x0b => "field_0b", "解锁标志 2": U8,
+    0x0c => "field_0c", "素材 ID 3": U16, 0x0e => "field_0e", "素材数量 3": U8, 0x0f => "field_0f", "解锁标志 3": U8,
+    0x10 => "field_10", "素材 ID 4": U16, 0x12 => "field_12", "素材数量 4": U8, 0x13 => "field_13", "解锁标志 4": U8,
 ];
 
 const fn sentinel(root: &'static [u32], stride: u16, width: u8, value: u32) -> RecordCount {

@@ -1,7 +1,8 @@
 //! Native stage member descriptors and references share the original nodes.
 
-use super::{Builder, Document, Hint, InspectionTask, Kind, hex};
-use crate::field::formatted;
+use super::{Builder, Document, Hint, InspectionTask, Kind, NodeAddress, hex};
+use crate::field::{FieldReference, ReferenceCollection, formatted};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::{
     container::StageArchive,
     stage::{ObjectPackage, ObjectTables, ResourceReference},
@@ -15,6 +16,15 @@ impl Builder {
         match ResourceReference::parse(bytes) {
             Ok(reference) => {
                 self.field(node, "resource_id", reference.resource_id, base + 16, 4);
+                self.document.nodes[node]
+                    .fields
+                    .last_mut()
+                    .unwrap()
+                    .reference = Some(FieldReference::Indexed(
+                    ReferenceCollection::StageResources,
+                    reference.resource_id,
+                    self.stage_resource_target(node, reference.resource_id),
+                ));
                 if bytes.len() > ResourceReference::SIZE {
                     self.field(
                         node,
@@ -49,6 +59,8 @@ impl Builder {
         ) else {
             return;
         };
+        self.set_address(descriptor, node, [Index(0)]);
+        let field = self.document.nodes[descriptor].fields.len();
         self.field(
             descriptor,
             "offset",
@@ -56,6 +68,8 @@ impl Builder {
             base + package.archive.table_offset,
             4,
         );
+        self.document.nodes[descriptor].fields[field].key = Some("entry_offset".into());
+        let field = self.document.nodes[descriptor].fields.len();
         self.field(
             descriptor,
             "size",
@@ -63,6 +77,7 @@ impl Builder {
             base + package.archive.table_offset + 4,
             4,
         );
+        self.document.nodes[descriptor].fields[field].key = Some("entry_size".into());
         self.field(
             descriptor,
             "unknown_00",
@@ -106,7 +121,9 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(entry.index as u32)]);
             let meta = base + package.archive.table_offset + entry.index * 8;
+            let field = self.document.nodes[child].fields.len();
             self.field(
                 child,
                 "offset",
@@ -114,8 +131,13 @@ impl Builder {
                 meta,
                 4,
             );
+            self.document.nodes[child].fields[field].key = Some("entry_offset".into());
+            let field = self.document.nodes[child].fields.len();
             self.field(child, "size", entry.size, meta + 4, 4);
+            self.document.nodes[child].fields[field].key = Some("entry_size".into());
+            let field = self.document.nodes[child].fields.len();
             self.field(child, "kind", member.kind, index_base + 3 + entry.index, 1);
+            self.document.nodes[child].fields[field].key = Some("entry_kind".into());
             if ResourceReference::has_magic(member.bytes) {
                 self.stage_reference(child, member.bytes, at);
                 continue;
@@ -188,6 +210,7 @@ impl Builder {
         base: usize,
     ) {
         for (index, value) in file.values().enumerate() {
+            let field = self.document.nodes[node].fields.len();
             self.field(
                 node,
                 format!("值 {index}"),
@@ -195,6 +218,7 @@ impl Builder {
                 base + 8 + index * 4,
                 4,
             );
+            self.document.nodes[node].fields[field].key = Some(format!("value_{index}"));
         }
     }
 
@@ -247,9 +271,20 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Key("tables".into()), Index(index as u32)]);
             self.field(child, "记录数", table.count, base + table.count_offset, 2);
             for (record, bytes) in table.records().enumerate() {
                 let offset = at + record * table.record_size;
+                let Some(row) = self.child(
+                    child,
+                    format!("记录[{record}]"),
+                    Kind::Block,
+                    buffer,
+                    offset..offset + bytes.len(),
+                ) else {
+                    break;
+                };
+                self.set_address(row, child, [Index(record as u32)]);
                 let words: Vec<_> = bytes
                     .as_chunks::<4>()
                     .0
@@ -257,8 +292,8 @@ impl Builder {
                     .map(|word| u32::from_le_bytes(*word))
                     .collect();
                 self.field(
-                    child,
-                    format!("记录 {record}"),
+                    row,
+                    "words",
                     formatted(&words, format!("{words:08X?}")),
                     offset,
                     bytes.len(),
@@ -367,18 +402,36 @@ impl Builder {
                         continue;
                     }
                     self.document.nodes[reference_node].children.push(target);
-                    self.field(
-                        reference_node,
-                        "解析资源链",
-                        resolved
-                            .references
-                            .iter()
-                            .map(u32::to_string)
-                            .collect::<Vec<_>>()
-                            .join(" → "),
-                        reference_base + 16,
-                        0,
-                    );
+                    if let Some(field) = self.document.nodes[reference_node]
+                        .fields
+                        .iter()
+                        .position(|field| field.key.as_deref() == Some("resource_id"))
+                    {
+                        self.document.nodes[reference_node].fields[field].reference =
+                            Some(FieldReference::Indexed(
+                                ReferenceCollection::StageResources,
+                                reference.resource_id,
+                                self.stage_resource_target(reference_node, reference.resource_id),
+                            ));
+                    }
+                    let chain = resolved
+                        .references
+                        .iter()
+                        .filter_map(|id| {
+                            self.stage_resource_target(reference_node, *id)
+                                .map(|anchor| {
+                                    FieldReference::Address(NodeAddress {
+                                        anchor,
+                                        segments: Vec::new(),
+                                    })
+                                })
+                        })
+                        .collect();
+                    let field = self.document.nodes[reference_node].fields.len();
+                    self.field(reference_node, "解析资源链", "", reference_base + 16, 0);
+                    self.document.nodes[reference_node].fields[field].reference =
+                        Some(FieldReference::Many(chain));
+                    let field = self.document.nodes[reference_node].fields.len();
                     self.field(
                         reference_node,
                         "目标成员",
@@ -386,6 +439,11 @@ impl Builder {
                         reference_base + 16,
                         0,
                     );
+                    self.document.nodes[reference_node].fields[field].reference =
+                        Some(FieldReference::Address(NodeAddress {
+                            anchor: target,
+                            segments: Vec::new(),
+                        }));
                     if let Some(payload) = self.document.payload(target) {
                         let actual = self.document.nodes[payload].kind;
                         if !member_kind_matches(member.kind, actual) {
@@ -664,6 +722,28 @@ mod tests {
                     value
                 );
             }
+            for (entry, through_reference) in [(3, false), (4, true)] {
+                let address = format!("renamed.bin#{entry}/1/value_0");
+                let (_, resolved, context, field) = super::super::resource_path::tests::resolve(
+                    expanded.clone(),
+                    std::path::Path::new(""),
+                    &address,
+                );
+                assert_eq!(resolved, node);
+                assert_eq!(context.contains(&reference), through_reference);
+                assert_eq!(
+                    expanded.nodes[node].fields[field.unwrap()].binding.range,
+                    base + 8..base + 12
+                );
+                assert_eq!(
+                    expanded
+                        .resource_address(std::path::Path::new(""), &context, field)
+                        .unwrap()
+                        .path
+                        .to_string(),
+                    address
+                );
+            }
         }
         let raw = words(&[0, 3, 1]);
         let document = inspect(
@@ -677,6 +757,33 @@ mod tests {
             .unwrap();
         assert!(document.nodes[node].error.is_some());
         assert_eq!(document.bytes(node).unwrap(), raw);
+    }
+
+    #[test]
+    fn sparse_object_tables_keep_empty_native_slots_and_record_ranges() {
+        let mut raw = vec![0; 32];
+        raw[..2].copy_from_slice(&8u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&1u16.to_le_bytes());
+        raw[16..].copy_from_slice(&words(&[0x1234_5678, u32::MAX, 0, 9]));
+        let document = inspect("objects.pac", package(&[4], &[raw]).into());
+        let (document, node, _, field) = super::super::resource_path::tests::resolve(
+            document,
+            std::path::Path::new(""),
+            "objects.pac#1/tables/4/0/words",
+        );
+        let binding = &document.nodes[node].fields[field.unwrap()].binding;
+        assert_eq!(binding.range.len(), 16);
+        assert_eq!(
+            &document.buffers[binding.buffer][binding.range.clone()],
+            words(&[0x1234_5678, u32::MAX, 0, 9])
+        );
+        let (_, empty, _, field) = super::super::resource_path::tests::resolve(
+            document,
+            std::path::Path::new(""),
+            "objects.pac#1/tables/0",
+        );
+        assert!(field.is_none());
+        assert_ne!(empty, node);
     }
 
     #[test]

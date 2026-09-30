@@ -151,7 +151,7 @@ pub(super) struct Editing {
     pub busy: bool,
     pub saving: bool,
     pub output: PathBuf,
-    source_root: PathBuf,
+    pub(super) source_root: PathBuf,
     inputs: BTreeMap<PathBuf, Vec<Input>>,
     pending_preview: BTreeMap<PathBuf, Arc<Document>>,
     submitted: Vec<(usize, u64)>,
@@ -238,6 +238,7 @@ impl Workbench {
     }
 
     pub(super) fn open_document(&mut self, path: PathBuf) {
+        self.navigation = None;
         if self.editing.busy
             || self
                 .path
@@ -278,7 +279,8 @@ impl Workbench {
             self.loaded_document(document);
         } else {
             self.loading = true;
-            self.worker.load(self.request, path);
+            self.worker
+                .load(self.request, path, self.editing.source_root.clone());
         }
     }
 
@@ -596,8 +598,25 @@ impl Workbench {
         index: usize,
         field: &Field,
     ) {
+        let source = field
+            .reference
+            .as_ref()
+            .and_then(|_| self.selected_source());
         if !field.writable || field.binding.range.is_empty() {
-            ui.add(egui::Label::new(&field.value).truncate());
+            if let Some((source, reference)) = source.as_ref().zip(field.reference.as_ref()) {
+                if let Some(path) = self.show_reference(
+                    ui,
+                    source,
+                    reference,
+                    Some(field.binding.range.clone()),
+                    true,
+                ) {
+                    self.address_input = path.to_string();
+                    self.navigate_resource(path);
+                }
+            } else {
+                ui.add(egui::Label::new(&field.value).truncate());
+            }
             return;
         }
         let Some(path) = &self.path else {
@@ -607,6 +626,33 @@ impl Workbench {
         let Some(node) = node else {
             return;
         };
+        let mut editor_rect = ui.available_rect_before_wrap();
+        let activated =
+            source
+                .as_ref()
+                .zip(field.reference.as_ref())
+                .and_then(|(source, reference)| {
+                    let split = editor_rect.left() + editor_rect.width() * 0.45;
+                    let reference_rect = egui::Rect::from_min_max(
+                        egui::pos2(split + 4.0, editor_rect.top()),
+                        editor_rect.max,
+                    );
+                    editor_rect.max.x = split;
+                    let mut reference_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(("field-reference", index))
+                            .max_rect(reference_rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    );
+                    reference_ui.set_clip_rect(reference_rect.intersect(ui.clip_rect()));
+                    self.show_reference(
+                        &mut reference_ui,
+                        source,
+                        reference,
+                        Some(field.binding.range.clone()),
+                        true,
+                    )
+                });
         let target = Target::Field {
             node: node.clone(),
             index,
@@ -635,7 +681,6 @@ impl Workbench {
             input.target = target;
         }
         ui.push_id(("field-input", node, index), |ui| {
-            let editor_rect = ui.available_rect_before_wrap();
             let mut editor = ui.new_child(
                 egui::UiBuilder::new()
                     .id_salt("editor")
@@ -671,6 +716,10 @@ impl Workbench {
                 input.reset(document);
             }
         });
+        if let Some(path) = activated {
+            self.address_input = path.to_string();
+            self.navigate_resource(path);
+        }
     }
 
     pub(super) fn select_bytes(&mut self, document: &Document, buffer: usize, range: Range<usize>) {

@@ -65,7 +65,7 @@ pub(super) fn rebuild_layers(
             }
             return Ok(restore_expanded(
                 document,
-                inspect::inspect(&root.name, Arc::from(bytes)),
+                inspect::inspect(&document.source, Arc::from(bytes)),
             ));
         }
         let owner = owners[buffer].ok_or("解码数据层缺少编码所有者")?;

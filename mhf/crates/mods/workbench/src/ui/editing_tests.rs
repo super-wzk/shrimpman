@@ -8,7 +8,7 @@ use std::{
 
 fn document(path: &Path, byte: u8) -> Arc<Document> {
     let bytes = [byte];
-    let mut document = crate::inspect::inspect(&path.to_string_lossy(), bytes.to_vec().into());
+    let mut document = crate::inspect::inspect(path, bytes.to_vec().into());
     document.nodes[document.root]
         .fields
         .push(Field::from_binary(
@@ -31,6 +31,350 @@ fn input(document: &Document) -> Input {
         document,
     )
     .unwrap()
+}
+
+fn native_sdt() -> Vec<u8> {
+    let mut bytes = vec![0_u8; 144];
+    bytes[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    bytes[8..12].copy_from_slice(&64_u32.to_le_bytes());
+    bytes[30..32].copy_from_slice(&u16::MAX.to_le_bytes());
+    bytes[108..110].copy_from_slice(&58_u16.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn attack_resource_reference_uses_the_current_sdt_draft_and_keeps_the_numeric_editor() {
+    with_workbench(|workbench, _| {
+        use crate::field::FieldReference;
+        use mhf_resource::action_definition::AttackReference;
+        let mut bytes = vec![0u8; 176];
+        for index in 0..2 {
+            let at = index * 28;
+            bytes[at..at + 2].copy_from_slice(&(index as u16).to_le_bytes());
+            bytes[at + 4..at + 6].copy_from_slice(&2u16.to_le_bytes());
+            bytes[at + 8..at + 12].copy_from_slice(&96u32.to_le_bytes());
+        }
+        bytes[58..60].copy_from_slice(&u16::MAX.to_le_bytes());
+        let path = workbench.editing.source_root.join("mhfsdt.bin");
+        let mut original = crate::inspect::inspect(&path, Arc::from(bytes.clone()));
+        original.attack_directory = Some(Arc::new(original.parsed_attack_directory()));
+        let mut current = workbench.document.as_ref().unwrap().as_ref().clone();
+        current.attack_directory = original.attack_directory.clone();
+        current.nodes[current.root].fields[0].reference =
+            Some(FieldReference::Attack(AttackReference {
+                category: 0,
+                subtype: None,
+                record: 1,
+            }));
+        let current = Arc::new(current);
+        workbench
+            .editing
+            .sessions
+            .get_mut(workbench.path.as_ref().unwrap())
+            .unwrap()
+            .document = current.clone();
+        workbench.loaded_document(current);
+        let context = egui::Context::default();
+        let draw = |workbench: &mut Workbench| {
+            let document = workbench.document.clone().unwrap();
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 240.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| workbench.inspector_fields(ui, &document, &document.nodes[workbench.node]),
+            );
+            let texts = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            output.drop_without_applying_deltas();
+            texts
+        };
+        assert!(
+            draw(workbench)
+                .iter()
+                .any(|text| text == "mhfsdt.bin#0/attacks/1")
+        );
+        let mut session = Session::new(Arc::new(original));
+        bytes[..2].copy_from_slice(&2u16.to_le_bytes());
+        let mut draft = crate::inspect::inspect(&path, Arc::from(bytes));
+        draft.attack_directory = Some(Arc::new(draft.parsed_attack_directory()));
+        session.apply(Arc::new(draft));
+        assert!(session.dirty());
+        workbench.editing.sessions.insert(path, session);
+        let texts = draw(workbench);
+        assert!(texts.iter().any(|text| text == "mhfsdt.bin#1/attacks/1"));
+        let input = &workbench.editing.inputs[workbench.path.as_ref().unwrap()][0];
+        assert_eq!(input.binding.range, 0..1);
+        assert_eq!(input.text, "0");
+        assert!(
+            workbench.control.commands().is_empty(),
+            "showing an attack target must not load or run a resource"
+        );
+    });
+}
+
+#[test]
+fn resource_path_enter_copy_and_field_click_keep_the_address_and_inspector_in_sync() {
+    with_workbench(|workbench, _| {
+        use egui::{Event, Key, Modifiers, Pos2, Shape};
+        let context = egui::Context::default();
+        context.all_styles_mut(|style| style.animation_time = 0.0);
+        let draw = |workbench: &mut Workbench, events: Vec<Event>, fields: bool| {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        Pos2::ZERO,
+                        egui::vec2(480.0, 240.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    if fields {
+                        let document = workbench.document.clone().unwrap();
+                        workbench.inspector_fields(ui, &document, &document.nodes[workbench.node]);
+                    } else {
+                        workbench.address_bar(ui);
+                    }
+                },
+            );
+            let labels = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    Shape::Text(text) => Some((
+                        text.galley.text().to_owned(),
+                        text.pos + text.galley.rect.center().to_vec2(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let commands = output.platform_output.commands.clone();
+            output.drop_without_applying_deltas();
+            (labels, commands)
+        };
+        workbench.address_input.clear();
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("workbench-resource-path")));
+        draw(
+            workbench,
+            vec![Event::Text("value.bin#value".into())],
+            false,
+        );
+        draw(
+            workbench,
+            vec![Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }],
+            false,
+        );
+        assert_eq!(workbench.address_field, Some(0));
+        assert_eq!(workbench.address_input, "value.bin#value");
+        assert_eq!(workbench.hex_selection, Some(0..1));
+        assert!(workbench.control.commands().is_empty());
+        draw(workbench, Vec::new(), false);
+        let copy = context
+            .read_response(egui::Id::new("workbench-resource-path").with("copy"))
+            .unwrap()
+            .rect
+            .center();
+        let pointer = |position, pressed| {
+            vec![
+                Event::PointerMoved(position),
+                Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::default(),
+                },
+            ]
+        };
+        draw(workbench, pointer(copy, true), false);
+        let (_, commands) = draw(workbench, pointer(copy, false), false);
+        assert!(commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "value.bin#value")));
+        workbench.address_field = None;
+        workbench.sync_address();
+        let (labels, _) = draw(workbench, Vec::new(), true);
+        let label = crate::inspect::field_label(Kind::Unknown, "value");
+        let field = labels
+            .iter()
+            .find(|(text, _)| text == label.as_ref())
+            .unwrap()
+            .1;
+        draw(workbench, pointer(field, true), true);
+        draw(workbench, pointer(field, false), true);
+        assert_eq!(workbench.address_input, "value.bin#value");
+        assert_eq!(workbench.address_field, Some(0));
+        assert!(workbench.control.commands().is_empty());
+    });
+}
+
+#[test]
+fn resource_path_navigation_flushes_pending_inputs_and_retains_dirty_file_sessions() {
+    with_workbench(|workbench, directory| {
+        let root = directory.join("dat");
+        let source = root.join("mhfsdt.bin");
+        fs::write(&source, native_sdt()).unwrap();
+        let (document, node, context, field) = crate::inspect::resource_path::tests::resolve(
+            crate::inspect::inspect(&source, Arc::from(native_sdt())),
+            &root,
+            "mhfsdt.bin#0/attacks/1/power",
+        );
+        let field = field.unwrap();
+        let document = Arc::new(document);
+        workbench.path = Some(source.clone());
+        workbench
+            .editing
+            .sessions
+            .insert(source.clone(), Session::new(document.clone()));
+        workbench.loaded_document(document.clone());
+        workbench.select_source(crate::preview::ResourceRef::at_context(
+            document.clone(),
+            node,
+            context,
+        ));
+        let value = &document.nodes[node].fields[field];
+        let mut draft = Input::new(
+            Target::Field {
+                node: edit::node_key(&document, node).unwrap(),
+                index: field,
+                name: value.name.clone(),
+            },
+            value.binding.clone(),
+            &document,
+        )
+        .unwrap();
+        draft.text = "66".into();
+        draft.change();
+        workbench.editing.inputs.insert(source.clone(), vec![draft]);
+        let other = root.join("other/mhfsdt.bin");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, native_sdt()).unwrap();
+        workbench.address_input = "other/mhfsdt.bin#0/attacks/0/power".into();
+        workbench.navigate_address();
+        assert_eq!(workbench.path.as_ref(), Some(&source));
+        assert_eq!(workbench.editing.next_path.as_ref(), Some(&other));
+        assert!(workbench.editing.inputs[&source][0].pending);
+        let context = egui::Context::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            workbench.poll();
+            workbench.flush_edits(&context);
+            if workbench.navigation.is_none()
+                && workbench.path.as_ref() == Some(&other)
+                && !workbench.loading
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert!(
+            workbench.navigation.is_none(),
+            "{} / {}",
+            workbench.address_error,
+            workbench.editing.error
+        );
+        assert_eq!(
+            workbench.address_input,
+            "other/mhfsdt.bin#0/attacks/0/power"
+        );
+        assert_eq!(workbench.hex_selection, Some(68..70));
+        let session = &workbench.editing.sessions[&source];
+        assert!(session.dirty());
+        assert_eq!(
+            &session.document.buffers[0][108..110],
+            &66_u16.to_le_bytes()
+        );
+        assert_eq!(&fs::read(&source).unwrap()[108..110], &58_u16.to_le_bytes());
+        assert!(
+            workbench
+                .catalog
+                .entries
+                .iter()
+                .any(|entry| entry.path == other)
+        );
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(500.0, 500.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                workbench.resources(ui);
+            },
+        );
+        let revealed = output.shapes.iter().any(|shape| {
+            matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text().contains("记录 00000"))
+        });
+        output.drop_without_applying_deltas();
+        assert!(
+            revealed,
+            "navigation must open the file folder and selected native record"
+        );
+        assert!(
+            workbench
+                .control
+                .commands()
+                .iter()
+                .all(|command| !matches!(command, Command::LoadResource(_)))
+        );
+    });
+}
+
+#[test]
+fn resource_path_navigation_does_not_apply_an_old_load_or_expansion_after_switching_files() {
+    with_workbench(|workbench, directory| {
+        let root = directory.join("dat");
+        let first = root.join("mhfsdt.bin");
+        let second = root.join("second.sdt");
+        fs::write(&first, native_sdt()).unwrap();
+        fs::write(&second, native_sdt()).unwrap();
+        workbench.open_document(first.clone());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while workbench.loading && Instant::now() < deadline {
+            workbench.poll();
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        workbench.address_input = "mhfsdt.bin#0/attacks/1/power".into();
+        workbench.navigate_address();
+        assert!(workbench.expanding.is_some());
+        let old_request = workbench.request;
+        workbench.open_document(second.clone());
+        assert!(workbench.request != old_request);
+        assert!(workbench.navigation.is_none());
+        while Instant::now() < deadline {
+            workbench.poll();
+            if !workbench.loading
+                && workbench
+                    .document
+                    .as_ref()
+                    .is_some_and(|document| document.source == second)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert_eq!(workbench.document.as_ref().unwrap().source, second);
+        assert_eq!(workbench.address_input, "second.sdt");
+        assert_eq!(workbench.node, workbench.document.as_ref().unwrap().root);
+        assert!(workbench.address_field.is_none());
+        assert!(workbench.control.commands().is_empty());
+    });
 }
 
 fn with_workbench(test: impl FnOnce(&mut Workbench, &Path)) {
@@ -151,10 +495,7 @@ fn reverting_input_never_reuses_an_inflight_revision_number() {
 }
 
 fn members(path: &Path, first_length: usize, second_length: usize) -> Arc<Document> {
-    let mut document = crate::inspect::inspect(
-        &path.to_string_lossy(),
-        vec![0; first_length + second_length].into(),
-    );
+    let mut document = crate::inspect::inspect(path, vec![0; first_length + second_length].into());
     let mut first = document.nodes[document.root].clone();
     first.name = "first".into();
     first.kind = Kind::Block;
@@ -285,12 +626,7 @@ fn two_field_rows_for_one_binding_share_the_pending_value() {
 fn editing_again_does_not_clear_a_conflict_and_overwrite_other_field_changes() {
     with_workbench(|workbench, _| {
         let path = workbench.path.clone().unwrap();
-        let image = |bytes: Vec<u8>| {
-            Arc::new(crate::inspect::inspect(
-                &path.to_string_lossy(),
-                bytes.into(),
-            ))
-        };
+        let image = |bytes: Vec<u8>| Arc::new(crate::inspect::inspect(&path, bytes.into()));
         let original = image(vec![1, 2, 3, 4]);
         workbench.loaded_document(original.clone());
         workbench.select_bytes(&original, 0, 0..4);

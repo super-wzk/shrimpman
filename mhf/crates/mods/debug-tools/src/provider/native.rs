@@ -47,6 +47,7 @@ pub(crate) struct State {
     controlled_monster: AtomicUsize,
     runtime: Mutex<Runtime>,
     ai_debug: Mutex<ai_debug::Runtime>,
+    attack_resources: super::action_definition::AttackResources,
 }
 
 #[derive(Default)]
@@ -143,6 +144,7 @@ pub(crate) unsafe fn install(
     module: HMODULE,
     session: QuestControl<'static>,
     control: Arc<DebugControl>,
+    attack_path: std::path::PathBuf,
 ) -> Result<HookGuard<State>, String> {
     let game_module =
         unsafe { mhf_mod_sdk::host::game_module_from_raw(module.0) }.ok_or("游戏模块尚未加载")?;
@@ -244,6 +246,7 @@ pub(crate) unsafe fn install(
             controlled_monster: AtomicUsize::new(0),
             runtime: Mutex::new(Runtime::default()),
             ai_debug: Mutex::new(ai_debug::Runtime::default()),
+            attack_resources: super::action_definition::AttackResources::new(attack_path),
         })
     }
 }
@@ -548,6 +551,9 @@ unsafe extern "C" fn dispatch() -> i32 {
                                         u32::from(get::<u8>(player + 3394))
                                     };
                                     (style <= 3).then_some(style as u8)
+                                }),
+                                attacks: definition.as_ref().ok().and_then(|definition| {
+                                    state.attack_resources.snapshot(definition)
                                 }),
                                 data: definition,
                             }));

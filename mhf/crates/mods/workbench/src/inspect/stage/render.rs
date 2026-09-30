@@ -2,6 +2,7 @@
 
 use super::{Builder, Kind, hex};
 use crate::field::{FieldType, ScalarType, formatted, typed};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::binary::Reader;
 use mhf_resource::stage::{
     RenderTables,
@@ -32,7 +33,7 @@ impl Builder {
         base: usize,
     ) {
         let buffer = self.document.nodes[node].buffer;
-        for table in &file.tables {
+        for (table_index, table) in file.tables.iter().enumerate() {
             let at = base + table.offset;
             let channel = table.animation_channel();
             let name = match channel {
@@ -52,6 +53,11 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(
+                parent,
+                node,
+                [Key("tables".into()), Index(table_index as u32)],
+            );
             self.field(
                 parent,
                 "记录数量",
@@ -70,6 +76,7 @@ impl Builder {
                 ) else {
                     break;
                 };
+                self.set_address(child, parent, [Index(index as u32)]);
                 let result = match channel {
                     Some(AnimationChannel::PointLight) => {
                         self.render_point_light_selection(child, bytes, offset)

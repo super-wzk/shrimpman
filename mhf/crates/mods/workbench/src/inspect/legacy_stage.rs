@@ -3,6 +3,7 @@
 
 use super::{Builder, Hint, Kind, hex};
 use crate::field::{FieldType, ScalarType, formatted, typed};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::{
     container::SimpleArchive,
     stage::{LegacyLighting, LegacyRenderTables},
@@ -212,6 +213,15 @@ impl Builder {
                 ) else {
                     break;
                 };
+                self.set_address(
+                    child,
+                    node,
+                    [
+                        Key("tables".into()),
+                        Key("records_24".into()),
+                        Index(index as u32),
+                    ],
+                );
                 for (word, bits) in record.words.iter().enumerate() {
                     self.field(
                         child,
@@ -235,6 +245,15 @@ impl Builder {
                 ) else {
                     break;
                 };
+                self.set_address(
+                    child,
+                    node,
+                    [
+                        Key("tables".into()),
+                        Key("records_16".into()),
+                        Index(index as u32),
+                    ],
+                );
                 for (word, bits) in record.words.iter().enumerate() {
                     self.field(
                         child,
@@ -302,8 +321,20 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Key("tables".into()), Index(index as u32)]);
             self.field(child, "记录数", table.count, base + table.count_offset, 2);
             for (index, record) in table.records().enumerate() {
+                let at = at + index * table.record_size;
+                let Some(row) = self.child(
+                    child,
+                    format!("记录[{index}]"),
+                    Kind::Block,
+                    buffer,
+                    at..at + record.len(),
+                ) else {
+                    break;
+                };
+                self.set_address(row, child, [Index(index as u32)]);
                 let words: Vec<_> = record
                     .as_chunks::<4>()
                     .0
@@ -311,10 +342,10 @@ impl Builder {
                     .map(|word| u32::from_le_bytes(*word))
                     .collect();
                 self.field(
-                    child,
-                    format!("记录 {index}"),
+                    row,
+                    "words",
                     formatted(&words, format!("{words:08X?}")),
-                    at + index * table.record_size,
+                    at,
                     record.len(),
                 );
             }

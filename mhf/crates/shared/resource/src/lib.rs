@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+pub mod action_definition;
 pub mod binary;
 pub mod container;
 pub mod crypto;
@@ -21,6 +22,7 @@ pub mod inf;
 pub mod jkr;
 pub mod material;
 pub mod motion;
+pub mod path;
 pub mod png;
 pub mod sdt;
 pub mod species;
@@ -28,6 +30,7 @@ pub mod stage;
 pub mod txb;
 
 pub use decoded::Decoded;
+pub use path::{PathSegment, ResourcePath, ResourcePathError};
 
 /// An offset in an input resource, not a pointer into the game process.
 #[derive(Clone, Debug, PartialEq, Eq)]

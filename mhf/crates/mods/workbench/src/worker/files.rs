@@ -70,7 +70,19 @@ pub(super) fn pack_bytes(
 
 pub(super) fn read_document(path: &Path) -> Result<Document, String> {
     let bytes = read_bytes(path)?;
-    Ok(inspect::inspect(&path.to_string_lossy(), bytes.into()))
+    Ok(inspect::inspect(path, bytes.into()))
+}
+
+pub(super) fn read_attack_directory(
+    path: &Path,
+) -> Result<mhf_resource::action_definition::AttackDirectory, String> {
+    let bytes = read_bytes(path)?;
+    let decoded = mhf_resource::container::open_layers(&bytes, usize::MAX, 8)
+        .map_err(|error| error.to_string())?;
+    let file =
+        mhf_resource::sdt::Sdt::parse(decoded.payload()).map_err(|error| error.to_string())?;
+    mhf_resource::action_definition::AttackDirectory::from_sdt("mhfsdt.bin", &file)
+        .map_err(|error| error.to_string())
 }
 
 pub(super) fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {

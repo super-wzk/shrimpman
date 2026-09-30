@@ -9,7 +9,8 @@ use std::{
     ops::Range,
 };
 
-use crate::{Error, Result, binary::ScalarType};
+pub use crate::dat::FieldLayout;
+use crate::{Error, Result};
 
 mod attack;
 mod auxiliary;
@@ -25,13 +26,6 @@ pub const HITBOX_GROUP_STRIDE: usize = 32;
 pub const HITBOX_SLOTS: usize = 8;
 pub const HITBOX_STRIDE: usize = 40;
 pub const EXTRA_STRIDE: usize = 32;
-
-#[derive(Clone, Copy, Debug)]
-pub struct FieldLayout {
-    pub name: &'static str,
-    pub offset: u16,
-    pub scalar: ScalarType,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TableKind {
@@ -525,3 +519,6 @@ fn record(source: &[u8], base: usize, stride: usize, index: usize) -> Result<(us
     let offset = index * stride;
     Ok((base + offset, &source[offset..offset + stride]))
 }
+
+#[cfg(test)]
+mod schema_tests;

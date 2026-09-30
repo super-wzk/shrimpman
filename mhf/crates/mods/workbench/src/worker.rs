@@ -5,7 +5,7 @@ mod export;
 mod files;
 
 use export::{Export, export_bytes};
-use files::{pack_bytes, read_bytes, read_document};
+use files::{pack_bytes, read_attack_directory, read_bytes, read_document};
 
 use crate::{
     action::NodeAction,
@@ -15,6 +15,7 @@ use crate::{
     inspect::{self, Document},
 };
 use std::{
+    collections::HashMap,
     io,
     path::PathBuf,
     sync::{
@@ -74,7 +75,7 @@ struct Pack {
 #[derive(Default)]
 struct Pending {
     scan: bool,
-    load: Option<(u64, PathBuf)>,
+    load: Option<(u64, PathBuf, PathBuf)>,
     expand: Option<(u64, Arc<Document>, usize)>,
     export: Option<Export>,
     edit: Option<Edit>,
@@ -117,6 +118,7 @@ impl Worker {
         let thread = thread::Builder::new()
             .name("mhf-workbench-io".into())
             .spawn(move || {
+                let mut attack_directories = HashMap::new();
                 loop {
                     let work = {
                         let mut pending =
@@ -137,6 +139,7 @@ impl Worker {
                         std::mem::take(&mut *pending)
                     };
                     if work.scan && !state.stopped.load(Ordering::Acquire) {
+                        attack_directories.clear();
                         let catalog = Catalog::scan(&root, &state.stopped)
                             .map(Arc::new)
                             .map_err(|error| error.to_string());
@@ -146,10 +149,27 @@ impl Worker {
                             .unwrap_or_else(PoisonError::into_inner)
                             .catalog = Some(catalog);
                     }
-                    if let Some((request, path)) = work.load
+                    if let Some((request, path, source_root)) = work.load
                         && !state.stopped.load(Ordering::Acquire)
                     {
-                        let document = read_document(&path).map(Arc::new);
+                        let document = read_document(&path).map(|mut document| {
+                            let sdt_path = source_root.join("mhfsdt.bin");
+                            if path == sdt_path {
+                                let directory = Arc::new(document.parsed_attack_directory());
+                                attack_directories.insert(sdt_path, directory.clone());
+                                document.attack_directory = Some(directory);
+                            } else if document
+                                .nodes
+                                .iter()
+                                .any(|node| node.kind == inspect::Kind::Dat)
+                            {
+                                let directory = attack_directories
+                                    .entry(sdt_path.clone())
+                                    .or_insert_with(|| Arc::new(read_attack_directory(&sdt_path)));
+                                document.attack_directory = Some(directory.clone());
+                            }
+                            Arc::new(document)
+                        });
                         state
                             .updates
                             .lock()
@@ -242,14 +262,14 @@ impl Worker {
         self.shared.wake.notify_one();
     }
 
-    pub fn load(&self, request: u64, path: PathBuf) {
+    pub fn load(&self, request: u64, path: PathBuf, source_root: PathBuf) {
         // 新选择覆盖尚未执行的读取；已经开始的旧读取由界面按请求号丢弃。
         let mut pending = self
             .shared
             .pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        pending.load = Some((request, path));
+        pending.load = Some((request, path, source_root));
         pending.expand = None;
         drop(pending);
         self.shared.wake.notify_one();

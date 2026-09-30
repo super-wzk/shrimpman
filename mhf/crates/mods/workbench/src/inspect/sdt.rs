@@ -1,4 +1,5 @@
 use super::{Builder, Kind, hex};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::sdt::{
     DIRECTORY_STRIDE, FieldLayout, HITBOX_GROUP_STRIDE, HITBOX_SLOTS, HITBOX_STRIDE, Sdt, TableKind,
 };
@@ -38,6 +39,7 @@ impl Builder {
             ) else {
                 return Ok(());
             };
+            self.set_address(child, node, [Index(entry.index as u32)]);
             for (offset, name) in [
                 (0, "子类别键"),
                 (2, "类别键"),
@@ -148,6 +150,12 @@ impl Builder {
             ) else {
                 return Ok(());
             };
+            let key = match table_kind {
+                TableKind::Attack => "attacks",
+                TableKind::Auxiliary => "auxiliary",
+                TableKind::Extra => "extras",
+            };
+            self.set_address(child, node, [Key(key.into())]);
             self.read::<u32>(child, "表偏移", base + entry.offset + field)?;
             match table {
                 Ok(Some(table)) => {
@@ -190,6 +198,7 @@ impl Builder {
             source.buffer,
             base + range.start..base + range.end,
         ) {
+            self.set_address(child, node, [Key("collisions".into())]);
             self.read::<u32>(child, "组目录偏移", base + entry.offset + 16)?;
             self.field(
                 child,
@@ -238,6 +247,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(index as u32)]);
             self.field(child, "记录编号", index, at, 0);
             self.document.nodes[child].deferred = true;
         }
@@ -320,7 +330,9 @@ impl Builder {
                 .get_mut(start..end)
                 .ok_or("SDT 字段超出记录范围")?
                 .fill(true);
+            let index = self.document.nodes[node].fields.len();
             self.read_scalar(node, field.name, base + start, field.scalar)?;
+            self.document.nodes[node].fields[index].key = Some(field.key.into());
         }
         let mut offset = 0;
         while offset < covered.len() {
@@ -364,6 +376,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(index as u32)]);
             for slot in 0..HITBOX_SLOTS {
                 self.read::<u32>(child, format!("槽 {slot} 偏移"), at + slot * 4)?;
             }
@@ -401,6 +414,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(slot as u32)]);
             self.read::<u32>(child, "记录表偏移", base + group.offset + slot * 4)?;
             match list {
                 Ok(list) => {
@@ -451,6 +465,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Index(index as u32)]);
             self.field(child, "判定编号", index, at, 0);
             self.document.nodes[child].deferred = true;
         }

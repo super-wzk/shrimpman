@@ -169,10 +169,17 @@ impl Workbench {
         ui.spacing_mut().item_spacing.y = 0.0;
         for (index, field) in node.fields.iter().enumerate() {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+            if self.reveal_field && self.address_field == Some(index) {
+                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                self.reveal_field = false;
+            }
             if !ui.is_rect_visible(rect) {
                 continue;
             }
-            if index % 2 == 1 {
+            if self.address_field == Some(index) {
+                ui.painter()
+                    .rect_filled(rect, 0.0, ui.visuals().selection.bg_fill);
+            } else if index % 2 == 1 {
                 ui.painter()
                     .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
             }
@@ -245,9 +252,7 @@ impl Workbench {
                 // Selecting bytes must not move the panel: the hex section is
                 // the last part of the inspector, so revealing it would jump
                 // the field list out from under the pointer.
-                self.hex_buffer = true;
-                self.hex_start = field.binding.range.start / 16 * 16;
-                self.hex_selection = Some(field.binding.range.clone());
+                self.select_field(field, index);
                 let id = ui.make_persistent_id("resource-hex");
                 let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),

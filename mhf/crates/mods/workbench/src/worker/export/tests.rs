@@ -2,6 +2,9 @@ use super::*;
 use crate::inspect::Node;
 fn export_document() -> Document {
     let node = |name: &str, kind, buffer, range| Node {
+        native_id: None,
+        material_slots: Vec::new(),
+        address: None,
         name: name.into(),
         kind,
         buffer,
@@ -14,6 +17,8 @@ fn export_document() -> Document {
         error: None,
     };
     Document {
+        attack_directory: None,
+        source: Default::default(),
         root: 0,
         buffers: vec![Arc::from([1, 2, 3, 4]), Arc::from([5, 6, 7, 8, 9, 10])],
         nodes: vec![

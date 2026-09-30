@@ -2,6 +2,7 @@
 
 use super::{Builder, Kind, hex};
 use crate::field::{FieldType, ScalarType, formatted, typed};
+use mhf_resource::PathSegment::{Field as Key, Index};
 use mhf_resource::stage::AreaCamera;
 
 impl Builder {
@@ -56,6 +57,11 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(
+                child,
+                node,
+                [Key("regions".into()), Index(region.index as u32)],
+            );
             self.field(child, "扩展记录数", bytes[5], at + 5, 1);
             for (index, bytes) in bytes.as_chunks::<4>().0.iter().enumerate() {
                 let word = u32::from_le_bytes(*bytes);
@@ -82,6 +88,7 @@ impl Builder {
             ) else {
                 break;
             };
+            self.set_address(child, node, [Key("cells".into()), Index(cell.index as u32)]);
             self.field(child, "区域引用数", cell.count, at, 4);
             self.field(child, "引用列表相对偏移", cell.relative_offset, at + 4, 4);
             self.field(
