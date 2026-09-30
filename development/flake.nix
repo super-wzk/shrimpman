@@ -17,11 +17,7 @@ let
   localModules = lib.optional (localRoot != "" && builtins.pathExists localModule) localModule;
   modules = [
     ./shell.nix
-    ../shrimpman/default.nix
     ../mhf/default.nix
-    ({ config, lib, ... }: {
-      mhf.sign.endpoint = lib.mkDefault "http://127.0.0.1:${toString config.development.ports.signHttp}";
-    })
   ];
 in
 {
@@ -40,11 +36,11 @@ in
       ...
     }:
     let
-      processGroup = config.process-compose.shrimpman-dev;
+      processGroup = config.process-compose.mhf-dev;
       # Public TOML generation must never include the local module.
       shared =
         ((import process-compose-flake.lib { inherit pkgs; }).evalModules {
-          name = "shrimpman-dev";
+          name = "mhf-dev";
           inherit modules;
         }).config;
       enterShell =
@@ -63,7 +59,7 @@ in
           '';
         };
       dev = {
-        program = enterShell "shrimpman-dev" processGroup.outputs.package;
+        program = enterShell "mhf-dev" processGroup.outputs.package;
         meta.description = "Run the development process group inside the devShell.";
       };
     in
@@ -77,7 +73,7 @@ in
         };
       };
 
-      process-compose.shrimpman-dev.imports = modules ++ localModules;
+      process-compose.mhf-dev.imports = modules ++ localModules;
       devShells.default = processGroup.outputs.devShell;
 
       packages = processGroup.development.commands // {
@@ -109,7 +105,7 @@ in
           default = dev;
           # process-compose-flake exports the raw package under this name.
           # Its nix run entry must also enter the development shell.
-          shrimpman-dev = dev;
+          mhf-dev = dev;
           update-configs = {
             program = lib.getExe self'.packages.update-configs;
             meta.description = "Regenerate public TOML defaults without local overrides.";

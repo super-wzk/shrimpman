@@ -7,6 +7,7 @@
 根 `flake.nix` 声明依赖与支持平台，`flake.lock` 固定 Nixpkgs、Rust overlay、
 flake-parts、git-hooks.nix 和 process-compose-flake。
 [`rust-toolchain.toml`](../rust-toolchain.toml) 定义 Rust 组件与 Windows 目标。
+Login 的客户端协议代码位于本工作区的 `mhf/crates/shared/shrimpman-{common,domain,transport}/`。
 
 | 主机 | 构建 | Windows 程序执行 |
 | --- | --- | --- |
@@ -41,10 +42,7 @@ direnv allow
 
 | 仓库根命令 | shell 内命令 | 用途 |
 | --- | --- | --- |
-| `nix run .#dev -- up` | `shrimpman-dev up` | 启动开发服务 |
-| `nix run .#shrimpman-build` | `shrimpman-build` | 构建服务端工作区 |
-| `nix run .#shrimpman-db -- --help` | `shrimpman-db --help` | 数据库 CLI |
-| `nix run .#shrimpman-migrate` | `shrimpman-migrate` | 应用数据库迁移 |
+| `nix run .#dev -- up` | `mhf-dev up` | 打开客户端开发进程组 |
 | `nix run .#mhf-build` | `mhf-build` | 构建 Windows 启动器 |
 | `nix run .#mhf-launcher -- --config mhf/mhf.toml` | `mhf-launcher --config mhf/mhf.toml` | 构建并启动游戏 |
 | `nix run .#mhf-mods-build` | `mhf-mods-build` | 构建独立 Mod 管理器 |
@@ -57,18 +55,17 @@ direnv allow
 `apps` 是可运行入口，`packages` 是可构建产物，`checks` 是 `nix flake check` 执行的检查。
 `update-configs` 仅生成公开 TOML，不进入 devShell。
 
-## 服务进程
+## 客户端进程
 
 ```sh
-shrimpman-dev up shrimpman-sign     # Sign、etcd 和迁移
-shrimpman-dev up shrimpman-entrance # Entrance 和 etcd
-shrimpman-dev up -t=false           # 不启用 TUI
-shrimpman-dev process list
+mhf-dev up
+mhf-dev up -t=false
+mhf-dev process list
 ```
 
-所有服务等待 etcd 健康检查，Sign 和 World 还等待迁移成功，失败会阻止启动。
-Ctrl-C 按依赖逆序停止进程。MHF launcher 进程默认禁用，可在 TUI 中显式启动。
-端口不会自动分配，默认值及状态目录见[配置说明](configuration.md#端口与数据)。
+`mhf-launcher` 进程默认禁用，可在 Process Compose TUI 中显式启动。
+也可直接运行 `mhf-launcher --config mhf/mhf.toml`。
+登录服务在独立的 `shrimpman-server` 仓库中启动，客户端通过完整 Sign URI 连接。
 
 ## 模块职责
 
@@ -77,8 +74,6 @@ Ctrl-C 按依赖逆序停止进程。MHF launcher 进程默认禁用，可在 TU
 | [`development/flake.nix`](../development/flake.nix) | 装配开发模块，导出 apps、packages、checks |
 | [`development/shell.nix`](../development/shell.nix) | 公共选项、devShell、命令与路径辅助函数 |
 | [`development/git-hooks.nix`](../development/git-hooks.nix) | 提交钩子、格式与语法检查 |
-| [`shrimpman/default.nix`](../shrimpman/default.nix) | 服务端命令、端口与进程 |
-| [`shrimpman/config.nix`](../shrimpman/config.nix) | 服务端默认值与 TOML 生成 |
 | [`mhf/default.nix`](../mhf/default.nix) | Windows 构建、Wine/WSL 运行 |
 | [`mhf/config.nix`](../mhf/config.nix) | MHF 默认值与 TOML 生成 |
 | `local/default.nix` | 不提交的机器配置；存在且启用 impure 求值时加载 |

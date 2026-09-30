@@ -7,7 +7,7 @@
 | --- | --- |
 | [`crates/mods/`](crates/mods/) | Config、Base、Login、Debug、Workbench、DatRedirect 运行 Mod，Font／UI／Quest／Geometry／Monster 组件，以及独立的 Unicode／Translation crate（不在应用运行清单中） |
 | [`crates/runtime/`](crates/runtime/) | 游戏会话、Mod 生命周期、公共 C 协议、Rust SDK、Hook 管理、包发现与依赖解析 |
-| [`crates/shared/`](crates/shared/) | [`egui-hunter`](crates/shared/egui-hunter/README.md) 组件、[`resource`](crates/shared/resource/README.md) 游戏资源类型与 [`ai-debug`](crates/shared/ai-debug/README.md) 断点、轨迹与录制回放 |
+| [`crates/shared/`](crates/shared/) | [`egui-hunter`](crates/shared/egui-hunter/README.md) 组件、[`resource`](crates/shared/resource/README.md) 游戏资源类型、[`ai-debug`](crates/shared/ai-debug/README.md) 断点、轨迹与录制回放，以及 `shrimpman-{common,domain,transport}` 客户端协议代码 |
 | [`crates/apps/`](crates/apps/) | 游戏入口 [`launcher`](crates/apps/launcher/README.md)、独立管理器 [`mod-manager`](crates/apps/mod-manager/README.md)、离线 AI 导出 [`ai-decompile`](crates/apps/ai-decompile/README.md) 及共享内建清单 [`launcher-catalog`](crates/apps/launcher-catalog/README.md) |
 
 ## 领域 API 与提供方
@@ -51,6 +51,10 @@ Login 是默认 fallback 启动提供方；启用 Debug 或 Workbench 自动覆�
 时，仍需遵守外部 Mod 的 detach 与 DLL 所有权契约。
 
 ## 构建与文档
+
+Login 使用 `crates/shared/shrimpman-{common,domain,transport}/` 中的客户端协议代码副本，
+保留 `shrimpman-common`、`shrimpman-domain` 和 `shrimpman-transport` 包名。
+Nix 入口见[仓库说明](../README.md)。
 
 游戏宿主及启动器目标为 `i686-pc-windows-msvc`。在配置好相应工具链的环境中，从仓库根运行：
 

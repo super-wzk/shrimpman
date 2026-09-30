@@ -2,18 +2,18 @@
 
 [返回项目入口](../README.md) · [开发环境](development.md) · [配置](configuration.md)
 
-以下命令从仓库根运行。两个 Rust 工作区分别检查；Windows 原生模块需要目标工具链，
+以下命令从仓库根运行。Windows 原生模块需要目标工具链，
 依赖游戏文件的检查还需要相应资源。执行结果应区分编译、自动化测试和真实游戏交互。
 
 ## 格式与工程配置
 
 ```sh
-cargo fmt --manifest-path shrimpman/Cargo.toml --all --check
 cargo fmt --manifest-path mhf/Cargo.toml --all --check
 ```
 
-进入 Nix shell 会通过 git-hooks.nix 安装 `prek` 提交钩子，检查 Nix 格式、受影响工作区的
+进入 Nix shell 会通过 git-hooks.nix 安装 `prek` 提交钩子，检查 Nix 格式、客户端工作区的
 Rust 格式、TOML 语法及合并冲突。生成的 `.pre-commit-config.yaml` 由 Git 忽略。
+客户端格式钩子执行 `cargo fmt --manifest-path mhf/Cargo.toml --all --check`。
 
 ```sh
 nix develop --command prek run --all-files
@@ -23,18 +23,6 @@ nix flake check
 修复格式时去掉 `cargo fmt` 的 `--check`；Nix 文件使用开发环境的 `nixfmt`。
 `nix flake check` 同时检查生成 TOML 一致性，不代替 Rust 测试或 Windows 游戏验证。
 Git flake 只包含已跟踪文件，新增 crate 或拆分出的模块必须纳入 Git 跟踪后才会进入该检查。
-
-## 服务端
-
-在具备 Protobuf 的环境中运行：
-
-```sh
-cargo test --manifest-path shrimpman/Cargo.toml --workspace --locked
-cargo clippy --manifest-path shrimpman/Cargo.toml --workspace --all-targets --locked -- -D warnings
-```
-
-etcd 与实际服务启动由[开发进程](development.md#服务进程)提供。
-纯编解码和模型测试通过后，还应按所改模块验证登录、分流、租约和持久化交互。
 
 ## 客户端可移植模块
 

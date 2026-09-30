@@ -1,5 +1,5 @@
 {
-  description = "Shrimpman services and MHF launcher development environment";
+  description = "MHF launcher and mod development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

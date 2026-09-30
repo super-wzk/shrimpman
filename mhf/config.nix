@@ -30,6 +30,7 @@ in
 
   config = {
     mhf = lib.mapAttrsRecursive (_: mkDefault) {
+      sign.endpoint = "http://127.0.0.1:53001";
       CHATPHI_211111 = chatProfile;
       CHATPHI_911111 = chatProfile;
       CHAT_SIZE = {

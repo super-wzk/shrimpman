@@ -39,14 +39,13 @@
             enable = true;
             args = [ "--check" ];
           };
-          rustfmt-shrimpman = rustfmt "shrimpman";
           rustfmt-mhf = rustfmt "mhf";
           check-merge-conflicts.enable = true;
           check-toml.enable = true;
         };
       };
 
-      process-compose.shrimpman-dev.development = {
+      process-compose.mhf-dev.development = {
         packages = config.pre-commit.settings.enabledPackages;
         shellHook = config.pre-commit.shellHook;
       };

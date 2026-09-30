@@ -5,7 +5,6 @@ target
 .wine
 .env
 .idea
-shrimpman.sqlite3
 
 # Development state and caches
 .state/

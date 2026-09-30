@@ -121,6 +121,7 @@ in
       ordered_shutdown = mkDefault true;
     };
     cli = {
+      options.port = mkDefault 8081;
       environment.PC_DISABLE_DOTENV = true;
       preHook = ''
         cd "$PROJECT_ROOT"

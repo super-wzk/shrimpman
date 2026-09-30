@@ -135,10 +135,9 @@ Cargo 会判断构建输入是否变化并复用未变化的产物。游戏目�
 可指定 Wine 可执行文件，设为空字符串则直接执行 EXE；`WINEPREFIX` 默认为
 `$PROJECT_STATE/wine`，公共状态目录默认是仓库的 `.state/`。原生 Windows 直接执行 EXE。
 两个运行命令设置默认 WINEPREFIX；进入开发环境或编译时不会初始化 Wine。
-正常启动器的默认 endpoint 是 HTTP，端口来自 Nix 选项
-`development.ports.signHttp`（53001）。在 `local/default.nix` 中设置
-`mhf.sign.endpoint = "tcp://127.0.0.1:53000";` 即可使用 TCP 登录；需要跟随服务端
-端口配置时可引用 `config.development.ports.signTcp`。
+正常启动器默认连接 `http://127.0.0.1:53001`。在 `local/default.nix` 中设置
+`mhf.sign.endpoint = "tcp://127.0.0.1:53000";` 即可使用 TCP 登录。
+使用自定义服务端口时，需要为客户端设置对应的完整 URI。
 环境变量 `MHF_SIGN__ENDPOINT` 覆盖完整地址，`MHF_SIGN__ENCODING` 覆盖 TCP 文本编码。
 Erupe 的本地 Nix 配置可设置 `mhf.sign.encoding = "shift_jis";`。例如：
 
@@ -146,5 +145,6 @@ Erupe 的本地 Nix 配置可设置 `mhf.sign.encoding = "shift_jis";`。例如�
 MHF_SIGN__ENDPOINT=tcp://127.0.0.1:53000 mhf-launcher
 ```
 
-`shrimpman-dev up` 启动服务端和 etcd；启动器也可
-在 process-compose 的 TUI 中手动启动。命令和环境变量覆盖详见仓库根目录 README。
+`mhf-dev up` 打开客户端 Process Compose 进程组，启动器可在 TUI 中手动启动。
+服务由独立的 `shrimpman-server` 仓库运行。客户端命令和环境变量覆盖详见
+[仓库入口](../../../../README.md)。

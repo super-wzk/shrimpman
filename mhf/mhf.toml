@@ -128,7 +128,6 @@ RECEIVE_0 = "0"
 RECEIVE_1 = "256"
 
 [font]
-#name = "MS Gothic"
 name = "JetBrains Maple Mono NF NL HT"
 quality = "antialiased"
 weight = 600
