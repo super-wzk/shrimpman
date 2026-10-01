@@ -766,8 +766,7 @@ mod tests {
                 assert_eq!(actual, patch.replacement);
             }
             for patch in crate::stage_cache::PATCHES {
-                let expected =
-                    patch.replacement(base, &stage_cache::FSKL_POINTER as *const _ as usize);
+                let expected = patch.replacement(&stage_cache::FSKL_POINTER as *const _ as usize);
                 let actual = unsafe {
                     slice::from_raw_parts((base + patch.rva) as *const u8, expected.len())
                 };

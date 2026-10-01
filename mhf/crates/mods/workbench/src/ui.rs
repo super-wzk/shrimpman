@@ -17,6 +17,8 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(test)]
+mod bone_binding_tests;
 mod editing;
 #[cfg(test)]
 mod field_layout_tests;
@@ -1714,34 +1716,14 @@ impl Workbench {
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut source, None, "原始骨架姿态");
                 for bone in skeleton.bones.iter().filter(|bone| bone.index != node) {
-                    let path = resource_reference::indexed_source(
-                        resource,
-                        crate::field::ReferenceCollection::SkeletonNodes,
-                        bone.index as u32,
-                    )
-                    .and_then(|source| source.resource_address(&self.editing.source_root, None))
-                    .filter(|address| address.exact)
-                    .map(|address| address.path);
-                    let label = format!("节点 {}", bone.index);
-                    let mut widget = mhf_ui::resource_reference::ResourceReference::new(
-                        mhf_ui::resource_reference::ResourceTarget::Index {
-                            collection: "skeleton.nodes",
-                            index: bone.index as u32,
-                        },
-                    )
-                    .label(&label)
-                    .compact(true)
-                    .activate(true);
-                    if let Some(path) = &path {
-                        widget = widget.resolved_path(path);
-                    }
-                    if widget
-                        .show(ui)
-                        .response
-                        .interact(egui::Sense::click())
+                    if ui
+                        .selectable_value(
+                            &mut source,
+                            Some(bone.index),
+                            format!("节点 {}", bone.index),
+                        )
                         .clicked()
                     {
-                        source = Some(bone.index);
                         ui.close();
                     }
                 }
@@ -3537,7 +3519,7 @@ mod tests {
         (label, button, id, details)
     }
 
-    fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+    pub(super) fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
         vec![
             egui::Event::PointerMoved(pos),
             egui::Event::PointerButton {

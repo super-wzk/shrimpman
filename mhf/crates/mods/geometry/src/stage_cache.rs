@@ -4,7 +4,6 @@ pub(crate) const RAW_GLOBAL: usize = 0x0ed528bc;
 pub(crate) const DECODED_GLOBAL: usize = 0x0ed528d8;
 pub(crate) const ORIGINAL_RAW: usize = 0x0c404740;
 pub(crate) const ORIGINAL_DECODED: usize = 0x02b04740;
-pub(crate) const SHARED_RESET: usize = 0x008e33bd;
 // BC is also native scratch space outside stage loading. Retain its original floor.
 pub(crate) const RAW_MINIMUM: usize = 14 * 1024 * 1024;
 pub(crate) const DECODE_CALLERS: [usize; 4] = [0x004114bb, 0x0060e0b9, 0x0089f19f, 0x0089f3a2];
@@ -86,87 +85,55 @@ pub(crate) fn pair_sizes(bytes: &[u8]) -> Result<[usize; 2], String> {
     Ok(sizes)
 }
 
-pub(crate) fn shared_reset(base: usize) -> [u8; 5] {
-    let mut bytes = [0xb8, 0, 0, 0, 0];
-    bytes[1..].copy_from_slice(&((base + ORIGINAL_DECODED) as u32).to_le_bytes());
-    bytes
-}
-
-pub(crate) enum Edit {
-    RawReset,
-    DecodedReset,
-    FsklPointer,
+/// Read-only signatures: native startup clears these globals before assigning
+/// their shared arenas. Animation and other non-stage consumers need the resets.
+pub(crate) fn reset_signatures(base: usize) -> [(usize, Vec<u8>); 3] {
+    let mut shared = vec![0xb8];
+    shared.extend_from_slice(&((base + ORIGINAL_DECODED) as u32).to_le_bytes());
+    let mut raw = vec![0xc7, 0x05];
+    raw.extend_from_slice(&((base + RAW_GLOBAL) as u32).to_le_bytes());
+    raw.extend_from_slice(&((base + ORIGINAL_RAW) as u32).to_le_bytes());
+    let mut decoded = vec![0xa3];
+    decoded.extend_from_slice(&((base + DECODED_GLOBAL) as u32).to_le_bytes());
+    [
+        (0x008e33bd, shared),
+        (0x008e3451, raw),
+        (0x008e3492, decoded),
+    ]
 }
 
 pub(crate) struct Patch {
     pub rva: usize,
-    pub original: &'static [u8],
-    pub edit: Edit,
+    pub original: &'static [u8; 6],
 }
 
 impl Patch {
-    /// Rebase the two absolute reset operands, matching the loaded PE image.
-    pub(crate) fn original_at(&self, base: usize) -> Vec<u8> {
-        let mut bytes = self.original.to_vec();
-        match self.edit {
-            Edit::RawReset => {
-                bytes[2..6].copy_from_slice(&((base + RAW_GLOBAL) as u32).to_le_bytes());
-                bytes[6..10].copy_from_slice(&((base + ORIGINAL_RAW) as u32).to_le_bytes());
-            }
-            Edit::DecodedReset => {
-                bytes[1..5].copy_from_slice(&((base + DECODED_GLOBAL) as u32).to_le_bytes());
-            }
-            Edit::FsklPointer => {}
-        }
-        bytes
-    }
-
-    pub(crate) fn replacement(&self, base: usize, fskl_pointer_cell: usize) -> Vec<u8> {
-        let mut bytes = self.original_at(base);
-        match self.edit {
-            // Preserve EAX for the neighbouring D4/E0/DC workspace aliases.
-            Edit::RawReset | Edit::DecodedReset => bytes.fill(0x90),
-            Edit::FsklPointer => {
-                bytes[..2].copy_from_slice(&[0x8b, 0x0d]);
-                bytes[2..6].copy_from_slice(&(fskl_pointer_cell as u32).to_le_bytes());
-            }
-        }
+    pub(crate) fn replacement(&self, fskl_pointer_cell: usize) -> [u8; 6] {
+        let mut bytes = *self.original;
+        bytes[..2].copy_from_slice(&[0x8b, 0x0d]);
+        bytes[2..6].copy_from_slice(&(fskl_pointer_cell as u32).to_le_bytes());
         bytes
     }
 }
 
 // Decode interception supplies both destinations; builders read the stable FSKL cell.
-// The two reset writes are the only writes to BC/D8 in the verified DLL.
+// Native scratch resets remain intact; each stage read/decode republishes its buffers.
 pub(crate) const PATCHES: &[Patch] = &[
     Patch {
         rva: 0x0041152d,
         original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-        edit: Edit::FsklPointer,
     },
     Patch {
         rva: 0x0060e120,
         original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-        edit: Edit::FsklPointer,
     },
     Patch {
         rva: 0x0089f2b7,
         original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-        edit: Edit::FsklPointer,
     },
     Patch {
         rva: 0x0089f40d,
         original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-        edit: Edit::FsklPointer,
-    },
-    Patch {
-        rva: 0x008e3451,
-        original: &[0xc7, 0x05, 0xbc, 0x28, 0xd5, 0x1e, 0x40, 0x47, 0x40, 0x1c],
-        edit: Edit::RawReset,
-    },
-    Patch {
-        rva: 0x008e3492,
-        original: &[0xa3, 0xd8, 0x28, 0xd5, 0x1e],
-        edit: Edit::DecodedReset,
     },
 ];
 
@@ -232,22 +199,32 @@ mod tests {
     }
 
     #[test]
-    fn reset_edits_leave_the_shared_decoder_aliases_unchanged() {
+    fn stage_edits_leave_native_scratch_resets_intact() {
         let base = 0x20000000;
         let cell = 0x50000000;
+        let resets = reset_signatures(base);
+        assert_eq!(resets[0], (0x008e33bd, vec![0xb8, 0x40, 0x47, 0xb0, 0x22]));
+        assert_eq!(
+            resets[1],
+            (
+                0x008e3451,
+                vec![0xc7, 0x05, 0xbc, 0x28, 0xd5, 0x2e, 0x40, 0x47, 0x40, 0x2c]
+            )
+        );
+        assert_eq!(resets[2], (0x008e3492, vec![0xa3, 0xd8, 0x28, 0xd5, 0x2e]));
         for patch in PATCHES {
-            let old = patch.original_at(base);
-            let new = patch.replacement(base, cell);
-            assert_eq!(old.len(), new.len());
-            match patch.edit {
-                Edit::RawReset | Edit::DecodedReset => assert!(new.iter().all(|&b| b == 0x90)),
-                Edit::FsklPointer => {
-                    assert_eq!(&new[..2], &[0x8b, 0x0d]);
-                    assert_eq!(
-                        u32::from_le_bytes(new[2..6].try_into().unwrap()),
-                        cell as u32
-                    );
-                }
+            let new = patch.replacement(cell);
+            assert_eq!(patch.original.len(), new.len());
+            assert_eq!(&new[..2], &[0x8b, 0x0d]);
+            assert_eq!(
+                u32::from_le_bytes(new[2..6].try_into().unwrap()),
+                cell as u32
+            );
+            for (rva, bytes) in &resets {
+                assert!(
+                    patch.rva + new.len() <= *rva || rva + bytes.len() <= patch.rva,
+                    "stage patches must not overwrite native scratch initialization"
+                );
             }
         }
     }
@@ -268,12 +245,14 @@ mod tests {
                 (word(offset + 12), word(offset + 16), word(offset + 20))
             })
             .collect();
-        let &(rva, _, offset) = sections
-            .iter()
-            .find(|&&(rva, size, _)| (rva..rva + size).contains(&SHARED_RESET))
-            .unwrap();
-        let offset = offset + SHARED_RESET - rva;
-        assert_eq!(&data[offset..offset + 5], shared_reset(base));
+        for (address, bytes) in reset_signatures(base) {
+            let &(rva, _, offset) = sections
+                .iter()
+                .find(|&&(rva, size, _)| (rva..rva + size).contains(&address))
+                .unwrap();
+            let offset = offset + address - rva;
+            assert_eq!(&data[offset..offset + bytes.len()], bytes);
+        }
         for (callers, target) in [(DECODE_CALLERS, 0x008df4b0), (BUILD_CALLERS, 0x008f88e0)] {
             for caller in callers {
                 let call = caller - 5;
@@ -294,7 +273,7 @@ mod tests {
         let mut previous_end = 0;
         for patch in PATCHES {
             assert!(patch.rva >= previous_end, "overlapping stage patches");
-            let old = patch.original_at(base);
+            let old = patch.original;
             let &(rva, _, offset) = sections
                 .iter()
                 .find(|&&(rva, size, _)| (rva..rva + size).contains(&patch.rva))

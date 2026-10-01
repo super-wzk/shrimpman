@@ -4,8 +4,7 @@ use super::{BASE, SLOT, State, abi, memory};
 use crate::{
     cache::{Buffer, Completion, Use},
     stage_cache::{
-        self, BUILD_CALLERS, DECODE_CALLERS, DECODED_GLOBAL, ORIGINAL_RAW, PATCHES, RAW_GLOBAL,
-        SHARED_RESET, shared_reset,
+        self, BUILD_CALLERS, DECODE_CALLERS, DECODED_GLOBAL, PATCHES, RAW_GLOBAL, reset_signatures,
     },
 };
 use mhf_hooks::HookSet;
@@ -31,9 +30,11 @@ const EMPTY_FMOD: [u32; 6] = [1, 1, 24, 2, 0, 12];
 const EMPTY_FSKL: [u32; 6] = [0xc0000000, 1, 24, 0, 0, 12];
 
 pub(super) unsafe fn validate(base: usize) -> Result<(), String> {
-    unsafe { memory::check(base + SHARED_RESET, &shared_reset(base)) }?;
+    for (rva, bytes) in reset_signatures(base) {
+        unsafe { memory::check(base + rva, &bytes) }?;
+    }
     for patch in PATCHES {
-        unsafe { memory::check(base + patch.rva, &patch.original_at(base)) }?;
+        unsafe { memory::check(base + patch.rva, patch.original) }?;
     }
     for caller in BUILD_CALLERS {
         let mut call = [0xe8, 0, 0, 0, 0];
@@ -140,13 +141,13 @@ impl Caches {
                 memory::write(
                     base,
                     patch.rva,
-                    &patch.replacement(base, &FSKL_POINTER as *const _ as usize),
+                    &patch.replacement(&FSKL_POINTER as *const _ as usize),
                 )
             }?;
         }
         guard.bound = true;
-        unsafe { memory::put(base + RAW_GLOBAL, base + ORIGINAL_RAW) };
-        guard.reject_pair();
+        // Startup clears and initializes BC/D8 for all scratch consumers.
+        // Publish dynamic destinations only at their stage read/decode boundary.
         Ok(guard)
     }
 
@@ -215,7 +216,7 @@ impl Caches {
     pub(super) fn restore(&mut self) -> Result<(), String> {
         while !self.reservations.is_empty() {
             let patch = &PATCHES[self.reservations.len() - 1];
-            unsafe { memory::write(self.base, patch.rva, &patch.original_at(self.base)) }?;
+            unsafe { memory::write(self.base, patch.rva, patch.original) }?;
             self.reservations
                 .pop()
                 .expect("stage patch owns its reservation")
@@ -453,6 +454,14 @@ pub(super) unsafe fn verify_dynamic_buffers(base: usize) {
             unsafe { memory::get::<usize>(base + RAW_GLOBAL) },
             larger as usize
         );
+        // Native scene initialization may restore shared scratch globals between
+        // stage loads. Reusing capacity must still republish the dynamic address.
+        unsafe { memory::put(base + RAW_GLOBAL, base + stage_cache::ORIGINAL_RAW) };
+        assert_eq!(unsafe { caches.prepare_raw(1024) }.unwrap(), larger);
+        assert_eq!(
+            unsafe { memory::get::<usize>(base + RAW_GLOBAL) },
+            larger as usize
+        );
     }
     let mut previous = [0usize; 2];
     for sizes in [[24usize, 24], [1024 * 1024 + 24, 2 * 1024 * 1024 + 24]] {
@@ -481,6 +490,9 @@ pub(super) unsafe fn verify_dynamic_buffers(base: usize) {
         outer[96 + sizes[0] - 1] = 0x5a;
         outer[96 + sizes[0] + sizes[1] - 1] = 0xa5;
         for caller in DECODE_CALLERS {
+            unsafe {
+                memory::put(base + DECODED_GLOBAL, base + stage_cache::ORIGINAL_DECODED);
+            }
             let frame = [0x202u32, (base + caller) as u32];
             let mut registers = abi::Registers {
                 edi: 0,

@@ -48,19 +48,15 @@ pub(super) fn images<'a>(sources: &[&'a [u8]]) -> Result<Vec<Image<'a>>, String>
 }
 
 pub(super) unsafe fn validate_interfaces(client: Client) -> Result<(), String> {
-    // Prefixes stop before relocated absolute operands.
+    // Geometry already hooks allocation/upload entries. Check their unchanged
+    // bodies, stopping before relocated absolute operands.
     for (address, prefix) in [
         (0x100113fc, &[0xbe, 1, 0, 0, 0, 0xb8][..]),
         (
             0x10011406,
             &[0x83, 0x38, 0, 0x74, 0x1c, 0x05, 0xd8, 0, 0, 0, 0x46, 0x3d][..],
         ),
-        (
-            0x10011af0,
-            &[
-                0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x81, 0xec, 0x8c, 0, 0, 0,
-            ][..],
-        ),
+        (0x10011af6, &[0x81, 0xec, 0x8c, 0, 0, 0, 0xa1][..]),
         (
             0x100119b0,
             &[0x56, 0x8b, 0xf0, 0x81, 0xfe, 0, 0x10, 0, 0, 0x72, 4][..],
@@ -74,7 +70,9 @@ pub(super) unsafe fn validate_interfaces(client: Client) -> Result<(), String> {
     }
     // Verify the actual allocator layout as well as its instruction prefixes.
     for (operand, target) in [
-        (0x100113f2, TEXTURE_LOCK),
+        // The entry's PUSH operand is covered by the allocator hook. Its
+        // LeaveCriticalSection path references the same lock outside that span.
+        (0x10011419, TEXTURE_LOCK),
         (0x10011402, TEXTURE_POOL + TEXTURE_STRIDE),
         (
             0x10011412,

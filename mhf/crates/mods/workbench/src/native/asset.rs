@@ -429,22 +429,22 @@ fn validate_files(
 
 /// All addresses are preferred VAs, relocated through Client. Prefixes stop
 /// before absolute operands, so ASLR does not invalidate the signature check.
+/// Geometry owns constructor/release entry hooks before workbench attaches;
+/// validate their unchanged bodies after the entry instructions instead.
 const SIGNATURES: &[(usize, &[u8])] = &[
     (
         0x114067e0,
         &[0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08, 0xf6, 0xc3, 0x10],
     ),
     (
-        0x108f88e0,
+        0x108f88e6,
         &[
-            0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0xb8, 0x2c, 0x12, 0x00, 0x00,
+            0xb8, 0x2c, 0x12, 0x00, 0x00, 0xe8, 0x80, 0x9b, 0xcc, 0x00, 0xa1,
         ],
     ),
     (
-        0x108f8eb0,
-        &[
-            0x55, 0x8b, 0xec, 0x8b, 0x45, 0x08, 0x56, 0x8b, 0xf0, 0xc1, 0xe6, 0x07,
-        ],
+        0x108f8eb6,
+        &[0x56, 0x8b, 0xf0, 0xc1, 0xe6, 0x07, 0x03, 0x35],
     ),
     (
         0x108f80a0,
@@ -1246,6 +1246,9 @@ unsafe extern "C" fn draw_model(_target: usize, _handle: u32) -> i32 {
         "ret",
     );
 }
+
+#[cfg(test)]
+mod interface_tests;
 
 #[cfg(test)]
 mod tests {

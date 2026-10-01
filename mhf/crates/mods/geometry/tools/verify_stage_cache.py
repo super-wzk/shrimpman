@@ -1,9 +1,10 @@
 """Verify moving stage caches against a read-only DLL's native readers and decoder.
 
 Requires the development-only Unicorn/Capstone environment of verify_native.py.
-Allocation/dispatch, file/pack I/O, ECD validation and CRT memcpy are substituted.
+Allocation/dispatch, file/pack I/O, ECD validation and CRT memory operations are substituted.
 Actual native readers, decoder call instructions, PAC routing, raw-JKR decoding,
-pointer-cell consumer edits and reset code execute in private emulator memory.
+pointer-cell consumer edits, scene initialization and motion LZ decoding execute
+in private emulator memory.
 This verifies native routing/ABI boundaries, not Rust allocation or game visuals.
 Dynamic destinations are chosen by a Python dispatch stub; Rust buffer growth
 and campaign preallocation are not executed by this script.
@@ -35,18 +36,14 @@ DECODER = 0x108DF4B0
 def config():
     source = (Path(__file__).parents[1] / "src/stage_cache.rs").read_text()
     edits = []
-    for rva, original, kind in re.findall(
-            r"Patch\s*\{\s*rva:\s*(0x[0-9a-f]+),\s*original:\s*&\[([^]]+)\],\s*edit:\s*Edit::(\w+)",
+    for rva, original in re.findall(
+            r"Patch\s*\{\s*rva:\s*(0x[0-9a-f]+),\s*original:\s*&\[([^]]+)\]",
             source):
         old = bytes(int(value, 16) for value in re.findall(r"0x[0-9a-f]+", original))
-        if kind in ["RawReset", "DecodedReset"]:
-            new = b"\x90" * len(old)
-        else:
-            assert kind == "FsklPointer"
-            new = b"\x8b\x0d" + struct.pack("<I", FSKL_CELL)
+        new = b"\x8b\x0d" + struct.pack("<I", FSKL_CELL)
         assert len(old) == len(new)
-        edits.append((int(rva, 16), old, new, kind))
-    assert len(edits) == 6
+        edits.append((int(rva, 16), old, new))
+    assert len(edits) == 4
     callers = re.search(r"const DECODE_CALLERS:.*?=\s*\[([^]]+)\]", source).group(1)
     callers = [BASE + int(value, 16) for value in re.findall(r"0x[0-9a-f]+", callers)]
     assert len(callers) == 4
@@ -66,36 +63,85 @@ def mapped_client(data, edits):
     ]:
         uc.mem_map(address, size)
     assert uc.mem_read(0x108E33BD, 5) == b"\xb8\x40\x47\xb0\x12"
-    for rva, old, new, _kind in edits:
+    for rva, old, new in edits:
         assert uc.mem_read(BASE + rva, len(old)) == old, hex(rva)
         uc.mem_write(BASE + rva, new)
     return uc
 
 
+def scene_reset(uc):
+    cleared = []
+
+    def memset(emu, _address, _size, _data):
+        sp = emu.reg_read(reg.UC_X86_REG_ESP)
+        target, value, size = struct.unpack("<III", emu.mem_read(sp + 4, 12))
+        emu.mem_write(target, bytes([value & 0xFF]) * size)
+        cleared.append((target, size))
+        return_stub(emu, target)
+
+    hook = uc.hook_add(UC_HOOK_CODE, memset, begin=0x115B4150, end=0x115B4150)
+    sp = uc.reg_read(reg.UC_X86_REG_ESP)
+    try:
+        # Run the global clear in 10B70380 before the native arena assignments.
+        # Starting at 108E33BD missed that clear and accepted unsafe NOP edits.
+        uc.emu_start(0x108E33A0, 0x108E349C, count=100_000)
+        assert uc.reg_read(reg.UC_X86_REG_EIP) == 0x108E349C
+        assert cleared == [(0x1ED52860, 0x128), (0x11E86340, 0xBD16400)]
+    finally:
+        uc.reg_write(reg.UC_X86_REG_ESP, sp)
+        uc.hook_del(hook)
+
+
+def verify_motion_after_reset(uc):
+    # Ten empty animation banks let the actual 1089F700 caller and 108FD1D0
+    # unpack a literal-only LZ stream without allocating compiled MOT objects.
+    payload = bytes(10 * 8)
+    packed = b"".join(b"\0" + payload[start:start + 8]
+                      for start in range(0, len(payload), 8))
+    source = b"JKR\x1a" + struct.pack("<HHII", 0x0108, 3, 16, len(payload)) + packed
+    uc.mem_write(SOURCE, source)
+    write32(uc, 0x1ED528B8, SOURCE)
+    destination = read32(uc, 0x1ED528BC)
+    if destination:
+        uc.mem_write(destination, b"\xcc" * len(payload))
+        uc.mem_write(destination - len(CANARY), CANARY)
+        uc.mem_write(destination + len(payload), CANARY)
+    sp = uc.reg_read(reg.UC_X86_REG_ESP)
+    try:
+        # Includes the live BC load, four arguments, CALL and stack cleanup.
+        # A zero BC reproduces the reported write at 1158F1CC.
+        uc.emu_start(0x1089F722, 0x1089F742, count=100_000)
+        assert uc.reg_read(reg.UC_X86_REG_EIP) == 0x1089F742
+        assert uc.reg_read(reg.UC_X86_REG_ESP) == sp
+        assert uc.mem_read(destination, len(payload)) == payload
+        assert uc.mem_read(destination - len(CANARY), len(CANARY)) == CANARY
+        assert uc.mem_read(destination + len(payload), len(CANARY)) == CANARY
+    finally:
+        uc.reg_write(reg.UC_X86_REG_ESP, sp)
+
+
 def verify_reset(uc):
     for raw, decoded, fskl in [
+        (0, 0, FSKL),
         (RAW, OLD_DECODED, OLD_DECODED + 0x02000000),
         (LARGE_RAW, FMOD, FSKL),
     ]:
         write32(uc, 0x1ED528BC, raw)
         write32(uc, 0x1ED528D8, decoded)
         write32(uc, FSKL_CELL, fskl)
-        # Execute the arena assignment and complete native pointer-reset span.
-        uc.emu_start(0x108E33BD, 0x108E33C2)
-        uc.emu_start(0x108E33CD, 0x108E349C)
-        assert read32(uc, 0x1ED528BC) == raw
-        assert read32(uc, 0x1ED528D8) == decoded
+        scene_reset(uc)
+        assert read32(uc, 0x1ED528BC) == 0x1C404740
+        assert read32(uc, 0x1ED528D8) == 0x12B04740
         assert read32(uc, FSKL_CELL) == fskl
         for alias in [0x1ED528D4, 0x1ED528DC, 0x1ED528E0]:
             assert read32(uc, alias) == 0x12B04740, hex(alias)
-    print("PASS: real native resets retain moved BC/D8 and preserve D4/DC/E0")
+        verify_motion_after_reset(uc)
+    print("PASS: native scene clear/reset restores BC/D8 and D4/DC/E0; actual motion LZ decode succeeds after initial and repeated resets")
 
 
 def verify_consumers(uc, edits):
     count = 0
-    for rva, _old, new, kind in edits:
-        if kind != "FsklPointer":
-            continue
+    for rva, _old, new in edits:
         for fmod, fskl in [(OLD_DECODED, FSKL), (FMOD, FSKL + 0x800000)]:
             write32(uc, FSKL_CELL, fskl)
             uc.reg_write(reg.UC_X86_REG_EAX, fmod)
