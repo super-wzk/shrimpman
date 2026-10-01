@@ -213,7 +213,7 @@ pub(super) fn generate_inspection(
     for table in tables {
         writeln!(
             output,
-            "TableLayout {{ id: {id:?}, label: {id:?}, root: &{root:?}, first_record: {first}, records: {count}, stride: {stride}, format: RecordFormat::Text {{ offset: {offset}, parts: {parts} }}, directory: {directory}, names: None }},",
+            "TableLayout {{ id: {id:?}, label: {id:?}, root: &{root:?}, start_offset: 0, first_record: {first}, records: {count}, stride: {stride}, format: RecordFormat::Text {{ offset: {offset}, parts: {parts} }}, directory: {directory}, names: None }},",
             id = table.id,
             root = table.root.offsets(),
             first = table.first_record,

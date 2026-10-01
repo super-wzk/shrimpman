@@ -55,7 +55,7 @@ impl Builder {
         );
         let buffer = self.document.nodes[node].buffer;
         for (name, tables, first_index) in [
-            ("装备、物品与生产数据", dat::DATA_TABLES, 0),
+            ("游戏数据与参数", dat::DATA_TABLES, 0),
             ("特效绑定与定义", dat::EFFECT_TABLES, dat::DATA_TABLES.len()),
             (
                 "文本及关联记录",
@@ -82,6 +82,15 @@ impl Builder {
                 self.set_address(child, node, [Key(layout.id.into())]);
                 self.field(child, "表标识", layout.id, base, 0);
                 self.field(child, "根字段路径", format!("{:X?}", layout.root), base, 0);
+                if layout.start_offset != 0 {
+                    self.field(
+                        child,
+                        "根内起点偏移",
+                        formatted(layout.start_offset, format!("{:#X}", layout.start_offset)),
+                        base,
+                        0,
+                    );
+                }
                 self.field(child, "记录步长", layout.stride, base, 0);
                 match table {
                     Ok(table) => {

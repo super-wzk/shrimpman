@@ -26,6 +26,55 @@ fn item_image() -> Vec<u8> {
 }
 
 #[test]
+fn bow_shot_stages_expand_at_the_root_relative_start_with_float_bindings() {
+    let root = 3200;
+    let first_stage = root + 0x21c;
+    let mut bytes = vec![0; first_stage + 8 * 0x28];
+    bytes[..4].copy_from_slice(dat::MAGIC);
+    set_u32(&mut bytes, 4, dat::VERSION);
+    set_u32(&mut bytes, 12, dat::HEADER_SIZE as u32);
+    set_u32(&mut bytes, 0x660, root as u32);
+    let last_element = first_stage + 7 * 0x28 + 0x1c;
+    bytes[last_element..last_element + 4].copy_from_slice(&1.5f32.to_le_bytes());
+
+    let table_index = dat::DATA_TABLES
+        .iter()
+        .position(|layout| layout.id == "bow_shot_stages")
+        .unwrap();
+    let end = bytes.len();
+    let document = inspect("mhfdat.bin", bytes.into());
+    let table = document
+        .nodes
+        .iter()
+        .position(|node| node.kind == Kind::DatTable(table_index))
+        .unwrap();
+    assert_eq!(document.nodes[table].range, first_stage..end);
+    assert!(
+        document.nodes[table]
+            .fields
+            .iter()
+            .any(|field| field.name == "根内起点偏移" && field.value == "0x21C")
+    );
+
+    let document = expand(&document, table).unwrap();
+    let stages = &document.nodes[table].children;
+    assert_eq!(stages.len(), 8);
+    assert_eq!(
+        document.nodes[stages[0]].range,
+        first_stage..first_stage + 0x28
+    );
+    let last = stages[7];
+    let document = expand(&document, last).unwrap();
+    let element = document.nodes[last]
+        .fields
+        .iter()
+        .find(|field| field.binding.range == (last_element..last_element + 4))
+        .unwrap();
+    assert_eq!(element.value, "1.5");
+    assert_eq!(element.binding.format, FieldType::Scalar(ScalarType::F32));
+}
+
+#[test]
 fn dat_inside_an_archive_expands_binary_fields_with_absolute_buffer_offsets() {
     let dat = item_image();
     let mut archive = vec![0; 32];

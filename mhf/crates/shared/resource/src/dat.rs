@@ -43,6 +43,8 @@ pub struct TableLayout {
     pub id: &'static str,
     pub label: &'static str,
     pub root: &'static [u32],
+    /// Byte offset inside the object referenced by `root`, before record indexing.
+    pub start_offset: u32,
     pub first_record: u32,
     pub records: RecordCount,
     pub stride: u16,
@@ -251,6 +253,7 @@ impl<'a> Dat<'a> {
         let first = (layout.first_record as usize)
             .checked_mul(stride)
             .ok_or_else(|| Error::new(field, "DAT first record overflow"))?;
+        let start = add(start, layout.start_offset as usize)?;
         let start = add(start, first)?;
         let size = count
             .checked_mul(stride)

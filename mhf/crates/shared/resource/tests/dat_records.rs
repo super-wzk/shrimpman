@@ -191,10 +191,48 @@ fn motion_event_group_keys_use_a_scalar_root_count() {
     assert_eq!(Dat::parse(&bytes).unwrap().table(layout).unwrap().count, 0);
 }
 
+#[test]
+fn bow_shot_stages_start_inside_the_root_object_and_require_complete_rows() {
+    let layout = dat::DATA_TABLES
+        .iter()
+        .find(|table| table.id == "bow_shot_stages")
+        .unwrap();
+    let root = 3200;
+    let first = root + 0x21c;
+    let end = first + 8 * 0x28;
+    let mut bytes = image(end);
+    set_u32(&mut bytes, 408 * 4, root as u32);
+    bytes[first + 0x18..first + 0x1c].copy_from_slice(&0.4f32.to_le_bytes());
+    bytes[first + 0x1c..first + 0x20].copy_from_slice(&0.7f32.to_le_bytes());
+    let last = first + 7 * 0x28;
+    bytes[last + 0x18..last + 0x1c].copy_from_slice(&2.0f32.to_le_bytes());
+    bytes[last + 0x1c..last + 0x20].copy_from_slice(&1.5f32.to_le_bytes());
+    bytes[last + 0x04] = 0xa5;
+
+    let file = Dat::parse(&bytes).unwrap();
+    let table = file.table(layout).unwrap();
+    assert_eq!(table.range, first..end);
+    assert_eq!(table.count, 8);
+    let (offset, stage0) = table.record(0).unwrap();
+    assert_eq!(offset, first);
+    assert_eq!(Reader::new(stage0).read_at::<f32>(0x18).unwrap().value, 0.4);
+    assert_eq!(Reader::new(stage0).read_at::<f32>(0x1c).unwrap().value, 0.7);
+    let (offset, stage7) = table.record(7).unwrap();
+    assert_eq!(offset, last);
+    assert_eq!(Reader::new(stage7).read_at::<f32>(0x18).unwrap().value, 2.0);
+    assert_eq!(Reader::new(stage7).read_at::<f32>(0x1c).unwrap().value, 1.5);
+    assert_eq!(stage7[0x04], 0xa5);
+    assert!(table.record(8).is_err());
+
+    bytes.pop();
+    assert!(Dat::parse(&bytes).unwrap().table(layout).is_err());
+}
+
 static TEXT: TableLayout = TableLayout {
     id: "text",
     label: "text",
     root: &[0x100],
+    start_offset: 0,
     first_record: 24,
     records: RecordCount::U16(&[0x10, 8]),
     stride: 4,
@@ -231,6 +269,7 @@ fn absent_directory_entries_are_checked_before_dereferencing() {
         id: "guard",
         label: "guard",
         root: &[0x100, 4],
+        start_offset: 0,
         first_record: 0,
         records: RecordCount::Fixed(1),
         stride: 4,
@@ -319,6 +358,38 @@ fn original_dat_core_tables_and_all_record_fields() {
     let (_, book) = item.record(1).unwrap();
     assert_eq!(u32::from_le_bytes(book[12..16].try_into().unwrap()), 1000);
     assert_eq!(u32::from_le_bytes(book[16..20].try_into().unwrap()), 100);
+    let bow = dat::DATA_TABLES
+        .iter()
+        .find(|table| table.id == "bow_shot_stages")
+        .unwrap();
+    let stages = file.table(bow).unwrap();
+    assert_eq!(stages.count, 8);
+    let multipliers = [
+        [0.4f32, 0.7, 0.6, 0.7],
+        [1.0, 0.95, 1.1, 1.2],
+        [1.5, 1.2, 1.1, 1.5],
+        [1.85, 1.34, 1.25, 1.7],
+        [1.0, 1.0, 1.0, 1.0],
+        [1.0, 1.0, 1.0, 1.0],
+        [1.0, 1.0, 1.0, 1.0],
+        [2.0, 1.5, 1.5, 1.5],
+    ];
+    for (index, expected) in multipliers.into_iter().enumerate() {
+        let (_, record) = stages.record(index).unwrap();
+        let reader = Reader::new(record);
+        for (offset, value) in [0x18, 0x1c, 0x20, 0x24].into_iter().zip(expected) {
+            assert_eq!(reader.read_at::<f32>(offset).unwrap().value, value);
+        }
+    }
+    let shot = dat::DATA_TABLES
+        .iter()
+        .find(|table| table.id == "shot_event_multipliers")
+        .unwrap();
+    let shot = file.table(shot).unwrap();
+    assert_eq!(shot.count, 1);
+    let (_, record) = shot.record(0).unwrap();
+    assert_eq!(Reader::new(record).read_at::<f32>(0).unwrap().value, 2.0);
+    assert_eq!(Reader::new(record).read_at::<f32>(4).unwrap().value, 0.6);
     use mhf_resource::effect::{
         AttachmentDefinition, AttachmentGroup, ModelEffectBinding, ModelEffectDefinition,
     };

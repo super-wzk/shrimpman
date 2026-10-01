@@ -100,22 +100,22 @@
     {
       "name": "light-bowgun",
       "enum": "LightBowgun",
-      "x": 0,
-      "y": 512,
-      "width": 64,
-      "height": 64,
-      "file": "light-bowgun.png",
-      "png_sha256": "7d72044d7ec1bacdae6dfa88dc01b8ceb621beebef892a5d42a15b192dfdb6e6"
-    },
-    {
-      "name": "heavy-bowgun",
-      "enum": "HeavyBowgun",
       "x": 256,
       "y": 512,
       "width": 64,
       "height": 64,
-      "file": "heavy-bowgun.png",
+      "file": "light-bowgun.png",
       "png_sha256": "f9bab75eee56a0b9c671d60052324bc98adcd491ad364ac6a14ff65b340b4724"
+    },
+    {
+      "name": "heavy-bowgun",
+      "enum": "HeavyBowgun",
+      "x": 0,
+      "y": 512,
+      "width": 64,
+      "height": 64,
+      "file": "heavy-bowgun.png",
+      "png_sha256": "7d72044d7ec1bacdae6dfa88dc01b8ceb621beebef892a5d42a15b192dfdb6e6"
     },
     {
       "name": "bow",

@@ -157,6 +157,23 @@ const MOTION_EVENT_GROUP_KEYS: &[FieldLayout] = fields![
     0x06 => "field_06", "匹配编号 3": U16,
 ];
 
+// DAT[408] is a larger parameter object. 11264F80 selects one of these
+// 0x28-byte rows at +0x21C; 11268000 consumes the multipliers at +0x18..+0x24.
+// Other bytes in each row retain their raw representation.
+const BOW_SHOT_STAGES: &[FieldLayout] = fields![
+    0x18 => "field_18", "物理威力倍率": F32,
+    0x1c => "field_1c", "属性倍率": F32,
+    0x20 => "field_20", "状态分支 A 倍率": F32,
+    0x24 => "field_24", "状态分支 B 倍率": F32,
+];
+
+// 1027EA60 applies these to the shot factor when the action event supplies
+// flag 0x20 or 0x40. The flag, rather than weapon class, selects the field.
+const SHOT_EVENT_MULTIPLIERS: &[FieldLayout] = fields![
+    0x00 => "flag_20", "射击事件标志 0x20 倍率": F32,
+    0x04 => "flag_40", "射击事件标志 0x40 倍率": F32,
+];
+
 const fn sentinel(root: &'static [u32], stride: u16, width: u8, value: u32) -> RecordCount {
     RecordCount::Sentinel {
         root,
@@ -180,6 +197,7 @@ const fn table(
         id,
         label,
         root,
+        start_offset: 0,
         stride,
         records,
         first_record: 0,
@@ -478,4 +496,28 @@ pub static DATA_TABLES: &[TableLayout] = &[
         MOTION_EVENT_GROUP_KEYS,
         None,
     ),
+    TableLayout {
+        start_offset: 0x21c,
+        ..table(
+            "bow_shot_stages",
+            "弓射击阶段倍率",
+            &[408 * 4],
+            0x28,
+            RecordCount::Fixed(8),
+            BOW_SHOT_STAGES,
+            None,
+        )
+    },
+    TableLayout {
+        start_offset: 0x90,
+        ..table(
+            "shot_event_multipliers",
+            "射击事件倍率",
+            &[408 * 4],
+            8,
+            RecordCount::Fixed(1),
+            SHOT_EVENT_MULTIPLIERS,
+            None,
+        )
+    },
 ];
