@@ -319,6 +319,8 @@ unsafe fn load_indices(
     }
     let size = unsafe { get::<u32>(root as usize + 8) };
     mesh::byte_size(size as usize, 1)?;
+    // The verified converter only reads the FMOD input and writes separate CRT
+    // buffers. Borrowed index bytes remain valid through the encoding below.
     let geometry = fmod::read(unsafe { slice::from_raw_parts(root, size as usize) }, index)?;
     // The widest existing native vertex conversion uses 72 bytes per vertex.
     // Check before calling it, so its 32-bit allocation multiplication cannot wrap.
@@ -447,6 +449,7 @@ unsafe fn build_model(
     } else {
         0
     };
+    let batch_count = mesh.bounds.len() as u32;
     let bounds_bytes = mesh::byte_size(mesh.bounds.len(), size_of::<mesh::Bounds>())?;
     let batch_bytes = mesh::byte_size(mesh.descriptors.len(), 4)?;
     let material_bytes = if flags & 2 != 0 {
@@ -567,6 +570,9 @@ unsafe fn build_model(
         }
     };
     unsafe { index_buffer.Unlock() }.map_err(|e| format!("unlock model index buffer: {e}"))?;
+    // CPU descriptors/bounds and GPU indices now own their copies. Return the
+    // temporary buffers before the remaining native callbacks can reenter.
+    drop(mesh);
     let header = Model {
         format: if cpu_skinning {
             format & !mesh::VARIANT
@@ -582,7 +588,7 @@ unsafe fn build_model(
         allocation_bytes,
         primitive: 5,
         batch_offset,
-        batch_count: mesh.bounds.len() as u32,
+        batch_count,
         fvf,
         vertex_count: source.vertex_count,
         vertex_stride,

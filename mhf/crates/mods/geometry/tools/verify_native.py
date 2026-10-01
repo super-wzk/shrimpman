@@ -10,7 +10,7 @@ import struct
 from pathlib import Path
 
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32, CS_OP_MEM, CS_OP_REG
-from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
+from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE, UC_PROT_READ
 from unicorn import x86_const as reg
 
 CODE = 0x40000000
@@ -357,6 +357,8 @@ def verify_converters(data):
                     uc.mem_write(0x10000000 + rva, data[offset:offset + size])
             uc.mem_map(0x30000000, 0x08000000)
             uc.mem_write(0x30000000, file)
+            # The Rust loader borrows FMOD index bytes across this native call.
+            uc.mem_protect(0x30000000, (len(file) + 0xFFF) & ~0xFFF, UC_PROT_READ)
             source = 0x31000000
             allocations = []
             cursor = 0x32000000
@@ -388,7 +390,7 @@ def verify_converters(data):
             assert list(old_indices[-3:]) == [i & 65535 for i in indices]
             for pointer, size in allocations:
                 assert uc.mem_read(pointer + size, 32) == b"\xa5" * 32, "native converter allocation overrun"
-    print("PASS: real native static/skinned converters preserve the expected ABI at 3 and 70001 vertices")
+    print("PASS: real native static/skinned converters preserve the expected ABI at 3 and 70001 vertices with read-only FMOD input")
 
 
 def main():

@@ -38,7 +38,7 @@ fn resource(vertex_count: u32, strips: &[(bool, Vec<u32>)]) -> Vec<u8> {
     block(1, 1, block(2, 1, object))
 }
 
-fn compile(geometry: &Geometry, flags: u32) -> mesh::Mesh {
+fn compile(geometry: &Geometry<'_>, flags: u32) -> mesh::CompiledMesh {
     let bytes = positions(geometry.vertex_count);
     mesh::compile(
         &geometry.encode(flags).unwrap(),
@@ -127,7 +127,8 @@ fn indices_cross_the_word_boundary_without_aliasing() {
 #[test]
 fn a_single_strip_exceeds_both_packed_and_word_lengths() {
     let indices = (0..70_000).collect::<Vec<_>>();
-    let geometry = fmod::read(&resource(70_000, &[(true, indices.clone())]), 0).unwrap();
+    let file = resource(70_000, &[(true, indices.clone())]);
+    let geometry = fmod::read(&file, 0).unwrap();
     let mesh = compile(&geometry, 0);
     assert_eq!(mesh.descriptors, [70_001]);
     assert_eq!(triangles(&mesh.indices, false), triangles(&indices, true));
@@ -136,12 +137,18 @@ fn a_single_strip_exceeds_both_packed_and_word_lengths() {
 #[test]
 fn joined_short_strips_keep_a_wide_batch_length() {
     let count = 16_000;
-    let strips = (0..count)
-        .map(|i| Strip {
+    let indices = (0..count * 3)
+        .flat_map(u32::to_le_bytes)
+        .collect::<Vec<_>>();
+    let strips = indices
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|indices| Strip {
             reversed: false,
             material: 0,
             variant: 0,
-            indices: vec![3 * i, 3 * i + 1, 3 * i + 2],
+            indices,
         })
         .collect();
     let mesh = compile(
@@ -159,12 +166,13 @@ fn joined_short_strips_keep_a_wide_batch_length() {
 #[test]
 fn material_and_skinning_variants_survive_many_batches() {
     let count = 5_000;
+    let indices = [0u32, 1, 2].map(u32::to_le_bytes);
     let strips = (0..count)
         .map(|i| Strip {
             reversed: i % 2 != 0,
             material: i % 3,
             variant: i % 2,
-            indices: vec![0, 1, 2],
+            indices: indices.as_flattened(),
         })
         .collect();
     let mesh = compile(
@@ -227,6 +235,91 @@ fn malformed_geometry_is_rejected_before_native_conversion() {
     };
     assert!(mesh::compile(&[3, 0, 1, 3], 1, 0, &vertices).is_err());
     assert!(mesh::compile(&[70_000, 0, 1, 2], 1, 0, &vertices).is_err());
+}
+
+#[test]
+fn strip_indices_borrow_unaligned_fmod_bytes() {
+    let file = resource(70_001, &[(true, vec![65_535, 65_536, 70_000])]);
+    let mut unaligned = vec![0; file.len() + 3];
+    let start = (0..4)
+        .find(|&offset| !(unaligned.as_ptr() as usize + offset).is_multiple_of(4))
+        .unwrap();
+    unaligned[start..start + file.len()].copy_from_slice(&file);
+    let file = &unaligned[start..start + file.len()];
+    let geometry = fmod::read(file, 0).unwrap();
+    let indices = geometry.strips[0].indices;
+    assert_ne!(indices.as_ptr() as usize % 4, 0);
+    let offset = indices.as_ptr() as usize - file.as_ptr() as usize;
+    assert_eq!(&file[offset..offset + indices.len()], indices);
+    assert_eq!(
+        geometry.encode(0).unwrap(),
+        [0x8000_0003, 65_535, 65_536, 70_000]
+    );
+    let mesh = compile(&geometry, 0);
+    assert_eq!(
+        triangles(&mesh.indices, false),
+        triangles(&[65_535, 65_536, 70_000], true)
+    );
+}
+
+#[test]
+fn malformed_siblings_are_checked_after_matching_blocks() {
+    let group = block(
+        0x30000,
+        1,
+        [3u32, 0, 1, 2]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect(),
+    );
+    let faces = block(5, 1, group.clone());
+    let vertices = block(0x70000, 3, positions(3));
+    let object = block(4, 2, [faces.clone(), vertices.clone()].concat());
+    let main = block(2, 1, object.clone());
+    let mut malformed = block(99, 0, Vec::new());
+    malformed[8..12].copy_from_slice(&24u32.to_le_bytes());
+    let files = [
+        ("MAIN", block(1, 2, [main, malformed.clone()].concat())),
+        (
+            "OBJECT",
+            block(1, 1, block(2, 2, [object, malformed.clone()].concat())),
+        ),
+        (
+            "vertex and face",
+            block(
+                1,
+                1,
+                block(
+                    2,
+                    1,
+                    block(4, 3, [faces, vertices.clone(), malformed.clone()].concat()),
+                ),
+            ),
+        ),
+        (
+            "strip group",
+            block(
+                1,
+                1,
+                block(
+                    2,
+                    1,
+                    block(
+                        4,
+                        2,
+                        [block(5, 2, [group, malformed].concat()), vertices].concat(),
+                    ),
+                ),
+            ),
+        ),
+    ];
+    for (selection, file) in files {
+        assert_eq!(
+            fmod::read(&file, 0).err().as_deref(),
+            Some("truncated FMOD block"),
+            "sibling after {selection}",
+        );
+    }
 }
 
 #[test]

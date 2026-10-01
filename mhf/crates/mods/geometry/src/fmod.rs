@@ -11,16 +11,17 @@ struct Block<'a> {
     bytes: &'a [u8],
 }
 
-pub(crate) struct Geometry {
+pub(crate) struct Geometry<'a> {
     pub vertex_count: u32,
-    pub strips: Vec<Strip>,
+    pub strips: Vec<Strip<'a>>,
 }
 
-pub(crate) struct Strip {
+pub(crate) struct Strip<'a> {
     pub reversed: bool,
     pub material: u32,
     pub variant: u32,
-    pub indices: Vec<u32>,
+    // FMOD stores little-endian words; the source slice need not be aligned.
+    pub indices: &'a [u8],
 }
 
 pub(crate) fn word(bytes: &[u8], offset: usize) -> Result<u32, String> {
@@ -44,53 +45,57 @@ impl<'a> Block<'a> {
         })
     }
 
-    fn children(self) -> Result<Vec<Self>, String> {
+    fn children(self) -> Result<impl Iterator<Item = Self>, String> {
         let mut bytes = &self.bytes[HEADER..];
         if self.count as usize > bytes.len() / HEADER {
             return Err("FMOD child count exceeds block size".into());
         }
-        let mut children = Vec::new();
-        children
-            .try_reserve_exact(self.count as usize)
-            .map_err(|e| e.to_string())?;
+        // Validate every declared sibling before callers select a matching block.
+        // Early iterator termination must not hide malformed later siblings.
         for _ in 0..self.count {
             let block = Self::read(bytes)?;
-            children.push(block);
             bytes = &bytes[block.bytes.len()..];
         }
-        Ok(children)
+        bytes = &self.bytes[HEADER..];
+        Ok((0..self.count).map(move |_| {
+            let block = Self::read(bytes).expect("FMOD children were validated");
+            bytes = &bytes[block.bytes.len()..];
+            block
+        }))
     }
 }
 
 /// Read the same MAIN/OBJECT selection as the native FMOD loader. Indices and
 /// strip counts in the file are 32-bit, including for unmodified game assets.
-pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry, String> {
+pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry<'_>, String> {
     let root = Block::read(bytes)?;
     let main = root
         .children()?
-        .into_iter()
         .find(|b| b.kind == 2)
         .ok_or("FMOD has no MAIN block")?;
-    let objects = main.children()?;
-    let object = objects
-        .get(object_index as usize)
+    let object = main
+        .children()?
+        .nth(object_index as usize)
         .ok_or("FMOD object index out of range")?;
     if object.kind != 4 {
         return Err("FMOD child is not an OBJECT block".into());
     }
-    let children = object.children()?;
-    let vertices = children
-        .iter()
-        .find(|b| b.kind == 0x70000)
-        .ok_or("FMOD object has no vertex block")?;
+    let mut vertices = None;
+    let mut face = None;
+    let mut materials = None;
+    for child in object.children()? {
+        match child.kind {
+            0x70000 if vertices.is_none() => vertices = Some(child),
+            5 if face.is_none() => face = Some(child),
+            0x60000 if materials.is_none() => materials = Some(child),
+            _ => {}
+        }
+    }
+    let vertices = vertices.ok_or("FMOD object has no vertex block")?;
     if vertices.count as usize > (vertices.bytes.len() - HEADER) / 12 {
         return Err("truncated FMOD vertex array".into());
     }
-    let face = children
-        .iter()
-        .find(|b| b.kind == 5)
-        .ok_or("FMOD object has no face block")?;
-    let materials = children.iter().find(|b| b.kind == 0x60000);
+    let face = face.ok_or("FMOD object has no face block")?;
     let mut strips = Vec::new();
     for group in face.children()? {
         let variant = match group.kind {
@@ -125,21 +130,17 @@ pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry, String> 
             if material > u16::MAX as u32 {
                 return Err("FMOD material identifier exceeds the native material table".into());
             }
-            let mut indices = Vec::new();
-            indices
-                .try_reserve_exact(count)
-                .map_err(|e| e.to_string())?;
-            for _ in 0..count {
-                let index = word(group.bytes, cursor)?;
+            let indices = &group.bytes[cursor..cursor + count * 4];
+            for bytes in indices.as_chunks::<4>().0 {
+                let index = u32::from_le_bytes(*bytes);
                 if index >= vertices.count {
                     return Err(format!(
                         "FMOD vertex index {index} exceeds vertex count {}",
                         vertices.count
                     ));
                 }
-                indices.push(index);
-                cursor += 4;
             }
+            cursor += indices.len();
             strips.push(Strip {
                 reversed: packed & 0x8000_0000 != 0,
                 material,
@@ -157,7 +158,7 @@ pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry, String> 
     })
 }
 
-impl Geometry {
+impl Geometry<'_> {
     /// Replace the temporary packed WORD stream produced by the native loader.
     /// Lengths no longer share the 14-bit field used by that intermediate format.
     pub(crate) fn encode(&self, flags: u32) -> Result<Vec<u32>, String> {
@@ -166,7 +167,7 @@ impl Geometry {
         for strip in &self.strips {
             length = length
                 .checked_add(extra)
-                .and_then(|n| n.checked_add(strip.indices.len()))
+                .and_then(|n| n.checked_add(strip.indices.len() / 4))
                 .ok_or("32-bit geometry size overflow")?;
         }
         mesh::byte_size(length, 4)?;
@@ -175,14 +176,15 @@ impl Geometry {
             .try_reserve_exact(length)
             .map_err(|e| e.to_string())?;
         for strip in &self.strips {
-            stream.push(strip.indices.len() as u32 | if strip.reversed { 0x8000_0000 } else { 0 });
+            let indices = strip.indices.as_chunks::<4>().0;
+            stream.push(indices.len() as u32 | if strip.reversed { 0x8000_0000 } else { 0 });
             if flags & MATERIAL != 0 {
                 stream.push(strip.material);
             }
             if flags & VARIANT != 0 {
                 stream.push(strip.variant);
             }
-            stream.extend_from_slice(&strip.indices);
+            stream.extend(indices.iter().copied().map(u32::from_le_bytes));
         }
         Ok(stream)
     }

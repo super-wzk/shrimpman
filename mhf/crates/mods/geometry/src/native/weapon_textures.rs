@@ -1,7 +1,9 @@
 //! Protect actual weapon texture owners from native bank overlap and recycling.
 
 use super::{BASE, SLOT, State, abi, memory};
-use crate::weapon_textures::{CreationResult, HANDLE_LIMIT, OwnerInfo, Ownership, Texture, Token};
+use crate::weapon_textures::{
+    CreationResult, HANDLE_LIMIT, OwnerInfo, Ownership, ReleaseDecision, Texture, Token,
+};
 use mhf_hooks::HookSet;
 use std::{
     cell::Cell,
@@ -280,42 +282,44 @@ pub(super) unsafe extern "C" fn release(registers: *mut abi::Registers) {
         return;
     };
     let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let (pointer, protected, claim) = {
+        let (pointer, generation, decision) = {
             let mut ownership = ownership(state);
             let pointer = texture_pointer(state, handle);
-            let protected = ownership
-                .protects(handle, pointer)
-                .map(|owner| (owner, ownership.generation(handle).unwrap_or(0)));
-            let claim = ownership.claim_release(handle, pointer, None);
-            (pointer, protected, claim)
+            let decision = ownership.prepare_release(handle, pointer, None);
+            let generation = match decision {
+                ReleaseDecision::Protected(_) => ownership.generation(handle).unwrap_or(0),
+                _ => 0,
+            };
+            (pointer, generation, decision)
         };
-        if let Some((owner, generation)) = protected {
-            if GUARD_LOGS.fetch_add(1, Ordering::Relaxed) < 32 {
-                let caller = memory::get::<u32>(registers.esp as usize + 4);
-                eprintln!(
-                    concat!(
-                        "weapon texture release deferred: slot={} weapon={} model={} ",
-                        "resource={:#x} base={} count={} handle={} generation={} ",
-                        "COM={:#x} caller={:#x}"
-                    ),
-                    owner.player,
-                    owner.weapon,
-                    owner.model,
-                    owner.resource,
-                    owner.base,
-                    owner.count,
-                    handle,
-                    generation,
-                    pointer,
-                    caller
-                );
+        let claim = match decision {
+            ReleaseDecision::Protected(owner) => {
+                if GUARD_LOGS.fetch_add(1, Ordering::Relaxed) < 32 {
+                    let caller = memory::get::<u32>(registers.esp as usize + 4);
+                    eprintln!(
+                        concat!(
+                            "weapon texture release deferred: slot={} weapon={} model={} ",
+                            "resource={:#x} base={} count={} handle={} generation={} ",
+                            "COM={:#x} caller={:#x}"
+                        ),
+                        owner.player,
+                        owner.weapon,
+                        owner.model,
+                        owner.resource,
+                        owner.base,
+                        owner.count,
+                        handle,
+                        generation,
+                        pointer,
+                        caller
+                    );
+                }
+                // DF700/DF660 only clear a bank entry after callback success (1).
+                // Preserve the other live weapon's mapping as well as its COM object.
+                return 0;
             }
-            // DF700/DF660 only clear a bank entry after callback success (1).
-            // Preserve the other live weapon's mapping as well as its COM object.
-            return 0;
-        }
-        let Some(claim) = claim else {
-            return 0;
+            ReleaseDecision::Claimed(claim) => claim,
+            ReleaseDecision::Ignored => return 0,
         };
         let original: unsafe extern "C" fn(u32) -> i32 =
             transmute(state.weapon_texture_originals.release);

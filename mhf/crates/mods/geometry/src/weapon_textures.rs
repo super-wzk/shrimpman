@@ -53,8 +53,18 @@ pub(crate) struct ReleaseClaim {
     identity: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ReleaseDecision {
+    Protected(OwnerInfo),
+    Claimed(ReleaseClaim),
+    Ignored,
+}
+
 pub(crate) struct Ownership {
     generations: Vec<u64>,
+    // Count references to the current generation only. Old tickets can remain
+    // in owners after a handle is reserved again.
+    owner_counts: Vec<usize>,
     next_generation: u64,
     next_owner: u64,
     next_release: u64,
@@ -67,6 +77,7 @@ impl Default for Ownership {
     fn default() -> Self {
         Self {
             generations: vec![0; HANDLE_LIMIT],
+            owner_counts: vec![0; HANDLE_LIMIT],
             next_generation: 0,
             next_owner: 0,
             next_release: 0,
@@ -89,6 +100,7 @@ impl Ownership {
         }
         self.next_generation = self.next_generation.wrapping_add(1);
         self.generations[handle as usize] = self.next_generation;
+        self.owner_counts[handle as usize] = 0;
         // A native reservation can only reuse a slot after its previous Release
         // has cleared it. The previous callback may still be returning to Rust.
         self.releasing[handle as usize] = None;
@@ -135,6 +147,7 @@ impl Ownership {
                 generation,
                 pointer: 0,
             });
+            self.owner_counts[handle as usize] += 1;
         }
         Some(CreationTicket {
             owner: token,
@@ -157,23 +170,28 @@ impl Ownership {
         }) else {
             return CreationResult::Discarded;
         };
-        let result = if !current || pointer == 0 || pointer == u32::MAX as usize {
-            owner.textures.remove(index);
-            CreationResult::Discarded
-        } else if owner.retired {
-            let mut texture = owner.textures.remove(index);
+        let valid = current && pointer != 0 && pointer != u32::MAX as usize;
+        if valid && !owner.retired {
+            owner.textures[index].pointer = pointer;
+            return CreationResult::Published;
+        }
+        let mut texture = owner.textures.remove(index);
+        let result = if valid {
             texture.pointer = pointer;
             CreationResult::Retired(texture)
         } else {
-            owner.textures[index].pointer = pointer;
-            CreationResult::Published
+            CreationResult::Discarded
         };
+        self.remove_texture_reference(texture);
         self.remove_finished(ticket.owner);
         result
     }
 
     pub(crate) fn protects(&self, handle: u32, pointer: usize) -> Option<OwnerInfo> {
         let &generation = self.generations.get(handle as usize)?;
+        if self.owner_counts[handle as usize] == 0 {
+            return None;
+        }
         self.owners.values().find_map(|owner| {
             owner
                 .textures
@@ -222,8 +240,17 @@ impl Ownership {
                 }
             });
         }
+        for &texture in &textures {
+            self.remove_texture_reference(texture);
+        }
         self.remove_finished(token);
         textures
+    }
+
+    fn remove_texture_reference(&mut self, texture: Texture) {
+        if self.generation(texture.handle) == Some(texture.generation) {
+            self.owner_counts[texture.handle as usize] -= 1;
+        }
     }
 
     fn remove_finished(&mut self, token: Token) {
@@ -244,19 +271,35 @@ impl Ownership {
         pointer: usize,
         expected: Option<Texture>,
     ) -> Option<ReleaseClaim> {
+        match self.prepare_release(handle, pointer, expected) {
+            ReleaseDecision::Claimed(claim) => Some(claim),
+            ReleaseDecision::Protected(_) | ReleaseDecision::Ignored => None,
+        }
+    }
+
+    /// Check ownership and claim an unprotected release in the same critical
+    /// section, so callers needing the protected owner never scan it twice.
+    pub(crate) fn prepare_release(
+        &mut self,
+        handle: u32,
+        pointer: usize,
+        expected: Option<Texture>,
+    ) -> ReleaseDecision {
+        if let Some(owner) = self.protects(handle, pointer) {
+            return ReleaseDecision::Protected(owner);
+        }
         if handle == 0
             || handle as usize >= HANDLE_LIMIT
             || pointer == 0
             || pointer == u32::MAX as usize
             || self.releasing[handle as usize].is_some()
-            || self.protects(handle, pointer).is_some()
             || expected.is_some_and(|texture| {
                 texture.handle != handle
                     || texture.pointer != pointer
                     || texture.generation != self.generations[handle as usize]
             })
         {
-            return None;
+            return ReleaseDecision::Ignored;
         }
         self.next_release = self.next_release.wrapping_add(1);
         let claim = ReleaseClaim {
@@ -265,7 +308,7 @@ impl Ownership {
             identity: self.next_release,
         };
         self.releasing[handle as usize] = Some(claim);
-        Some(claim)
+        ReleaseDecision::Claimed(claim)
     }
 
     pub(crate) fn finish_release(&mut self, claim: ReleaseClaim) {
@@ -349,6 +392,156 @@ mod tests {
         ownership.finish(token);
         assert!(ownership.protects(1, 999).is_none());
         assert!(ownership.protects(1, 101).is_some());
+    }
+
+    #[test]
+    fn shared_generation_stays_protected_until_every_owner_is_retired() {
+        let mut ownership = Ownership::default();
+        ownership.reserve(1);
+        let first = ownership.begin(owner(10, 220, 1)).0;
+        let second = ownership.begin(owner(20, 221, 1)).0;
+        let first_ticket = ownership.pending(first, 1).unwrap();
+        let second_ticket = ownership.pending(second, 1).unwrap();
+        assert_eq!(ownership.pending(first, 1), Some(first_ticket));
+        assert_eq!(ownership.owner_counts[1], 2);
+
+        assert_eq!(
+            ownership.created(first_ticket, 101),
+            CreationResult::Published
+        );
+        ownership.finish(first);
+        let first_texture = ownership.take(10)[0];
+        assert_eq!(ownership.owner_counts[1], 1);
+        assert_eq!(ownership.protects(1, 999).unwrap().resource, 20);
+        assert!(
+            ownership
+                .claim_release(1, 101, Some(first_texture))
+                .is_none()
+        );
+
+        assert!(ownership.take(20).is_empty());
+        ownership.finish(second);
+        assert_eq!(ownership.owner_counts[1], 1);
+        assert!(ownership.protects(1, u32::MAX as usize).is_some());
+        let CreationResult::Retired(second_texture) = ownership.created(second_ticket, 101) else {
+            panic!("the retired pending owner must return its completed texture");
+        };
+        assert_eq!(ownership.owner_counts[1], 0);
+        assert!(ownership.protects(1, 101).is_none());
+        let ReleaseDecision::Claimed(claim) =
+            ownership.prepare_release(1, 101, Some(second_texture))
+        else {
+            panic!("the last completed owner must allow a release claim");
+        };
+        assert!(
+            ownership
+                .claim_release(1, 101, Some(first_texture))
+                .is_none()
+        );
+        ownership.finish_release(claim);
+    }
+
+    #[test]
+    fn repeated_pending_and_failed_creation_leave_no_phantom_owner() {
+        for pointer in [0, u32::MAX as usize] {
+            let mut ownership = Ownership::default();
+            ownership.reserve(1);
+            let token = ownership.begin(owner(10, 220, 1)).0;
+            let ticket = ownership.pending(token, 1).unwrap();
+            assert_eq!(ownership.pending(token, 1), Some(ticket));
+            assert_eq!(ownership.owner_counts[1], 1);
+            assert_eq!(
+                ownership.created(ticket, pointer),
+                CreationResult::Discarded
+            );
+            assert_eq!(ownership.owner_counts[1], 0);
+            assert!(ownership.protects(1, 101).is_none());
+            assert_eq!(ownership.created(ticket, 101), CreationResult::Discarded);
+            assert_eq!(ownership.owner_counts[1], 0);
+            ownership.finish(token);
+            assert!(ownership.take(10).is_empty());
+            assert!(ownership.claim_release(1, 101, None).is_some());
+        }
+    }
+
+    #[test]
+    fn removing_an_old_pending_generation_preserves_the_new_reference() {
+        let mut ownership = Ownership::default();
+        let token = ownership.begin(owner(10, 220, 1)).0;
+        ownership.reserve(1);
+        let old = ownership.pending(token, 1).unwrap();
+        ownership.reserve(1);
+        assert_eq!(ownership.owner_counts[1], 0);
+        assert!(ownership.protects(1, 101).is_none());
+        let current = ownership.pending(token, 1).unwrap();
+        assert_eq!(ownership.owner_counts[1], 1);
+
+        assert_eq!(ownership.created(old, 101), CreationResult::Discarded);
+        assert_eq!(ownership.owner_counts[1], 1);
+        assert!(ownership.protects(1, 101).is_some());
+        assert_eq!(ownership.created(current, 101), CreationResult::Published);
+        ownership.finish(token);
+        let retired = ownership.take(10);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].generation, current.generation);
+        assert_eq!(ownership.owner_counts[1], 0);
+        assert!(ownership.claim_release(1, 101, Some(retired[0])).is_some());
+    }
+
+    #[test]
+    fn retiring_an_old_completed_generation_preserves_the_new_owner() {
+        let mut ownership = Ownership::default();
+        let first = ownership.begin(owner(10, 220, 1)).0;
+        create(&mut ownership, first, 1, 101);
+        ownership.finish(first);
+        let second = ownership.begin(owner(20, 221, 1)).0;
+        create(&mut ownership, second, 1, 101);
+        ownership.finish(second);
+
+        let old = ownership.take(10)[0];
+        assert_eq!(ownership.owner_counts[1], 1);
+        assert_eq!(ownership.protects(1, 101).unwrap().resource, 20);
+        assert!(ownership.claim_release(1, 101, Some(old)).is_none());
+        let current = ownership.take(20)[0];
+        assert_eq!(ownership.owner_counts[1], 0);
+        assert!(ownership.claim_release(1, 101, Some(old)).is_none());
+        assert!(ownership.claim_release(1, 101, Some(current)).is_some());
+    }
+
+    #[test]
+    fn release_decision_reports_protection_and_serializes_unowned_handles() {
+        let mut ownership = Ownership::default();
+        let token = ownership.begin(owner(10, 220, 1)).0;
+        ownership.reserve(1);
+        let ticket = ownership.pending(token, 1).unwrap();
+        // A pending creator remains protected even before COM is published.
+        let ReleaseDecision::Protected(info) = ownership.prepare_release(1, 0, None) else {
+            panic!("the release decision must preserve pending protection");
+        };
+        assert_eq!(info.resource, 10);
+        assert!(ownership.releasing[1].is_none());
+        assert_eq!(ownership.created(ticket, 101), CreationResult::Published);
+        assert!(matches!(
+            ownership.prepare_release(1, 101, None),
+            ReleaseDecision::Protected(_)
+        ));
+
+        ownership.reserve(2);
+        let ReleaseDecision::Claimed(claim) = ownership.prepare_release(2, 102, None) else {
+            panic!("an unowned effect handle must allow a release claim");
+        };
+        assert!(matches!(
+            ownership.prepare_release(2, 102, None),
+            ReleaseDecision::Ignored
+        ));
+        ownership.finish_release(claim);
+        assert!(ownership.claim_release(2, 102, None).is_some());
+        for handle in [0, HANDLE_LIMIT as u32, u32::MAX] {
+            assert!(matches!(
+                ownership.prepare_release(handle, 102, None),
+                ReleaseDecision::Ignored
+            ));
+        }
     }
 
     #[test]
