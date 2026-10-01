@@ -206,25 +206,24 @@ def verify_decoder(uc, callers):
 
 
 def verify_raw_reader(uc):
-    path = b"stage-hd\\st244.pac"
     size = 65 * 1024 * 1024 + 12
     payload = b"\x59" * size
     writes = []
-    uc.mem_write(DATA, path + b"\0")
-    uc.mem_write(RAW, CANARY)
-    uc.mem_write(LARGE_RAW + size + len(path) + 1, CANARY)
+    # Model reclamation of the former allocation. Any native dereference of its
+    # address now faults, including after the reader returns to the stage loader.
+    uc.mem_unmap(RAW, 0x01000000)
     write32(uc, 0x1ED528BC, LARGE_RAW)
 
     def io(emu, location, _size, _user):
         sp = emu.reg_read(reg.UC_X86_REG_ESP)
-        if location == 0x1000B0B0:
+        if location in [0x1000AFF0, 0x1000B0B0]:
             return_stub(emu, size)
         elif location == 0x1158CB60:
             return_stub(emu, 0)
         elif location == 0x1158C940:
             target = read32(emu, sp + 8)
             assert target == read32(emu, 0x1ED528BC) == LARGE_RAW
-            emu.mem_write(target, payload + path + b"\0")
+            emu.mem_write(target, contents)
             writes.append(target)
             return_stub(emu, 2)
         else:
@@ -232,22 +231,33 @@ def verify_raw_reader(uc):
             return_stub(emu, 1)
 
     hooks = [uc.hook_add(UC_HOOK_CODE, io, begin=address, end=address)
-             for address in [0x1000B0B0, 0x1158CB60, 0x1158C940, 0x1158F510]]
+             for address in [0x1000AFF0, 0x1000B0B0, 0x1158CB60, 0x1158C940, 0x1158F510]]
     sp = uc.reg_read(reg.UC_X86_REG_ESP)
-    uc.mem_write(sp, struct.pack("<I", LARGE_RAW))
-    uc.reg_write(reg.UC_X86_REG_EAX, DATA)
-    # Execute the real stage HD reader call with the dispatch-selected buffer.
-    uc.emu_start(0x1089F121, 0x1089F126, count=100_000)
-    assert uc.reg_read(reg.UC_X86_REG_ESP) == sp
-    assert uc.reg_read(reg.UC_X86_REG_EAX) == size + len(path)
-    assert writes == [LARGE_RAW]
-    assert uc.mem_read(LARGE_RAW, size) == payload
-    assert uc.mem_read(LARGE_RAW + size, len(path) + 1) == path + b"\0"
-    assert uc.mem_read(LARGE_RAW + size + len(path) + 1, 32) == CANARY
-    assert uc.mem_read(RAW, 32) == CANARY
+    for call, path in [(0x1089F121, b"stage-hd\\st244.pac"),
+                       (0x1089F14F, b"stage\\st244.pac")]:
+        contents = payload + path + b"\0"
+        uc.mem_write(DATA, path + b"\0")
+        uc.mem_write(LARGE_RAW + len(contents), CANARY)
+        uc.reg_write(reg.UC_X86_REG_ESP, sp)
+        write32(uc, sp, LARGE_RAW)
+        uc.reg_write(reg.UC_X86_REG_EAX, DATA)
+        uc.reg_write(reg.UC_X86_REG_EBX, RAW)
+        # Execute both real reader CALLs with the dispatch-selected buffer.
+        uc.emu_start(call, call + 5, count=100_000)
+        assert uc.reg_read(reg.UC_X86_REG_ESP) == sp
+        assert uc.reg_read(reg.UC_X86_REG_EAX) == size + len(path)
+        assert uc.mem_read(LARGE_RAW, len(contents)) == contents
+        assert uc.mem_read(LARGE_RAW + len(contents), len(CANARY)) == CANARY
+        # The successful read branches to 1089F172 and reloads BC into EBX.
+        uc.emu_start(call + 5, 0x1089F178, count=100)
+        assert uc.reg_read(reg.UC_X86_REG_EIP) == 0x1089F178
+        assert uc.reg_read(reg.UC_X86_REG_EBX) == LARGE_RAW
+        assert uc.reg_read(reg.UC_X86_REG_ESP) == sp + 4
+    assert writes == [LARGE_RAW, LARGE_RAW]
+    uc.reg_write(reg.UC_X86_REG_ESP, sp)
     for hook in hooks:
         uc.hook_del(hook)
-    print("PASS: real stage HD reader CALL accepts a moved >64-MiB PAC buffer and retains trailing filename/NUL semantics")
+    print("PASS: real HD/SD reads and post-read routing use a moved >64-MiB PAC with the old buffer unmapped; filename/NUL preserved")
 
 
 def main():

@@ -95,6 +95,7 @@ pub(super) struct Caches {
     original_decoded: usize,
     bound: bool,
     reservations: Vec<mhf_hooks::PatchReservation>,
+    raw_use: Option<Use>,
     pending: Option<[Use; 2]>,
 }
 
@@ -112,6 +113,7 @@ impl Caches {
             original_decoded: unsafe { memory::get(base + DECODED_GLOBAL) },
             bound: false,
             reservations: Vec::new(),
+            raw_use: None,
             pending: None,
         };
         guard.empty_address = guard.empty.prepare(48)? as usize;
@@ -148,9 +150,24 @@ impl Caches {
         Ok(guard)
     }
 
-    fn prepare_raw(&mut self, required: usize) -> Result<*mut u8, String> {
+    /// Replace scratch storage at the HD/SD reads in 1089EF20. Callers do not
+    /// retain BC across this load; PAC consumers reload it after the read.
+    /// Individual model completion is too early: subsequent models, campaign
+    /// textures and stage metadata still use the PAC.
+    ///
+    /// # Safety
+    /// All previous users of the shared raw workspace must have ended.
+    unsafe fn prepare_raw(&mut self, required: usize) -> Result<*mut u8, String> {
         let raw = self.raw.prepare(required)?;
-        unsafe { memory::put(self.base + RAW_GLOBAL, raw as usize) };
+        let address = raw as usize;
+        unsafe { memory::put(self.base + RAW_GLOBAL, address) };
+        // Allocation failure leaves the published address and its use intact.
+        // A successful publication ends the old use, even on same-buffer reuse.
+        if let Some(previous) = self.raw_use.take() {
+            self.raw.complete(previous);
+        }
+        self.raw.reclaim(address);
+        self.raw_use = self.raw.begin_use(address);
         Ok(raw)
     }
 
@@ -411,18 +428,31 @@ pub(super) unsafe fn verify_dynamic_buffers(base: usize) {
     let state = invocation.state().unwrap();
     {
         let mut caches = state.stage_caches.lock().unwrap();
-        let old = caches.prepare_raw(crate::stage_cache::RAW_MINIMUM).unwrap();
+        let old = unsafe { caches.prepare_raw(crate::stage_cache::RAW_MINIMUM) }.unwrap();
         unsafe { old.write(0x5a) };
-        let new = caches
-            .prepare_raw(crate::stage_cache::RAW_MINIMUM * 2)
-            .unwrap();
-        assert_ne!(old, new);
+        assert_eq!(unsafe { caches.prepare_raw(1024) }.unwrap(), old);
         assert_eq!(unsafe { old.read() }, 0x5a);
+        let new = unsafe { caches.prepare_raw(crate::stage_cache::RAW_MINIMUM * 2) }.unwrap();
+        assert_ne!(old, new);
+        assert_eq!(caches.raw.allocation_count(), 1);
+        unsafe { new.write(0xa5) };
+        let usage = caches.raw_use;
+        assert!(unsafe { caches.prepare_raw(usize::MAX) }.is_err());
+        assert_eq!(caches.raw_use, usage);
+        assert_eq!(unsafe { new.read() }, 0xa5);
         assert_eq!(
             unsafe { memory::get::<usize>(base + RAW_GLOBAL) },
             new as usize
         );
-        assert_eq!(caches.prepare_raw(1024).unwrap(), new);
+        assert_eq!(unsafe { caches.prepare_raw(1024) }.unwrap(), new);
+        assert_eq!(caches.raw.allocation_count(), 1);
+        let larger = unsafe { caches.prepare_raw(crate::stage_cache::RAW_MINIMUM * 4) }.unwrap();
+        assert_ne!(new, larger);
+        assert_eq!(caches.raw.allocation_count(), 1);
+        assert_eq!(
+            unsafe { memory::get::<usize>(base + RAW_GLOBAL) },
+            larger as usize
+        );
     }
     let mut previous = [0usize; 2];
     for sizes in [[24usize, 24], [1024 * 1024 + 24, 2 * 1024 * 1024 + 24]] {
