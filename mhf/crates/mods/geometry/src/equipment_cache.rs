@@ -8,54 +8,15 @@ pub(crate) const CACHE_RVAS: [usize; 14] = [
 pub(crate) const ORIGINAL_CAPACITY: usize = 0x20000;
 
 /// File loaders append a path and NUL; queued mode 7 first stores a 76-byte job.
-pub(crate) fn capacity(file_size: usize, path_length: usize) -> Result<usize, String> {
+pub(crate) fn required_size(file_size: usize, path_length: usize) -> Result<usize, String> {
     if file_size == 0 {
         return Err("equipment resource is empty or missing".into());
     }
-    let required = file_size
+    Ok(file_size
         .checked_add(path_length)
         .and_then(|size| size.checked_add(1))
         .ok_or("equipment cache size overflow")?
-        .max(ORIGINAL_CAPACITY);
-    crate::mesh::byte_size(required, 1)?;
-    Ok(required
-        .checked_next_power_of_two()
-        .filter(|&size| size <= i32::MAX as usize)
-        .unwrap_or(required))
-}
-
-#[derive(Default)]
-pub(crate) struct Buffer {
-    // 扩容时保留旧分配，直到原生调用方停止；异步 I/O 即使完成读取，也可能仍持有旧地址。
-    allocations: Vec<Vec<u8>>,
-}
-
-impl Buffer {
-    pub(crate) fn prepare(&mut self, size: usize) -> Result<*mut u8, String> {
-        if self
-            .allocations
-            .last()
-            .is_none_or(|bytes| bytes.len() < size)
-        {
-            self.allocations.try_reserve(1).map_err(|e| e.to_string())?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(size).map_err(|e| e.to_string())?;
-            bytes.resize(size, 0);
-            self.allocations.push(bytes);
-        }
-        Ok(self.allocations.last_mut().unwrap().as_mut_ptr())
-    }
-
-    pub(crate) fn invalidate(&mut self) {
-        for bytes in &mut self.allocations {
-            bytes[..INVALID_RESOURCE.len()].copy_from_slice(&INVALID_RESOURCE);
-        }
-    }
-
-    #[cfg(all(windows, target_arch = "x86"))]
-    pub(crate) fn retain_for_native(&mut self) {
-        std::mem::forget(std::mem::take(&mut self.allocations));
-    }
+        .max(ORIGINAL_CAPACITY))
 }
 
 // ECD v4 with an empty filename and a deliberately incorrect filename checksum.
@@ -321,6 +282,7 @@ pub(crate) const CACHE_REFERENCES: &[CacheReference] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::Buffer;
 
     #[test]
     fn files_at_the_old_boundary_include_the_filename_terminator() {
@@ -332,7 +294,7 @@ mod tests {
             1024 * 1024,
         ] {
             let mut cache = Buffer::default();
-            let length = capacity(size, path.len() - 1).unwrap();
+            let length = required_size(size, path.len() - 1).unwrap();
             let pointer = cache.prepare(length).unwrap();
             let bytes = unsafe { std::slice::from_raw_parts_mut(pointer, length) };
             bytes[..size].fill(0x5a);
@@ -351,7 +313,7 @@ mod tests {
         assert_ne!(old, new);
         assert_eq!(unsafe { old.read() }, 0x5a);
         assert_eq!(cache.prepare(ORIGINAL_CAPACITY).unwrap(), new);
-        cache.invalidate();
+        cache.write_prefix(&INVALID_RESOURCE);
         for pointer in [old, new] {
             assert_eq!(
                 unsafe { std::slice::from_raw_parts(pointer, 17) },
@@ -362,8 +324,9 @@ mod tests {
 
     #[test]
     fn invalid_file_sizes_do_not_wrap_allocations() {
-        assert!(capacity(0, 20).is_err());
-        assert!(capacity(usize::MAX, 20).is_err());
-        assert!(capacity(i32::MAX as usize, 20).is_err());
+        assert!(required_size(0, 20).is_err());
+        assert!(required_size(usize::MAX, 20).is_err());
+        let required = required_size(i32::MAX as usize, 20).unwrap();
+        assert!(Buffer::default().prepare(required).is_err());
     }
 }

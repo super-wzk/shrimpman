@@ -227,6 +227,46 @@ def verify_rejected_resource(data):
     print("PASS: native ECD validation rejects the failed-load marker before model decoding")
 
 
+def verify_batch_completion(data):
+    """Execute the native wait/finish fence; allocation ownership is tested in Rust."""
+    uc = mapped_client(data)
+    uc.mem_write(WAIT_EVENT, b"\xc3")
+    write32(uc, 0x115D21A0, WAIT_EVENT)
+    ready = False
+    finished = []
+
+    def callback(emu, location, _size, _user):
+        if location == WAIT_EVENT:
+            return_stub(emu, 0 if ready else 0x102, pop=8)
+        elif location == 0x1158FF60:
+            return_stub(emu)
+        else:
+            assert location == 0x108E13C0
+            assert read32(emu, QUEUE) == 6, "completion runs before the queue is advanced"
+            sp = emu.reg_read(reg.UC_X86_REG_ESP)
+            finished.append((read32(emu, sp + 4), read32(emu, sp + 8)))
+            return_stub(emu)
+
+    for target in [WAIT_EVENT, 0x1158FF60, 0x108E13C0]:
+        uc.hook_add(UC_HOOK_CODE, callback, begin=target, end=target)
+    for worker, finish in [(0x108E1170, 0x108E13C0), (0x115903A0, 0)]:
+        finished.clear()
+        ready = False
+        write32(uc, 0x1E866CE0, 1)
+        write32(uc, 0x1E866CE4, 0)
+        write32(uc, 0x1E866CE8, 1)
+        uc.mem_write(QUEUE, struct.pack("<6I", 6, 0x42, worker, DATA, finish, DATA))
+        run(uc, 0x115904C0)
+        assert uc.reg_read(reg.UC_X86_REG_EAX) == 0
+        assert read32(uc, QUEUE) == 6 and not finished
+        ready = True
+        run(uc, 0x115904C0)
+        assert uc.reg_read(reg.UC_X86_REG_EAX) == 1
+        assert read32(uc, QUEUE) == 0 and read32(uc, 0x1E866CE4) == 1
+        assert finished == ([(DATA, 0x42)] if finish else [])
+    print("PASS: native construction completion waits for the worker and callback; file-worker completion has no construction callback")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("client", type=Path)
@@ -235,6 +275,7 @@ def main():
     bases, references = config()
     verify_references(data, bases, references)
     verify_rejected_resource(data)
+    verify_batch_completion(data)
     verify_read(data, bases, 1, 130 * 1024, "loose", old_buffer=True)
     print("PASS: the original 128-KiB weapon cache reproduces adjacent-memory corruption at 130 KiB")
     count = 0

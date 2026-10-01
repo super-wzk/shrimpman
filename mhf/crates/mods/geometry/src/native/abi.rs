@@ -39,6 +39,57 @@ pub(super) unsafe extern "C" fn build_detour() {
     );
 }
 
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn weapon_texture_release_detour() {
+    core::arch::naked_asm!(
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        dispatch = sym super::weapon_textures::release,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn weapon_texture_constructor_detour() {
+    core::arch::naked_asm!(
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        dispatch = sym super::weapon_textures::construct,
+    );
+}
+
+/// ECX/EDX carry FSKL/TXB, while the caller owns the seven stack arguments.
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn build_resource_original(
+    _target: usize,
+    _skeleton: usize,
+    _textures: usize,
+    _resource: usize,
+    _root: usize,
+    _kind: u32,
+    _texture_base: u32,
+    _palette: u32,
+    _flags: u32,
+    _skinning: u32,
+) -> usize {
+    core::arch::naked_asm!(
+        "push ebp",
+        "mov ebp, esp",
+        "mov ecx, [ebp + 12]",
+        "mov edx, [ebp + 16]",
+        "push dword ptr [ebp + 44]",
+        "push dword ptr [ebp + 40]",
+        "push dword ptr [ebp + 36]",
+        "push dword ptr [ebp + 32]",
+        "push dword ptr [ebp + 28]",
+        "push dword ptr [ebp + 24]",
+        "push dword ptr [ebp + 20]",
+        "call dword ptr [ebp + 8]",
+        "add esp, 28",
+        "pop ebp",
+        "ret",
+    );
+}
+
 /// The hook replaces a CALL instruction, so recreate its return address first.
 #[unsafe(naked)]
 pub(super) unsafe extern "C" fn equipment_cache_load_detour() {
@@ -59,6 +110,60 @@ pub(super) unsafe extern "C" fn equipment_part_load_detour() {
         "popad", "popfd", "ret",
         resume = sym super::equipment_cache::SYNC_PART_RETURN,
         dispatch = sym super::equipment_cache::load,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn stage_hd_load_detour() {
+    core::arch::naked_asm!(
+        "push dword ptr [{resume}]",
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        resume = sym super::stage_cache::HD_RETURN,
+        dispatch = sym super::stage_cache::load,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn stage_load_detour() {
+    core::arch::naked_asm!(
+        "push dword ptr [{resume}]",
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        resume = sym super::stage_cache::SD_RETURN,
+        dispatch = sym super::stage_cache::load,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn stage_decode_detour() {
+    core::arch::naked_asm!(
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        dispatch = sym super::stage_cache::decode,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn decode_stage_pair(
+    _target: usize,
+    _fmod: usize,
+    _fskl: usize,
+    _source: usize,
+) -> u32 {
+    core::arch::naked_asm!(
+        "push ebp",
+        "mov ebp, esp",
+        "push edi",
+        "push esi",
+        "mov eax, [ebp + 12]",
+        "mov edi, [ebp + 16]",
+        "mov esi, [ebp + 20]",
+        "call dword ptr [ebp + 8]",
+        "pop esi",
+        "pop edi",
+        "pop ebp",
+        "ret",
     );
 }
 
@@ -123,8 +228,8 @@ pub(super) unsafe extern "C" fn build_original(
 #[unsafe(naked)]
 pub(super) unsafe extern "C" fn schedule(
     _target: usize,
-    _callback: unsafe extern "C" fn(*mut super::BufferRequest) -> i32,
-    _argument: *mut super::BufferRequest,
+    _callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
+    _argument: *mut std::ffi::c_void,
 ) -> i32 {
     core::arch::naked_asm!(
         "push ebp",

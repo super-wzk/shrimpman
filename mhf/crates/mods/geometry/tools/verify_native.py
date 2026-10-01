@@ -102,9 +102,12 @@ def verify_patches(data):
         for value in values:
             uc = cpu()
             uc.mem_write(CODE, new)
-            if original.mnemonic == "movzx":
-                assert replacement.mnemonic == "mov"
-                assert replacement.operands[1].size == 4
+            if original.mnemonic in ("movzx", "mov"):
+                if original.mnemonic == "movzx":
+                    assert replacement.mnemonic == "mov"
+                    assert replacement.operands[1].size == 4
+                else:
+                    value = 17
                 assert replacement.operands[1].mem.disp == 2 * original.operands[1].mem.disp
                 write_operand(uc, replacement, replacement.operands[1], value)
                 uc.emu_start(CODE, CODE + len(new))
@@ -115,11 +118,6 @@ def verify_patches(data):
                 write_operand(uc, replacement, replacement.operands[0], before)
                 uc.emu_start(CODE, CODE + len(new))
                 assert read_operand(uc, replacement, replacement.operands[0]) == before + replacement.operands[1].imm, hex(rva)
-            elif original.mnemonic == "mov":
-                assert replacement.operands[1].mem.disp == 2 * original.operands[1].mem.disp
-                write_operand(uc, replacement, replacement.operands[1], 17)
-                uc.emu_start(CODE, CODE + len(new))
-                assert read_operand(uc, replacement, replacement.operands[0]) == 17, hex(rva)
             elif original.mnemonic == "cmp":
                 assert replacement.operands[0].mem.disp == 2 * original.operands[0].mem.disp
                 write_operand(uc, replacement, replacement.operands[0], value)
@@ -188,6 +186,15 @@ def verify_renderer_entry(data):
 
 def coff_functions(path):
     """Read named function sections from the actual rustc i686 COFF object."""
+    functions = (
+        "load_detour", "build_detour", "load_original", "build_original",
+        "schedule", "convert_vertices", "source_query",
+        "equipment_cache_load_detour", "equipment_part_load_detour",
+        "read_equipment_file", "weapon_texture_release_detour",
+        "weapon_texture_constructor_detour", "build_resource_original",
+        "stage_hd_load_detour", "stage_load_detour", "stage_decode_detour",
+        "decode_stage_pair",
+    )
     data = path.read_bytes()
     machine, count, _, table, symbols, optional, _ = struct.unpack_from("<HHIIIHH", data)
     assert machine == 0x14C and optional == 0, "expected an ordinary i686 COFF object"
@@ -206,26 +213,40 @@ def coff_functions(path):
             name = data[offset:data.index(b"\0", offset)]
         name = name.rstrip(b"\0").decode(errors="replace")
         if section > 0 and "mhf_geometry" in name and "abi" in name:
-            for function in ["load_detour", "build_detour", "load_original", "build_original", "schedule", "convert_vertices", "source_query", "equipment_cache_load_detour", "equipment_part_load_detour", "read_equipment_file"]:
+            for function in functions:
                 if f"{len(function)}{function}" in name:
                     size, offset = spans[section - 1]
                     result[function] = data[offset + value:offset + size]
         index += 1 + auxiliaries
-    assert len(result) == 10, result.keys()
+    assert len(result) == len(functions), result.keys()
     return result
 
 
 def verify_abi(path):
+    resource_arguments = [DATA + 0x4000, DATA + 0x5000, 0, 220, 0, 0x900, 1]
     for name, code in coff_functions(path).items():
         uc = cpu()
         code = bytearray(code)
-        call_site = name in ("equipment_cache_load_detour", "equipment_part_load_detour")
+        call_site = name in (
+            "equipment_cache_load_detour", "equipment_part_load_detour",
+            "stage_hd_load_detour", "stage_load_detour",
+        )
         if name.endswith("detour"):
             calls = [i for i in DISASM.disasm(code, CODE) if i.mnemonic == "call"]
             assert len(calls) == 1 and calls[0].bytes[0] == 0xE8
             offset = calls[0].address - CODE
             struct.pack_into("<i", code, offset + 1, STUB - (CODE + offset + 5))
             arguments = [0x12345678, 0x22334455]
+            if name == "weapon_texture_constructor_detour":
+                arguments = resource_arguments
+            elif name == "stage_decode_detour":
+                arguments = []
+                for register, value in [
+                    (reg.UC_X86_REG_EAX, DATA + 0x2000),
+                    (reg.UC_X86_REG_EDI, DATA + 0x3000),
+                    (reg.UC_X86_REG_ESI, DATA + 0x4000),
+                ]:
+                    uc.reg_write(register, value)
             if call_site:
                 assert code[:2] == b"\xff\x35", "expected saved call-site continuation"
                 struct.pack_into("<I", code, 2, DATA + 0x100)
@@ -238,6 +259,10 @@ def verify_abi(path):
             arguments = [STUB, DATA + 0x3000]
         elif name == "read_equipment_file":
             arguments = [STUB, DATA + 0x2000, DATA + 0x3000]
+        elif name == "build_resource_original":
+            arguments = [STUB, DATA + 0x2000, DATA + 0x3000, *resource_arguments]
+        elif name == "decode_stage_pair":
+            arguments = [STUB, DATA + 0x2000, DATA + 0x3000, DATA + 0x4000]
         else:
             arguments = [STUB, 70001 if name == "load_original" else DATA + 0x2000, DATA + 0x3000, DATA + 0x4000]
         sp = uc.reg_read(reg.UC_X86_REG_ESP)
@@ -253,7 +278,16 @@ def verify_abi(path):
             if name.endswith("detour"):
                 frame = stack(0)
                 saved_sp = u32(emu.mem_read(frame + 12, 4))
-                assert u32(emu.mem_read(saved_sp + 8, 4)) == arguments[0]
+                assert u32(emu.mem_read(saved_sp + 4, 4)) == STOP
+                assert [u32(emu.mem_read(saved_sp + 8 + 4 * i, 4))
+                        for i in range(len(arguments))] == arguments
+                if name == "weapon_texture_constructor_detour":
+                    assert u32(emu.mem_read(frame + 24, 4)) == DATA + 0x800  # ECX
+                    assert u32(emu.mem_read(frame + 20, 4)) == DATA + 0x800  # EDX
+                elif name == "stage_decode_detour":
+                    assert u32(emu.mem_read(frame + 28, 4)) == DATA + 0x2000  # EAX
+                    assert u32(emu.mem_read(frame, 4)) == DATA + 0x3000  # EDI
+                    assert u32(emu.mem_read(frame + 4, 4)) == DATA + 0x4000  # ESI
                 emu.mem_write(frame + 28, struct.pack("<I", 0x76543210))
             elif name == "load_original":
                 assert emu.reg_read(reg.UC_X86_REG_EAX) == arguments[1]
@@ -271,6 +305,11 @@ def verify_abi(path):
             elif name == "read_equipment_file":
                 assert emu.reg_read(reg.UC_X86_REG_EAX) == arguments[1]
                 assert stack(0) == arguments[2]
+            elif name == "build_resource_original":
+                assert [emu.reg_read(r) for r in [reg.UC_X86_REG_ECX, reg.UC_X86_REG_EDX]] == arguments[1:3]
+                assert [stack(i) for i in range(7)] == arguments[3:]
+            elif name == "decode_stage_pair":
+                assert [emu.reg_read(r) for r in [reg.UC_X86_REG_EAX, reg.UC_X86_REG_EDI, reg.UC_X86_REG_ESI]] == arguments[1:]
             emu.reg_write(reg.UC_X86_REG_EAX, 0x76543210)
             emu.reg_write(reg.UC_X86_REG_ECX, 0x11223344)
             emu.reg_write(reg.UC_X86_REG_EDX, 0x22334455)
@@ -285,7 +324,7 @@ def verify_abi(path):
             assert uc.reg_read(r) == value, (name, r)
         if name.endswith("detour"):
             assert uc.reg_read(reg.UC_X86_REG_EFLAGS) == 0x202
-    print("PASS: 10 compiled x86 adapters preserve the native argument, register and stack ABI")
+    print("PASS: 17 compiled x86 adapters preserve the native argument, register and stack ABI")
 
 
 def block(kind, count, payload):

@@ -1,6 +1,8 @@
 mod abi;
 mod equipment_cache;
 mod memory;
+mod stage_cache;
+mod weapon_textures;
 
 use crate::{
     fmod,
@@ -42,7 +44,12 @@ struct State {
     module: ModuleReference,
     load_original: usize,
     cache_dispatch_original: usize,
+    cache_completion_originals: equipment_cache::CompletionOriginals,
     equipment_caches: Arc<Mutex<equipment_cache::Caches>>,
+    stage_caches: Arc<Mutex<stage_cache::Caches>>,
+    stage_decode_original: usize,
+    weapon_texture_originals: weapon_textures::Originals,
+    weapon_texture_ownership: Mutex<crate::weapon_textures::Ownership>,
 }
 
 impl State {
@@ -96,6 +103,7 @@ impl Drop for Allocation<'_> {
 pub struct GeometryHooks {
     // Restore instructions while the hook state still retains the native DLL.
     patches: CodePatches,
+    stage_caches: Arc<Mutex<stage_cache::Caches>>,
     hooks: HookGuard<State>,
     equipment_caches: Arc<Mutex<equipment_cache::Caches>>,
 }
@@ -105,6 +113,10 @@ impl GeometryHooks {
     pub fn uninstall(&mut self) -> Result<(), String> {
         self.hooks.uninstall()?;
         self.equipment_caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restore()?;
+        self.stage_caches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .restore()?;
@@ -145,6 +157,8 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
     let base = module.0 as usize;
     unsafe { memory::validate(base) }?;
     unsafe { equipment_cache::validate(base) }?;
+    unsafe { weapon_textures::validate(base) }?;
+    unsafe { stage_cache::validate(base) }?;
     let retained = unsafe { ModuleReference::acquire(module) }?;
     let load_original = unsafe {
         hooks.create(
@@ -183,23 +197,34 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
         )
     }?;
     let equipment_caches = Arc::new(Mutex::new(equipment_cache::Caches::new(base)));
+    let cache_completion_originals =
+        unsafe { equipment_cache::create_completion_hooks(&mut hooks, base) }?;
+    let weapon_texture_originals = unsafe { weapon_textures::create(&mut hooks, base) }?;
+    let stage_decode_original = unsafe { stage_cache::create(&mut hooks, base) }?;
     equipment_cache::SYNC_RETURN.store(base + equipment_cache::SYNC_LOAD + 5, Ordering::Release);
     equipment_cache::SYNC_PART_RETURN.store(
         base + equipment_cache::SYNC_PART_LOAD + 5,
         Ordering::Release,
     );
     let patches = unsafe { CodePatches::install(base) }?;
+    let stage_caches = Arc::new(Mutex::new(unsafe { stage_cache::Caches::install(base) }?));
     BASE.store(base, Ordering::Release);
     let hooks = unsafe {
         hooks.install(State {
             module: retained,
             load_original: load_original as usize,
             cache_dispatch_original: cache_dispatch_original as usize,
+            cache_completion_originals,
             equipment_caches: Arc::clone(&equipment_caches),
+            stage_caches: Arc::clone(&stage_caches),
+            stage_decode_original,
+            weapon_texture_originals,
+            weapon_texture_ownership: Mutex::new(crate::weapon_textures::Ownership::default()),
         })
     }?;
     Ok(GeometryHooks {
         patches,
+        stage_caches,
         hooks,
         equipment_caches,
     })
@@ -491,7 +516,13 @@ unsafe fn build_model(
         fvf,
         result: None,
     };
-    let created = unsafe { abi::schedule(state.address(0x0158ffd0), create_buffers, &mut request) };
+    let created = unsafe {
+        abi::schedule(
+            state.address(0x0158ffd0),
+            create_buffers,
+            (&mut request as *mut BufferRequest).cast(),
+        )
+    };
     let (vertex_buffer, index_buffer) = match (created, request.result) {
         (_, Some(Err(error))) => return Err(error),
         (0, _) | (_, None) => return Err("native geometry buffer dispatch failed".into()),
@@ -602,8 +633,8 @@ struct BufferRequest {
     result: Option<Result<(IDirect3DVertexBuffer9, IDirect3DIndexBuffer9), String>>,
 }
 
-unsafe extern "C" fn create_buffers(request: *mut BufferRequest) -> i32 {
-    let request = unsafe { &mut *request };
+unsafe extern "C" fn create_buffers(request: *mut c_void) -> i32 {
+    let request = unsafe { &mut *request.cast::<BufferRequest>() };
     let result = (|| {
         let pointer = request.device as *mut c_void;
         let device = unsafe { IDirect3DDevice9::from_raw_borrowed(&pointer) }
@@ -653,6 +684,60 @@ mod tests {
         core::PCWSTR,
     };
 
+    static UNEXPECTED_TEXTURE_RELEASES: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "system" fn unexpected_texture_release(_texture: *mut c_void) -> u32 {
+        UNEXPECTED_TEXTURE_RELEASES.fetch_add(1, Ordering::Relaxed);
+        1
+    }
+
+    /// Exercise the compiled release detour through the actual DLL entrypoint.
+    /// Its protected branch must preserve both COM ownership and the registry.
+    unsafe fn verify_protected_texture_release(base: usize) {
+        let invocation = SLOT.enter();
+        let state = invocation.state().expect("installed geometry state");
+        let vtable = [0usize, 0, unexpected_texture_release as *const () as usize];
+        let texture = [vtable.as_ptr() as usize];
+        let pointer = texture.as_ptr() as usize;
+        let handle = 4095u32;
+        let entry = base + 0x01aa7d80 + 216 * handle as usize;
+        let original = unsafe { get::<usize>(entry) };
+        let info = crate::weapon_textures::OwnerInfo {
+            resource: 0x1234_0000,
+            base: 220,
+            count: 1,
+            player: 3,
+            weapon: 123,
+            model: 456,
+        };
+        {
+            let mut ownership = state.weapon_texture_ownership.lock().unwrap();
+            let token = ownership.begin(info).0;
+            ownership.reserve(handle);
+            let pending = ownership.pending(token, handle).unwrap();
+            let _ = ownership.created(pending, pointer);
+            ownership.finish(token);
+        }
+        UNEXPECTED_TEXTURE_RELEASES.store(0, Ordering::Relaxed);
+        unsafe { put(entry, pointer) };
+        let release: unsafe extern "C" fn(u32) -> i32 = unsafe { transmute(base + 0x11960) };
+        let result = unsafe { release(handle) };
+        let retained = unsafe { get::<usize>(entry) };
+        // Restore native data before assertions or hook teardown can unwind.
+        unsafe { put(entry, original) };
+        let _ = state
+            .weapon_texture_ownership
+            .lock()
+            .unwrap()
+            .take(info.resource);
+        assert_eq!(
+            result, 0,
+            "live-owner release must preserve the bank mapping"
+        );
+        assert_eq!(retained, pointer);
+        assert_eq!(UNEXPECTED_TEXTURE_RELEASES.load(Ordering::Relaxed), 0);
+    }
+
     #[test]
     #[ignore = "Windows: set MHF_GEOMETRY_TEST_CLIENT; loads the real DLL and its DllMain"]
     fn supported_client_installs_and_restores_geometry() {
@@ -662,7 +747,13 @@ mod tests {
             unsafe { LoadLibraryExW(PCWSTR(path.as_ptr()), None, LOAD_WITH_ALTERED_SEARCH_PATH) }
                 .expect("load game DLL and its adjacent dependencies");
         let _module = unsafe { ModuleReference::from_owned(module) };
+        let base = module.0 as usize;
+        let stage_globals = [
+            crate::stage_cache::RAW_GLOBAL,
+            crate::stage_cache::DECODED_GLOBAL,
+        ];
         for _ in 0..2 {
+            let original_stage = stage_globals.map(|rva| unsafe { get::<usize>(base + rva) });
             let mut hooks = unsafe { install(module) }.expect("install geometry hooks");
             assert!(
                 unsafe { install(module) }.is_err(),
@@ -670,18 +761,32 @@ mod tests {
             );
             for patch in crate::patches::PATCHES {
                 let actual = unsafe {
-                    slice::from_raw_parts(
-                        (module.0 as usize + patch.rva) as *const u8,
-                        patch.replacement.len(),
-                    )
+                    slice::from_raw_parts((base + patch.rva) as *const u8, patch.replacement.len())
                 };
                 assert_eq!(actual, patch.replacement);
             }
+            for patch in crate::stage_cache::PATCHES {
+                let expected =
+                    patch.replacement(base, &stage_cache::FSKL_POINTER as *const _ as usize);
+                let actual = unsafe {
+                    slice::from_raw_parts((base + patch.rva) as *const u8, expected.len())
+                };
+                assert_eq!(actual, expected);
+            }
+            unsafe { verify_protected_texture_release(base) };
+            unsafe { equipment_cache::verify_reclamation(base) };
+            unsafe { stage_cache::verify_dynamic_buffers(base) };
             hooks.uninstall().expect("restore geometry hooks");
-            unsafe { memory::validate(module.0 as usize) }
-                .expect("all original instructions restored");
-            unsafe { equipment_cache::validate(module.0 as usize) }
+            unsafe { memory::validate(base) }.expect("all original instructions restored");
+            unsafe { equipment_cache::validate(base) }
                 .expect("all original equipment cache references restored");
+            unsafe { weapon_textures::validate(base) }
+                .expect("all original weapon texture entrypoints restored");
+            unsafe { stage_cache::validate(base) }.expect("all original stage references restored");
+            assert_eq!(
+                stage_globals.map(|rva| unsafe { get::<usize>(base + rva) }),
+                original_stage
+            );
         }
     }
 }

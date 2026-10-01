@@ -6,6 +6,8 @@
 compile_error!("the MHF geometry adapter requires i686 Windows");
 
 #[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+mod cache;
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
 mod equipment_cache;
 #[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
 mod fmod;
@@ -15,6 +17,10 @@ mod mesh;
 mod native;
 #[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
 mod patches;
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+mod stage_cache;
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+mod weapon_textures;
 
 #[cfg(all(feature = "provider", windows, target_arch = "x86"))]
 mod module;
