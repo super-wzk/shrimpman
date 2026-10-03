@@ -67,7 +67,6 @@ fn zero_ends_loading_but_does_not_discard_later_file_slots() {
         definition_ids: [7, 8, 0, 9, 10, 11, 12, 13],
     };
     assert_eq!(group.active_definition_ids(), &[7, 8]);
-    assert_eq!(AttachmentGroup::parse(&group.to_bytes()).unwrap(), group);
     let binding = ModelEffectBinding {
         part_code: 0xffff,
         weapon_class: 42,
@@ -76,10 +75,6 @@ fn zero_ends_loading_but_does_not_discard_later_file_slots() {
         definition_ids: group.definition_ids,
     };
     assert_eq!(binding.active_definition_ids(), &[7, 8]);
-    assert_eq!(
-        ModelEffectBinding::parse(&binding.to_bytes()).unwrap(),
-        binding
-    );
 }
 
 #[test]

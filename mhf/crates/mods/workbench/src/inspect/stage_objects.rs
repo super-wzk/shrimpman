@@ -60,24 +60,12 @@ impl Builder {
             return;
         };
         self.set_address(descriptor, node, [Index(0)]);
-        let field = self.document.nodes[descriptor].fields.len();
-        self.field(
+        self.archive_entry_fields(
             descriptor,
-            "offset",
-            formatted(index.offset, format!("{:#X}", index.offset)),
-            base + package.archive.table_offset,
-            4,
-        );
-        self.document.nodes[descriptor].fields[field].key = Some("entry_offset".into());
-        let field = self.document.nodes[descriptor].fields.len();
-        self.field(
-            descriptor,
-            "size",
+            index.offset,
             index.size,
-            base + package.archive.table_offset + 4,
-            4,
+            base + package.archive.table_offset,
         );
-        self.document.nodes[descriptor].fields[field].key = Some("entry_size".into());
         self.field(
             descriptor,
             "unknown_00",
@@ -123,18 +111,7 @@ impl Builder {
             };
             self.set_address(child, node, [Index(entry.index as u32)]);
             let meta = base + package.archive.table_offset + entry.index * 8;
-            let field = self.document.nodes[child].fields.len();
-            self.field(
-                child,
-                "offset",
-                formatted(entry.offset, format!("{:#X}", entry.offset)),
-                meta,
-                4,
-            );
-            self.document.nodes[child].fields[field].key = Some("entry_offset".into());
-            let field = self.document.nodes[child].fields.len();
-            self.field(child, "size", entry.size, meta + 4, 4);
-            self.document.nodes[child].fields[field].key = Some("entry_size".into());
+            self.archive_entry_fields(child, entry.offset, entry.size, meta);
             let field = self.document.nodes[child].fields.len();
             self.field(child, "kind", member.kind, index_base + 3 + entry.index, 1);
             self.document.nodes[child].fields[field].key = Some("entry_kind".into());

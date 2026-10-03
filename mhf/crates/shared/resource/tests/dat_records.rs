@@ -1,9 +1,8 @@
+pub mod support;
+
 use mhf_resource::binary::{Reader, ScalarType};
 use mhf_resource::dat::{self, Dat, RecordCount, RecordFormat, TableLayout};
-
-fn set_u32(bytes: &mut [u8], at: usize, value: u32) {
-    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-}
+use support::dword as set_u32;
 
 fn image(size: usize) -> Vec<u8> {
     let mut bytes = vec![0; size];
@@ -292,7 +291,7 @@ fn absent_directory_entries_are_checked_before_dereferencing() {
 }
 
 #[test]
-fn header_validation_and_schema_fields_are_bounded() {
+fn header_validation_keeps_opaque_words_and_rejects_bad_extents() {
     let bytes = image(dat::HEADER_SIZE);
     // Header +8 is opaque, even when it resembles an invalid root pointer.
     for unknown in [8, dat::HEADER_SIZE as u32, u32::MAX] {
@@ -311,19 +310,6 @@ fn header_validation_and_schema_fields_are_bounded() {
     set_u32(&mut wrong, 4, dat::VERSION);
     set_u32(&mut wrong, 12, 16);
     assert_eq!(Dat::parse(&wrong).unwrap_err().offset, 12);
-    for layout in dat::DATA_TABLES {
-        let RecordFormat::Fields(fields) = layout.format else {
-            panic!()
-        };
-        let mut used = vec![false; usize::from(layout.stride)];
-        for field in fields {
-            let start = usize::from(field.offset);
-            let end = start + field.scalar.size();
-            assert!(end <= used.len(), "{}: {}", layout.id, field.name);
-            assert!(used[start..end].iter().all(|value| !value));
-            used[start..end].fill(true);
-        }
-    }
 }
 
 #[test]

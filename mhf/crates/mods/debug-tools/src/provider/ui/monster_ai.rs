@@ -26,7 +26,7 @@ enum View {
 pub(super) struct Editor {
     selected: Option<AiTarget>,
     page: Page,
-    debugger: debugger::DebuggerUi,
+    pub(super) debugger: debugger::DebuggerUi,
     inspector: usize,
     show_inspector: bool,
     show_trace: bool,
@@ -191,14 +191,6 @@ impl Editor {
         self.selected.filter(|_| self.show_status)
     }
 
-    pub(super) fn take_recording_save(&mut self) -> Option<String> {
-        self.debugger.take_recording_save()
-    }
-
-    pub(super) fn recording_save_finished(&mut self, result: Result<bool, String>) {
-        self.debugger.recording_save_finished(result);
-    }
-
     pub(super) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -244,11 +236,11 @@ impl Editor {
             })
             .inner;
         ui.separator();
-        if self.debugger.take_replay_request() {
+        if std::mem::take(&mut self.debugger.replay_requested) {
             self.page = Page::Replay;
         }
         if self.page != previous_page {
-            self.debugger.set_follow(self.page != Page::Replay);
+            self.debugger.follow_latest = self.page != Page::Replay;
             self.inspector = 0;
         }
         ui.push_id(self.page, |ui| {
@@ -329,7 +321,7 @@ impl Editor {
                 .debug_info
                 .lookup(pc.script as usize, pc.offset as usize)
         });
-        let following = self.debugger.follows_live();
+        let following = self.debugger.follow_latest;
         if following
             && let Some(debug) = debug.filter(|debug| debug.attached && debug.paused)
             && let Some(pc) = debug.state.pc
@@ -412,14 +404,14 @@ impl Editor {
                 .clicked()
             {
                 locate = true;
-                self.debugger.set_follow(true);
+                self.debugger.follow_latest = true;
                 self.last_stop = None;
                 if let Some(file) = execution_file {
                     selected_file = file;
                 }
             }
         });
-        if !self.debugger.follows_live() {
+        if !self.debugger.follow_latest {
             self.debugger
                 .recorded_source(ui, snapshot, self.selected, false);
             return;
@@ -452,19 +444,8 @@ impl Editor {
                 .iter()
                 .filter(|breakpoint| breakpoint.enabled)
                 .filter_map(|breakpoint| {
-                    let mhf_ai_debug::BreakpointKind::Location(pc) = breakpoint.kind else {
-                        return None;
-                    };
-                    if debug
-                        .state
-                        .pc
-                        .is_some_and(|current| current.revision != pc.revision)
-                    {
-                        return None;
-                    }
                     debug
-                        .debug_info
-                        .lookup(pc.script as usize, pc.offset as usize)
+                        .breakpoint_mapping(breakpoint)
                         .filter(|mapping| mapping.source.path == file.path)
                         .map(|mapping| mapping.source.line)
                 })

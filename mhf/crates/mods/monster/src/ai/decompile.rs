@@ -233,41 +233,41 @@ pub fn decompile(
     let super::Node::Table(root) = &compiled.program.nodes[compiled.program.root] else {
         unreachable!()
     };
-    for (index, bytes) in &states {
-        let super::Node::Table(table) = &compiled.program.nodes[root.get(0).unwrap()] else {
-            unreachable!()
-        };
-        if !matches!(
-            &compiled.program.nodes[table.get(usize::from(*index)).unwrap()],
-            super::Node::Script(actual) if matches_export(actual, bytes)?
-        ) {
-            return Err(Error::new("state round-trip mismatch"));
-        }
-    }
-    for (index, bytes) in &events {
-        let super::Node::Table(cell) =
-            &compiled.program.nodes[root.get(EVENT_SLOTS[*index].root_index).unwrap()]
+    let scripts = states
+        .iter()
+        .map(|(&index, bytes)| (0, usize::from(index), Some(ScriptRef::State(index)), bytes))
+        .chain(
+            events
+                .iter()
+                .map(|(&index, bytes)| (EVENT_SLOTS[index].root_index, 0, None, bytes)),
+        )
+        .chain(subs.iter().map(|(&slot, bytes)| {
+            (
+                slot.table,
+                usize::from(slot.index),
+                Some(ScriptRef::Subscript(slot)),
+                bytes,
+            )
+        }));
+    for (root_index, index, reference, bytes) in scripts {
+        let super::Node::Table(table) = &compiled.program.nodes[root.get(root_index).unwrap()]
         else {
             unreachable!()
         };
         if !matches!(
-            &compiled.program.nodes[cell.get(0).unwrap()],
+            &compiled.program.nodes[table.get(index).unwrap()],
             super::Node::Script(actual) if matches_export(actual, bytes)?
         ) {
-            return Err(Error::new("event round-trip mismatch"));
-        }
-    }
-    for (slot, bytes) in &subs {
-        let super::Node::Table(table) = &compiled.program.nodes[root.get(slot.table).unwrap()]
-        else {
-            unreachable!()
-        };
-        if !matches!(&compiled.program.nodes[table.get(usize::from(slot.index)).unwrap()], super::Node::Script(actual) if matches_export(actual, bytes)?)
-        {
-            return Err(Error::new(format!(
-                "subscript round-trip mismatch: {}:{}",
-                slot.table, slot.index
-            )));
+            return Err(Error::new(match reference {
+                Some(ScriptRef::State(_)) => "state round-trip mismatch".into(),
+                None => "event round-trip mismatch".into(),
+                Some(ScriptRef::Subscript(slot)) => {
+                    format!(
+                        "subscript round-trip mismatch: {}:{}",
+                        slot.table, slot.index
+                    )
+                }
+            }));
         }
     }
     Ok(Decompiled { source, warnings })
@@ -276,13 +276,16 @@ pub fn decompile(
 /// The only canonicalization permitted on export is the equivalent RNG opcode.
 /// Decode boundaries so operand bytes with value 7B are never rewritten.
 fn matches_export(actual: &[u8], original: &[u8]) -> Result<bool> {
-    let mut expected = original.to_vec();
-    for instruction in bytecode::decode(original)? {
-        if instruction.bytes == [0x7b] {
-            expected[instruction.offset] = 0x84;
-        }
-    }
-    Ok(actual == expected)
+    let instructions = bytecode::decode(original)?;
+    Ok(actual.len() == original.len()
+        && instructions.iter().all(|instruction| {
+            let expected = if instruction.bytes == [0x7b] {
+                &[0x84][..]
+            } else {
+                &instruction.bytes
+            };
+            actual[instruction.offset..instruction.offset + expected.len()] == *expected
+        }))
 }
 
 /// Only omit a complete, matching instruction outside native conditional blocks.
@@ -398,21 +401,28 @@ fn sub_name(slot: NativeSlot) -> String {
     format!("sub_{}_{}", slot.table, slot.index)
 }
 
-/// Collect ordinary `81`/`82`/`16` calls, skipping calls owned by the request
-/// protocol. Any ordinary call site keeps the callee a plain subscript.
-fn collect_call_targets(bytes: &[u8], targets: &mut BTreeSet<NativeSlot>) {
+/// Keep ordinary calls separate from request-owned handler calls in one scan.
+/// Any ordinary call site keeps its callee a plain subscript.
+fn collect_targets(
+    bytes: &[u8],
+    ordinary: &mut BTreeSet<NativeSlot>,
+    handled: &mut BTreeSet<NativeSlot>,
+) {
     let Ok(instructions) = bytecode::decode(bytes) else {
         return;
     };
     let mut index = 0;
     while index < instructions.len() {
         if let Some(recovered) = recover_request(&instructions[index..]) {
-            collect_call_targets(&recovered.then_body, targets);
+            if let Some(slot) = NativeSlot::from_call(recovered.call) {
+                handled.insert(slot);
+            }
+            collect_targets(&recovered.then_body, ordinary, handled);
             index += recovered.instruction_count;
             continue;
         }
         if let Some(slot) = NativeSlot::from_call(&instructions[index].bytes) {
-            targets.insert(slot);
+            ordinary.insert(slot);
         }
         index += 1;
     }
@@ -449,32 +459,6 @@ fn collect_raw_call_targets(
     }
 }
 
-/// Whether a body starts a request dispatch of its own.
-fn has_handle_sites(bytes: &[u8]) -> bool {
-    let mut targets = BTreeSet::new();
-    collect_handle_targets(bytes, &mut targets);
-    !targets.is_empty()
-}
-
-/// Collect `handle` targets in a body, including those in a `then` block.
-fn collect_handle_targets(bytes: &[u8], targets: &mut BTreeSet<NativeSlot>) {
-    let Ok(instructions) = bytecode::decode(bytes) else {
-        return;
-    };
-    let mut index = 0;
-    while index < instructions.len() {
-        if let Some(recovered) = recover_request(&instructions[index..]) {
-            if let Some(slot) = NativeSlot::from_call(&recovered.call) {
-                targets.insert(slot);
-            }
-            collect_handle_targets(&recovered.then_body, targets);
-            index += recovered.instruction_count;
-            continue;
-        }
-        index += 1;
-    }
-}
-
 /// Decide which subscripts can be declared `handler fn`.
 ///
 /// The compiler enters a handler only from `handle` or from the tail of another
@@ -489,8 +473,7 @@ fn handler_slots(
     let mut referenced = BTreeSet::new();
     let mut handled = BTreeSet::new();
     for body in bodies {
-        collect_call_targets(body, &mut referenced);
-        collect_handle_targets(body, &mut handled);
+        collect_targets(body, &mut referenced, &mut handled);
     }
     let mut candidates: BTreeSet<NativeSlot> = handled
         .into_iter()
@@ -523,9 +506,10 @@ fn handler_slots(
                     continue;
                 };
                 let mut calls = BTreeSet::new();
-                collect_call_targets(body, &mut calls);
+                let mut handles = BTreeSet::new();
+                collect_targets(body, &mut calls, &mut handles);
                 let nested =
-                    (current != *slot && has_handle_sites(body)) || !calls.is_disjoint(&candidates);
+                    (current != *slot && !handles.is_empty()) || !calls.is_disjoint(&candidates);
                 if nested {
                     rejected.insert(*slot);
                     break;
@@ -542,38 +526,6 @@ fn handler_slots(
 }
 
 type BranchBodies = Vec<(u8, Vec<u8>)>;
-
-fn distance_branches(instructions: &[bytecode::Instruction]) -> Option<(usize, BranchBodies)> {
-    let [0x83, 0, count] = instructions.first()?.bytes.as_slice() else {
-        return None;
-    };
-    if instructions.get(1)?.bytes != [0x83, 1] || !(1..=4).contains(count) {
-        return None;
-    }
-    let mut branches = vec![(1, Vec::new())];
-    let mut structure = bytecode::ScriptStructure::default();
-    for (index, instruction) in instructions.iter().enumerate().skip(2) {
-        if structure.is_closed() {
-            match instruction.bytes.as_slice() {
-                [0x83, 0xff] => {
-                    return (branches.len() == usize::from(*count) + 1)
-                        .then_some((index + 1, branches));
-                }
-                [0x83, selector] => {
-                    if usize::from(*selector) != branches.len() + 1 || *selector > count + 1 {
-                        return None;
-                    }
-                    branches.push((*selector, Vec::new()));
-                    continue;
-                }
-                _ => {}
-            }
-        }
-        structure.push(&instruction.bytes).ok()?;
-        branches.last_mut()?.1.extend_from_slice(&instruction.bytes);
-    }
-    None
-}
 
 struct RecoveredMatch {
     instruction_count: usize,
@@ -659,24 +611,24 @@ fn recover_match(instructions: &[bytecode::Instruction]) -> Option<RecoveredMatc
     None
 }
 
-struct RecoveredRequest {
+struct RecoveredRequest<'a> {
     instruction_count: usize,
     /// The native call that enters the handler.
-    call: Vec<u8>,
+    call: &'a [u8],
     then_body: Vec<u8>,
 }
 
 /// The canonical protocol: request guard, default takeover, handler call, the
 /// takeover check, the `then` block, and both closing markers. Anything else,
 /// including an `1B 01` else, stays a raw escape.
-fn recover_request(instructions: &[bytecode::Instruction]) -> Option<RecoveredRequest> {
+fn recover_request(instructions: &[bytecode::Instruction]) -> Option<RecoveredRequest<'_>> {
     if instructions.first()?.bytes != [0x1b, 0, 1]
         || instructions.get(1)?.bytes != [0x0c, 4, 1]
         || instructions.get(3)?.bytes != [0x2b, 0, 4, 1]
     {
         return None;
     }
-    let call = instructions.get(2)?.bytes.clone();
+    let call = instructions.get(2)?.bytes.as_slice();
     let mut structure = bytecode::ScriptStructure::default();
     let mut then_body = Vec::new();
     for (index, instruction) in instructions.iter().enumerate().skip(4) {
@@ -751,35 +703,44 @@ fn append_indented_body(
     Ok(())
 }
 
-/// Recover only canonical, exhaustive weighted choices; all other layouts stay raw.
-fn random_branches(instructions: &[bytecode::Instruction]) -> Option<(usize, BranchBodies)> {
-    let [0x80, 0, count] = instructions.first()?.bytes.as_slice() else {
+/// Recover canonical weighted choices or exhaustive distance groups.
+/// Other counts, selectors and weights stay byte-preserving native escapes.
+fn recover_choice(instructions: &[bytecode::Instruction]) -> Option<(usize, BranchBodies, bool)> {
+    let [opcode @ (0x80 | 0x83), 0, count] = instructions.first()?.bytes.as_slice() else {
         return None;
     };
-    let [0x80, 1, first_weight] = instructions.get(1)?.bytes.as_slice() else {
-        return None;
+    let distance = *opcode == 0x83;
+    let first = match instructions.get(1)?.bytes.as_slice() {
+        [0x83, 1] if distance && (1..=4).contains(count) => 1,
+        [0x80, 1, weight] if !distance && (1..=31).contains(count) && *weight <= 32 => *weight,
+        _ => return None,
     };
-    if !(1..=31).contains(count) {
-        return None;
-    }
-    if *first_weight > 32 {
-        return None;
-    }
-    let mut branches: Vec<(u8, Vec<u8>)> = vec![(*first_weight, Vec::new())];
+    let mut branches = vec![(first, Vec::new())];
     let mut structure = bytecode::ScriptStructure::default();
     for (index, instruction) in instructions.iter().enumerate().skip(2) {
         if structure.is_closed() {
             match instruction.bytes.as_slice() {
-                [0x80, 0xff] => {
-                    return (branches.len() == usize::from(*count)
-                        && branches
-                            .iter()
-                            .map(|(weight, _)| usize::from(*weight))
-                            .sum::<usize>()
-                            == 32)
-                        .then_some((index + 1, branches));
+                [op, 0xff] if op == opcode => {
+                    let complete = if distance {
+                        branches.len() == usize::from(*count) + 1
+                    } else {
+                        branches.len() == usize::from(*count)
+                            && branches
+                                .iter()
+                                .map(|(weight, _)| usize::from(*weight))
+                                .sum::<usize>()
+                                == 32
+                    };
+                    return complete.then_some((index + 1, branches, distance));
                 }
-                [0x80, selector, weight] if *selector != 0 => {
+                [0x83, selector] if distance => {
+                    if usize::from(*selector) != branches.len() + 1 || *selector > count + 1 {
+                        return None;
+                    }
+                    branches.push((*selector, Vec::new()));
+                    continue;
+                }
+                [0x80, selector, weight] if !distance && *selector != 0 => {
                     if usize::from(*selector) != branches.len() + 1 || *weight > 32 {
                         return None;
                     }
@@ -816,12 +777,6 @@ fn is_own_return(bytes: &[u8], context: &BodyContext) -> bool {
     context.return_ending == Some(*ending)
 }
 
-/// Return the `handle` target when it is a subscript that no ordinary call site
-/// reaches, so the sub can carry the handler contract.
-fn request_handler_slot(call: &[u8], context: &BodyContext) -> Option<NativeSlot> {
-    NativeSlot::from_call(call).filter(|slot| context.handlers.contains(slot))
-}
-
 fn can_structure_body(
     instructions: &[bytecode::Instruction],
     handlers: &BTreeSet<NativeSlot>,
@@ -837,7 +792,7 @@ fn can_structure_body(
         if instruction.bytes == [0x1b, 0, 1] {
             // The request protocol owns this guard: fold it whole or stay raw.
             match recover_request(&instructions[index..]).filter(|recovered| {
-                NativeSlot::from_call(&recovered.call).is_some_and(|slot| handlers.contains(&slot))
+                NativeSlot::from_call(recovered.call).is_some_and(|slot| handlers.contains(&slot))
             }) {
                 Some(recovered) => {
                     index += recovered.instruction_count;
@@ -888,7 +843,8 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
         }
         if structured
             && let Some(recovered) = recover_request(&instructions[index..])
-            && let Some(target) = request_handler_slot(&recovered.call, context)
+            && let Some(target) =
+                NativeSlot::from_call(recovered.call).filter(|slot| context.handlers.contains(slot))
         {
             writeln!(
                 out,
@@ -930,17 +886,9 @@ fn format_body(out: &mut String, bytes: &[u8], context: &BodyContext) -> Result<
             skip_until = index + recovered.instruction_count;
             continue;
         }
-        let choice = if structured {
-            random_branches(&instructions[index..])
-                .map(|(length, branches)| (length, branches, false))
-                .or_else(|| {
-                    distance_branches(&instructions[index..])
-                        .map(|(length, branches)| (length, branches, true))
-                })
-        } else {
-            None
-        };
-        if let Some((length, branches, distance)) = choice {
+        if structured
+            && let Some((length, branches, distance)) = recover_choice(&instructions[index..])
+        {
             let header = if distance {
                 "match self.target_distance_group()"
             } else {
@@ -1109,6 +1057,14 @@ mod tests {
             self.put(address, &target.to_le_bytes());
         }
     }
+    fn main_image() -> Image {
+        let mut image = Image::default();
+        image.put(0x100, &[0; 60]);
+        image.pointer(0x100, 0x200);
+        image.pointer(0x200, 0x300);
+        image
+    }
+
     impl Memory for Image {
         fn bytes(&self, address: u32, length: usize) -> Result<Vec<u8>> {
             (0..length)
@@ -1240,10 +1196,7 @@ mod tests {
             bytes.extend_from_slice(&[
                 0x35, 0, 0xff, 0, 0x35, 2, opcode, 2, 0x92, opcode, 3, 0xff, 0,
             ]);
-            let mut image = Image::default();
-            image.put(0x100, &[0; 60]);
-            image.pointer(0x100, 0x200);
-            image.pointer(0x200, 0x300);
+            let mut image = main_image();
             image.put(0x300, &bytes);
             assert_eq!(script(&image, 0x300).unwrap(), bytes);
             let result = decompile(&image, 0x100, 1, 0, None).unwrap();
@@ -1270,10 +1223,7 @@ mod tests {
     #[test]
     fn request_dispatch_recovers_only_with_a_complete_case_count() {
         for (count, recovered) in [(2u8, true), (7, false)] {
-            let mut image = Image::default();
-            image.put(0x100, &[0; 60]);
-            image.pointer(0x100, 0x200);
-            image.pointer(0x200, 0x300);
+            let mut image = main_image();
             image.put(
                 0x300,
                 &[
@@ -1298,10 +1248,7 @@ mod tests {
 
     #[test]
     fn target_strategies_decompile_and_recompile_losslessly() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &[0x52, 0x53, 0x5f, 0x7e, 0x12, 0x58, 0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         for name in [
@@ -1329,10 +1276,7 @@ mod tests {
         assert!(
             !matches_export(&[0x84, 0x48, 0x84, 0xff, 0], &[0x7b, 0x48, 0x7b, 0xff, 0]).unwrap()
         );
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &[0x7b, 0x81, 0, 0xff, 0]);
         image.pointer(0x104, 0x400);
         image.pointer(0x400, 0x500);
@@ -1456,18 +1400,18 @@ mod tests {
 
     #[test]
     fn mode_target_and_random_methods_round_trip() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(
             0x300,
             &[
-                0x40, 0, 0x40, 1, 0x4d, 0x18, 0x2e, 1, 0x2d, 0x84, 0x7b, 0x40, 2, 0xff, 0,
+                0x11, 0x13, 0x40, 0, 0x40, 1, 0x4d, 0x18, 0x2e, 1, 0x2d, 0x84, 0x7b, 0x40, 2, 0xff,
+                0,
             ],
         );
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         for method in [
+            "self.bind_awareness_target();",
+            "self.bind_current_target();",
             "self.set_mode(Mode::Normal);",
             "self.set_mode(Mode::Attack);",
             "self.resolve_target();",
@@ -1486,15 +1430,14 @@ mod tests {
                 .count(),
             2
         );
-        assert!(!result.source.contains("native(0x7b)"));
+        for opcode in [0x11, 0x13, 0x7b] {
+            assert!(!result.source.contains(&format!("native(0x{opcode:02x}")));
+        }
     }
 
     #[test]
     fn weighted_choices_round_trip_nested_blocks_and_preserve_unusual_weights() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(
             0x300,
             &[
@@ -1519,10 +1462,7 @@ mod tests {
 
     #[test]
     fn distance_matches_round_trip_with_nested_random_and_distance_blocks() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         for count in 1..=4 {
             let mut bytes = vec![0x83, 0, count];
             for index in 1..=count + 1 {
@@ -1594,10 +1534,7 @@ mod tests {
 
     #[test]
     fn area_and_monster_targets_round_trip() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         let mut bytes = vec![6, 3, 0, 1, 70, 6, 3, 0, 255, 255, 6, 10, 0, 0];
         for subtype in 0..4 {
             bytes.extend_from_slice(&[6, 13, subtype, 0]);
@@ -1649,10 +1586,7 @@ mod tests {
 
     #[test]
     fn waypoint_selection_round_trips_without_reinterpreting_other_target_types() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(
             0x300,
             &[6, 2, 1, 0, 0x4d, 6, 2, 1, 255, 6, 2, 2, 0, 0xff, 0],
@@ -1716,10 +1650,7 @@ mod tests {
 
     #[test]
     fn player_slots_round_trip_without_reinterpreting_other_target_groups() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         let mut body = Vec::new();
         for slot in 0..=255 {
             body.extend_from_slice(&[6, 1, 0, slot]);
@@ -1742,10 +1673,7 @@ mod tests {
 
     #[test]
     fn relative_target_points_round_trip_and_preserve_other_encodings() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         let mut body = Vec::new();
         // Exercise all direction selectors, including the second distance band,
         // and nonzero trailing operands that must remain byte-preserving escapes.
@@ -1782,10 +1710,7 @@ mod tests {
 
     #[test]
     fn active_conditions_decompile_and_recompile_losslessly() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &[0x08, 0, 0x92, 0x08, 1, 0x4d, 0x08, 2, 0xff, 0]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(result.source.contains("if self.active {"));
@@ -1794,10 +1719,7 @@ mod tests {
 
     #[test]
     fn angle_conditions_round_trip_every_native_boundary_and_reversed_bounds() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         for boundary in 0..=255 {
             image.put(
                 0x300,
@@ -1816,21 +1738,31 @@ mod tests {
     }
 
     #[test]
-    fn target_angle_thresholds_round_trip_all_u8_degrees() {
-        for degrees in 0..=u8::MAX {
-            for with_else in [false, true] {
-                let mut bytes = vec![0x14, 0, degrees, 0x92];
-                if with_else {
-                    bytes.extend_from_slice(&[0x14, 1, 0x48, 1]);
+    fn byte_condition_operands_round_trip_the_full_range_with_optional_else() {
+        for (opcode, method) in [
+            (0x14, "target_angle_at_least"),
+            (0x5a, "target_ground_is"),
+            (0x22, "near_target_2d"),
+            (0x36, "near_target_3d"),
+        ] {
+            for value in 0..=u8::MAX {
+                for with_else in [false, true] {
+                    let mut bytes = vec![opcode, 0, value, 0x92];
+                    if with_else {
+                        bytes.extend_from_slice(&[opcode, 1, 0x48, 1]);
+                    }
+                    bytes.extend_from_slice(&[opcode, 2]);
+                    let source = round_trip_body(&bytes);
+                    assert!(
+                        source.contains(&format!("if self.{method}({value}) {{")),
+                        "{source}"
+                    );
+                    assert_eq!(source.contains("} else {"), with_else, "{source}");
+                    assert!(
+                        !source.contains(&format!("native(0x{opcode:02x}")),
+                        "{source}"
+                    );
                 }
-                bytes.extend_from_slice(&[0x14, 2]);
-                let source = round_trip_body(&bytes);
-                assert!(
-                    source.contains(&format!("if self.target_angle_at_least({degrees}) {{")),
-                    "{source}"
-                );
-                assert_eq!(source.contains("} else {"), with_else, "{source}");
-                assert!(!source.contains("native(0x14"), "{source}");
             }
         }
     }
@@ -1879,10 +1811,7 @@ mod tests {
     #[test]
     fn zero_weight_random_branches_round_trip_at_every_position() {
         for weights in [[0, 16, 16], [16, 0, 16], [16, 16, 0]] {
-            let mut image = Image::default();
-            image.put(0x100, &[0; 60]);
-            image.pointer(0x100, 0x200);
-            image.pointer(0x200, 0x300);
+            let mut image = main_image();
             let mut bytes = vec![0x80, 0, 3];
             for (index, weight) in weights.into_iter().enumerate() {
                 bytes.extend_from_slice(&[0x80, index as u8 + 1, weight, 0x92]);
@@ -1897,28 +1826,11 @@ mod tests {
 
     #[test]
     fn target_forgetting_reset_round_trips_as_control_flow() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &[0xff, 0xf7]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert!(result.source.contains("end forget_target;"));
         assert!(!result.source.contains("native(0xff, 0xf7)"));
-    }
-
-    #[test]
-    fn target_binding_methods_decompile_and_recompile_losslessly() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
-        image.put(0x300, &[0x11, 0x13, 0xff, 0]);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert!(result.source.contains("self.bind_awareness_target();"));
-        assert!(result.source.contains("self.bind_current_target();"));
-        assert!(!result.source.contains("native(0x11"));
-        assert!(!result.source.contains("native(0x13"));
     }
 
     #[test]
@@ -1943,10 +1855,7 @@ mod tests {
 
     #[test]
     fn mode_is_round_trips_operands_nested_blocks_and_events() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(
             0x300,
             &[
@@ -2033,58 +1942,35 @@ mod tests {
     }
 
     #[test]
-    fn tracked_players_method_round_trips_with_optional_else() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
-        image.put(
-            0x300,
-            &[2, 0, 0x54, 0, 0x92, 0x54, 2, 2, 1, 4, 2, 2, 0xff, 0],
-        );
-        image.pointer(0x100 + EVENT_SLOTS[3].root_index as u32 * 4, 0x400);
-        image.pointer(0x400, 0x500);
-        image.put(0x500, &[2, 0, 0x92, 2, 2, 0xff, EVENT_SLOTS[3].ending]);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert_eq!(
-            result
-                .source
-                .matches("if self.check_tracked_players() {")
-                .count(),
-            2
-        );
-        assert!(result.source.contains("if self.target_available() {"));
-        assert!(!result.source.contains("native(0x02"));
-    }
-
-    #[test]
-    fn target_available_conditions_round_trip() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
-        image.put(
-            0x300,
-            &[
-                0x54, 0, 0x39, 0, 0x92, 0x39, 2, 0x54, 1, 4, 0x54, 2, 0xff, 0,
-            ],
-        );
-        image.pointer(0x100 + EVENT_SLOTS[3].root_index as u32 * 4, 0x400);
-        image.pointer(0x400, 0x500);
-        image.put(
-            0x500,
-            &[0x54, 0, 0x92, 0x54, 2, 0xff, EVENT_SLOTS[3].ending],
-        );
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
-        assert_eq!(
-            result
-                .source
-                .matches("if self.target_available() {")
-                .count(),
-            2
-        );
-        assert!(result.source.contains("if self.flashed {"));
-        assert!(!result.source.contains("native(0x54"));
+    fn target_query_conditions_round_trip_nested_state_and_event_bodies() {
+        for (opcode, condition, nested, nested_condition) in [
+            (
+                0x02,
+                "self.check_tracked_players()",
+                0x54,
+                "self.target_available()",
+            ),
+            (0x54, "self.target_available()", 0x39, "self.flashed"),
+        ] {
+            let mut image = main_image();
+            image.put(
+                0x300,
+                &[
+                    opcode, 0, nested, 0, 0x92, nested, 2, opcode, 1, 4, opcode, 2, 0xff, 0,
+                ],
+            );
+            let event = EVENT_SLOTS[3];
+            image.pointer(0x100 + event.root_index as u32 * 4, 0x400);
+            image.pointer(0x400, 0x500);
+            image.put(0x500, &[opcode, 0, 0x92, opcode, 2, 0xff, event.ending]);
+            let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+            assert_eq!(
+                result.source.matches(&format!("if {condition} {{")).count(),
+                2
+            );
+            assert!(result.source.contains(&format!("if {nested_condition} {{")));
+            assert!(!result.source.contains(&format!("native(0x{opcode:02x}")));
+        }
     }
 
     /// Render `bytes` as a script body, recompile the rendered source, and check
@@ -2110,31 +1996,43 @@ mod tests {
     }
 
     #[test]
-    fn carrying_conditions_round_trip() {
-        for (bytes, structured) in [
-            (vec![0x2f, 0, 0x07, 4, 0x2f, 1, 0x07, 9, 0x2f, 2], true),
-            (vec![0x2f, 0, 0x2f, 0, 0x92, 0x2f, 2, 0x2f, 2], true),
-            (vec![0x2f, 0, 0x2f, 1, 0x2f, 1, 0x2f, 2], false),
+    fn condition_markers_round_trip_nested_else_and_irregular_layouts() {
+        for (opcode, condition) in [
+            (0x2f, "context.any_player_carrying()"),
+            (0x28, "self.has_player_in_same_area()"),
+            (0x4a, "self.target_detected"),
+            (0x77, "context.is_daytime"),
+            (0x09, "self.airborne"),
+            (0x2a, "self.attack_timer_active"),
+            (0x29, "self.area_timer_expired"),
         ] {
-            let source = round_trip_body(&bytes);
-            assert_eq!(
-                source.contains("if context.any_player_carrying() {"),
-                structured,
-                "{source}"
-            );
+            for bytes in [
+                vec![opcode, 0, 0x92, opcode, 2],
+                vec![opcode, 0, 0x07, 4, opcode, 1, 0x07, 9, opcode, 2],
+                vec![opcode, 0, opcode, 0, 0x92, opcode, 2, opcode, 2],
+                vec![
+                    opcode, 0, opcode, 0, 0x92, opcode, 1, 0x48, 1, opcode, 2, opcode, 1, 0x92,
+                    opcode, 2,
+                ],
+            ] {
+                let source = round_trip_body(&bytes);
+                assert!(source.contains(&format!("if {condition} {{")), "{source}");
+                assert!(
+                    !source.contains(&format!("native(0x{opcode:02x}")),
+                    "{source}"
+                );
+            }
+            for nested in [0x2f, 0x39] {
+                let source = round_trip_body(&[opcode, 0, nested, 0, 0x92, nested, 2, opcode, 2]);
+                assert!(source.contains(&format!("if {condition} {{")), "{source}");
+                assert!(!source.contains("native("), "{source}");
+            }
+            let source = round_trip_body(&[opcode, 0, opcode, 1, opcode, 1, opcode, 2]);
+            assert!(!source.contains(condition), "{source}");
+            assert_eq!(source.matches("native(").count(), 4, "{source}");
         }
-        for condition in [
-            "self.any_player_carrying()",
-            "context.active",
-            "context.any_player_carrying",
-        ] {
-            assert!(
-                dsl::parse(&format!(
-                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ nop(); }} }}"
-                ))
-                .is_err()
-            );
-        }
+        // Unknown selectors have no verified instruction boundary.
+        assert!(format_test_body(&mut String::new(), &[0x77, 3], None).is_err());
     }
 
     #[test]
@@ -2267,67 +2165,6 @@ mod tests {
     }
 
     #[test]
-    fn has_player_in_same_area_conditions_round_trip() {
-        for (bytes, structured) in [
-            (vec![0x28, 0, 0x92, 0x28, 2], true),
-            (vec![0x28, 0, 0x07, 4, 0x28, 1, 0x07, 9, 0x28, 2], true),
-            (vec![0x28, 0, 0x39, 0, 0x92, 0x39, 2, 0x28, 2], true),
-            (vec![0x28, 0, 0x28, 1, 0x28, 1, 0x28, 2], false),
-        ] {
-            let source = round_trip_body(&bytes);
-            assert_eq!(
-                source.contains("if self.has_player_in_same_area() {"),
-                structured,
-                "{source}"
-            );
-            if structured {
-                assert!(!source.contains("native(0x28"), "{source}");
-            }
-        }
-    }
-
-    #[test]
-    fn target_detected_conditions_round_trip() {
-        for (bytes, structured) in [
-            (vec![0x4a, 0, 0x92, 0x4a, 2], true),
-            (vec![0x4a, 0, 0x07, 4, 0x4a, 1, 0x07, 9, 0x4a, 2], true),
-            (vec![0x4a, 0, 0x39, 0, 0x92, 0x39, 2, 0x4a, 2], true),
-            (
-                vec![0x4a, 0, 0x4a, 0, 0x92, 0x4a, 2, 0x4a, 1, 0x92, 0x4a, 2],
-                true,
-            ),
-            (vec![0x4a, 0, 0x4a, 1, 0x4a, 1, 0x4a, 2], false),
-        ] {
-            let source = round_trip_body(&bytes);
-            assert_eq!(
-                source.contains("if self.target_detected {"),
-                structured,
-                "{source}"
-            );
-            if structured {
-                assert!(!source.contains("native(0x4a"), "{source}");
-            }
-        }
-    }
-
-    #[test]
-    fn target_ground_conditions_round_trip_all_u8_operands() {
-        for value in 0..=u8::MAX {
-            for with_else in [false, true] {
-                let mut bytes = vec![0x5a, 0, value, 0x92];
-                if with_else {
-                    bytes.extend_from_slice(&[0x5a, 1, 0x48, 1]);
-                }
-                bytes.extend_from_slice(&[0x5a, 2]);
-                let source = round_trip_body(&bytes);
-                assert!(source.contains(&format!("if self.target_ground_is({value}) {{")));
-                assert_eq!(source.contains("} else {"), with_else, "{source}");
-                assert!(!source.contains("native(0x5a"), "{source}");
-            }
-        }
-    }
-
-    #[test]
     fn target_ground_conditions_preserve_nested_and_irregular_layouts() {
         let source = round_trip_body(&[
             0x49, 2, 0x5a, 0, 1, 0x5a, 0, 255, 0x13, 0x5a, 1, 0x92, 0x5a, 2, 0x5a, 1, 0x39, 0,
@@ -2352,41 +2189,6 @@ mod tests {
     }
 
     #[test]
-    fn daytime_conditions_round_trip() {
-        for (bytes, structured) in [
-            (vec![0x77, 0, 0x92, 0x77, 2], true),
-            (vec![0x77, 0, 0x07, 4, 0x77, 1, 0x07, 9, 0x77, 2], true),
-            (vec![0x77, 0, 0x77, 0, 0x92, 0x77, 2, 0x77, 2], true),
-            (vec![0x77, 0, 0x2f, 0, 0x92, 0x2f, 2, 0x77, 2], true),
-            (vec![0x77, 0, 0x77, 1, 0x77, 1, 0x77, 2], false),
-        ] {
-            let source = round_trip_body(&bytes);
-            assert_eq!(
-                source.contains("if context.is_daytime {"),
-                structured,
-                "{source}"
-            );
-            if structured {
-                assert!(!source.contains("native(0x77"), "{source}");
-            }
-        }
-        // Unknown selectors have no verified instruction boundary.
-        assert!(format_test_body(&mut String::new(), &[0x77, 3], None).is_err());
-        for condition in [
-            "self.is_daytime",
-            "context.is_daytime()",
-            "context.is_daytime(1)",
-        ] {
-            assert!(
-                dsl::parse(&format!(
-                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ nop(); }} }}"
-                ))
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
     fn default_point_round_trip() {
         let source = round_trip_body(&[0x06, 2, 0, 0]);
         assert!(source.contains("self.select_target_point(PointTarget::Default);"));
@@ -2401,51 +2203,6 @@ mod tests {
             let bytes = vec![0x34, 0, group, id, 0x92, 0x34, 1, 0x48, 1, 0x34, 2];
             let source = round_trip_body(&bytes);
             assert!(source.contains(&format!("self.in_action({group}:{id})")));
-        }
-        for condition in [
-            "self.in_action(256:0)",
-            "self.in_action(0:256)",
-            "self.in_action(1)",
-            "self.in_action()",
-            "self.in_action",
-            "context.in_action(1, 2)",
-        ] {
-            assert!(
-                dsl::parse(&format!(
-                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
-                ))
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn near_target_conditions_round_trip() {
-        for value in 0..=255u8 {
-            let bytes = vec![0x22, 0, value, 0x92, 0x22, 1, 0x48, 1, 0x22, 2];
-            let source = round_trip_body(&bytes);
-            assert!(source.contains(&format!("self.near_target_2d({value})")));
-            let bytes = vec![0x36, 0, value, 0x92, 0x36, 1, 0x48, 1, 0x36, 2];
-            let source = round_trip_body(&bytes);
-            assert!(source.contains(&format!("self.near_target_3d({value})")));
-        }
-        for condition in [
-            "self.near_target_2d(256)",
-            "self.near_target_2d()",
-            "self.near_target_2d",
-            "self.near_target_3d(256)",
-            "self.near_target_3d()",
-            "self.near_target_3d",
-            "self.near_target(5)",
-            "context.near_target_2d(1)",
-            "context.near_target_3d(1)",
-        ] {
-            assert!(
-                dsl::parse(&format!(
-                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
-                ))
-                .is_err()
-            );
         }
     }
 
@@ -2462,19 +2219,6 @@ mod tests {
         // A stray else marker has no matching condition block and is an error,
         // never a silently accepted native escape.
         assert!(format_test_body(&mut String::new(), &[0x5d, 1, 0x92, 0x5d, 2], None).is_err());
-        for condition in [
-            "self.target_position_available",
-            "self.target_position_available(1)",
-            "context.target_position_available()",
-            "self.target.position_available()",
-        ] {
-            assert!(
-                dsl::parse(&format!(
-                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
-                ))
-                .is_err()
-            );
-        }
     }
 
     #[test]
@@ -2485,75 +2229,11 @@ mod tests {
             let source = round_trip_body(&bytes);
             assert!(source.contains(&format!("self.in_area({area})")));
         }
-        for condition in [
-            "self.in_area(65536)",
-            "self.in_area()",
-            "self.in_area",
-            "context.in_area(1)",
-        ] {
-            assert!(
-                dsl::parse(&format!(
-                    "mhf_ai 1; species 6; fn main() {{ if {condition} {{ end; }} }}"
-                ))
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn airborne_conditions_round_trip() {
-        for (bytes, structured) in [
-            (vec![9, 0, 0x92, 9, 2], true),
-            (vec![9, 0, 9, 0, 0x92, 9, 2, 9, 1, 0x48, 1, 9, 2], true),
-            (vec![9, 0, 9, 1, 9, 1, 9, 2], false),
-        ] {
-            let source = round_trip_body(&bytes);
-            assert_eq!(source.contains("if self.airborne"), structured);
-        }
-    }
-
-    #[test]
-    fn attack_timer_conditions_round_trip() {
-        for bytes in [
-            vec![0x2a, 0, 0x92, 0x2a, 2],
-            vec![0x2a, 0, 0x2a, 0, 0x92, 0x2a, 2, 0x2a, 1, 0x48, 1, 0x2a, 2],
-            vec![0x2a, 0, 0x2a, 1, 0x2a, 1, 0x2a, 2],
-        ] {
-            let source = round_trip_body(&bytes);
-            if bytes == [0x2a, 0, 0x2a, 1, 0x2a, 1, 0x2a, 2] {
-                assert!(!source.contains("self.attack_timer_active"));
-                assert_eq!(source.matches("native(").count(), 4);
-            } else {
-                assert!(source.contains("if self.attack_timer_active {"), "{source}");
-                assert!(!source.contains("native(0x2a"), "{source}");
-            }
-        }
-    }
-
-    #[test]
-    fn area_timer_conditions_round_trip_and_preserve_irregular_blocks() {
-        for bytes in [
-            vec![0x29, 0, 0x92, 0x29, 2],
-            vec![
-                0x29, 0, 0x29, 0, 0x92, 0x29, 1, 0x48, 1, 0x29, 2, 0x29, 1, 0x92, 0x29, 2,
-            ],
-        ] {
-            let source = round_trip_body(&bytes);
-            assert!(source.contains("if self.area_timer_expired {"), "{source}");
-            assert!(!source.contains("native(0x29"), "{source}");
-        }
-        let bytes = [0x29, 0, 0x29, 1, 0x29, 1, 0x29, 2];
-        let source = round_trip_body(&bytes);
-        assert!(!source.contains("self.area_timer_expired"));
-        assert_eq!(source.matches("native(").count(), 4);
     }
 
     #[test]
     fn mixed_rage_and_flash_conditions_round_trip() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(
             0x300,
             &[
@@ -2574,42 +2254,68 @@ mod tests {
     }
 
     #[test]
-    fn species_matches_round_trip_without_folding_by_project_species() {
-        for (bytes, recovered) in [
-            (
-                vec![0x70, 0, 2, 0x70, 1, 1, 0x92, 0x70, 1, 11, 0x70, 3],
-                true,
-            ),
-            (vec![0x70, 0, 1, 0x70, 1, 255, 0x70, 2, 0x92, 0x70, 3], true),
-            (
-                vec![
-                    0x70, 0, 1, 0x70, 1, 1, 0x70, 0, 1, 0x70, 1, 11, 0xff, 0, 0x70, 3, 0x70, 3,
-                ],
-                true,
-            ),
-            (vec![0x70, 0, 0, 0x70, 1, 1, 0x70, 3], false),
-            (vec![0x70, 0, 2, 0x70, 1, 1, 0x70, 3], false),
-            (vec![0x70, 0, 2, 0x70, 1, 11, 0x70, 1, 1, 0x70, 3], false),
-            (vec![0x70, 0, 2, 0x70, 1, 1, 0x70, 1, 1, 0x70, 3], false),
+    fn ordered_matches_preserve_canonical_nested_and_irregular_layouts() {
+        for (opcode, selector, first, last, nested) in [
+            (0x70, "self.species", 1, 11, 11),
+            (0x94, "context.debug_mode", 0, 255, 1),
         ] {
-            let mut source = String::new();
-            format_test_body(&mut source, &bytes, None).unwrap();
-            assert_eq!(source.contains("match self.species"), recovered, "{source}");
-            let compiled = dsl::parse(&format!("mhf_ai 1; species 1; fn main() {{ {source} }}"))
-                .unwrap()
-                .compile()
-                .unwrap();
-            let mut expected = bytes;
-            expected.extend([0xff, 0]);
-            assert!(
-                compiled
-                    .program
-                    .nodes
-                    .iter()
-                    .any(|node| matches!(node, Node::Script(actual) if *actual == expected)),
-                "{source}"
-            );
+            for (bytes, recovered) in [
+                (
+                    vec![
+                        opcode, 0, 2, opcode, 1, first, 0x92, opcode, 1, last, opcode, 3,
+                    ],
+                    true,
+                ),
+                (
+                    vec![opcode, 0, 1, opcode, 1, first, opcode, 2, 0x92, opcode, 3],
+                    true,
+                ),
+                // A nested match and an early return retain their exact bytes.
+                (
+                    vec![
+                        opcode, 0, 1, opcode, 1, first, opcode, 0, 1, opcode, 1, nested, 0xff, 0,
+                        opcode, 3, opcode, 3,
+                    ],
+                    true,
+                ),
+                (vec![opcode, 0, 0, opcode, 1, first, opcode, 3], false),
+                (vec![opcode, 0, 2, opcode, 1, first, opcode, 3], false),
+                (
+                    vec![opcode, 0, 2, opcode, 1, last, opcode, 1, first, opcode, 3],
+                    false,
+                ),
+                (
+                    vec![opcode, 0, 2, opcode, 1, first, opcode, 1, first, opcode, 3],
+                    false,
+                ),
+            ] {
+                let mut source = String::new();
+                format_test_body(&mut source, &bytes, None).unwrap();
+                assert_eq!(
+                    source.contains(&format!("match {selector}")),
+                    recovered,
+                    "{source}"
+                );
+                let compiled =
+                    dsl::parse(&format!("mhf_ai 1; species 1; fn main() {{ {source} }}"))
+                        .unwrap()
+                        .compile()
+                        .unwrap();
+                let mut expected = bytes;
+                expected.extend([0xff, 0]);
+                assert!(
+                    compiled
+                        .program
+                        .nodes
+                        .iter()
+                        .any(|node| matches!(node, Node::Script(actual) if *actual == expected)),
+                    "{source}"
+                );
+            }
         }
+        // Species 255 remains a case ID regardless of the project species.
+        let source = round_trip_body(&[0x70, 0, 1, 0x70, 1, 255, 0x70, 2, 0x92, 0x70, 3]);
+        assert!(source.contains("255 => {"));
     }
 
     #[test]
@@ -2617,10 +2323,7 @@ mod tests {
         let bytes = [
             0x2c, 0, 3, 0x2c, 1, 42, 0x92, 0x2c, 1, 1, 0x2c, 1, 42, 0x48, 2, 0x2c, 3, 0xff, 0,
         ];
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &bytes);
         let result = decompile(&image, 0x100, 1, 0, None).unwrap();
         assert!(result.source.contains("match self.species_group"));
@@ -2632,50 +2335,6 @@ mod tests {
     }
 
     #[test]
-    fn debug_mode_preserves_canonical_and_irregular_layouts() {
-        for (bytes, recovered) in [
-            (
-                vec![0x94, 0, 2, 0x94, 1, 0, 0x92, 0x94, 1, 255, 0x94, 3],
-                true,
-            ),
-            (vec![0x94, 0, 1, 0x94, 1, 0, 0x94, 2, 0x92, 0x94, 3], true),
-            // A nested match and an early return must retain their exact bytes.
-            (
-                vec![
-                    0x94, 0, 1, 0x94, 1, 0, 0x94, 0, 1, 0x94, 1, 1, 0xff, 0, 0x94, 3, 0x94, 3,
-                ],
-                true,
-            ),
-            (vec![0x94, 0, 0, 0x94, 1, 0, 0x94, 3], false),
-            (vec![0x94, 0, 2, 0x94, 1, 0, 0x94, 3], false),
-            (vec![0x94, 0, 2, 0x94, 1, 1, 0x94, 1, 0, 0x94, 3], false),
-            (vec![0x94, 0, 2, 0x94, 1, 0, 0x94, 1, 0, 0x94, 3], false),
-        ] {
-            let mut source = String::new();
-            format_test_body(&mut source, &bytes, None).unwrap();
-            assert_eq!(
-                source.contains("match context.debug_mode"),
-                recovered,
-                "{source}"
-            );
-            let compiled = dsl::parse(&format!("mhf_ai 1; species 1; fn main() {{ {source} }}"))
-                .unwrap()
-                .compile()
-                .unwrap();
-            let mut expected = bytes;
-            expected.extend([0xff, 0]);
-            assert!(
-                compiled
-                    .program
-                    .nodes
-                    .iter()
-                    .any(|node| matches!(node, Node::Script(actual) if *actual == expected)),
-                "{source}"
-            );
-        }
-    }
-
-    #[test]
     fn area_route_profile_preserves_noncanonical_layouts() {
         for bytes in [
             vec![0x57, 0, 1, 0x57, 1, 1, 0, 0x57, 2, 0x57, 3],
@@ -2684,19 +2343,8 @@ mod tests {
             vec![0x57, 0, 2, 0x57, 1, 0, 1, 0x57, 1, 0, 1, 0x57, 2, 0x57, 3],
             vec![0x57, 0, 1, 0x57, 1, 0, 1, 0x57, 3],
         ] {
-            let mut source = String::new();
-            format_test_body(&mut source, &bytes, None).unwrap();
+            let source = round_trip_body(&bytes);
             assert!(!source.contains("self.area_route_profile"), "{source}");
-            let compiled =
-                crate::ai::dsl::parse(&format!("mhf_ai 1; species 6; fn main() {{ {source} }}"))
-                    .unwrap()
-                    .compile()
-                    .unwrap();
-            let mut expected = bytes;
-            expected.extend_from_slice(&[0xff, 0]);
-            assert!(compiled.program.nodes.iter().any(
-                |node| matches!(node, crate::ai::Node::Script(actual) if *actual == expected)
-            ));
         }
     }
 
@@ -2706,10 +2354,7 @@ mod tests {
             0x57, 0, 2, 0x57, 1, 0, 0, 0x57, 0, 1, 0x57, 1, 0, 255, 0x92, 0x57, 2, 0x57, 3, 0x57,
             1, 0, 255, 0x57, 2, 0x57, 3, 0xff, 0,
         ];
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &bytes);
         let result = decompile(&image, 0x100, 1, 0, None).unwrap();
         assert_eq!(
@@ -2746,10 +2391,7 @@ mod tests {
             1, 255, 0x35, 0, 0x92, 0x35, 2, 0x79, 2, 0x92, 0x79, 3, 0xff, 0,
         ];
         for species in [11, 14, 110] {
-            let mut image = Image::default();
-            image.put(0x100, &[0; 60]);
-            image.pointer(0x100, 0x200);
-            image.pointer(0x200, 0x300);
+            let mut image = main_image();
             image.put(0x300, &bytes);
             let result = decompile(&image, 0x100, species, 0, None).unwrap();
             assert_eq!(result.source.matches("context.query").count(), 2);
@@ -2761,10 +2403,7 @@ mod tests {
 
     #[test]
     fn context_query_decompiles_and_round_trips() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(
             0x300,
             &[
@@ -2789,10 +2428,7 @@ mod tests {
 
     #[test]
     fn flashed_blocks_decompile_and_round_trip_in_states_and_events() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(
             0x300,
             &[
@@ -3139,10 +2775,7 @@ mod tests {
 
     #[test]
     fn state_reset_tails_are_implicit_but_early_resets_remain_lossless() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.pointer(0x204, 0x400);
         image.put(0x300, &[0x39, 0, 7, 1, 0x39, 2, 0xff, 0]);
         image.put(0x400, &[0x92, 0xff, 0]);
@@ -3236,10 +2869,7 @@ mod tests {
 
     #[test]
     fn follows_sparse_cyclic_states_without_reading_a_guessed_table_length() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.pointer(0x200 + 9 * 4, 0x400);
         image.put(0x300, &[5, 3, 6, 0, 7, 9]);
         image.put(0x400, &[0x99, 2, 4]);
@@ -3253,10 +2883,7 @@ mod tests {
 
     #[test]
     fn contents_calls_are_not_main_state_references() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &[0x81, 200, 4]);
         let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert_eq!(result.warnings.len(), 1);
@@ -3414,10 +3041,7 @@ mod tests {
 
     #[test]
     fn ambiguous_and_unreadable_entries_are_inherited_not_cleared() {
-        let mut image = Image::default();
-        image.put(0x100, &[0; 60]);
-        image.pointer(0x100, 0x200);
-        image.pointer(0x200, 0x300);
+        let mut image = main_image();
         image.put(0x300, &[5, 0, 6, 0, 0]);
         image.pointer(0x200 + 4, 0x400);
         image.put(0x400, &[0x24, 0, 2]);

@@ -85,7 +85,6 @@ pub(super) unsafe fn check(address: usize, bytes: &[u8]) -> Result<(), String> {
 /// their original instruction spans, so relative branches need no relocation.
 pub(super) struct CodePatches {
     base: usize,
-    applied: usize,
     reservations: Vec<mhf_hooks::PatchReservation>,
 }
 
@@ -93,7 +92,6 @@ impl CodePatches {
     pub unsafe fn install(base: usize) -> Result<Self, String> {
         let mut guard = Self {
             base,
-            applied: 0,
             reservations: Vec::new(),
         };
         for patch in PATCHES {
@@ -106,21 +104,19 @@ impl CodePatches {
                 )?);
             // Record the current edit before writing: cache/protection errors
             // after the copy must still restore this instruction during rollback.
-            guard.applied += 1;
             unsafe { write(base, patch.rva, patch.replacement) }?;
         }
         Ok(guard)
     }
 
     pub fn restore(&mut self) -> Result<(), String> {
-        while self.applied > 0 {
-            let patch = &PATCHES[self.applied - 1];
+        while !self.reservations.is_empty() {
+            let patch = &PATCHES[self.reservations.len() - 1];
             unsafe { write(self.base, patch.rva, patch.original) }?;
             self.reservations
                 .pop()
                 .expect("applied patch owns its reservation")
                 .release();
-            self.applied -= 1;
         }
         Ok(())
     }

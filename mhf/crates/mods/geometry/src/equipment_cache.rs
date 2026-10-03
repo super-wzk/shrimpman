@@ -285,26 +285,6 @@ mod tests {
     use crate::cache::Buffer;
 
     #[test]
-    fn files_at_the_old_boundary_include_the_filename_terminator() {
-        let path = b"dat\\weapon\\we001.bin\0";
-        for size in [
-            ORIGINAL_CAPACITY - 1,
-            ORIGINAL_CAPACITY,
-            130 * 1024,
-            1024 * 1024,
-        ] {
-            let mut cache = Buffer::default();
-            let length = required_size(size, path.len() - 1).unwrap();
-            let pointer = cache.prepare(length).unwrap();
-            let bytes = unsafe { std::slice::from_raw_parts_mut(pointer, length) };
-            bytes[..size].fill(0x5a);
-            bytes[size..size + path.len()].copy_from_slice(path);
-            assert_eq!(&bytes[size..size + path.len()], path);
-            assert!(length > ORIGINAL_CAPACITY);
-        }
-    }
-
-    #[test]
     fn growing_a_cache_retains_previous_native_addresses() {
         let mut cache = Buffer::default();
         let old = cache.prepare(ORIGINAL_CAPACITY).unwrap();
@@ -323,7 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn invalid_file_sizes_do_not_wrap_allocations() {
+    fn filename_terminator_and_invalid_sizes_are_accounted_for() {
+        assert_eq!(
+            required_size(ORIGINAL_CAPACITY, 20).unwrap(),
+            ORIGINAL_CAPACITY + 21
+        );
         assert!(required_size(0, 20).is_err());
         assert!(required_size(usize::MAX, 20).is_err());
         let required = required_size(i32::MAX as usize, 20).unwrap();

@@ -1,5 +1,5 @@
 use crate::model::PasswordCredentials;
-use std::{ffi::CStr, ptr};
+use std::ptr;
 use windows::{
     Win32::{
         Foundation::ERROR_NOT_FOUND,
@@ -9,11 +9,9 @@ use windows::{
         },
         System::LibraryLoader::{GetModuleHandleA, GetProcAddress},
     },
-    core::{HRESULT, PCSTR, PCWSTR, PWSTR},
+    core::{HRESULT, PCWSTR, PWSTR, s},
 };
 
-const NTDLL: &CStr = c"ntdll.dll";
-const WINE_GET_VERSION: &CStr = c"wine_get_version";
 const TARGET_PREFIX: &str = "Shrimpman MHF — ";
 
 #[derive(Clone)]
@@ -59,8 +57,7 @@ impl CredentialStore {
         }
 
         let credential = CredentialBuffer(raw);
-        let credential = credential
-            .get()
+        let credential = unsafe { credential.0.as_ref() }
             .ok_or_else(|| "The system credential store returned an empty credential".to_owned())?;
         let username = if credential.UserName.is_null() {
             return Err("The saved credential has no username".to_owned());
@@ -112,12 +109,6 @@ impl CredentialStore {
 
 struct CredentialBuffer(*mut CREDENTIALW);
 
-impl CredentialBuffer {
-    fn get(&self) -> Option<&CREDENTIALW> {
-        unsafe { self.0.as_ref() }
-    }
-}
-
 impl Drop for CredentialBuffer {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -127,14 +118,10 @@ impl Drop for CredentialBuffer {
 }
 
 fn is_wine() -> bool {
-    let Ok(ntdll) = (unsafe { GetModuleHandleA(pcstr(NTDLL)) }) else {
+    let Ok(ntdll) = (unsafe { GetModuleHandleA(s!("ntdll.dll")) }) else {
         return false;
     };
-    unsafe { GetProcAddress(ntdll, pcstr(WINE_GET_VERSION)) }.is_some()
-}
-
-fn pcstr(value: &CStr) -> PCSTR {
-    PCSTR(value.as_ptr().cast())
+    unsafe { GetProcAddress(ntdll, s!("wine_get_version")) }.is_some()
 }
 
 fn wide_string(value: &str) -> Result<Vec<u16>, String> {
@@ -146,11 +133,7 @@ fn wide_string(value: &str) -> Result<Vec<u16>, String> {
 }
 
 fn encode_password(password: &str) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(password.len() * 2);
-    for unit in password.encode_utf16() {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-    bytes
+    password.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 fn decode_password(credential: &CREDENTIALW) -> Result<String, String> {

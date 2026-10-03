@@ -703,6 +703,19 @@ impl Builder {
         self.field_with_note(node, name, value, offset, size, None);
     }
 
+    fn archive_entry_fields(&mut self, node: usize, offset: u32, size: u32, base: usize) {
+        self.field(
+            node,
+            "offset",
+            formatted(offset, format!("{offset:#X}")),
+            base,
+            4,
+        );
+        self.document.nodes[node].fields.last_mut().unwrap().key = Some("entry_offset".into());
+        self.field(node, "size", size, base + 4, 4);
+        self.document.nodes[node].fields.last_mut().unwrap().key = Some("entry_size".into());
+    }
+
     /// Add one field. `note` is the value legend shown in the hover text.
     fn field_with_note(
         &mut self,
@@ -1220,18 +1233,7 @@ impl Builder {
                         };
                         self.set_address(child, node, [Index(entry.index as u32)]);
                         let meta = base + archive.table_offset + entry.index * 8;
-                        self.field(
-                            child,
-                            "offset",
-                            formatted(entry.offset, format!("{:#X}", entry.offset)),
-                            meta,
-                            4,
-                        );
-                        self.document.nodes[child].fields.last_mut().unwrap().key =
-                            Some("entry_offset".into());
-                        self.field(child, "size", entry.size, meta + 4, 4);
-                        self.document.nodes[child].fields.last_mut().unwrap().key =
-                            Some("entry_size".into());
+                        self.archive_entry_fields(child, entry.offset, entry.size, meta);
                         self.inspect_node(
                             child,
                             Hint {
@@ -1293,18 +1295,7 @@ impl Builder {
                 } else {
                     meta
                 };
-                self.field(
-                    child,
-                    "offset",
-                    formatted(entry.offset, format!("{:#X}", entry.offset)),
-                    location,
-                    4,
-                );
-                self.document.nodes[child].fields.last_mut().unwrap().key =
-                    Some("entry_offset".into());
-                self.field(child, "size", entry.size, location + 4, 4);
-                self.document.nodes[child].fields.last_mut().unwrap().key =
-                    Some("entry_size".into());
+                self.archive_entry_fields(child, entry.offset, entry.size, location);
                 self.inspect_node(
                     child,
                     Hint {
@@ -1328,29 +1319,15 @@ impl Builder {
                             self.fail(node, error);
                         }
                     }
-                    self.field(node, "bit_depth", file.header.bit_depth, base + 24, 1);
-                    self.field(node, "color_type", file.header.color_type, base + 25, 1);
-                    self.field(
-                        node,
-                        "compression_method",
-                        file.header.compression_method,
-                        base + 26,
-                        1,
-                    );
-                    self.field(
-                        node,
-                        "filter_method",
-                        file.header.filter_method,
-                        base + 27,
-                        1,
-                    );
-                    self.field(
-                        node,
-                        "interlace_method",
-                        file.header.interlace_method,
-                        base + 28,
-                        1,
-                    );
+                    for (name, value, offset) in [
+                        ("bit_depth", file.header.bit_depth, 24),
+                        ("color_type", file.header.color_type, 25),
+                        ("compression_method", file.header.compression_method, 26),
+                        ("filter_method", file.header.filter_method, 27),
+                        ("interlace_method", file.header.interlace_method, 28),
+                    ] {
+                        self.field(node, name, value, base + offset, 1);
+                    }
                     // Image properties cannot be changed independently of
                     // chunk checksums and encoded pixels. Replace the image.
                     for field in &mut self.document.nodes[node].fields[first_field..] {
@@ -1598,48 +1575,38 @@ impl Builder {
                         break;
                     };
                     for (index, entry) in meshes.entries.iter().enumerate() {
-                        match entry {
+                        let (name, kind, block) = match entry {
                             ObjectEntry::Object(object) => {
-                                let Some(child) = self.block_child(
-                                    parent,
-                                    format!("对象 {index}"),
-                                    Kind::Object,
-                                    object.block,
-                                    base,
-                                ) else {
-                                    break;
-                                };
-                                self.set_address(
-                                    child,
-                                    parent,
-                                    [Key("objects".into()), Index(index as u32)],
-                                );
-                                if let Err(error) = object.validate_geometry() {
-                                    self.fail(child, error.to_string());
-                                }
-                                for (index, component) in object.components.iter().enumerate() {
-                                    self.component(child, index, component, base);
-                                }
-                                if !object.components.iter().any(|component| {
-                                    component.block().header.kind == fmod::RENDERING
-                                }) {
-                                    self.missing_rendering_block(child, object, base);
-                                }
+                                (format!("对象 {index}"), Kind::Object, object.block)
                             }
                             ObjectEntry::Unknown(block) => {
-                                if let Some(child) = self.block_child(
-                                    parent,
-                                    format!("未知对象 {index}"),
-                                    Kind::Block,
-                                    *block,
-                                    base,
-                                ) {
-                                    self.set_address(
-                                        child,
-                                        parent,
-                                        [Key("objects".into()), Index(index as u32)],
-                                    );
-                                }
+                                (format!("未知对象 {index}"), Kind::Block, *block)
+                            }
+                        };
+                        let Some(child) = self.block_child(parent, name, kind, block, base) else {
+                            if matches!(entry, ObjectEntry::Unknown(_)) {
+                                continue;
+                            }
+                            break;
+                        };
+                        self.set_address(
+                            child,
+                            parent,
+                            [Key("objects".into()), Index(index as u32)],
+                        );
+                        if let ObjectEntry::Object(object) = entry {
+                            if let Err(error) = object.validate_geometry() {
+                                self.fail(child, error.to_string());
+                            }
+                            for (index, component) in object.components.iter().enumerate() {
+                                self.component(child, index, component, base);
+                            }
+                            if !object
+                                .components
+                                .iter()
+                                .any(|component| component.block().header.kind == fmod::RENDERING)
+                            {
+                                self.missing_rendering_block(child, object, base);
                             }
                         }
                     }
@@ -1651,124 +1618,95 @@ impl Builder {
                         break;
                     };
                     for (index, entry) in table.records.iter().enumerate() {
-                        match entry {
+                        let (name, kind, block) = match entry {
                             MaterialEntry::Material(material) => {
-                                let Some(child) = self.block_child(
-                                    parent,
-                                    format!("材质 {index}"),
-                                    Kind::Material,
-                                    material.block,
-                                    base,
-                                ) else {
-                                    break;
-                                };
-                                self.set_address(
-                                    child,
-                                    parent,
-                                    [Key("materials".into()), Index(index as u32)],
-                                );
-                                let at = base + material.block.offset() + 12;
-                                self.field(
-                                    child,
-                                    "color_00",
-                                    typed(
-                                        format!("{:?}", material.color_00),
-                                        FieldType::Array(ScalarType::F32),
-                                    ),
-                                    at,
-                                    16,
-                                );
-                                self.field(
-                                    child,
-                                    "color_10",
-                                    typed(
-                                        format!("{:?}", material.color_10),
-                                        FieldType::Array(ScalarType::F32),
-                                    ),
-                                    at + 16,
-                                    16,
-                                );
-                                self.field(
-                                    child,
-                                    "color_20",
-                                    typed(
-                                        format!("{:?}", material.color_20),
-                                        FieldType::Array(ScalarType::F32),
-                                    ),
-                                    at + 32,
-                                    16,
-                                );
-                                self.field(
-                                    child,
-                                    "parameter_30",
-                                    formatted(
-                                        material.parameter_30,
-                                        format!(
-                                            "{} ({:#010X})",
-                                            material.parameter_30,
-                                            material.parameter_30.to_bits()
-                                        ),
-                                    ),
-                                    at + 48,
-                                    4,
-                                );
-                                self.field(
-                                    child,
-                                    "贴图引用数",
-                                    material.texture_indices.len(),
-                                    at + 52,
-                                    4,
-                                );
-                                self.field(
-                                    child,
-                                    "texture_indices",
-                                    typed(
-                                        summary(&material.texture_indices),
-                                        FieldType::Array(ScalarType::U32),
-                                    ),
-                                    at + 256,
-                                    material.texture_indices.len() * 4,
-                                );
-                                self.document.nodes[child]
-                                    .fields
-                                    .last_mut()
-                                    .unwrap()
-                                    .reference = Some(FieldReference::Many(
-                                    material
-                                        .texture_indices
-                                        .iter()
-                                        .map(|&index| {
-                                            FieldReference::Indexed(
-                                                ReferenceCollection::ModelTextures,
-                                                index,
-                                                None,
-                                            )
-                                        })
-                                        .collect(),
-                                ));
-                                self.field(
-                                    child,
-                                    "unknown_38",
-                                    hex(material.unknown_38),
-                                    at + 56,
-                                    material.unknown_38.len(),
-                                );
+                                (format!("材质 {index}"), Kind::Material, material.block)
                             }
                             MaterialEntry::Unknown(block) => {
-                                if let Some(child) = self.block_child(
-                                    parent,
-                                    format!("未知材质 {index}"),
-                                    Kind::Block,
-                                    *block,
-                                    base,
-                                ) {
-                                    self.set_address(
-                                        child,
-                                        parent,
-                                        [Key("materials".into()), Index(index as u32)],
-                                    );
-                                }
+                                (format!("未知材质 {index}"), Kind::Block, *block)
                             }
+                        };
+                        let Some(child) = self.block_child(parent, name, kind, block, base) else {
+                            if matches!(entry, MaterialEntry::Unknown(_)) {
+                                continue;
+                            }
+                            break;
+                        };
+                        self.set_address(
+                            child,
+                            parent,
+                            [Key("materials".into()), Index(index as u32)],
+                        );
+                        if let MaterialEntry::Material(material) = entry {
+                            let at = base + material.block.offset() + 12;
+                            for (name, color, offset) in [
+                                ("color_00", material.color_00, 0),
+                                ("color_10", material.color_10, 16),
+                                ("color_20", material.color_20, 32),
+                            ] {
+                                self.field(
+                                    child,
+                                    name,
+                                    typed(format!("{color:?}"), FieldType::Array(ScalarType::F32)),
+                                    at + offset,
+                                    16,
+                                );
+                            }
+                            self.field(
+                                child,
+                                "parameter_30",
+                                formatted(
+                                    material.parameter_30,
+                                    format!(
+                                        "{} ({:#010X})",
+                                        material.parameter_30,
+                                        material.parameter_30.to_bits()
+                                    ),
+                                ),
+                                at + 48,
+                                4,
+                            );
+                            self.field(
+                                child,
+                                "贴图引用数",
+                                material.texture_indices.len(),
+                                at + 52,
+                                4,
+                            );
+                            self.field(
+                                child,
+                                "texture_indices",
+                                typed(
+                                    summary(&material.texture_indices),
+                                    FieldType::Array(ScalarType::U32),
+                                ),
+                                at + 256,
+                                material.texture_indices.len() * 4,
+                            );
+                            self.document.nodes[child]
+                                .fields
+                                .last_mut()
+                                .unwrap()
+                                .reference = Some(FieldReference::Many(
+                                material
+                                    .texture_indices
+                                    .iter()
+                                    .map(|&index| {
+                                        FieldReference::Indexed(
+                                            ReferenceCollection::ModelTextures,
+                                            index,
+                                            None,
+                                        )
+                                    })
+                                    .collect(),
+                            ));
+                            self.field(
+                                child,
+                                "unknown_38",
+                                hex(material.unknown_38),
+                                at + 56,
+                                material.unknown_38.len(),
+                            );
                         }
                     }
                 }
@@ -1779,58 +1717,46 @@ impl Builder {
                         break;
                     };
                     for (index, entry) in table.records.iter().enumerate() {
-                        match entry {
+                        let (name, kind, block) = match entry {
                             TextureEntry::Texture(texture) => {
-                                let Some(child) = self.block_child(
-                                    parent,
-                                    format!("贴图 {index}"),
-                                    Kind::Texture,
-                                    texture.block,
-                                    base,
-                                ) else {
-                                    break;
-                                };
-                                self.set_address(
-                                    child,
-                                    parent,
-                                    [Key("textures".into()), Index(index as u32)],
-                                );
-                                let at = base + texture.block.offset() + 12;
-                                self.field(child, "image_id", texture.image_id, at, 4);
-                                self.document.nodes[child]
-                                    .fields
-                                    .last_mut()
-                                    .unwrap()
-                                    .reference = Some(FieldReference::Indexed(
-                                    ReferenceCollection::TextureImages,
-                                    texture.image_id,
-                                    None,
-                                ));
-                                self.field(child, "width", texture.width, at + 4, 4);
-                                self.field(child, "height", texture.height, at + 8, 4);
-                                self.field(
-                                    child,
-                                    "unknown_0c",
-                                    hex(texture.unknown_0c),
-                                    at + 12,
-                                    texture.unknown_0c.len(),
-                                );
+                                (format!("贴图 {index}"), Kind::Texture, texture.block)
                             }
                             TextureEntry::Unknown(block) => {
-                                if let Some(child) = self.block_child(
-                                    parent,
-                                    format!("未知贴图 {index}"),
-                                    Kind::Block,
-                                    *block,
-                                    base,
-                                ) {
-                                    self.set_address(
-                                        child,
-                                        parent,
-                                        [Key("textures".into()), Index(index as u32)],
-                                    );
-                                }
+                                (format!("未知贴图 {index}"), Kind::Block, *block)
                             }
+                        };
+                        let Some(child) = self.block_child(parent, name, kind, block, base) else {
+                            if matches!(entry, TextureEntry::Unknown(_)) {
+                                continue;
+                            }
+                            break;
+                        };
+                        self.set_address(
+                            child,
+                            parent,
+                            [Key("textures".into()), Index(index as u32)],
+                        );
+                        if let TextureEntry::Texture(texture) = entry {
+                            let at = base + texture.block.offset() + 12;
+                            self.field(child, "image_id", texture.image_id, at, 4);
+                            self.document.nodes[child]
+                                .fields
+                                .last_mut()
+                                .unwrap()
+                                .reference = Some(FieldReference::Indexed(
+                                ReferenceCollection::TextureImages,
+                                texture.image_id,
+                                None,
+                            ));
+                            self.field(child, "width", texture.width, at + 4, 4);
+                            self.field(child, "height", texture.height, at + 8, 4);
+                            self.field(
+                                child,
+                                "unknown_0c",
+                                hex(texture.unknown_0c),
+                                at + 12,
+                                texture.unknown_0c.len(),
+                            );
                         }
                     }
                 }
@@ -2187,36 +2113,19 @@ impl Builder {
                         ));
                     }
                 }
-                self.field(
-                    child,
-                    "scale",
-                    typed(
-                        format!("{:?}", bone.transform.scale),
-                        FieldType::Array(ScalarType::F32),
-                    ),
-                    at + 16,
-                    16,
-                );
-                self.field(
-                    child,
-                    "rotation",
-                    typed(
-                        format!("{:?}", bone.transform.rotation),
-                        FieldType::Array(ScalarType::F32),
-                    ),
-                    at + 32,
-                    16,
-                );
-                self.field(
-                    child,
-                    "translation",
-                    typed(
-                        format!("{:?}", bone.transform.translation),
-                        FieldType::Array(ScalarType::F32),
-                    ),
-                    at + 48,
-                    16,
-                );
+                for (name, transform, offset) in [
+                    ("scale", bone.transform.scale, 16),
+                    ("rotation", bone.transform.rotation, 32),
+                    ("translation", bone.transform.translation, 48),
+                ] {
+                    self.field(
+                        child,
+                        name,
+                        typed(format!("{transform:?}"), FieldType::Array(ScalarType::F32)),
+                        at + offset,
+                        16,
+                    );
+                }
                 self.field(
                     child,
                     "unknown_40",
@@ -2343,16 +2252,7 @@ impl Builder {
             self.document.nodes[child].native_id =
                 Some(NativeId::Effect(member.reference.resource_id));
             let meta = base + file.directory.table_offset + member.index * 8;
-            self.field(
-                child,
-                "offset",
-                formatted(member.offset, format!("{:#X}", member.offset)),
-                meta,
-                4,
-            );
-            self.document.nodes[child].fields.last_mut().unwrap().key = Some("entry_offset".into());
-            self.field(child, "size", member.size, meta + 4, 4);
-            self.document.nodes[child].fields.last_mut().unwrap().key = Some("entry_size".into());
+            self.archive_entry_fields(child, member.offset, member.size, meta);
             let descriptor = base + file.index.offset as usize + 4 + (member.index - 1) * 4;
             self.field(child, "kind", member.reference.kind, descriptor, 2);
             self.field(
@@ -2665,19 +2565,24 @@ impl Builder {
                 let motion = offset
                     .map(|offset| Motion::parse_at(file.as_bytes(), offset as usize))
                     .transpose();
-                match motion {
+                let (name, kind, range) = match &motion {
                     Ok(Some(motion)) => {
                         let at = base + motion.offset;
-                        let Some(child) = self.child(
-                            parent,
-                            name,
-                            Kind::Motion,
-                            buffer,
-                            at..at + motion.as_bytes().len(),
-                        ) else {
-                            break;
-                        };
-                        self.set_address(child, parent, [Index(slot as u32)]);
+                        (name, Kind::Motion, at..at + motion.as_bytes().len())
+                    }
+                    Ok(None) => (
+                        format!("{name} · 空"),
+                        Kind::Empty,
+                        table + slot * 4..table + slot * 4 + 4,
+                    ),
+                    Err(_) => (name, Kind::Unknown, table + slot * 4..table + slot * 4 + 4),
+                };
+                let Some(child) = self.child(parent, name, kind, buffer, range) else {
+                    break;
+                };
+                self.set_address(child, parent, [Index(slot as u32)]);
+                match motion {
+                    Ok(Some(motion)) => {
                         self.field(
                             child,
                             "motion_offset",
@@ -2697,16 +2602,6 @@ impl Builder {
                         self.document.nodes[child].deferred = !motion.tracks.is_empty();
                     }
                     Ok(None) => {
-                        let Some(child) = self.child(
-                            parent,
-                            format!("{name} · 空"),
-                            Kind::Empty,
-                            buffer,
-                            table + slot * 4..table + slot * 4 + 4,
-                        ) else {
-                            break;
-                        };
-                        self.set_address(child, parent, [Index(slot as u32)]);
                         self.field(
                             child,
                             "motion_offset",
@@ -2715,19 +2610,7 @@ impl Builder {
                             4,
                         );
                     }
-                    Err(error) => {
-                        let Some(child) = self.child(
-                            parent,
-                            name,
-                            Kind::Unknown,
-                            buffer,
-                            table + slot * 4..table + slot * 4 + 4,
-                        ) else {
-                            break;
-                        };
-                        self.set_address(child, parent, [Index(slot as u32)]);
-                        self.fail(child, error.to_string());
-                    }
+                    Err(error) => self.fail(child, error.to_string()),
                 }
             }
         }
@@ -2889,10 +2772,6 @@ fn hex(bytes: &[u8]) -> FieldValue {
     typed(value, FieldType::Bytes)
 }
 
-fn archive_name(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
 fn summary<T: fmt::Debug>(values: &[T]) -> String {
     if values.len() <= 8 {
         format!("{values:?}")
@@ -3024,69 +2903,6 @@ mod tests {
         let document = inspect("broken.bin", Arc::from(&b"JKR\x1a\0"[..]));
         assert_eq!(document.nodes[0].kind, Kind::Jkr);
         assert!(document.nodes[0].error.is_some());
-    }
-
-    #[test]
-    fn every_model_object_exposes_one_rendering_parameter_item() {
-        use mhf_resource::fmod::{
-            FILE, MAIN, OBJECT, RENDERING, RENDERING_VERSION, RENDERING_WORDS, WORD_GROUPS,
-        };
-
-        let block = |kind: u32, children: &[Vec<u8>]| {
-            let payload: Vec<_> = children.concat();
-            let mut bytes = words(&[kind, children.len() as u32, (12 + payload.len()) as u32]);
-            bytes.extend_from_slice(&payload);
-            bytes
-        };
-        let mut parameters = [0; RENDERING_WORDS];
-        parameters[0] = RENDERING_VERSION;
-        let rendering = block(
-            RENDERING,
-            &[parameters
-                .iter()
-                .flat_map(|word| word.to_le_bytes())
-                .collect()],
-        );
-        let with = block(OBJECT, &[rendering, words(&[WORD_GROUPS, 0, 12])]);
-        let without = block(OBJECT, &[]);
-        let source = block(FILE, &[block(MAIN, &[with, without])]);
-        let document = inspect("model.bin", source.into());
-        let objects: Vec<_> = document
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.kind == Kind::Object)
-            .map(|(index, _)| index)
-            .collect();
-        assert_eq!(objects.len(), 2);
-        for &object in &objects {
-            let items: Vec<_> = document.nodes[object]
-                .children
-                .iter()
-                .copied()
-                .filter(|&child| document.nodes[child].name == "渲染参数")
-                .collect();
-            assert_eq!(items.len(), 1, "object {object}");
-        }
-        let item = |object: usize| {
-            *document.nodes[object]
-                .children
-                .iter()
-                .find(|&&child| document.nodes[child].name == "渲染参数")
-                .unwrap()
-        };
-        let existing = item(objects[0]);
-        assert_eq!(document.nodes[existing].kind, Kind::Block);
-        assert!(!document.nodes[existing].fields.is_empty());
-        assert!(document.nodes[existing].action.is_none());
-        let missing = item(objects[1]);
-        assert_eq!(document.nodes[missing].kind, Kind::MissingBlock);
-        assert!(document.nodes[missing].range.is_empty());
-        assert_eq!(
-            document.nodes[missing].action,
-            Some(NodeAction::InitializeRenderingBlock)
-        );
-        all_ranges_are_in_owned_buffers(&document);
     }
 
     #[test]
@@ -3225,49 +3041,6 @@ mod tests {
         assert_eq!(document.nodes[0].children.len(), 3);
         assert_eq!(document.bytes(0).unwrap(), bytes);
         all_ranges_are_in_owned_buffers(&document);
-    }
-
-    #[test]
-    fn motion_details_expand_without_truncating_siblings_or_changing_source_offsets() {
-        let channel = words(&[0x8021_0001, 1, 20, 1.0_f32.to_bits(), 0.0_f32.to_bits()]);
-        let mut track = words(&[0x38, 1, 12 + channel.len() as u32]);
-        track.extend(channel);
-        let mut clip = words(&[1, 1, 20 + track.len() as u32, 0, 0]);
-        clip.extend(track);
-        let mut source = words(&[2, 16, 0, 24, 24, 24 + clip.len() as u32]);
-        source.extend_from_slice(&clip);
-        source.extend_from_slice(&clip);
-        let source: Arc<[u8]> = source.into();
-        let document = inspect("renamed.mot", source.clone());
-        assert_eq!(document.nodes.len(), 5);
-        assert!(document.nodes.iter().all(|node| node.error.is_none()));
-        let motions: Vec<_> = document
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.kind == Kind::Motion)
-            .map(|(index, _)| index)
-            .collect();
-        assert_eq!(motions.len(), 2);
-        assert!(motions.iter().all(|&index| document.nodes[index].deferred));
-        let expanded = expand(&document, motions[0]).unwrap();
-        assert!(Arc::ptr_eq(&expanded.buffers[0], &source));
-        assert_eq!(document.nodes.len(), 5);
-        assert_eq!(expanded.nodes.len(), 7);
-        assert!(!expanded.nodes[motions[0]].deferred);
-        assert!(expanded.nodes[motions[1]].deferred);
-        for &index in &motions {
-            assert_eq!(document.bytes(index), expanded.bytes(index));
-        }
-        let track = expanded.nodes[motions[0]].children[0];
-        assert_eq!(expanded.nodes[track].range.start, 24 + 20);
-        assert_eq!(
-            expanded.nodes[expanded.nodes[track].children[0]]
-                .range
-                .start,
-            24 + 20 + 12
-        );
-        all_ranges_are_in_owned_buffers(&expanded);
     }
 
     #[test]

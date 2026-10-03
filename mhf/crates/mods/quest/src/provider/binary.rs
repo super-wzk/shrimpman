@@ -50,14 +50,7 @@ impl Quest {
         if ids == 0 || ids > self.bytes.len().saturating_sub(4) {
             return Err("任务缺少怪物资源列表".into());
         }
-        let mut resources = Vec::new();
-        for index in 0..6 {
-            let id = u32_at(&self.bytes, ids + index * 4)?;
-            if id == 0 || id == u32::MAX {
-                break;
-            }
-            resources.push(id);
-        }
+        let mut resources = read_species(&self.bytes, ids)?;
         let append = !resources.contains(&u32::from(species));
         if append && resources.len() == 6 {
             return Err("任务的 6 个怪物资源槽已满，无法载入新种类".into());
@@ -69,14 +62,8 @@ impl Quest {
         let mut bytes = self.bytes.clone();
         if append {
             let properties = u32_at(&bytes, 0)? as usize;
-            let variants = [0x91, 0x92, 0xb6, 0xb7, 0xb8];
-            let variant_slots = if u32_at(&bytes, properties + 0x98)? & 0x2000 != 0 {
-                5
-            } else {
-                2
-            };
-            if resources.len() < variant_slots {
-                bytes[properties + variants[resources.len()]] = 0;
+            if let Some(&offset) = variant_offsets(&bytes, properties)?.get(resources.len()) {
+                bytes[properties + offset] = 0;
             }
             resources.push(u32::from(species));
             bytes.resize(new_ids + 28, 0xff);
@@ -119,14 +106,7 @@ impl Quest {
         if original_ids == 0 || original_ids == u32::MAX as usize {
             return Err("任务缺少怪物资源列表".into());
         }
-        let mut species_ids = Vec::new();
-        for index in 0..6 {
-            let id = u32_at(original, original_ids + index * 4)?;
-            if id == 0 || id == u32::MAX {
-                break;
-            }
-            species_ids.push(id);
-        }
+        let mut species_ids = read_species(original, original_ids)?;
         if !species_ids.contains(&u32::from(species)) {
             if species_ids.len() == 6 {
                 return Err("任务的 6 个怪物资源槽已满，无法额外载入此种类".into());
@@ -134,15 +114,8 @@ impl Quest {
             species_ids.push(u32::from(species));
         }
         let properties = u32_at(original, 0)? as usize;
-        // Native 1087CB30 indexes variants by the resource-species slot. The
-        // leading byte at +0x90 is the reward mode, not a monster variant.
-        let variant_offsets = [0x91, 0x92, 0xb6, 0xb7, 0xb8];
-        let variant_slots = if u32_at(original, properties + 0x98)? & 0x2000 != 0 {
-            5
-        } else {
-            2
-        };
-        for (index, &id) in species_ids.iter().enumerate().skip(variant_slots) {
+        let variants = variant_offsets(original, properties)?;
+        for (index, &id) in species_ids.iter().enumerate().skip(variants.len()) {
             if id == u32::from(species) && variant != 0 {
                 return Err(format!(
                     "任务的第 {} 个怪物资源槽不支持设置变种，请更换怪物种类较少的任务",
@@ -158,7 +131,7 @@ impl Quest {
         }
         let mut bytes = Vec::with_capacity(end);
         bytes.extend_from_slice(original);
-        for (&id, &offset) in species_ids.iter().zip(&variant_offsets[..variant_slots]) {
+        for (&id, &offset) in species_ids.iter().zip(variants) {
             if id == u32::from(species) {
                 bytes[properties + offset] = variant;
             }
@@ -239,6 +212,29 @@ impl Quest {
             properties,
         })
     }
+}
+
+fn read_species(bytes: &[u8], offset: usize) -> Result<Vec<u32>, String> {
+    let mut species = Vec::new();
+    for index in 0..6 {
+        let id = u32_at(bytes, offset + index * 4)?;
+        if id == 0 || id == u32::MAX {
+            break;
+        }
+        species.push(id);
+    }
+    Ok(species)
+}
+
+fn variant_offsets(bytes: &[u8], properties: usize) -> Result<&'static [usize], String> {
+    // Native 1087CB30 indexes variants by resource-species slot; +0x90 is reward mode.
+    const OFFSETS: [usize; 5] = [0x91, 0x92, 0xb6, 0xb7, 0xb8];
+    let slots = if u32_at(bytes, properties + 0x98)? & 0x2000 != 0 {
+        5
+    } else {
+        2
+    };
+    Ok(&OFFSETS[..slots])
 }
 
 fn set_start_area(bytes: &mut [u8], area: u16) -> Result<(), String> {

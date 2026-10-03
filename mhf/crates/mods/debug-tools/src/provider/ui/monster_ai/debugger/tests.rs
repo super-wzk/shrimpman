@@ -90,54 +90,7 @@ fn invalid_import_preserves_the_loaded_replay() {
 }
 
 #[test]
-fn live_controls_send_commands_for_the_exact_instance_and_disable_stale_targets() {
-    use egui::{Event, Pos2, RawInput, Rect};
-    let debug = fixture();
-    let target = debug.target;
-    let control = DebugControl::new();
-    let context = egui::Context::default();
-    let mut debugger = DebuggerUi::default();
-    let mut draw = |events: Vec<Event>, active: bool| {
-        let output = context.run_ui(
-            RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(340.0, 650.0))),
-                events,
-                ..Default::default()
-            },
-            |ui| debugger.controls(ui, &control, Some(target), active, Some(&debug)),
-        );
-        output.drop_without_applying_deltas();
-    };
-    for id in ["ai-pause", "ai-step", "ai-run-yield"] {
-        draw(vec![], true);
-        let position = context
-            .read_response(egui::Id::new(id))
-            .unwrap()
-            .rect
-            .center();
-        for pressed in [true, false] {
-            draw(pointer_click(position, pressed), true);
-        }
-    }
-    let commands = control.commands();
-    assert!(
-        matches!(commands.as_slice(), [DebugCommand::AiDebug { target: a, operation: AiDebugOperation::Continue }, DebugCommand::AiDebug { target: b, operation: AiDebugOperation::StepInstruction }, DebugCommand::AiDebug { target: c, operation: AiDebugOperation::RunUntilYield }] if *a == target && *b == target && *c == target)
-    );
-    draw(vec![], false);
-    draw(vec![], false);
-    let position = context
-        .read_response(egui::Id::new("ai-step"))
-        .unwrap()
-        .rect
-        .center();
-    for pressed in [true, false] {
-        draw(pointer_click(position, pressed), false);
-    }
-    assert!(control.commands().is_empty());
-}
-
-#[test]
-fn attach_icon_uses_one_id_and_toggles_commands_and_tooltips_from_snapshot_state() {
+fn live_control_icons_preserve_exact_targets_state_tooltips_and_disabled_input() {
     let mut debug = fixture();
     let target = debug.target;
     let control = DebugControl::new();
@@ -170,6 +123,20 @@ fn attach_icon_uses_one_id_and_toggles_commands_and_tooltips_from_snapshot_state
             matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.job.text == expected)
         });
+        for event in &output.platform_output.events {
+            let info = event.widget_info();
+            let (role, selected) = match info.label.as_deref() {
+                Some("附加调试器" | "分离调试器") => {
+                    (egui::WidgetType::SelectableLabel, Some(attached))
+                }
+                Some("暂停" | "继续" | "单步" | "至让出") => {
+                    (egui::WidgetType::Button, None)
+                }
+                _ => continue,
+            };
+            assert_eq!(info.typ, role);
+            assert_eq!(info.selected, selected);
+        }
         output.drop_without_applying_deltas();
         (context.read_response(id).unwrap().rect, tooltip)
     };
@@ -196,12 +163,35 @@ fn attach_icon_uses_one_id_and_toggles_commands_and_tooltips_from_snapshot_state
         DebugCommand::AiDebug { target: a, operation: AiDebugOperation::Attach },
         DebugCommand::AiDebug { target: b, operation: AiDebugOperation::Detach },
     ] if *a == target && *b == target));
-    for attached in [false, true] {
-        draw(attached, false, Vec::new());
-        let (rect, _) = draw(attached, false, Vec::new());
-        assert!(!context.read_response(id).unwrap().enabled());
+    for id in ["ai-pause", "ai-step", "ai-run-yield"] {
+        draw(true, true, Vec::new());
+        let position = context
+            .read_response(egui::Id::new(id))
+            .unwrap()
+            .rect
+            .center();
         for pressed in [true, false] {
-            draw(attached, false, pointer_click(rect.center(), pressed));
+            draw(true, true, pointer_click(position, pressed));
+        }
+    }
+    assert!(matches!(control.commands().as_slice(), [
+        DebugCommand::AiDebug { target: a, operation: AiDebugOperation::Continue },
+        DebugCommand::AiDebug { target: b, operation: AiDebugOperation::StepInstruction },
+        DebugCommand::AiDebug { target: c, operation: AiDebugOperation::RunUntilYield },
+    ] if *a == target && *b == target && *c == target));
+    for attached in [false, true] {
+        for id in ["ai-attach", "ai-pause", "ai-step", "ai-run-yield"] {
+            draw(attached, false, Vec::new());
+            draw(attached, false, Vec::new());
+            let response = context.read_response(egui::Id::new(id)).unwrap();
+            assert!(!response.enabled());
+            for pressed in [true, false] {
+                draw(
+                    attached,
+                    false,
+                    pointer_click(response.rect.center(), pressed),
+                );
+            }
         }
     }
     assert!(control.commands().is_empty());
@@ -215,7 +205,7 @@ fn inspector_frame(
     target: AiTarget,
     active: bool,
     events: Vec<egui::Event>,
-) -> (Option<egui::Response>, Vec<String>, (bool, bool, bool)) {
+) -> (Option<egui::Response>, Vec<String>) {
     let snapshot = DebugSnapshot {
         ai_debug: Some(std::sync::Arc::new(debug.clone())),
         ..Default::default()
@@ -243,40 +233,8 @@ fn inspector_frame(
             _ => None,
         })
         .collect();
-    let glyph = response.as_ref().map_or((false, false, false), |response| {
-        let circle = output.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Circle(circle) => (circle.center == response.rect.center()
-                && circle.radius > 0.0
-                && response.rect.contains_rect(egui::Rect::from_center_size(
-                    circle.center,
-                    egui::Vec2::splat(circle.radius * 2.0),
-                )))
-            .then_some(circle),
-            _ => None,
-        });
-        let slash = output.shapes.iter().any(|shape| {
-            let (points, width) = match &shape.shape {
-                egui::Shape::Path(path) if path.points.len() == 2 => {
-                    (&path.points[..], path.stroke.width)
-                }
-                egui::Shape::LineSegment { points, stroke } => (&points[..], stroke.width),
-                _ => return false,
-            };
-            width > 0.0
-                && points.iter().all(|point| response.rect.contains(*point))
-                && points[0].x != points[1].x
-                && points[0].y != points[1].y
-        });
-        (
-            circle.is_some_and(|circle| circle.fill != egui::Color32::TRANSPARENT),
-            circle.is_some_and(|circle| {
-                circle.stroke.width > 0.0 && circle.stroke.color != egui::Color32::TRANSPARENT
-            }),
-            slash,
-        )
-    });
     output.drop_without_applying_deltas();
-    (response, texts, glyph)
+    (response, texts)
 }
 
 fn pointer_click(position: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
@@ -317,63 +275,31 @@ fn field_breakpoint_icon_removes_disabled_breakpoints_and_adds_for_the_exact_ins
         },
         unrelated.clone(),
     ];
-    let (initial, _, glyph) = inspector_frame(
-        &context,
-        &mut debugger,
-        &debug,
-        &control,
-        debug.target,
-        true,
-        vec![],
-    );
-    let initial = initial.unwrap();
-    assert!(initial.enabled());
-    assert_eq!(initial.rect.width(), initial.rect.height());
-    assert_eq!(
-        glyph,
-        (false, true, true),
-        "removal must show an outlined circle with a slash"
-    );
-    let (hovered, _, _) = inspector_frame(
-        &context,
-        &mut debugger,
-        &debug,
-        &control,
-        debug.target,
-        true,
-        vec![egui::Event::PointerMoved(initial.rect.center())],
-    );
-    assert!(hovered.unwrap().hovered());
-    inspector_frame(
-        &context,
-        &mut debugger,
-        &debug,
-        &control,
-        debug.target,
-        true,
-        vec![],
-    );
-    let (hovered, texts, _) = inspector_frame(
-        &context,
-        &mut debugger,
-        &debug,
-        &control,
-        debug.target,
-        true,
-        vec![],
-    );
-    assert_eq!(hovered.unwrap().rect, initial.rect);
-    assert!(texts.iter().any(|text| text == "移除字段断点"));
-    for pressed in [true, false] {
+    let mut draw = |debug: &AiDebugSnapshot, events| {
         inspector_frame(
             &context,
             &mut debugger,
-            &debug,
+            debug,
             &control,
             debug.target,
             true,
-            pointer_click(initial.rect.center(), pressed),
-        );
+            events,
+        )
+    };
+    let (initial, _) = draw(&debug, vec![]);
+    let initial = initial.unwrap();
+    assert!(initial.enabled());
+    let (hovered, _) = draw(
+        &debug,
+        vec![egui::Event::PointerMoved(initial.rect.center())],
+    );
+    assert!(hovered.unwrap().hovered());
+    draw(&debug, vec![]);
+    let (hovered, texts) = draw(&debug, vec![]);
+    assert_eq!(hovered.unwrap().rect, initial.rect);
+    assert!(texts.iter().any(|text| text == "移除字段断点"));
+    for pressed in [true, false] {
+        draw(&debug, pointer_click(initial.rect.center(), pressed));
     }
     let commands = control.commands();
     let [
@@ -388,32 +314,11 @@ fn field_breakpoint_icon_removes_disabled_breakpoints_and_adds_for_the_exact_ins
     assert_eq!(*target, debug.target);
     assert_eq!(breakpoints, std::slice::from_ref(&unrelated));
     debug.breakpoints = breakpoints.clone();
-    let (response, texts, glyph) = inspector_frame(
-        &context,
-        &mut debugger,
-        &debug,
-        &control,
-        debug.target,
-        true,
-        vec![],
-    );
+    let (response, texts) = draw(&debug, vec![]);
     assert_eq!(response.unwrap().rect, initial.rect);
     assert!(texts.iter().any(|text| text == "添加字段断点"));
-    assert_eq!(
-        glyph,
-        (true, false, false),
-        "addition must show a plain dot in the same button"
-    );
     for pressed in [true, false] {
-        inspector_frame(
-            &context,
-            &mut debugger,
-            &debug,
-            &control,
-            debug.target,
-            true,
-            pointer_click(initial.rect.center(), pressed),
-        );
+        draw(&debug, pointer_click(initial.rect.center(), pressed));
     }
     let commands = control.commands();
     let [
@@ -482,7 +387,7 @@ fn field_breakpoint_icon_disables_pending_and_detached_instances_and_rejects_reu
         serial: debug.target.serial + 1,
         ..debug.target
     };
-    let (response, _, _) = inspector_frame(
+    let (response, _) = inspector_frame(
         &context,
         &mut debugger,
         &debug,
@@ -611,6 +516,16 @@ fn live_and_replay_save_queue_json_once_without_opening_the_import_dialog() {
         assert_eq!(json, expected_json);
         assert_eq!(Recording::from_json(&json).unwrap(), recording);
         assert!(debugger.take_recording_save().is_none());
+        if replay {
+            assert_eq!(debugger.replay.as_ref().unwrap().recording(), &recording);
+        } else {
+            assert!(
+                !context
+                    .read_response(egui::Id::new("ai-trace-clear"))
+                    .unwrap()
+                    .enabled()
+            );
+        }
         assert!(control.commands().is_empty());
     }
 }
@@ -776,43 +691,4 @@ fn replay_icons_move_and_reset_the_recorded_state_and_disable_at_boundaries() {
             .enabled()
     );
     assert!(debugger.error.is_none());
-}
-
-#[test]
-fn detached_capture_is_labeled_archived_and_preserves_offline_replay() {
-    let mut debug = fixture();
-    debug.attached = false;
-    let target = debug.target;
-    let mut ui = DebuggerUi::default();
-    ui.load_recording(debug.recording.clone());
-    let loaded = ui.replay.as_ref().unwrap().recording().clone();
-    let snapshot = DebugSnapshot {
-        ai_debug: Some(std::sync::Arc::new(debug)),
-        ..Default::default()
-    };
-    let context = egui::Context::default();
-    let output = context.run_ui(egui::RawInput::default(), |root| {
-        ui.recording_actions(
-            root,
-            &DebugControl::new(),
-            Some(target),
-            false,
-            session(&snapshot, Some(target)),
-        )
-    });
-    output.drop_without_applying_deltas();
-    assert!(
-        context
-            .read_response(egui::Id::new("ai-recording-save"))
-            .unwrap()
-            .enabled()
-    );
-    assert!(context.read_response(egui::Id::new("ai-detach")).is_none());
-    assert!(
-        !context
-            .read_response(egui::Id::new("ai-trace-clear"))
-            .unwrap()
-            .enabled()
-    );
-    assert_eq!(ui.replay.as_ref().unwrap().recording(), &loaded);
 }

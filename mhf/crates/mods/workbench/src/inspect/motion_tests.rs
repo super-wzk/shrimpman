@@ -44,6 +44,7 @@ fn native_resource_paths_keep_motion_holes_aliases_groups_and_real_sources() {
     assert_eq!(document.bytes(first), Some(clip.as_slice()));
     assert_eq!(document.bytes(first), document.bytes(alias));
     assert_eq!(document.nodes[first].range, document.nodes[alias].range);
+    assert!(document.nodes[first].deferred && document.nodes[alias].deferred);
     assert_eq!(
         document
             .resource_address(root, &context, None)
@@ -71,6 +72,10 @@ fn native_resource_paths_keep_motion_holes_aliases_groups_and_real_sources() {
         "motion/玩家 %25%23.mot#0/1/tracks/0/channels/0",
     );
     assert_eq!(expanded.nodes[channel].kind, Kind::Channel);
+    assert!(!expanded.nodes[first].deferred && expanded.nodes[alias].deferred);
+    assert!(Arc::ptr_eq(&expanded.buffers[0], &document.buffers[0]));
+    assert_eq!(expanded.nodes[channel].range, 60..80);
+    assert_eq!(expanded.bytes(channel), Some(&clip[32..]));
     assert_eq!(
         expanded
             .resource_address(root, &context, None)

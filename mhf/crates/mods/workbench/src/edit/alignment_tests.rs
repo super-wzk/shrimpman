@@ -103,6 +103,7 @@ fn mha_rebuilds_allocations_across_size_plus_24_boundaries() {
         (489, 488, 512),
         (488, 512, 1024),
         (512, 0, 512),
+        (0, 489, 1024),
     ] {
         let original = vec![0x41; old_size];
         let replacement = vec![0x42; new_size];
@@ -160,25 +161,6 @@ fn mha_rebuilds_allocations_across_size_plus_24_boundaries() {
             }
         }
     }
-}
-
-#[test]
-fn mha_can_replace_an_allocated_empty_member_without_moving_its_start() {
-    let source = mha(&[&[], b"sibling"], &[Some(0), Some(1)]);
-    let updated = repack::replace(Kind::Mha, &source, 24..24, &[0x51; 489]).unwrap();
-    let parsed = MhaArchive::parse(&updated, 2).unwrap();
-    assert_eq!(parsed.entries[0].entry.offset, 24);
-    assert_eq!(parsed.entries[0].padded_size, 1024);
-    assert_eq!(
-        parsed.entries[0].entry.payload(&updated).unwrap(),
-        &[0x51; 489]
-    );
-    assert_eq!(parsed.entries[1].entry.offset, 1048);
-    assert_eq!(
-        parsed.entries[1].entry.payload(&updated).unwrap(),
-        b"sibling"
-    );
-    assert_eq!(parsed.header.names_offset, 1560);
 }
 
 fn assert_momo_layout(bytes: &[u8], offsets: [u32; 3], eof: usize) {

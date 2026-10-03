@@ -5,8 +5,8 @@ use egui::{Context, InputState, Key};
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputSettings {
-    species: u8,
-    variant: u8,
+    pub(super) species: u8,
+    pub(super) variant: u8,
     pub(super) speed: f32,
     pub(super) shortcuts: [Option<MonsterAction>; 4],
 }
@@ -23,14 +23,6 @@ impl Default for InputSettings {
 }
 
 impl InputSettings {
-    pub(super) fn species(&self) -> u8 {
-        self.species
-    }
-
-    pub(super) fn variant(&self) -> u8 {
-        self.variant
-    }
-
     pub(super) fn select_species(&mut self, species: u8) {
         if self.species != species {
             self.species = species;

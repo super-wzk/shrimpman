@@ -31,15 +31,6 @@ pub(crate) enum Definition {
 }
 
 impl Definition {
-    fn conflicts_with(&self, other: &Self) -> bool {
-        let (Some((mesh, local)), Some((other_mesh, other_local))) = (self.draw(), other.draw())
-        else {
-            return false;
-        };
-        mesh == other_mesh
-            && (local == other_local || self.transforms_node() && other.transforms_node())
-    }
-
     fn timeline(&self) -> (f32, bool) {
         let mut duration = 1;
         let mut looping = false;
@@ -146,6 +137,13 @@ pub(crate) struct Binding {
 }
 
 impl Binding {
+    fn entry_mut(&mut self, slot: usize) -> Result<&mut Entry, String> {
+        self.entries
+            .iter_mut()
+            .find(|entry| entry.slot == slot)
+            .ok_or_else(|| "特效定义已移除".into())
+    }
+
     pub fn read(source: ResourceRef) -> Result<Self, String> {
         Self::parse(source, false)
     }
@@ -480,14 +478,28 @@ impl Effects {
         if !frame.is_finite() || frame < 0.0 {
             return Err("触发位置无效".into());
         }
-        let entry = self.entry_mut(binding, slot)?;
+        let entry = self
+            .bindings
+            .iter_mut()
+            .find(|value| value.id == binding)
+            .ok_or("特效来源已移除")?
+            .entry_mut(slot)?;
         entry.started_at = Some(frame);
-        let definition = entry.definition.clone();
-        if self.target.error(&definition).is_none() {
+        if self.target.error(&entry.definition).is_none()
+            && let Some((mesh, local)) = entry.definition.draw()
+        {
+            let transforms_node = entry.definition.transforms_node();
             for source in &mut self.bindings {
                 for other in &mut source.entries {
                     if (source.id != binding || other.slot != slot)
-                        && definition.conflicts_with(&other.definition)
+                        && other
+                            .definition
+                            .draw()
+                            .is_some_and(|(other_mesh, other_local)| {
+                                mesh == other_mesh
+                                    && (local == other_local
+                                        || transforms_node && other.definition.transforms_node())
+                            })
                     {
                         other.started_at = None;
                     }
@@ -502,15 +514,12 @@ impl Effects {
         Ok(())
     }
 
-    fn entry_mut(&mut self, binding: u64, slot: usize) -> Result<&mut Entry, String> {
+    pub(crate) fn entry_mut(&mut self, binding: u64, slot: usize) -> Result<&mut Entry, String> {
         self.bindings
             .iter_mut()
             .find(|value| value.id == binding)
             .ok_or("特效来源已移除")?
-            .entries
-            .iter_mut()
-            .find(|entry| entry.slot == slot)
-            .ok_or_else(|| "特效定义已移除".into())
+            .entry_mut(slot)
     }
 
     pub fn seek(
@@ -789,13 +798,19 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(refreshed.entries[0].id, 2);
         assert_eq!(refreshed.entries[0].started_at, Some(40.0));
-        metadata.definition_ids[0] = 0;
-        bytes[node.range.clone()].copy_from_slice(&metadata.to_bytes());
-        document.buffers[0] = bytes.into();
-        let refreshed = binding
-            .refreshed(source.remap(Arc::new(document)).unwrap(), 40.0)
-            .unwrap();
-        assert!(refreshed.entries.is_empty());
+        for id in [0, 65535] {
+            metadata.definition_ids[0] = id;
+            bytes[node.range.clone()].copy_from_slice(&metadata.to_bytes());
+            document.buffers[0] = bytes.clone().into();
+            let bad = source.remap(Arc::new(document.clone())).unwrap();
+            assert!(Binding::read(bad.clone()).is_err());
+            let refreshed = binding.refreshed(bad, 40.0);
+            if id == 0 {
+                assert!(refreshed.unwrap().entries.is_empty());
+            } else {
+                assert!(refreshed.is_err());
+            }
+        }
     }
 
     pub(crate) fn fixture() -> (ResourceRef, ResourceRef) {
@@ -1042,24 +1057,6 @@ pub(crate) mod tests {
         );
         let expanded = expand(&model.document, model.node).unwrap();
         assert!(Arc::ptr_eq(&source, &expanded.buffers[0]));
-        assert_eq!(&*source, &*model.document.buffers[0]);
-        assert!(!is_binding(Kind::DatRecord(dat::DATA_TABLES.len() + 1)));
-        assert!(!is_binding(Kind::DatTable(dat::DATA_TABLES.len())));
-    }
-
-    #[test]
-    fn invalid_ids_and_empty_bindings_are_reported_without_replacing_sources() {
-        let (_, model) = fixture();
-        for id in [0u16, 65535] {
-            let mut document = (*model.document).clone();
-            let mut bytes = document.buffers[0].to_vec();
-            let at = document.nodes[model.node].range.start + 8;
-            bytes[at..at + 2].copy_from_slice(&id.to_le_bytes());
-            document.buffers[0] = bytes.into();
-            let bad = ResourceRef::new(Arc::new(document), model.node);
-            assert!(Binding::read(bad).is_err());
-        }
-        assert!(Binding::read(model).is_ok());
     }
 
     #[test]

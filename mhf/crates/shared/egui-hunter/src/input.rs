@@ -88,16 +88,13 @@ impl NavigationInput {
             .unwrap_or(self.time + f64::from(raw.predicted_dt.max(0.0)))
             .max(self.time);
         engagement::prepare_input(ctx, raw.viewport_id);
-        if raw.events.iter().any(engagement::native_activity) {
+        let native_input = raw.events.iter().any(engagement::native_activity);
+        if native_input {
             self.device = InputDevice::KeyboardMouse;
-            // Real input wins this frame. A held stick must be released or
-            // changed before it can take over from keyboard/mouse again.
-            self.held = state;
-            self.next_repeat = None;
-            return;
         }
-        if !raw.focused {
-            // Holding A while returning to the window must not activate a button.
+        if native_input || !raw.focused {
+            // Real input wins; after focus loss or native input, require a new
+            // controller edge before navigation or activation can resume.
             self.held = state;
             self.next_repeat = None;
             return;

@@ -206,41 +206,34 @@ impl App {
         let list_width = (width * 0.28).clamp(248.0, 272.0);
         ui.spacing_mut().item_spacing.x = gap;
         ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(list_width, height),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    Panel::new("").show(ui, |ui| {
-                        let padding = ui.spacing().window_margin.sum().y
-                            + ui.visuals().window_stroke.width * 2.0;
-                        let content_height = (height - padding).max(0.0);
-                        ui.set_min_height(content_height);
-                        self.mod_list(ui, (content_height - 76.0).max(0.0));
-                    });
-                },
-            );
-            ui.allocate_ui_with_layout(
-                egui::vec2(width - list_width - gap, height),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    Panel::new("").show(ui, |ui| {
-                        let padding = ui.spacing().window_margin.sum().y
-                            + ui.visuals().window_stroke.width * 2.0;
-                        let content_height = (height - padding).max(0.0);
-                        ui.set_min_height(content_height);
-                        egui::ScrollArea::vertical()
-                            .id_salt(("mod_details", self.selected.as_deref()))
-                            .content_margin(egui::Margin {
-                                right: 12,
-                                ..egui::Margin::ZERO
-                            })
-                            .max_height(content_height)
-                            .min_scrolled_height(0.0)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| self.details(ui));
-                    });
-                },
-            );
+            for (list, width) in [(true, list_width), (false, width - list_width - gap)] {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        Panel::new("").show(ui, |ui| {
+                            let padding = ui.spacing().window_margin.sum().y
+                                + ui.visuals().window_stroke.width * 2.0;
+                            let content_height = (height - padding).max(0.0);
+                            ui.set_min_height(content_height);
+                            if list {
+                                self.mod_list(ui, (content_height - 76.0).max(0.0));
+                            } else {
+                                egui::ScrollArea::vertical()
+                                    .id_salt(("mod_details", self.selected.as_deref()))
+                                    .content_margin(egui::Margin {
+                                        right: 12,
+                                        ..egui::Margin::ZERO
+                                    })
+                                    .max_height(content_height)
+                                    .min_scrolled_height(0.0)
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| self.details(ui));
+                            }
+                        });
+                    },
+                );
+            }
         });
     }
 

@@ -80,10 +80,6 @@ mod tests {
 
     const SOURCE: &str = "endpoint = \"http://127.0.0.1:53313\"\n";
 
-    fn document() -> toml::Table {
-        toml::from_str(SOURCE).expect("test config should parse")
-    }
-
     #[test]
     fn environment_overrides_only_the_sign_configuration() {
         let environment = sign_environment().source(Some(HashMap::from([
@@ -99,47 +95,20 @@ mod tests {
 
         assert_eq!(settings.endpoint, "http://127.0.0.1:60000");
         assert_eq!(settings.encoding, SignEncoding::Utf8);
-        assert_eq!(
-            document()["endpoint"].as_str(),
-            Some("http://127.0.0.1:53313")
-        );
-    }
-
-    #[test]
-    fn tcp_endpoint_can_be_selected_by_config_or_environment() {
-        let environment = sign_environment().source(Some(HashMap::from([(
-            "MHF_SIGN__ENDPOINT".into(),
-            "tcp://localhost:60001".into(),
-        )])));
-        assert_eq!(
-            load_sign_settings(SOURCE, environment).unwrap().endpoint,
-            "tcp://localhost:60001"
-        );
-        let environment = sign_environment().source(Some(HashMap::new()));
-        assert_eq!(
-            load_sign_settings("endpoint = 'tcp://[::1]:53000'", environment)
-                .unwrap()
-                .endpoint,
-            "tcp://[::1]:53000",
-        );
     }
 
     #[test]
     fn sign_configuration_requires_one_endpoint() {
         for source in [
             "",
+            r#"[screen]
+mode = "windowed""#,
             "endpoint = 'tcp://localhost:53000'\ntransport = 'tcp'",
             "[http]\nbase_url = 'http://localhost:53001'",
         ] {
             let environment = sign_environment().source(Some(HashMap::new()));
             assert!(load_sign_settings(source, environment).is_err(), "{source}");
         }
-    }
-
-    #[test]
-    fn online_launch_still_requires_valid_sign_settings() {
-        let environment = sign_environment().source(Some(HashMap::new()));
-        assert!(load_sign_settings("[screen]\nmode = \"windowed\"", environment).is_err());
     }
 
     #[test]

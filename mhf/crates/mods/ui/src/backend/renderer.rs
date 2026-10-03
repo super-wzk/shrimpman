@@ -273,7 +273,13 @@ impl Renderer {
     }
 
     fn apply_texture_delta(&mut self, texture_id: TextureId, delta: &ImageDelta) -> Result<()> {
-        let pixels = image_pixels(&delta.image);
+        let egui::ImageData::Color(image) = &delta.image;
+        let pixels = image
+            .pixels
+            .iter()
+            .copied()
+            .map(Bgra::from)
+            .collect::<Vec<_>>();
         let size = delta.image.size();
 
         if let Some([x, y]) = delta.pos {
@@ -438,12 +444,6 @@ impl Texture {
             self.handle = Some(handle);
         }
         Ok(())
-    }
-}
-
-fn image_pixels(image: &egui::ImageData) -> Vec<Bgra> {
-    match image {
-        egui::ImageData::Color(image) => image.pixels.iter().copied().map(Bgra::from).collect(),
     }
 }
 

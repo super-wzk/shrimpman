@@ -35,12 +35,11 @@ impl MaterialHeader {
         if (bytes[0] as i8) < 0 {
             return Err(Error::new(offset, "negative material count"));
         }
-        let mut unknown = [0; 15];
-        unknown.copy_from_slice(&bytes[1..]);
+
         Ok(Self {
             offset,
             count: bytes[0],
-            unknown,
+            unknown: bytes[1..].try_into().unwrap(),
         })
     }
 }
@@ -119,10 +118,10 @@ impl<'a> GroupedMaterials<'a> {
             let mut records = Vec::with_capacity(usize::from(header.count));
             for _ in 0..header.count {
                 let offset = cursor.position() as usize;
-                let mut bytes = [0; EXTENDED_RECORD_SIZE];
-                cursor
-                    .read_exact(&mut bytes[..stride])
-                    .map_err(|_| Error::new(offset, "truncated material parameter record"))?;
+                let bytes = source
+                    .get(offset..offset + stride)
+                    .ok_or_else(|| Error::new(offset, "truncated material parameter record"))?;
+                cursor.set_position((offset + stride) as u64);
                 let color = |start| {
                     std::array::from_fn(|i| {
                         let at = start + i * 4;

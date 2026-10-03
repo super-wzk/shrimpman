@@ -166,27 +166,24 @@ impl MotionPlan {
 
 fn supported_key_values(key: Keyframe) -> bool {
     match key {
-        Keyframe::I16Pair { .. } | Keyframe::I16Quad { .. } => true,
-        Keyframe::Mixed12 { unknown_00, .. } => matches!(unknown_00, 0x10000 | 0x20000),
+        Keyframe::Mixed12 { unknown_00, .. } | Keyframe::F32Five { unknown_00, .. }
+            if !matches!(unknown_00, 0x10000 | 0x20000) =>
+        {
+            false
+        }
+        Keyframe::I16Pair { .. } | Keyframe::I16Quad { .. } | Keyframe::Mixed12 { .. } => true,
         Keyframe::F32Pair { value_bits, .. } => f32::from_bits(value_bits).is_finite(),
         Keyframe::F32Quad {
             value_bits,
             parameter_bits,
             ..
-        } => {
-            f32::from_bits(value_bits).is_finite()
-                && parameter_bits
-                    .into_iter()
-                    .all(|bits| f32::from_bits(bits).is_finite())
         }
-        Keyframe::F32Five {
-            unknown_00,
+        | Keyframe::F32Five {
             value_bits,
             parameter_bits,
             ..
         } => {
-            matches!(unknown_00, 0x10000 | 0x20000)
-                && f32::from_bits(value_bits).is_finite()
+            f32::from_bits(value_bits).is_finite()
                 && parameter_bits
                     .into_iter()
                     .all(|bits| f32::from_bits(bits).is_finite())
@@ -508,8 +505,7 @@ unsafe fn free_compiled(client: Client, compiled: usize) -> Result<(), String> {
 pub(super) struct NativeMotion {
     pub(super) source: ResourceRef,
     compiled: Option<usize>,
-    targets: Vec<usize>,
-    offsets: Vec<u32>,
+    bindings: Vec<(usize, u32)>,
 }
 
 impl NativeMotion {
@@ -537,17 +533,14 @@ impl NativeMotion {
     }
 
     pub(super) fn target_nodes(&self) -> impl Iterator<Item = usize> + '_ {
-        self.targets.iter().copied()
+        self.bindings.iter().map(|&(node, _)| node)
     }
 
     /// # Safety
     /// The retained compilation and every target skeleton node must still be live.
     pub(super) unsafe fn activate(&self) -> Result<(), String> {
         let compiled = self.compiled.ok_or("动画编译资源已释放")?;
-        if self.offsets.len() != self.targets.len() {
-            return Err("动画轨道和绑定节点数量不一致".into());
-        }
-        for (&node, &offset) in self.targets.iter().zip(&self.offsets) {
+        for &(node, offset) in &self.bindings {
             unsafe {
                 put(node + NODE_MOTION, compiled);
                 put(node + NODE_TRACK_OFFSET, offset);
@@ -620,12 +613,12 @@ impl NativeMotion {
         Ok(Self {
             source,
             compiled: Some(compiled),
-            targets: binding
+            bindings: binding
                 .targets
                 .into_iter()
-                .map(|target| target.address)
+                .zip(offsets)
+                .map(|(target, offset)| (target.address, offset))
                 .collect(),
-            offsets,
         })
     }
 
@@ -639,7 +632,7 @@ impl NativeMotion {
         };
         let locked = unsafe { AllocationListLock::acquire(client) };
         if unsafe { locked.contains(client, compiled) }? {
-            for &node in &self.targets {
+            for &(node, _) in &self.bindings {
                 // Releasing an older clip must not erase a replacement binding.
                 if unsafe { get::<usize>(node + NODE_MOTION) } == compiled {
                     unsafe {

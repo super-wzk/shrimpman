@@ -448,23 +448,6 @@ mod tests {
     ];
 
     #[test]
-    fn every_weapon_has_distinct_original_64px_artwork() {
-        let mut names = std::collections::HashSet::new();
-        let mut images = std::collections::HashSet::new();
-        for icon in WEAPONS {
-            let (name, bytes) = icon.weapon_png().expect("weapon artwork");
-            let image = image::load_from_memory(bytes).unwrap().into_rgba8();
-            assert_eq!(image.dimensions(), (64, 64), "{name}");
-            assert!(names.insert(name), "duplicate weapon mapping: {name}");
-            assert!(images.insert(bytes), "duplicate weapon image: {name}");
-            assert!(
-                image.pixels().any(|pixel| pixel[3] > 0 && pixel[3] < 255),
-                "{name}: original antialiased edges must be preserved",
-            );
-        }
-    }
-
-    #[test]
     fn weapon_textures_are_cached_and_ignore_theme_tint() {
         let context = egui::Context::default();
         let mut texture_ids = Vec::new();

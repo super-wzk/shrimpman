@@ -1,6 +1,6 @@
-mod events;
+pub mod events;
 
-use egui::{Context, Event, Id, Key, RawInput, Rect, Response, pos2, vec2};
+use egui::{Context, Event, Id, Key, Rect, Response, vec2};
 use egui_hunter::{Button, ScrollPanel, Theme};
 use events::{key, pointer};
 
@@ -22,13 +22,8 @@ fn frame(
     enabled: impl Fn(usize) -> bool,
 ) -> ListFrame {
     let mut result = None;
-    let mut output = ctx.run_ui(
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 700.0))),
-            events,
-            ..Default::default()
-        },
-        |ui| {
+    let (_, mut output) =
+        events::frame(ctx, events::input(vec2(640.0, 700.0), None, events), |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 let mut rows = Vec::new();
                 let mut panel = ScrollPanel::new(Id::new("archive"), "委托档案");
@@ -57,11 +52,9 @@ fn frame(
                     after,
                 });
             });
-        },
-    );
+        });
     let mut result = result.unwrap();
     result.accessibility = output.platform_output.accesskit_update.take();
-    output.drop_without_applying_deltas();
     result
 }
 
@@ -98,8 +91,7 @@ fn assert_active_row(ctx: &Context, frame: &ListFrame, index: usize) {
 
 #[test]
 fn tab_then_down_crosses_row_six_and_scrolls_instead_of_focusing_the_next_panel() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     frame(&ctx, vec![], 10_000, |_| true);
     let first = frame(&ctx, vec![key(Key::Tab)], 10_000, |_| true);
     assert_active_row(&ctx, &first, 0);
@@ -126,8 +118,7 @@ fn tab_then_down_crosses_row_six_and_scrolls_instead_of_focusing_the_next_panel(
 
 #[test]
 fn list_navigation_clamps_at_logical_ends_and_handles_page_jumps_and_shrinking_data() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     frame(&ctx, vec![], 10_000, |_| true);
     frame(&ctx, vec![key(Key::Tab)], 10_000, |_| true);
     let output = frame(&ctx, vec![key(Key::ArrowUp)], 10_000, |_| true);
@@ -153,8 +144,7 @@ fn list_navigation_clamps_at_logical_ends_and_handles_page_jumps_and_shrinking_d
 
 #[test]
 fn disabled_offscreen_rows_are_skipped_without_rendering_them() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let enabled = |row| row != 0 && row != 9_999 && !(3..500).contains(&row);
     frame(&ctx, vec![], 10_000, enabled);
     let output = frame(&ctx, vec![key(Key::Tab)], 10_000, enabled);
@@ -175,8 +165,7 @@ fn disabled_offscreen_rows_are_skipped_without_rendering_them() {
 
 #[test]
 fn tab_can_leave_the_list_and_external_clicks_are_not_overridden() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     frame(&ctx, vec![], 10_000, |_| true);
     frame(&ctx, vec![key(Key::Tab)], 10_000, |_| true);
     frame(&ctx, vec![key(Key::End)], 10_000, |_| true);

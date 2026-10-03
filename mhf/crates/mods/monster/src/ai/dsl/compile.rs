@@ -26,16 +26,9 @@ pub struct Compiled {
     pub debug_info: DebugInfo,
 }
 
-/// A name the compiler owns (spec §6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Command {
-    /// Author-writable: `opcode` followed by exactly `args` literal bytes.
-    opcode: &'static [u8],
-    args: usize,
-}
-
-fn reserved_command(name: &str) -> Option<Command> {
-    let (opcode, args): (&[u8], usize) = match name {
+/// A reserved command's opcode and number of literal byte arguments (spec §6).
+fn reserved_command(name: &str) -> Option<(&'static [u8], usize)> {
+    Some(match name {
         "stop" => (&[0x68], 0),
         "clear_requests" => (&[0x1e], 0),
         "mark_unhandled" => (&[0x0d, 0x04], 0),
@@ -44,8 +37,7 @@ fn reserved_command(name: &str) -> Option<Command> {
         "area_end" => (&[0xff, 0xfb], 0),
         "route_move_end" => (&[0xff, 0xfe], 0),
         _ => return None,
-    };
-    Some(Command { opcode, args })
+    })
 }
 
 /// Whether `name` belongs to the command vocabulary the compiler owns. The
@@ -664,9 +656,9 @@ impl Compiler<'_> {
                     out.extend_from_slice(&bytecode::encode_action(*group, *id, args[0]));
                 }
                 Callee::Name(name) => {
-                    if let Some(command) = reserved_command(name) {
-                        self.require_args(statement, args, command.args, &format!("'{name}'"))?;
-                        out.extend_from_slice(command.opcode);
+                    if let Some((opcode, count)) = reserved_command(name) {
+                        self.require_args(statement, args, count, &format!("'{name}'"))?;
+                        out.extend_from_slice(opcode);
                         out.extend_from_slice(args);
                     } else if let Some(&(group, id)) = self.names.actions.get(name.as_str()) {
                         self.require_args(statement, args, 1, "an action call")?;
@@ -1235,10 +1227,7 @@ impl Document {
             files: self.source_files.clone(),
             mappings: Vec::new(),
         };
-        let mut program = match self.base {
-            Base::Empty => assemble_empty(self, states, events, &mut debug_info)?,
-            Base::Native => assemble_native(self, states, events, &mut debug_info)?,
-        };
+        let mut program = assemble(self, states, events, &mut debug_info)?;
         self.encode_native_functions(&mut compiler, &mut program, &mut debug_info)?;
         program.automatic_slots = allocation.automatic.iter().copied().collect();
         program.validate_lossless()?;
@@ -1358,72 +1347,19 @@ impl Document {
     }
 }
 
-/// Build a self-contained graph: the descriptor, the state table, and one
-/// script per declared entry.  An index the document does not write is empty.
-fn assemble_empty(
+/// An empty base owns its complete graph; a native base writes only declared
+/// slots. Native tables carry no length, preserving every undeclared entry.
+fn assemble(
     document: &Document,
     states: Vec<(u8, Option<EncodedScript>)>,
     events: Vec<(u8, Option<EncodedScript>)>,
     debug_info: &mut DebugInfo,
 ) -> Result<Program> {
-    if states.is_empty() {
+    if document.base == Base::Empty && states.is_empty() {
         return Err(Error::new(
             "an empty base needs a states block: the interpreter enters through the state table's entry 0, and there is no native table to inherit (spec §8)",
         ));
     }
-
-    let main_index = 1;
-    let mut nodes = vec![Node::Table(Table::new()), Node::Table(Table::new())];
-    let mut relocations = Vec::new();
-    let mut root = Table::new();
-    root.insert(0, main_index);
-    let mut main = Table::new();
-
-    for (index, body) in states {
-        let Some(script) = body else { continue };
-        let node = push_script(&mut nodes, &mut relocations, script, debug_info);
-        main.insert(usize::from(index), node);
-    }
-    if main.get(0).is_none() {
-        return Err(Error::new(
-            "state index 0 needs a script: the interpreter enters through the state table's entry 0 (spec §8)",
-        ));
-    }
-
-    for (slot, body) in events {
-        let Some(encoded) = body else { continue };
-        let script = push_script(&mut nodes, &mut relocations, encoded, debug_info);
-        let cell = nodes.len();
-        nodes.push(Node::Table(Table::from_entries([(0, Some(script))])));
-        root.insert(EVENT_SLOTS[usize::from(slot)].root_index, cell);
-    }
-
-    nodes[main_index] = Node::Table(main);
-    nodes[0] = Node::Table(root);
-    Ok(Program {
-        species: document.species,
-        base: Base::Empty,
-        root: 0,
-        nodes,
-        automatic_slots: Vec::new(),
-        relocations,
-    })
-}
-
-/// Build a `base native;` declaration: every index the document does not write
-/// keeps the native entry at the same position.
-///
-/// The compiler holds the native layout but never the native data, so it writes
-/// nothing it was not told to: a table carries only the declared indices and no
-/// length (spec §8.1).  The state table gets a local node only when the
-/// document declares a state at all; a document that declares none keeps the
-/// whole descriptor.
-fn assemble_native(
-    document: &Document,
-    states: Vec<(u8, Option<EncodedScript>)>,
-    events: Vec<(u8, Option<EncodedScript>)>,
-    debug_info: &mut DebugInfo,
-) -> Result<Program> {
     let mut nodes = vec![Node::Table(Table::new())];
     let mut relocations = Vec::new();
     let mut root = Table::new();
@@ -1439,14 +1375,21 @@ fn assemble_native(
                     let node = push_script(&mut nodes, &mut relocations, encoded, debug_info);
                     main.insert(index, node);
                 }
-                // A bare entry clears the slot it names.
-                None => main.clear(index),
+                None if document.base == Base::Native => main.clear(index),
+                None => {}
             };
         }
-        if main.declares(0) && main.get(0).is_none() {
-            return Err(Error::new(
-                "clearing state index 0 would leave the state table unenterable: the interpreter enters through its entry 0 (spec §8)",
-            ));
+        if main.get(0).is_none() {
+            if document.base == Base::Empty {
+                return Err(Error::new(
+                    "state index 0 needs a script: the interpreter enters through the state table's entry 0 (spec §8)",
+                ));
+            }
+            if main.declares(0) {
+                return Err(Error::new(
+                    "clearing state index 0 would leave the state table unenterable: the interpreter enters through its entry 0 (spec §8)",
+                ));
+            }
         }
         nodes[main_index] = Node::Table(main);
         root.insert(0, main_index);
@@ -1461,15 +1404,15 @@ fn assemble_native(
                 nodes.push(Node::Table(Table::from_entries([(0, Some(script))])));
                 root.insert(root_index, cell);
             }
-            // A bare entry clears the slot it names.
-            None => root.clear(root_index),
+            None if document.base == Base::Native => root.clear(root_index),
+            None => {}
         };
     }
 
     nodes[0] = Node::Table(root);
     Ok(Program {
         species: document.species,
-        base: Base::Native,
+        base: document.base,
         root: 0,
         nodes,
         automatic_slots: Vec::new(),

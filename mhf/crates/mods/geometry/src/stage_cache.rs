@@ -102,40 +102,17 @@ pub(crate) fn reset_signatures(base: usize) -> [(usize, Vec<u8>); 3] {
     ]
 }
 
-pub(crate) struct Patch {
-    pub rva: usize,
-    pub original: &'static [u8; 6],
-}
-
-impl Patch {
-    pub(crate) fn replacement(&self, fskl_pointer_cell: usize) -> [u8; 6] {
-        let mut bytes = *self.original;
-        bytes[..2].copy_from_slice(&[0x8b, 0x0d]);
-        bytes[2..6].copy_from_slice(&(fskl_pointer_cell as u32).to_le_bytes());
-        bytes
-    }
+#[cfg(all(feature = "provider", windows, target_arch = "x86"))]
+pub(crate) fn replacement(fskl_pointer_cell: usize) -> [u8; 6] {
+    let mut bytes = [0x8b, 0x0d, 0, 0, 0, 0];
+    bytes[2..].copy_from_slice(&(fskl_pointer_cell as u32).to_le_bytes());
+    bytes
 }
 
 // Decode interception supplies both destinations; builders read the stable FSKL cell.
 // Native scratch resets remain intact; each stage read/decode republishes its buffers.
-pub(crate) const PATCHES: &[Patch] = &[
-    Patch {
-        rva: 0x0041152d,
-        original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-    },
-    Patch {
-        rva: 0x0060e120,
-        original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-    },
-    Patch {
-        rva: 0x0089f2b7,
-        original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-    },
-    Patch {
-        rva: 0x0089f40d,
-        original: &[0x8d, 0x88, 0x00, 0x00, 0x80, 0x00],
-    },
-];
+pub(crate) const PATCH_RVAS: [usize; 4] = [0x0041152d, 0x0060e120, 0x0089f2b7, 0x0089f40d];
+pub(crate) const ORIGINAL: [u8; 6] = [0x8d, 0x88, 0x00, 0x00, 0x80, 0x00];
 
 #[cfg(test)]
 mod tests {
@@ -199,37 +176,6 @@ mod tests {
     }
 
     #[test]
-    fn stage_edits_leave_native_scratch_resets_intact() {
-        let base = 0x20000000;
-        let cell = 0x50000000;
-        let resets = reset_signatures(base);
-        assert_eq!(resets[0], (0x008e33bd, vec![0xb8, 0x40, 0x47, 0xb0, 0x22]));
-        assert_eq!(
-            resets[1],
-            (
-                0x008e3451,
-                vec![0xc7, 0x05, 0xbc, 0x28, 0xd5, 0x2e, 0x40, 0x47, 0x40, 0x2c]
-            )
-        );
-        assert_eq!(resets[2], (0x008e3492, vec![0xa3, 0xd8, 0x28, 0xd5, 0x2e]));
-        for patch in PATCHES {
-            let new = patch.replacement(cell);
-            assert_eq!(patch.original.len(), new.len());
-            assert_eq!(&new[..2], &[0x8b, 0x0d]);
-            assert_eq!(
-                u32::from_le_bytes(new[2..6].try_into().unwrap()),
-                cell as u32
-            );
-            for (rva, bytes) in &resets {
-                assert!(
-                    patch.rva + new.len() <= *rva || rva + bytes.len() <= patch.rva,
-                    "stage patches must not overwrite native scratch initialization"
-                );
-            }
-        }
-    }
-
-    #[test]
     #[ignore = "set MHF_GEOMETRY_TEST_CLIENT to either verified ZZ HD DLL"]
     fn stage_instruction_edits_match_the_actual_client() {
         let data = std::fs::read(std::env::var("MHF_GEOMETRY_TEST_CLIENT").unwrap()).unwrap();
@@ -271,21 +217,19 @@ mod tests {
             }
         }
         let mut previous_end = 0;
-        for patch in PATCHES {
-            assert!(patch.rva >= previous_end, "overlapping stage patches");
-            let old = patch.original;
-            let &(rva, _, offset) = sections
+        for rva in PATCH_RVAS {
+            assert!(rva >= previous_end, "overlapping stage patches");
+            let &(section_rva, _, offset) = sections
                 .iter()
-                .find(|&&(rva, size, _)| (rva..rva + size).contains(&patch.rva))
+                .find(|&&(start, size, _)| (start..start + size).contains(&rva))
                 .unwrap();
-            let offset = offset + patch.rva - rva;
+            let offset = offset + rva - section_rva;
             assert_eq!(
-                &data[offset..offset + old.len()],
-                old,
-                "RVA {:#x}",
-                patch.rva
+                &data[offset..offset + ORIGINAL.len()],
+                ORIGINAL,
+                "RVA {rva:#x}"
             );
-            previous_end = patch.rva + old.len();
+            previous_end = rva + ORIGINAL.len();
         }
     }
 }

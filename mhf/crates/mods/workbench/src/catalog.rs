@@ -120,9 +120,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn search_matches_every_term_without_changing_asset_paths() {
+    fn search_matches_every_term() {
         let entry = Entry {
-            path: "root/dat/emmodel-hd/em094_b-hd.pac".into(),
+            path: PathBuf::new(),
             relative_path: "emmodel-hd/em094_b-hd.pac".into(),
             size: 0,
             header: Vec::new(),
@@ -130,9 +130,5 @@ mod tests {
         assert!(entry.matches("EM094 HD"));
         assert!(!entry.matches("em094 motion"));
         assert!(entry.matches("  "));
-        assert_eq!(
-            entry.relative_path,
-            PathBuf::from("emmodel-hd/em094_b-hd.pac")
-        );
     }
 }

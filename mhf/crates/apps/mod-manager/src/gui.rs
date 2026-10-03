@@ -316,7 +316,7 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        let baseline = snapshot.config.clone();
+        let baseline = snapshot.config.selections();
         let manager = self.manager.clone();
         self.start(context, "正在保存设置…", move || {
             let snapshot = manager.save(&baseline, &selections)?;

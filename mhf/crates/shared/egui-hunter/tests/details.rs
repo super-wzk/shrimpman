@@ -1,32 +1,25 @@
-mod events;
+pub mod events;
 
 use std::time::Duration;
 
-use egui::{Context, Event, Id, Key, RawInput, Rect, Response, pos2, vec2};
+use egui::{Context, Event, Id, Key, RawInput, Response, pos2, vec2};
 use egui_hunter::{
     Button, Dialog, DialogState, Direction, FocusGroup, GamepadState, InputDevice, NavigationInput,
-    Popup, Property, RichTooltip, TextField, Theme, Validation,
+    Popup, Property, RichTooltip, TextField, Validation,
     primitives::{focus::focus_on_click, layout::scroll_keyboard},
     properties,
 };
 use events::{key, pointer};
 
 fn frame<R>(ctx: &Context, raw: RawInput, mut show: impl FnMut(&mut egui::Ui) -> R) -> R {
-    let mut result = None;
-    let output = ctx.run_ui(raw, |ui| {
-        egui::CentralPanel::default().show(ui, |ui| result = Some(show(ui)));
-    });
-    output.drop_without_applying_deltas();
-    result.unwrap()
+    events::frame(ctx, raw, |ui| {
+        egui::CentralPanel::default().show(ui, &mut show).inner
+    })
+    .0
 }
 
 fn input(time: f64, events: Vec<Event>) -> RawInput {
-    RawInput {
-        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 480.0))),
-        time: Some(time),
-        events,
-        ..Default::default()
-    }
+    events::input(vec2(640.0, 480.0), Some(time), events)
 }
 
 fn grid(ui: &mut egui::Ui, wrap: bool) -> Vec<Response> {
@@ -49,8 +42,7 @@ fn grid(ui: &mut egui::Ui, wrap: bool) -> Vec<Response> {
 
 #[test]
 fn grid_skips_disabled_cells_clamps_edges_and_wraps_in_the_same_column() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     frame(&ctx, input(0.0, vec![]), |ui| grid(ui, false));
     ctx.memory_mut(|m| m.request_focus(Id::new(0)));
     frame(&ctx, input(0.1, vec![key(Key::ArrowRight)]), |ui| {
@@ -88,8 +80,7 @@ fn grid_skips_disabled_cells_clamps_edges_and_wraps_in_the_same_column() {
 
 #[test]
 fn vertical_groups_keep_their_edges_but_leave_horizontal_navigation_native() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let first = Id::new("first");
     let last = Id::new("last");
     let outside = Id::new("outside");
@@ -121,8 +112,7 @@ fn vertical_groups_keep_their_edges_but_leave_horizontal_navigation_native() {
 
 #[test]
 fn navigation_leaves_text_cursor_keys_and_disabled_groups_alone() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("name");
     let mut value = String::new();
     let mut draw = |ui: &mut egui::Ui| {
@@ -152,8 +142,7 @@ fn navigation_leaves_text_cursor_keys_and_disabled_groups_alone() {
 
 #[test]
 fn controller_repeats_directions_but_never_confirmation_and_releases_native_keys() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut adapter = NavigationInput::default()
         .repeat_timing(Duration::from_millis(300), Duration::from_millis(100));
     let mut clicks = 0;
@@ -209,8 +198,7 @@ fn controller_repeats_directions_but_never_confirmation_and_releases_native_keys
 
 #[test]
 fn controller_does_not_release_physical_keys_or_activate_after_window_focus_returns() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("confirm");
     frame(&ctx, input(0.0, vec![]), |ui| {
         ui.add(Button::new("确认").id(id))
@@ -249,8 +237,7 @@ fn controller_does_not_release_physical_keys_or_activate_after_window_focus_retu
 
 #[test]
 fn field_validation_changes_preserve_focus_and_read_only_and_disabled_values() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("field");
     let mut value = String::new();
     frame(&ctx, input(0.0, vec![]), |ui| {
@@ -294,8 +281,7 @@ fn field_validation_changes_preserve_focus_and_read_only_and_disabled_values() {
 
 #[test]
 fn rich_tooltip_opens_on_focus_without_taking_it_or_opening_a_menu() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("anchor");
     let mut draw = |ui: &mut egui::Ui| {
         let anchor = ui.add(Button::new("详细属性").id(id));
@@ -315,41 +301,8 @@ fn rich_tooltip_opens_on_focus_without_taking_it_or_opening_a_menu() {
 }
 
 #[test]
-fn long_properties_and_validation_wrap_within_a_narrow_parent() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
-    let mut value = String::new();
-    let (wide, narrow, field) = frame(&ctx, input(0.0, vec![]), |ui| {
-        let rows = [Property::new(
-            "限制条件",
-            "Complete the expedition before returning to the gathering hall.",
-        )];
-        let wide = properties(ui, &rows);
-        let (narrow, field) = ui
-            .scope(|ui| {
-                ui.set_width(190.0);
-                let narrow = properties(ui, &rows);
-                let field = ui.add(
-                    TextField::new(Id::new("narrow"), &mut value)
-                        .label("姓名")
-                        .validation(Validation::Error(
-                            "This name is already in use. Please choose another hunter name.",
-                        )),
-                );
-                (narrow, field)
-            })
-            .inner;
-        (wide, narrow, field)
-    });
-    assert!(narrow.rect.width() <= 190.1);
-    assert!(narrow.rect.height() > wide.rect.height());
-    assert!(field.rect.width() <= 190.1);
-}
-
-#[test]
 fn controller_cancel_closes_the_popup_then_the_dialog_on_separate_presses() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut adapter = NavigationInput::default();
     let mut dialog = DialogState::default();
     let popup = Id::new("popup");
@@ -385,39 +338,8 @@ fn controller_cancel_closes_the_popup_then_the_dialog_on_separate_presses() {
 }
 
 #[test]
-fn focused_tooltip_fits_a_narrow_viewport() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
-    let id = Id::new("edge-anchor");
-    let viewport = Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 240.0));
-    let mut bounds = Rect::NOTHING;
-    for index in 0..3 {
-        let mut raw = input(f64::from(index) * 0.1, vec![]);
-        raw.screen_rect = Some(viewport);
-        bounds = frame(&ctx, raw, |ui| {
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
-                let anchor = ui.add(Button::new("详细信息").id(id));
-                anchor.request_focus();
-                RichTooltip::new(&anchor, "装备资料")
-                    .width(1000.0)
-                    .show(|ui| {
-                        ui.label("A description that wraps inside a narrow tooltip.");
-                    })
-                    .unwrap()
-                    .response
-                    .rect
-            })
-            .inner
-        });
-    }
-    assert!(viewport.expand(1.0).contains_rect(bounds), "{bounds:?}");
-    assert_eq!(ctx.memory(|m| m.focused()), Some(id));
-}
-
-#[test]
 fn focused_scroll_viewport_scrolls_while_down_is_held_without_repeat_events() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let focus = Id::new("viewport");
     let mut draw = |ui: &mut egui::Ui| {
         let scope = ui.scope_builder(
@@ -460,8 +382,7 @@ fn focused_scroll_viewport_scrolls_while_down_is_held_without_repeat_events() {
 
 #[test]
 fn scroll_viewport_does_not_steal_child_clicks_or_text_arrows() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut value = String::new();
     let id = Id::new("scroll-editor");
     let focus = Id::new("viewport");

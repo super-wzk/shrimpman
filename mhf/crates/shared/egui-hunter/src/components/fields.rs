@@ -89,7 +89,6 @@ impl Widget for TextField<'_> {
 impl TextField<'_> {
     fn show_editor(self, ui: &mut Ui) -> Response {
         let tokens = Tokens::get(ui);
-        let density = crate::Density::get(ui);
         let enabled = ui.is_enabled();
         let visibility_id = self.id.with("visibility");
         let password_visible = self.password_visible;
@@ -152,7 +151,8 @@ impl TextField<'_> {
             ));
         }
         if password_visible.is_some() {
-            let width = density
+            let width = tokens
+                .density
                 .password_button_width()
                 .max(ui.spacing().icon_width_inner + ui.spacing().icon_spacing);
             editor = editor.suffix(Atom::custom(

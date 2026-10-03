@@ -1,4 +1,4 @@
-mod events;
+pub mod events;
 
 use egui::{Context, Event, Id, Key, Modifiers, RawInput, Rect, Response, Ui, pos2, vec2};
 use egui_hunter::{
@@ -154,12 +154,7 @@ impl Default for Host {
 impl Host {
     fn step(&mut self, events: Vec<Event>, pad: GamepadState) -> Scene {
         self.time += 0.016;
-        let mut raw = RawInput {
-            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(700.0, 1000.0))),
-            time: Some(self.time),
-            events,
-            ..Default::default()
-        };
+        let mut raw = events::input(vec2(700.0, 1000.0), Some(self.time), events);
         self.adapter.apply(&self.ctx, &mut raw, pad);
         let mut scene = None;
         self.ctx

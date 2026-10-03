@@ -1,8 +1,5 @@
 use super::*;
-
-fn put32(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
+use crate::test_support::dword as put32;
 
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 2048];
@@ -213,30 +210,6 @@ fn species_probability_links_have_five_four_byte_rows() {
     assert!(Emd::parse(&bytes).unwrap().directory_table(7, 0).is_err());
     put32(&mut bytes, 404, 0);
     assert!(Emd::parse(&bytes).unwrap().directory_table(7, 0).is_err());
-}
-
-#[test]
-fn newly_typed_fields_fit_their_records_without_covering_unknown_bytes() {
-    for (kind, stride) in [
-        (RecordKind::Parameters80, 80),
-        (RecordKind::Parameters90, 90),
-        (RecordKind::WeightedPair, 2),
-        (RecordKind::ProbabilityRow, 4),
-        (RecordKind::PartHealthRatios, 36),
-        (RecordKind::SpeciesParameter, 40),
-        (RecordKind::AngerProfile, 60),
-    ] {
-        let mut covered = vec![false; stride];
-        for field in kind.fields() {
-            let end = field.offset + field.scalar.size();
-            assert!(end <= stride);
-            assert!(covered[field.offset..end].iter().all(|byte| !byte));
-            covered[field.offset..end].fill(true);
-        }
-        if kind == RecordKind::Parameters90 {
-            assert!(covered[36..72].iter().all(|byte| !byte));
-        }
-    }
 }
 
 #[test]

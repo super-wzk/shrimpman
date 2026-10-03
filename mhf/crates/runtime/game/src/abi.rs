@@ -5,11 +5,8 @@ use windows::Win32::Foundation::HMODULE;
 const MHF_LAUNCH_PARAMS_SIZE: usize = 0x2010;
 const MHF_GLOBAL_DATA_SIZE: usize = 0x8ae0;
 
-pub(crate) fn copy_c_string(
-    field: &str,
-    destination: &mut [u8],
-    value: &[u8],
-) -> Result<(), String> {
+/// Copy bytes into a zero-terminated ABI field, preserving the field on overflow.
+pub fn copy_c_string(field: &str, destination: &mut [u8], value: &[u8]) -> Result<(), String> {
     if value.len() >= destination.len() {
         return Err(format!(
             "{field} is {} bytes; at most {} bytes are supported",

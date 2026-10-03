@@ -3,6 +3,8 @@
 #[cfg(feature = "base")]
 use mhf_base::MhfConfig;
 use mhf_config::{Registration, Store};
+#[cfg(feature = "base")]
+use mhf_game::copy_c_string;
 use mhf_game::{LaunchConfig, MhfLaunchParams32};
 use std::{
     env,
@@ -117,20 +119,6 @@ fn launch_params(config: &MhfConfig) -> Result<MhfLaunchParams32, String> {
         config.launch.proxy_address.to_string().as_bytes(),
     )?;
     Ok(params)
-}
-
-#[cfg(feature = "base")]
-fn copy_c_string(field: &str, destination: &mut [u8], value: &[u8]) -> Result<(), String> {
-    if value.len() >= destination.len() {
-        return Err(format!(
-            "{field} is {} bytes; at most {} bytes are supported",
-            value.len(),
-            destination.len().saturating_sub(1)
-        ));
-    }
-    destination.fill(0);
-    destination[..value.len()].copy_from_slice(value);
-    Ok(())
 }
 
 #[cfg(all(test, feature = "base"))]

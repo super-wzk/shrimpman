@@ -1,12 +1,7 @@
+pub mod support;
+
 use mhf_resource::sdt::{HITBOX_GROUP_STRIDE, HITBOX_SLOTS, HITBOX_STRIDE, Sdt};
-
-fn word(bytes: &mut [u8], offset: usize, value: u16) {
-    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
-
-fn dword(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
+use support::{dword, word};
 
 fn directory(size: usize, groups: usize) -> Vec<u8> {
     let mut bytes = vec![0; size];

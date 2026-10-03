@@ -15,7 +15,7 @@ fn saving_deltas_preserves_fresh_configuration_and_rejects_invalid_combinations(
     let initial = "# user configuration\n[video]\nvolume = 12\n[mods.\"mhf.base\"]\nenabled = false\nversion = '^1'\n[mods.\"mhf.base\".settings]\ncustom = 7 # preserve\n";
     fs::write(&path, initial).unwrap();
     let manager = Manager::new(path.clone(), Some(root.join("mods"))).unwrap();
-    let baseline = manager.load().unwrap().config;
+    let baseline = manager.load().unwrap().config.selections();
     // 另一个写入者更新了游戏设置，以及本次编辑未修改的版本字段。
     fs::write(
         &path,
@@ -47,7 +47,7 @@ fn saving_deltas_preserves_fresh_configuration_and_rejects_invalid_combinations(
     assert!(
         manager
             .save(
-                &changed.config,
+                &changed.config.selections(),
                 &BTreeMap::from([(
                     "missing.mod".into(),
                     Selection {

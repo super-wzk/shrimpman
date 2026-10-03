@@ -167,7 +167,7 @@ struct ResourceRuntime {
 
 enum ResourceBody {
     Records(Vec<RecordTable>),
-    Quest(QuestTable),
+    Quest(QuestTableDefinition),
 }
 
 struct RecordTable {
@@ -179,18 +179,6 @@ struct RecordTable {
     parts: u16,
     stride: u16,
     directory: Option<DirectoryEntry>,
-}
-
-struct QuestTable {
-    id: String,
-    root: u32,
-    count_root: u32,
-    category_stride: u16,
-    category_count_field: u16,
-    category_records_field: u16,
-    record_text_field: u16,
-    record_id_field: u16,
-    parts: u16,
 }
 
 /// Generate DAT and INF layouts for offline resource inspection.
@@ -245,8 +233,8 @@ pub(super) fn generate_inspection(
              category_count_field: {}, category_records_field: {},\n\
              record_text_field: {}, record_id_field: {}, parts: {},\n\
          }};\n",
-        layout.root,
-        layout.count_root,
+        layout.root_field,
+        layout.count_root_field,
         layout.category_stride,
         layout.category_count_field,
         layout.category_records_field,
@@ -358,20 +346,13 @@ fn expand_resource_layout(
             code_page,
             runtime,
             layout,
-        } => {
-            let quest = QuestTable {
-                id: layout.id,
-                root: layout.root_field,
-                count_root: layout.count_root_field,
-                category_stride: layout.category_stride,
-                category_count_field: layout.category_count_field,
-                category_records_field: layout.category_records_field,
-                record_text_field: layout.record_text_field,
-                record_id_field: layout.record_id_field,
-                parts: layout.parts,
-            };
-            (id, identity, code_page, runtime, ResourceBody::Quest(quest))
-        }
+        } => (
+            id,
+            identity,
+            code_page,
+            runtime,
+            ResourceBody::Quest(layout),
+        ),
     };
     let runtime = expand_resource_runtime(path, &id, runtime)?;
     Ok(ResourceLayout {
@@ -678,7 +659,7 @@ fn validate_field_path(path: &Path, field: &FieldPath, width: u32) -> Result<(),
 fn validate_quest_layout(
     path: &Path,
     resource: &ResourceLayout,
-    layout: &QuestTable,
+    layout: &QuestTableDefinition,
 ) -> Result<(), String> {
     let category_count_fits = layout
         .category_count_field
@@ -689,9 +670,9 @@ fn validate_quest_layout(
         .checked_add(4)
         .is_some_and(|end| end <= layout.category_stride);
     if !valid_identifier(&layout.id)
-        || !layout.root.is_multiple_of(4)
-        || !layout.count_root.is_multiple_of(4)
-        || layout.root == layout.count_root
+        || !layout.root_field.is_multiple_of(4)
+        || !layout.count_root_field.is_multiple_of(4)
+        || layout.root_field == layout.count_root_field
         || layout.category_stride == 0
         || !category_count_fits
         || !category_records_fit

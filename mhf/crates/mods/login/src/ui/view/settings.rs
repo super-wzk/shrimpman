@@ -214,23 +214,19 @@ fn resolution(ui: &mut egui::Ui, id: &str, label: &str, resolution: &mut Resolut
                 ui.selectable_value(resolution, preset, format!("{width} × {height}"));
             }
         });
+    let dimensions = [
+        ("width", "宽度", &mut resolution.width),
+        ("height", "高度", &mut resolution.height),
+    ];
     if ui.available_width() < 280.0 {
-        dimension(ui, id.with("width"), "宽度", &mut resolution.width);
-        dimension(ui, id.with("height"), "高度", &mut resolution.height);
+        for (key, label, value) in dimensions {
+            dimension(ui, id.with(key), label, value);
+        }
     } else {
         ui.columns(2, |columns| {
-            dimension(
-                &mut columns[0],
-                id.with("width"),
-                "宽度",
-                &mut resolution.width,
-            );
-            dimension(
-                &mut columns[1],
-                id.with("height"),
-                "高度",
-                &mut resolution.height,
-            );
+            for ((key, label, value), ui) in dimensions.into_iter().zip(columns) {
+                dimension(ui, id.with(key), label, value);
+            }
         });
     }
 }

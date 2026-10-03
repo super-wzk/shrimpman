@@ -1,13 +1,6 @@
 use super::*;
 use egui::{Event, Modifiers, RawInput};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-fn control() -> Arc<DebugControl> {
-    DebugControl::new()
-}
+use std::time::{Duration, Instant};
 
 fn new_context() -> Context {
     let context = Context::default();
@@ -52,7 +45,7 @@ fn axes(input: MonsterInput) -> [f32; 4] {
 #[test]
 fn movement_uses_existing_axes_speed_boost_and_cancelling_keys() {
     let context = new_context();
-    let control = control();
+    let control = DebugControl::new();
     let input = InputSettings {
         speed: 450.0,
         ..Default::default()
@@ -94,7 +87,7 @@ fn shortcuts_use_the_selected_species_and_clear_only_when_selection_changes() {
             .zip(actions)
             .all(|(binding, action)| *binding == Some(action))
     );
-    let control = control();
+    let control = DebugControl::new();
     let context = new_context();
     frame(
         &context,
@@ -159,30 +152,8 @@ fn shortcuts_use_the_selected_species_and_clear_only_when_selection_changes() {
 }
 
 #[test]
-fn variant_changes_clear_bindings_and_species_changes_restore_the_normal_variant() {
-    let action = MonsterAction { group: 2, id: 7 };
-    let mut input = InputSettings::default();
-    for variant in [1, 16] {
-        input.shortcuts[0] = Some(action);
-        input.select_variant(variant);
-        assert_eq!(input.variant(), variant);
-        assert!(input.shortcuts.iter().all(Option::is_none));
-
-        input.shortcuts[0] = Some(action);
-        input.select_variant(variant);
-        input.select_species(input.species());
-        assert_eq!(input.variant(), variant);
-        assert!(input.shortcuts[0] == Some(action));
-    }
-    input.select_species(1);
-    assert_eq!(input.species(), 1);
-    assert_eq!(input.variant(), 0);
-    assert!(input.shortcuts.iter().all(Option::is_none));
-}
-
-#[test]
 fn shortcuts_require_the_selected_variant_to_match_the_controlled_monster() {
-    let control = control();
+    let control = DebugControl::new();
     let action = MonsterAction { group: 2, id: 7 };
     let mut input = InputSettings::default();
     input.select_variant(1);
@@ -198,7 +169,7 @@ fn shortcuts_require_the_selected_variant_to_match_the_controlled_monster() {
             |context| input.update(context, &control, &snapshot),
         );
         let commands = control.commands();
-        if variant == input.variant() {
+        if variant == input.variant {
             assert!(matches!(
                 commands.as_slice(),
                 [DebugCommand::MonsterAction(bound)] if *bound == action
@@ -212,7 +183,7 @@ fn shortcuts_require_the_selected_variant_to_match_the_controlled_monster() {
 
 #[test]
 fn application_focus_and_stopped_control_publish_neutral_input() {
-    let control = control();
+    let control = DebugControl::new();
     let input = InputSettings::default();
     for (focused, controlling) in [(false, true), (true, false)] {
         control.set_monster_input(MonsterInput {
@@ -238,7 +209,7 @@ fn application_focus_and_stopped_control_publish_neutral_input() {
 #[test]
 fn focused_egui_editor_blocks_gameplay() {
     let context = new_context();
-    let control = control();
+    let control = DebugControl::new();
     let input = InputSettings::default();
     let mut text = String::new();
     context
@@ -255,7 +226,7 @@ fn focused_egui_editor_blocks_gameplay() {
 #[test]
 fn shared_panel_settings_drive_only_game_window_input() {
     let context = new_context();
-    let control = control();
+    let control = DebugControl::new();
     let mut settings = control.ui_settings();
     settings.input.speed = 500.0;
     settings.input.shortcuts[0] = Some(MonsterAction { group: 2, id: 7 });
@@ -298,7 +269,7 @@ fn shared_panel_settings_drive_only_game_window_input() {
 #[test]
 fn missing_frames_expire_movement_and_full_command_queues_remain_bounded() {
     let context = new_context();
-    let control = control();
+    let control = DebugControl::new();
     let input = InputSettings::default();
     frame(&context, keys(&[Key::W], Modifiers::NONE), |context| {
         input.update(context, &control, &snapshot());

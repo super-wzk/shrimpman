@@ -615,44 +615,38 @@ pub enum Keyframe {
 
 impl Keyframe {
     fn decode(encoding: KeyEncoding, bytes: &[u8]) -> Self {
+        let short = |at| i16::from_le_bytes(bytes[at..at + 2].try_into().unwrap());
+        let bits = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         match encoding {
             KeyEncoding::I16Pair => Self::I16Pair {
-                value: i16::from_le_bytes(bytes[0..2].try_into().unwrap()),
-                frame: i16::from_le_bytes(bytes[2..4].try_into().unwrap()),
+                value: short(0),
+                frame: short(2),
             },
             KeyEncoding::I16Quad => Self::I16Quad {
-                value: i16::from_le_bytes(bytes[0..2].try_into().unwrap()),
-                frame: i16::from_le_bytes(bytes[2..4].try_into().unwrap()),
-                parameters: std::array::from_fn(|i| {
-                    i16::from_le_bytes(bytes[4 + i * 2..6 + i * 2].try_into().unwrap())
-                }),
+                value: short(0),
+                frame: short(2),
+                parameters: std::array::from_fn(|i| short(4 + i * 2)),
             },
             KeyEncoding::Mixed12 => Self::Mixed12 {
-                unknown_00: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-                value: i16::from_le_bytes(bytes[4..6].try_into().unwrap()),
-                frame: i16::from_le_bytes(bytes[6..8].try_into().unwrap()),
-                parameters: std::array::from_fn(|i| {
-                    i16::from_le_bytes(bytes[8 + i * 2..10 + i * 2].try_into().unwrap())
-                }),
+                unknown_00: bits(0),
+                value: short(4),
+                frame: short(6),
+                parameters: std::array::from_fn(|i| short(8 + i * 2)),
             },
             KeyEncoding::F32Pair => Self::F32Pair {
-                value_bits: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-                frame_bits: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                value_bits: bits(0),
+                frame_bits: bits(4),
             },
             KeyEncoding::F32Quad => Self::F32Quad {
-                value_bits: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-                frame_bits: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                parameter_bits: std::array::from_fn(|i| {
-                    u32::from_le_bytes(bytes[8 + i * 4..12 + i * 4].try_into().unwrap())
-                }),
+                value_bits: bits(0),
+                frame_bits: bits(4),
+                parameter_bits: std::array::from_fn(|i| bits(8 + i * 4)),
             },
             KeyEncoding::F32Five => Self::F32Five {
-                unknown_00: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-                value_bits: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                frame_bits: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-                parameter_bits: std::array::from_fn(|i| {
-                    u32::from_le_bytes(bytes[12 + i * 4..16 + i * 4].try_into().unwrap())
-                }),
+                unknown_00: bits(0),
+                value_bits: bits(4),
+                frame_bits: bits(8),
+                parameter_bits: std::array::from_fn(|i| bits(12 + i * 4)),
             },
             KeyEncoding::Unknown(_) | KeyEncoding::Disabled => {
                 unreachable!("encoding checked by Channel::key")
@@ -685,6 +679,9 @@ impl Keyframe {
 
     pub fn to_bytes(self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.encoding().stride().unwrap());
+        if let Self::Mixed12 { unknown_00, .. } | Self::F32Five { unknown_00, .. } = self {
+            bytes.extend(unknown_00.to_le_bytes());
+        }
         match self {
             Self::I16Pair { value, frame } => {
                 bytes.extend(value.to_le_bytes());
@@ -694,18 +691,13 @@ impl Keyframe {
                 value,
                 frame,
                 parameters,
-            } => {
-                for value in [value, frame, parameters[0], parameters[1]] {
-                    bytes.extend(value.to_le_bytes());
-                }
             }
-            Self::Mixed12 {
-                unknown_00,
+            | Self::Mixed12 {
                 value,
                 frame,
                 parameters,
+                ..
             } => {
-                bytes.extend(unknown_00.to_le_bytes());
                 for value in [value, frame, parameters[0], parameters[1]] {
                     bytes.extend(value.to_le_bytes());
                 }
@@ -721,24 +713,14 @@ impl Keyframe {
                 value_bits,
                 frame_bits,
                 parameter_bits,
-            } => {
-                for value in [value_bits, frame_bits, parameter_bits[0], parameter_bits[1]] {
-                    bytes.extend(value.to_le_bytes());
-                }
             }
-            Self::F32Five {
-                unknown_00,
+            | Self::F32Five {
                 value_bits,
                 frame_bits,
                 parameter_bits,
+                ..
             } => {
-                for value in [
-                    unknown_00,
-                    value_bits,
-                    frame_bits,
-                    parameter_bits[0],
-                    parameter_bits[1],
-                ] {
+                for value in [value_bits, frame_bits, parameter_bits[0], parameter_bits[1]] {
                     bytes.extend(value.to_le_bytes());
                 }
             }

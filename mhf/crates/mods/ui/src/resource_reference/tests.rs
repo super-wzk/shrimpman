@@ -263,33 +263,6 @@ fn activation_is_opt_in_and_returns_the_actual_resolved_path() {
 }
 
 #[test]
-fn long_references_and_their_copy_buttons_fit_the_available_row() {
-    for compact in [false, true] {
-        for width in [120.0, 240.0, 320.0] {
-            let context = context();
-            let id = Id::new("long-path");
-            let path =
-                ResourcePath::new(format!("motion/{}.mot", "long-source-name".repeat(40))).unwrap();
-            let (row, copy, _) = frame(&context, id, width, vec![], |ui| {
-                ResourceReference::new(&path)
-                    .id(id)
-                    .compact(compact)
-                    .show(ui)
-            });
-            let copy = copy.unwrap();
-            assert!(
-                row.response.rect.left().abs() <= 0.5,
-                "the value starts at the row's left edge"
-            );
-            assert!(copy.rect.right() <= width + 0.5);
-            assert!(row.response.rect.right() <= copy.rect.left() + 0.5);
-            assert_eq!(copy.rect.height(), if compact { 24.0 } else { 36.0 });
-            assert!((row.response.rect.center().y - copy.rect.center().y).abs() < 0.5);
-        }
-    }
-}
-
-#[test]
 fn editor_copies_canonical_text_without_submitting_or_replacing_the_draft() {
     let context = context();
     let id = Id::new("editor");

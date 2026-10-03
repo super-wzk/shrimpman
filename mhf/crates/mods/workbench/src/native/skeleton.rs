@@ -95,13 +95,16 @@ impl CompilePlan {
         for &root in source.root_indices() {
             let first = root as usize;
             let mut pending = vec![first];
-            let mut indices = Vec::new();
+            let mut group = Group { first, count: 0 };
+            let mut bounds = first..first;
             while let Some(index) = pending.pop() {
                 if visited[index] {
                     return Err("骨架包含重复根或共享节点".into());
                 }
                 visited[index] = true;
-                indices.push(index);
+                group.count += 1;
+                bounds.start = bounds.start.min(index);
+                bounds.end = bounds.end.max(index + 1);
                 let NodeEntry::Bone(node) = &source.nodes[index] else {
                     return Err("未知原生骨骼布局".into());
                 };
@@ -114,14 +117,10 @@ impl CompilePlan {
             }
             // 100022A0 counts the traversal, then copies this contiguous source
             // range. It rebases only child/sibling ordinals, not node IDs.
-            let end = first + indices.len();
-            if indices.iter().any(|&index| index < first || index >= end) {
+            if bounds != (first..first + group.count) {
                 return Err("骨架根所引用的节点不构成原生要求的连续索引范围".into());
             }
-            groups.push(Group {
-                first,
-                count: indices.len(),
-            });
+            groups.push(group);
         }
         if visited.iter().any(|visited| !visited) {
             return Err("存在不属于任何根骨架的节点".into());

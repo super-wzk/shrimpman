@@ -1,3 +1,5 @@
+pub mod support;
+
 use mhf_resource::{
     container::open_layers,
     dat::{
@@ -5,14 +7,7 @@ use mhf_resource::{
         motion_events::{ChoiceEvent, CommandEvent, Directory, EventKind, WeightedChoice},
     },
 };
-
-fn set_u16(bytes: &mut [u8], at: usize, value: u16) {
-    bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
-}
-
-fn set_u32(bytes: &mut [u8], at: usize, value: u32) {
-    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-}
+use support::{dword as set_u32, word as set_u16};
 
 fn image(size: usize) -> Vec<u8> {
     let mut bytes = vec![0; size];

@@ -4,7 +4,7 @@
 //! original version/control WORDs do not gate the six-table layout in that
 //! path, so this parser retains them without inventing a version restriction.
 
-use super::render_tables::RenderTable;
+use super::render_tables::{RenderTable, read_tables};
 use crate::{Error, Result};
 
 const HEADER_SIZE: usize = 16;
@@ -28,28 +28,8 @@ impl<'a> LegacyRenderTables<'a> {
             .get(..HEADER_SIZE)
             .ok_or_else(|| Error::new(0, "truncated legacy stage render table header"))?;
         let word = |offset| u16::from_le_bytes([header[offset], header[offset + 1]]);
-        let mut tables = Vec::with_capacity(TABLE_LAYOUT.len());
-        let mut offset = HEADER_SIZE;
-        for (count_offset, record_size) in TABLE_LAYOUT {
-            let count = word(count_offset);
-            let size = usize::from(count)
-                .checked_mul(record_size)
-                .ok_or_else(|| Error::new(count_offset, "legacy stage table length overflow"))?;
-            let end = offset
-                .checked_add(size)
-                .ok_or_else(|| Error::new(count_offset, "legacy stage table range overflow"))?;
-            let records = source.get(offset..end).ok_or_else(|| {
-                Error::new(count_offset, "legacy stage table records exceed resource")
-            })?;
-            tables.push(RenderTable {
-                count_offset,
-                record_size,
-                count,
-                offset,
-                records,
-            });
-            offset = end;
-        }
+        let (tables, offset) =
+            read_tables(source, HEADER_SIZE, &TABLE_LAYOUT, "legacy stage table")?;
         Ok(Self {
             version: word(0),
             control: word(14),

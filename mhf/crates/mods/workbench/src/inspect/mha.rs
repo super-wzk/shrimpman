@@ -1,6 +1,6 @@
 //! MHA physical members and derived native ID slots share the original tree.
 
-use super::{Builder, Hint, Kind, archive_name, hex};
+use super::{Builder, Hint, Kind, hex};
 use crate::metadata;
 use mhf_resource::PathSegment::Index;
 use mhf_resource::container::{MhaArchive, MhaEntry, MhaHeader};
@@ -66,7 +66,7 @@ impl Builder {
         let buffer = self.document.nodes[node].buffer;
         for item in &archive.entries {
             let entry = item.entry;
-            let name = archive_name(item.name);
+            let name = String::from_utf8_lossy(item.name);
             let at = if entry.size == 0 {
                 base
             } else {
@@ -154,7 +154,7 @@ impl Builder {
                         format!(
                             "目录项 {:04} · {} · {}",
                             item.entry.index,
-                            archive_name(item.name),
+                            String::from_utf8_lossy(item.name),
                             entry_status(item),
                         ),
                         base + archive.header.entries_offset as usize + entry * 20 + 16,

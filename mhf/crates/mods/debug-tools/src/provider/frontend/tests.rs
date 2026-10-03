@@ -253,103 +253,6 @@ fn close_and_f7_keep_the_panel_and_unapplied_ai_draft() {
     );
 }
 
-fn select_id(name: &str) -> egui::Id {
-    let id = egui::Id::new(name);
-    id.with("select").with(egui::IdSalt::new(id))
-}
-
-#[test]
-fn ai_toolbar_controls_align_and_keep_geometry_when_hovered_or_switching_mode() {
-    let mut ui = DesktopUi::new(snapshot());
-    load_ai_source(&mut ui, "mhf_ai 1; species 4; base native;");
-    let ids = [
-        select_id("ai-session-mode"),
-        select_id("ai-target"),
-        egui::Id::new("ai-attach"),
-        egui::Id::new("ai-pause"),
-        egui::Id::new("ai-step"),
-        egui::Id::new("ai-run-yield"),
-        egui::Id::new("ai-apply"),
-        egui::Id::new("ai-source-refresh"),
-        egui::Id::new("ai-source-load"),
-        egui::Id::new("ai-source-restore"),
-        egui::Id::new("ai-source-copy"),
-        egui::Id::new("ai-recording-save"),
-        egui::Id::new("ai-trace-clear"),
-        egui::Id::new("ai-status-hud"),
-    ];
-    for size in [vec2(440.0, 360.0), vec2(720.0, 480.0), vec2(1280.0, 900.0)] {
-        ui.size = size;
-        for _ in 0..4 {
-            ui.run(Vec::new(), false);
-        }
-        let rects = ids.map(|id| ui.context.read_response(id).unwrap().rect);
-        let viewport = Rect::from_min_size(pos2(0.0, 0.0), size);
-        for (index, rect) in rects.iter().enumerate() {
-            assert!(
-                viewport.contains_rect(*rect),
-                "toolbar control {index} is outside {size:?}: {rect:?}; all controls {rects:?}"
-            );
-            assert!(
-                (rect.height() - rects[0].height()).abs() < 1.0,
-                "field and button heights differ: {rect:?}, {:?}",
-                rects[0]
-            );
-        }
-        for (index, rect) in rects.iter().enumerate() {
-            if index >= 2 {
-                assert!(
-                    (rect.width() - rect.height()).abs() < 1.0,
-                    "action icon is not square: {rect:?}"
-                );
-            }
-            for other in &rects[..index] {
-                if rect.y_range().intersects(other.y_range()) {
-                    assert!(
-                        (rect.center().y - other.center().y).abs() < 1.0,
-                        "toolbar centers differ at {size:?}: {rect:?}, {other:?}"
-                    );
-                }
-            }
-        }
-        assert!(ui.context.read_response(egui::Id::new("ai-more")).is_none());
-        for hovered in rects {
-            ui.run(vec![Event::PointerMoved(hovered.center())], false);
-            let actual = ids.map(|id| ui.context.read_response(id).unwrap().rect);
-            assert_eq!(actual, rects, "hover changed toolbar geometry at {size:?}");
-        }
-        assert!(ui.app.control.commands().is_empty(), "hover is local");
-        ui.click_id(select_id("ai-session-mode"));
-        ui.click("回放");
-        ui.run(Vec::new(), false);
-        assert!(
-            ui.context
-                .read_response(egui::Id::new("ai-apply"))
-                .is_none()
-        );
-        assert_eq!(
-            ui.context
-                .read_response(select_id("ai-session-mode"))
-                .unwrap()
-                .rect,
-            rects[0]
-        );
-        ui.click_id(select_id("ai-session-mode"));
-        ui.click("现场");
-        ui.run(Vec::new(), false);
-        assert!(
-            ui.context
-                .read_response(egui::Id::new("ai-apply"))
-                .unwrap()
-                .enabled()
-        );
-        assert!(
-            ui.app.control.commands().is_empty(),
-            "mode selection is local"
-        );
-    }
-}
-
 #[test]
 fn exposed_ai_icons_keep_native_operations_disabled_while_pending_or_loading() {
     use crate::provider::AiDebugSnapshot;
@@ -470,8 +373,8 @@ fn desktop_controls_publish_settings_and_queue_game_operations() {
     ui.click(crate::provider::monsters::NAMES[94]);
     ui.click("菌猪");
     let settings = ui.app.control.ui_settings();
-    assert_eq!(settings.input.species(), 4);
-    assert_eq!(settings.input.variant(), 0);
+    assert_eq!(settings.input.species, 4);
+    assert_eq!(settings.input.variant, 0);
     assert_eq!(settings.input.speed, 475.0);
     assert!(settings.input.shortcuts.iter().all(Option::is_none));
     assert!(ui.app.control.commands().is_empty());

@@ -1,7 +1,7 @@
-mod events;
+pub mod events;
 
-use egui::{Context, Event, Key, Modifiers, RawInput, Rect, Shape, pos2, vec2};
-use egui_hunter::{Segment, SegmentedControl, Theme};
+use egui::{Context, Event, Key, Rect, Shape, vec2};
+use egui_hunter::{Segment, SegmentedControl};
 
 struct Harness {
     context: Context,
@@ -12,8 +12,7 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let context = Context::default();
-        Theme::default().apply(&context);
+        let context = events::themed_context();
         Self {
             context,
             selected: None,
@@ -24,12 +23,9 @@ impl Harness {
 
     fn frame(&mut self, events: Vec<Event>) -> bool {
         let mut changed = false;
-        let output = self.context.run_ui(
-            RawInput {
-                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 200.0))),
-                events,
-                ..Default::default()
-            },
+        let (_, output) = events::frame(
+            &self.context,
+            events::input(vec2(400.0, 200.0), None, events),
             |ui| {
                 ui.add_enabled_ui(self.enabled, |ui| {
                     changed = SegmentedControl::new(egui::Id::new("styles"))
@@ -54,7 +50,6 @@ impl Harness {
                 _ => None,
             })
             .collect();
-        output.drop_without_applying_deltas();
         changed
     }
 
@@ -67,13 +62,7 @@ impl Harness {
 
     fn key(&mut self, key: Key) -> bool {
         let changed = self.frame(vec![events::key(key)]);
-        self.frame(vec![Event::Key {
-            key,
-            physical_key: None,
-            pressed: false,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        }]);
+        self.frame(vec![events::key_event(key, false)]);
         changed
     }
 }

@@ -10,16 +10,16 @@ mod replay;
 mod trace;
 
 #[derive(Default)]
-pub(super) struct DebuggerUi {
+pub(in super::super) struct DebuggerUi {
     selected_event: Option<u64>,
-    follow_latest: bool,
+    pub(super) follow_latest: bool,
     error: Option<String>,
     import_json: String,
-    import_open: bool,
+    pub(super) import_open: bool,
     import_path: String,
     recording_save: Option<String>,
     replay: Option<ReplaySession>,
-    replay_requested: bool,
+    pub(super) replay_requested: bool,
     breakpoint_kind: usize,
     breakpoint_script: String,
     breakpoint_offset: String,
@@ -138,27 +138,16 @@ impl DebuggerUi {
         self.breakpoint_condition = false;
     }
 
-    pub(super) fn take_replay_request(&mut self) -> bool {
-        std::mem::take(&mut self.replay_requested)
-    }
-
-    pub(super) fn take_recording_save(&mut self) -> Option<String> {
+    pub(in super::super) fn take_recording_save(&mut self) -> Option<String> {
         self.recording_save.take()
     }
 
-    pub(super) fn recording_save_finished(&mut self, result: Result<bool, String>) {
+    pub(in super::super) fn recording_save_finished(&mut self, result: Result<bool, String>) {
         match result {
             Ok(true) => self.error = None,
             Ok(false) => {}
             Err(error) => self.error = Some(error),
         }
-    }
-
-    pub(super) fn follows_live(&self) -> bool {
-        self.follow_latest
-    }
-    pub(super) fn set_follow(&mut self, follow: bool) {
-        self.follow_latest = follow;
     }
 
     pub(super) fn inspect(
@@ -284,62 +273,46 @@ impl DebuggerUi {
         let attached = debug.is_some_and(|debug| debug.attached);
         let paused = debug.is_some_and(|debug| debug.paused);
         let mut operation = None;
-        if ui
-            .add_enabled(
-                active,
-                IconButton::new(
-                    if attached { Icon::Detach } else { Icon::Attach },
-                    if attached {
-                        "分离调试器"
-                    } else {
-                        "附加调试器"
-                    },
-                )
-                .id(egui::Id::new("ai-attach"))
-                .selected(attached),
-            )
-            .clicked()
-        {
-            operation = Some(if attached {
-                AiDebugOperation::Detach
-            } else {
-                AiDebugOperation::Attach
-            });
-        }
-        if ui
-            .add_enabled(
-                active && attached,
-                IconButton::new(
-                    if paused { Icon::Play } else { Icon::Pause },
-                    if paused { "继续" } else { "暂停" },
-                )
-                .id(egui::Id::new("ai-pause")),
-            )
-            .clicked()
-        {
-            operation = Some(if paused {
-                AiDebugOperation::Continue
-            } else {
-                AiDebugOperation::Pause
-            });
-        }
-        if ui
-            .add_enabled(
-                active && attached && paused,
-                IconButton::new(Icon::Step, "单步").id(egui::Id::new("ai-step")),
-            )
-            .clicked()
-        {
-            operation = Some(AiDebugOperation::StepInstruction);
-        }
-        if ui
-            .add_enabled(
-                active && attached && paused,
-                IconButton::new(Icon::StepOut, "至让出").id(egui::Id::new("ai-run-yield")),
-            )
-            .clicked()
-        {
-            operation = Some(AiDebugOperation::RunUntilYield);
+        for (id, requested) in [
+            (
+                "ai-attach",
+                if attached {
+                    AiDebugOperation::Detach
+                } else {
+                    AiDebugOperation::Attach
+                },
+            ),
+            (
+                "ai-pause",
+                if paused {
+                    AiDebugOperation::Continue
+                } else {
+                    AiDebugOperation::Pause
+                },
+            ),
+            ("ai-step", AiDebugOperation::StepInstruction),
+            ("ai-run-yield", AiDebugOperation::RunUntilYield),
+        ] {
+            let (icon, label, enabled) = match requested {
+                AiDebugOperation::Attach => (Icon::Attach, "附加调试器", active),
+                AiDebugOperation::Detach => (Icon::Detach, "分离调试器", active),
+                AiDebugOperation::Pause => (Icon::Pause, "暂停", active && attached),
+                AiDebugOperation::Continue => (Icon::Play, "继续", active && attached),
+                AiDebugOperation::StepInstruction => {
+                    (Icon::Step, "单步", active && attached && paused)
+                }
+                AiDebugOperation::RunUntilYield => {
+                    (Icon::StepOut, "至让出", active && attached && paused)
+                }
+                _ => unreachable!("only live controls appear in this toolbar"),
+            };
+            let mut button = IconButton::new(icon, label).id(egui::Id::new(id));
+            if id == "ai-attach" {
+                button = button.selected(attached);
+            }
+            if ui.add_enabled(enabled, button).clicked() {
+                operation = Some(requested);
+            }
         }
 
         if let Some(operation) = operation
@@ -380,12 +353,6 @@ impl DebuggerUi {
             && let Some(target) = target
         {
             self.error = send(control, target, AiDebugOperation::ClearTrace).err();
-        }
-    }
-
-    pub(super) fn show_workspace_error(&self, ui: &mut egui::Ui) {
-        if !self.import_open {
-            self.show_error(ui);
         }
     }
 

@@ -1,33 +1,42 @@
 use std::collections::HashSet;
 
-use super::{EXTRA_STRIDE, FieldLayout, attack, auxiliary, hitbox, parameters};
-use crate::{PathSegment, ResourcePath, binary::ScalarType, dat};
+use super::{
+    ATTACK_STRIDE, AUXILIARY_STRIDE, EXTRA_STRIDE, FieldLayout, HITBOX_STRIDE, attack, auxiliary,
+    hitbox, parameters,
+};
+use crate::{PathSegment, ResourcePath, dat};
 
-fn check_keys<'a>(keys: impl IntoIterator<Item = &'a str>) {
-    let mut seen = HashSet::new();
-    for key in keys {
-        assert!(seen.insert(key), "duplicate schema key {key}");
-        let path = ResourcePath::from_parts("schema.bin", [PathSegment::Field(key.into())])
-            .unwrap_or_else(|error| panic!("invalid schema key {key}: {error}"));
-        assert_eq!(path.to_string().parse::<ResourcePath>().unwrap(), path);
+fn check_fields(fields: &[FieldLayout], stride: usize) {
+    let mut keys = HashSet::new();
+    let mut used = vec![false; stride];
+    for field in fields {
+        assert!(keys.insert(field.key), "duplicate schema key {}", field.key);
+        ResourcePath::from_parts("schema.bin", [PathSegment::Field(field.key.into())])
+            .unwrap_or_else(|error| panic!("invalid schema key {}: {error}", field.key));
+        let start = usize::from(field.offset);
+        let end = start + field.scalar.size();
+        assert!(end <= stride, "{} exceeds its record", field.key);
+        assert!(
+            used[start..end].iter().all(|value| !value),
+            "overlapping field {}",
+            field.key
+        );
+        used[start..end].fill(true);
     }
 }
 
 #[test]
-fn dat_keys_are_valid_and_unique_within_each_record_schema() {
+fn dat_schemas_have_unique_keys_and_disjoint_bounded_fields() {
     for table in dat::DATA_TABLES {
         if let dat::RecordFormat::Fields(fields) = table.format {
-            check_keys(fields.iter().map(|field| field.key));
-            for field in fields {
-                assert_eq!(field.key, format!("field_{:02x}", field.offset));
-            }
+            check_fields(fields, usize::from(table.stride));
         }
     }
 }
 
 #[test]
 fn all_selected_sdt_schemas_have_valid_unique_field_keys() {
-    check_keys(attack::FIELDS.iter().map(|field| field.key));
+    check_fields(attack::FIELDS, ATTACK_STRIDE);
     let mut bank = vec![0; 800 * EXTRA_STRIDE];
     // Exercise range-selected weapon layouts as well as fixed native selectors.
     for (selector, record) in [(125, 200_i32), (129, 210), (136, 220)] {
@@ -37,19 +46,14 @@ fn all_selected_sdt_schemas_have_valid_unique_field_keys() {
     }
     for category in [100, 106, 107, 140, 141, 160, 999] {
         for index in 0..800 {
-            check_keys(
-                auxiliary::fields(category, index)
-                    .iter()
-                    .map(|field| field.key),
-            );
+            check_fields(auxiliary::fields(category, index), AUXILIARY_STRIDE);
             // The category-140 record selector changes its field layout.
             for state in [0_u32, 2, 1] {
                 let mut bytes = [0; EXTRA_STRIDE];
                 bytes[20..24].copy_from_slice(&state.to_le_bytes());
-                check_keys(
-                    parameters::fields(category, index, &bytes, &bank)
-                        .iter()
-                        .map(|field| field.key),
+                check_fields(
+                    parameters::fields(category, index, &bytes, &bank),
+                    EXTRA_STRIDE,
                 );
             }
         }
@@ -59,60 +63,7 @@ fn all_selected_sdt_schemas_have_valid_unique_field_keys() {
             let mut bytes = [0; 40];
             bytes[..2].copy_from_slice(&mode.to_le_bytes());
             bytes[2..4].copy_from_slice(&shape.to_le_bytes());
-            check_keys(hitbox::fields(&bytes).iter().map(|field| field.key));
+            check_fields(hitbox::fields(&bytes), HITBOX_STRIDE);
         }
     }
-}
-
-#[test]
-fn attack_core_keys_and_unknown_keys_retain_the_original_storage() {
-    for (key, name, offset, scalar) in [
-        (
-            "startup_count",
-            "启动延迟（原始计数）",
-            0x00,
-            ScalarType::U16,
-        ),
-        (
-            "active_count",
-            "有效阶段（原始计数）",
-            0x02,
-            ScalarType::U16,
-        ),
-        ("power", "基础威力／动作值", 0x04, ScalarType::U16),
-        ("unknown_08", "unknown_08", 0x08, ScalarType::U16),
-        ("unknown_0d", "unknown_0d", 0x0d, ScalarType::I8),
-        ("unknown_24", "unknown_24", 0x24, ScalarType::U32),
-    ] {
-        let field = attack::FIELDS
-            .iter()
-            .find(|field| field.key == key)
-            .unwrap();
-        assert_eq!(field.name, name);
-        assert_eq!(field.offset, offset);
-        assert_eq!(field.scalar, scalar);
-    }
-    let FieldLayout {
-        key,
-        offset,
-        scalar,
-        ..
-    } = attack::FIELDS[2];
-    let renamed = FieldLayout {
-        key,
-        name: "不同语言的显示名称",
-        offset,
-        scalar,
-    };
-    let path = ResourcePath::from_parts(
-        "mhfsdt.bin",
-        [
-            PathSegment::Index(0),
-            PathSegment::Field("attacks".into()),
-            PathSegment::Index(23),
-            PathSegment::Field(renamed.key.into()),
-        ],
-    )
-    .unwrap();
-    assert_eq!(path.to_string(), "mhfsdt.bin#0/attacks/23/power");
 }

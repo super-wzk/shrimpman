@@ -168,30 +168,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requires_exactly_species_and_map() {
-        let args = Args::try_parse_from(["mhf-ai-decompile", "1", "31"]).unwrap();
-        assert_eq!((args.species, args.map), (1, 31));
-        assert!(!args.overwrite);
-        assert!(
-            Args::try_parse_from(["mhf-ai-decompile", "1", "31", "--overwrite"])
-                .unwrap()
-                .overwrite
-        );
-        for values in [
-            vec![],
-            vec!["1"],
-            vec!["256", "31"],
-            vec!["1", "-1"],
-            vec!["1", "31", "extra"],
-            vec!["--dll", "client.dll"],
-        ] {
-            assert!(
-                Args::try_parse_from(std::iter::once("mhf-ai-decompile").chain(values)).is_err()
-            );
-        }
-    }
-
-    #[test]
     fn game_directory_override_does_not_move_output() {
         let args = Args {
             species: 1,

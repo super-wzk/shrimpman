@@ -73,7 +73,7 @@ fn need(bytes: &[u8], length: usize) -> Result<()> {
     )))
 }
 
-fn subtype(bytes: &[u8], _opcode: u8) -> Result<u8> {
+fn subtype(bytes: &[u8]) -> Result<u8> {
     need(bytes, 2)?;
     Ok(bytes[1])
 }
@@ -102,7 +102,7 @@ pub fn instruction_len(bytes: &[u8]) -> Result<usize> {
         match opcode {
             0x05 | 0x3f => 4,
             0x06 => {
-                if subtype(bytes, opcode)? == 3 {
+                if subtype(bytes)? == 3 {
                     5
                 } else {
                     4
@@ -111,9 +111,8 @@ pub fn instruction_len(bytes: &[u8]) -> Result<usize> {
             // Subtype 0 carries a three-byte form; 1 and 2 are two-byte
             // markers.  0x14 is the verified angle-condition family.
             0x0b | 0x14 | 0x1b | 0x22 | 0x32 | 0x36 | 0x42 | 0x5a | 0x5e | 0x63 | 0x64 | 0x69
-            | 0x71 | 0x74 => match subtype(bytes, opcode)? {
+            | 0x71 | 0x74 => match subtype(bytes)? {
                 0 => 3,
-                1 | 2 => 2,
                 _ => 2,
             },
             // These dispatch directly to the native three-byte skip handler;
@@ -122,68 +121,64 @@ pub fn instruction_len(bytes: &[u8]) -> Result<usize> {
             // Subtype 0 carries one additional two-byte field here; 1 and 2
             // are short forms.
             0x0e | 0x2b | 0x34 | 0x3d | 0x46 | 0x56 | 0x78 | 0x9a | 0x9b | 0x9c => {
-                match subtype(bytes, opcode)? {
+                match subtype(bytes)? {
                     0 => 4,
-                    1 | 2 => 2,
                     _ => 2,
                 }
             }
             0x0f => 6,
-            0x15 => match subtype(bytes, opcode)? {
+            0x15 => match subtype(bytes)? {
                 // 10861BB0: count, then a separate 15/1 + be_u16 case.
                 0 => 3,
                 1 => 4,
-                2 | 3 => 2,
                 _ => 2,
             },
             0x17 => 5,
             0x1c | 0x1d | 0x20 | 0x23 | 0x27 | 0x2c | 0x33 | 0x70 | 0x73 | 0x75 | 0x76 | 0x7a
-            | 0x7d => match subtype(bytes, opcode)? {
+            | 0x7d => match subtype(bytes)? {
                 // Count, then a separate opcode/1 + u8 case.
-                0 => 3,
-                1 => 3,
+                0 | 1 => 3,
                 _ => 2,
             },
             // The native function increments to the selector and returns that
             // pointer for unknown values, so this is one byte (opcode only).
-            0x21 => match subtype(bytes, opcode)? {
+            0x21 => match subtype(bytes)? {
                 0..=2 => 2,
                 _ => 1,
             },
-            0x24 => match subtype(bytes, opcode)? {
+            0x24 => match subtype(bytes)? {
                 0 => 3,
                 1 => 2,
                 _ => 1,
             },
-            0x3e | 0x57 => match subtype(bytes, opcode)? {
+            0x3e | 0x57 => match subtype(bytes)? {
                 // 10863A40/10865910: count, then opcode/1 + be_u16.
                 0 => 3,
                 1 => 4,
                 2 | 3 => 2,
                 _ => 1,
             },
-            0x79 => match subtype(bytes, opcode)? {
+            0x79 => match subtype(bytes)? {
                 // 10862D20: count and callback argument, then 79/1 + u8.
                 0 => 4,
                 1 => 3,
                 _ => 2,
             },
-            0x80 => match subtype(bytes, opcode)? {
+            0x80 => match subtype(bytes)? {
                 // 10866E50 scans from the end of this count header.
                 0 => 3,
                 1..=0x20 => 3,
                 0xff => 2,
                 _ => 1,
             },
-            0x83 => match subtype(bytes, opcode)? {
+            0x83 => match subtype(bytes)? {
                 // 10867460: count, then a separate two-byte branch marker.
                 0 => 3,
                 1..=5 | 0xff => 2,
                 _ => 1,
             },
-            0x94 => match subtype(bytes, opcode)? {
-                0 => 3,
-                1 => 3,
+            0x94 => match subtype(bytes)? {
+                0 | 1 => 3,
                 _ => 2,
             },
             value => {

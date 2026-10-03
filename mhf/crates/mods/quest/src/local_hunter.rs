@@ -23,9 +23,11 @@ mod tests {
 
     #[test]
     fn local_startup_only_changes_character_selection() {
-        let mut params = LaunchParams32::default();
-        params.window_width = 1234;
-        params.window_height = 567;
+        let mut params = LaunchParams32 {
+            window_width: 1234,
+            window_height: 567,
+            ..Default::default()
+        };
         configure_local_hunter(&mut params, b"Workbench").unwrap();
         assert_eq!(params.selected_character_id_1, 1);
         assert_eq!(params.selected_character_id_2, 1);

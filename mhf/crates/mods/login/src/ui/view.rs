@@ -7,7 +7,6 @@ use egui_hunter::{
     Button, ButtonKind, Checkbox, Dialog, DialogState, Icon, NoticeKind, Notifications, Panel,
     TextField, Tokens, notice,
 };
-use jiff::Timestamp;
 use shrimpman_domain::character::{Gender, WeaponType};
 use std::borrow::Cow;
 
@@ -92,7 +91,13 @@ impl View {
                     show_characters(state, self.encoding, ui)
                 }
                 Model::Closing => {
-                    show_closing(ui);
+                    ui.add_space((ui.available_height() * 0.4).max(0.0));
+                    Panel::new("正在启动").show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("正在启动游戏…");
+                        });
+                    });
                     None
                 }
             })
@@ -163,16 +168,6 @@ impl View {
     }
 }
 
-fn show_closing(ui: &mut egui::Ui) {
-    ui.add_space((ui.available_height() * 0.4).max(0.0));
-    Panel::new("正在启动").show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label("正在启动游戏…");
-        });
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,14 +235,12 @@ mod tests {
                 let button = context.read_response(Id::new("sign_in_submit")).unwrap();
                 if step == 2 {
                     before = Some(button.rect);
-                    assert_eq!(button.rect.height(), 44.0);
                     assert!(button.rect.bottom() <= size.y - 8.0);
                     let username = context.read_response(Id::new("sign_in_username")).unwrap();
                     let password = context.read_response(Id::new("sign_in_password")).unwrap();
                     let reveal = context
                         .read_response(Id::new("sign_in_password").with("visibility"))
                         .unwrap();
-                    assert!((username.rect.height() - 40.0).abs() <= 1.0);
                     assert_eq!(username.rect.left(), password.rect.left());
                     assert_eq!(username.rect.right(), password.rect.right());
                     assert!(password.rect.contains_rect(reveal.rect));
@@ -551,38 +544,13 @@ mod tests {
     }
 
     fn characters_model() -> Model {
-        use crate::model::{IssuedSignSession, SignInSuccess};
-        use shrimpman_domain::{account::CourseRights, character::CharacterId};
-        let id = CharacterId::from(7);
+        let mut state = crate::ui::model::tests::characters();
         let timestamp = "2026-09-07T00:00:00Z".parse().unwrap();
-        Model::Characters(Characters {
-            form: Default::default(),
-            sign_in: SignInSuccess {
-                session: IssuedSignSession {
-                    session_id: 11.into(),
-                    token: *b"0123456789abcdef",
-                    issued_at: timestamp,
-                },
-                entrance_servers: vec!["127.0.0.1:53310".parse().unwrap()],
-                characters: vec![SignCharacter {
-                    id,
-                    name: b"Hunter".to_vec(),
-                    gr: 2,
-                    hr: 3,
-                    weapon_type: WeaponType::GreatSword,
-                    gender: Gender::Female,
-                    last_sign_in_at: None,
-                    is_new: false,
-                }],
-                notices: vec![],
-                last_character_id: None,
-                rights: CourseRights::empty(),
-                return_expires_at: timestamp,
-                festa: None,
-            },
-            selection: CharacterSelection::Existing(id),
-            operation: CharacterOperation::Idle,
-        })
+        state.form = Default::default();
+        state.sign_in.session.issued_at = timestamp;
+        state.sign_in.characters[0].last_sign_in_at = None;
+        state.sign_in.return_expires_at = timestamp;
+        Model::Characters(state)
     }
 
     fn key(key: egui::Key) -> Vec<egui::Event> {

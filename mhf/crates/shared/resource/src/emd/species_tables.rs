@@ -76,10 +76,7 @@ impl<'a> Emd<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn put32(bytes: &mut [u8], offset: usize, value: u32) {
-        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
+    use crate::test_support::dword as put32;
 
     fn fixture(size: usize) -> Vec<u8> {
         let mut bytes = vec![0; size];

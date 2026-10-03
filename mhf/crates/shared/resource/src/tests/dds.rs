@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::dword as set_word;
 
 fn file(width: u32, height: u32, mips: u32, four_cc: &[u8; 4], payload: usize) -> Vec<u8> {
     let mut words = [0u32; 31];
@@ -17,10 +18,6 @@ fn file(width: u32, height: u32, mips: u32, four_cc: &[u8; 4], payload: usize) -
     bytes.extend(words.into_iter().flat_map(u32::to_le_bytes));
     bytes.resize(bytes.len() + payload, 0x5a);
     bytes
-}
-
-fn set_word(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
 #[test]

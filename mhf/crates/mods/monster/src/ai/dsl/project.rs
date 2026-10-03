@@ -100,7 +100,7 @@ impl Project {
         parser::parse(&file.source).map_err(|error| Error::new(format!("{}: {error}", file.path)))
     }
 
-    fn bounds(&self) -> Result<(PathBuf, PathBuf)> {
+    fn bounds(&self) -> Result<(Document, PathBuf, PathBuf)> {
         let entry = self.document()?;
         let directory = Path::new(&self.entry)
             .parent()
@@ -126,12 +126,12 @@ impl Project {
         {
             return Err(Error::new("common entry must omit the map declaration"));
         }
-        Ok((directory, common))
+        Ok((entry, directory, common))
     }
 
     /// Load newly imported files while keeping all supplied editor drafts.
     pub fn complete(&mut self, root: &Path) -> Result<()> {
-        let (directory, common) = self.bounds()?;
+        let (_, directory, common) = self.bounds()?;
         let mut cursor = 0;
         while cursor < self.files.len() {
             self.validate_files(&directory, &common)?;
@@ -176,7 +176,7 @@ impl Project {
     }
 
     pub fn compile(&self) -> Result<Compiled> {
-        let (directory, common) = self.bounds()?;
+        let (mut entry, directory, common) = self.bounds()?;
         self.validate_files(&directory, &common)?;
         let mut documents = HashMap::new();
         for file in &self.files {
@@ -188,7 +188,7 @@ impl Project {
                     file.path
                 )));
             }
-            documents.insert(file.path.clone(), document);
+            documents.insert(file.path.as_str(), document);
         }
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
@@ -200,7 +200,6 @@ impl Project {
             &mut visited,
             &mut stack,
         )?;
-        let mut entry = self.document()?;
         entry.actions.clear();
         entry.functions.clear();
         entry.imports.clear();
@@ -210,14 +209,14 @@ impl Project {
             if !visited.contains(&file.path) {
                 continue;
             }
-            let document = &documents[&file.path];
-            for (name, slot) in &document.native_functions {
-                if entry.native_functions.values().any(|value| value == slot) {
+            let document = documents.remove(file.path.as_str()).unwrap();
+            for (name, slot) in document.native_functions {
+                if entry.native_functions.values().any(|value| *value == slot) {
                     return Err(Error::new("duplicate native slot binding across modules"));
                 }
                 entry
                     .native_functions
-                    .insert(qualify(&file.path, name), *slot);
+                    .insert(qualify(&file.path, &name), slot);
             }
             let mut imports = HashMap::new();
             for import in &document.imports {
@@ -226,13 +225,11 @@ impl Project {
                     resolve(&file.path, &import.path, &directory, &common)?,
                 );
             }
-            for action in &document.actions {
-                let mut action = action.clone();
+            for mut action in document.actions {
                 action.name = qualify(&file.path, &action.name);
                 entry.actions.push(action);
             }
-            for function in &document.functions {
-                let mut function = function.clone();
+            for mut function in document.functions {
                 function.source.path = file.path.clone();
                 if function.name != "main" {
                     function.name = qualify(&file.path, &function.name);
@@ -267,7 +264,7 @@ impl Project {
 
 fn visit(
     path: &str,
-    documents: &HashMap<String, Document>,
+    documents: &HashMap<&str, Document>,
     directory: &Path,
     common: &Path,
     visited: &mut HashSet<String>,

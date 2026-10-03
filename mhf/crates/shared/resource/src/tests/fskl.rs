@@ -1,13 +1,5 @@
 use super::*;
-
-fn block(kind: u32, count: u32, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for value in [kind, count, (payload.len() + HEADER_SIZE) as u32] {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes.extend_from_slice(payload);
-    bytes
-}
+use crate::test_support::block;
 
 fn bone(id: i32, parent: i32, child: i32, sibling: i32) -> Vec<u8> {
     let mut data = vec![0x6d; BONE_RECORD_SIZE];

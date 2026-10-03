@@ -17,19 +17,8 @@ impl DebuggerUi {
             .iter()
             .enumerate()
             .filter_map(|(index, bp)| {
-                let mhf_ai_debug::BreakpointKind::Location(pc) = bp.kind else {
-                    return None;
-                };
-                if debug
-                    .state
-                    .pc
-                    .is_some_and(|current| current.revision != pc.revision)
-                {
-                    return None;
-                }
                 debug
-                    .debug_info
-                    .lookup(pc.script as usize, pc.offset as usize)
+                    .breakpoint_mapping(bp)
                     .filter(|mapping| mapping.source.path == path && mapping.source.line == line)
                     .map(|_| index)
             })

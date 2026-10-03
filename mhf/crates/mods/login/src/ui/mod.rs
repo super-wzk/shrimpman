@@ -211,14 +211,14 @@ impl<'a> EframeApp<'a> {
                 let sender = self.message_sender.clone();
                 let repaint_context = context.clone();
                 let credential_store = connection.credential_store.clone();
-                let credentials_to_store = PasswordCredentials {
+                let credentials_to_store = remember_password.then(|| PasswordCredentials {
                     username: credentials.username.clone(),
                     password: credentials.password.clone(),
-                };
+                });
                 let result = connection.client.sign_in(&credentials, move |result| {
                     let credential_error = if result.is_ok() {
-                        let credential_result = if remember_password {
-                            credential_store.write(&credentials_to_store)
+                        let credential_result = if let Some(credentials) = &credentials_to_store {
+                            credential_store.write(credentials)
                         } else {
                             credential_store.delete()
                         };
@@ -300,17 +300,13 @@ impl<'a> EframeApp<'a> {
             }
         }
     }
-
-    fn receive_messages(&mut self, context: &egui::Context) {
-        while let Ok(message) = self.messages.try_recv() {
-            self.dispatch(message, context);
-        }
-    }
 }
 
 impl eframe::App for EframeApp<'_> {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
-        self.receive_messages(context);
+        while let Ok(message) = self.messages.try_recv() {
+            self.dispatch(message, context);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

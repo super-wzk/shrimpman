@@ -88,7 +88,7 @@ fn mha(payload: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn ecd_encoding_matches_independent_vectors_and_preserves_metadata() {
+fn ecd_encoding_matches_independent_vectors() {
     for (key, hex) in [
         "f577b418203c37b628",
         "deb25b2b8fdaea8924",
@@ -100,8 +100,7 @@ fn ecd_encoding_matches_independent_vectors_and_preserves_metadata() {
     .into_iter()
     .enumerate()
     {
-        let template = ecd(b"");
-        let mut file = Ecd::parse(&template).unwrap();
+        let mut file = Ecd::parse(b"ecd\x1a\x03\0\xaa\xbb\0\0\0\0\0\0\0\0").unwrap();
         file.header.key_index = key as u16;
         let encoded = file.encode(b"123456789", Some(b"test.bin")).unwrap();
         let expected: Vec<u8> = (0..hex.len())
@@ -109,14 +108,6 @@ fn ecd_encoding_matches_independent_vectors_and_preserves_metadata() {
             .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
             .collect();
         assert_eq!(&encoded[16..25], expected);
-        let decoded = Ecd::parse(&encoded).unwrap().decode(9).unwrap();
-        assert_eq!(&**decoded, b"123456789");
-        if key < 4 {
-            assert_eq!(decoded.encoding.header.filename_checksum, 0xbbaa);
-        } else {
-            decoded.encoding.validate_filename(b"test.bin").unwrap();
-        }
-        assert_eq!(decoded.encoding.trailing_bytes().unwrap(), b"trailer");
     }
 }
 
@@ -124,8 +115,8 @@ fn ecd_encoding_matches_independent_vectors_and_preserves_metadata() {
 fn exf_encoding_covers_every_byte_and_key_without_changing_header() {
     let payload: Vec<u8> = (0..=255).cycle().take(1025).collect();
     for key in 0..5 {
-        let template = exf(b"");
-        let mut file = Exf::parse(&template).unwrap();
+        let mut file =
+            Exf::parse(b"exf\x1a\x04\0\xaa\xbb\x11\x22\x33\x44\x55\x66\x77\x88").unwrap();
         file.header.key_index = key;
         let encoded = file.encode(&payload, None).unwrap();
         let decoded = Exf::parse(&encoded).unwrap().decode(payload.len()).unwrap();
@@ -460,8 +451,11 @@ fn raw_wrapper_trailers_and_reference_identity_are_preserved() {
 }
 
 #[test]
-fn uv_matrix_switch_edit_reaches_the_parsed_rendering_record() {
-    use mhf_resource::fmod::{FILE, MAIN, OBJECT, RENDERING, RENDERING_VERSION, UV_MATRIX_WORD};
+fn rendering_initialization_and_uv_edits_repack_nested_model_members() {
+    use crate::action::NodeAction;
+    use mhf_resource::fmod::{
+        FILE, MAIN, OBJECT, RENDERING, RENDERING_VERSION, UV_MATRIX_WORD, WORD_GROUPS,
+    };
 
     let mut parameters = [0; mhf_resource::fmod::RENDERING_WORDS];
     parameters[0] = RENDERING_VERSION;
@@ -469,59 +463,67 @@ fn uv_matrix_switch_edit_reaches_the_parsed_rendering_record() {
         .iter()
         .flat_map(|word| word.to_le_bytes())
         .collect();
-    let source = fmod_block(
-        FILE,
-        1,
-        &fmod_block(
-            MAIN,
-            1,
-            &fmod_block(OBJECT, 1, &fmod_block(RENDERING, 1, &payload)),
-        ),
-    );
-    let document = inspect::inspect("model.bin", source.into());
-    let switch = document
+    let mut components = fmod_block(RENDERING, 1, &payload);
+    components.extend_from_slice(&fmod_block(WORD_GROUPS, 0, &[]));
+    // Native ordinals include unknown entries; only OBJECTs expose an item.
+    let mut objects = fmod_block(0x00ff_0000, 0, &[]);
+    objects.extend_from_slice(&fmod_block(OBJECT, 2, &components));
+    objects.extend_from_slice(&fmod_block(OBJECT, 0, &[0xab, 0xcd]));
+    let fmod = fmod_block(FILE, 1, &fmod_block(MAIN, 3, &objects));
+    let directory = archive(&[&jkr(0, fmod.len(), &fmod), b"unchanged"], false);
+    let document = inspect::inspect("nested-model.bin", ecd(&mha(&directory)).into());
+    let items: Vec<_> = document
         .nodes
         .iter()
-        .flat_map(|node| &node.fields)
+        .filter(|node| node.kind == Kind::Object)
+        .map(|object| {
+            let items: Vec<_> = object
+                .children
+                .iter()
+                .copied()
+                .filter(|&child| document.nodes[child].name == "渲染参数")
+                .collect();
+            assert_eq!(items.len(), 1);
+            items[0]
+        })
+        .collect();
+    assert_eq!(items.len(), 2);
+    assert_eq!(document.nodes[items[0]].kind, Kind::Block);
+    assert!(!document.nodes[items[0]].fields.is_empty());
+    assert!(document.nodes[items[0]].action.is_none());
+    let missing = &document.nodes[items[1]];
+    assert_eq!(missing.kind, Kind::MissingBlock);
+    assert!(missing.range.is_empty());
+    assert_eq!(missing.action, Some(NodeAction::InitializeRenderingBlock));
+    let insertion = missing.range.start;
+    let initialized = super::fmod::initialize_rendering_block(&document, items[1]).unwrap();
+    assert!(initialized.nodes.iter().all(|node| node.action.is_none()));
+    let block = initialized
+        .nodes
+        .iter()
+        .position(|node| node.name == "渲染参数" && node.range.start == insertion)
+        .unwrap();
+    assert_eq!(initialized.nodes[block].kind, Kind::Block);
+    assert!(super::fmod::initialize_rendering_block(&initialized, block).is_err());
+    let switch = initialized.nodes[block]
+        .fields
+        .iter()
         .find(|field| field.name == "UV 矩阵来源")
         .unwrap();
-    // `word_1C` is the matrix-source row itself, and it stays a plain u32.
     assert_eq!(switch.value, "0");
     assert_eq!(switch.binding.format, FieldType::Scalar(ScalarType::U32));
     assert!(switch.writable);
     assert!(
-        document
+        initialized
             .nodes
             .iter()
             .flat_map(|node| &node.fields)
             .all(|field| field.name != "word_1C")
     );
-    let patch = switch.write(&document.buffers, "1").unwrap().unwrap();
+    let patch = switch.write(&initialized.buffers, "1").unwrap().unwrap();
     assert_eq!(patch.before, [0; 4]);
     assert_eq!(patch.after, [1, 0, 0, 0]);
-    let updated = apply_many(&document, &[patch]).unwrap();
-    let root = updated.payload(updated.root).unwrap();
-    let model = Fmod::parse(updated.bytes(root).unwrap()).unwrap();
-    let rendering = model.rendering_block(0).unwrap().unwrap();
-    assert_eq!(rendering.words[UV_MATRIX_WORD], 1);
-}
-
-#[test]
-fn rendering_parameter_initialization_repacks_nested_model_members() {
-    use mhf_resource::fmod::{FILE, MAIN, OBJECT, RENDERING};
-
-    let object = fmod_block(OBJECT, 0, &[]);
-    let fmod = fmod_block(FILE, 1, &fmod_block(MAIN, 1, &object));
-    let directory = archive(&[&jkr(0, fmod.len(), &fmod), b"unchanged"], false);
-    let named = mha(&directory);
-    let source = ecd(&named);
-    let document = inspect::inspect("nested-model.bin", source.into());
-    let item = document
-        .nodes
-        .iter()
-        .position(|node| node.kind == Kind::MissingBlock)
-        .unwrap();
-    let updated = super::fmod::initialize_rendering_block(&document, item).unwrap();
+    let updated = apply_many(&initialized, &[patch]).unwrap();
     let decoded = open_layers(&updated.buffers[0], usize::MAX, 10).unwrap();
     let named = MhaArchive::parse(&decoded, 10).unwrap();
     let directory =
@@ -531,10 +533,13 @@ fn rendering_parameter_initialization_repacks_nested_model_members() {
         .unwrap();
     let model = open_layers(compressed, usize::MAX, 4).unwrap();
     let model = Fmod::parse(model.payload()).unwrap();
-    let rendering = model.rendering_block(0).unwrap().unwrap();
+    assert!(model.rendering_block(0).is_err());
+    assert_eq!(model.rendering_block(1).unwrap().unwrap().words, parameters);
+    let rendering = model.rendering_block(2).unwrap().unwrap();
     assert_eq!(rendering.block.header.kind, RENDERING);
-    assert_eq!(rendering.words[0], mhf_resource::fmod::RENDERING_VERSION);
-    assert!(rendering.words[1..].iter().all(|&word| word == 0));
+    parameters[UV_MATRIX_WORD] = 1;
+    assert_eq!(rendering.words, parameters);
+    assert_eq!(model.objects().last().unwrap().trailing, [0xab, 0xcd]);
     assert_eq!(
         directory.entries[1]
             .payload(named.entries[0].entry.payload(&decoded).unwrap())

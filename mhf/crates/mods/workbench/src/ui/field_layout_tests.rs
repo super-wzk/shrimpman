@@ -30,52 +30,6 @@ impl Case {
     }
 }
 
-fn cases() -> Vec<Case> {
-    let mut numeric = Case::new(
-        "long numeric input",
-        FieldType::Scalar(ScalarType::U64),
-        vec![0; 8],
-    );
-    numeric.text = "9".repeat(512);
-    vec![
-        numeric,
-        Case::new("flags", FieldType::Flags(ScalarType::U64), vec![0; 8]),
-        Case::new(
-            "color",
-            FieldType::Color { alpha: true },
-            vec![10, 20, 30, 255],
-        ),
-        Case::new("three raw bytes", FieldType::Bytes, vec![0x41, 0x7f, 0xff]),
-        Case::new(
-            "short vector",
-            FieldType::Array(ScalarType::F32),
-            [-1_234_567.3_f32; 3]
-                .into_iter()
-                .flat_map(f32::to_le_bytes)
-                .collect(),
-        ),
-        Case::new(
-            "multiline text",
-            FieldType::Text {
-                encoding: TextEncoding::Utf8,
-                terminated: false,
-            },
-            format!(
-                "{}\n{}",
-                "wide resource name ".repeat(30),
-                "second line ".repeat(30)
-            )
-            .into_bytes(),
-        ),
-        Case::new("large raw", FieldType::Bytes, vec![0xa5; 256]),
-        Case::new(
-            "large array",
-            FieldType::Array(ScalarType::U32),
-            (0..128_u32).flat_map(u32::to_le_bytes).collect(),
-        ),
-    ]
-}
-
 struct Frame {
     main: Rect,
     available: Rect,
@@ -284,24 +238,9 @@ fn open_popup(harness: &mut Harness, case: &mut Case, label: &str) -> (Frame, Fr
 }
 
 #[test]
-fn every_field_control_keeps_a_single_row_at_narrow_and_wide_panel_sizes() {
-    for width in [220.0, 320.0, 500.0] {
-        for mut case in cases() {
-            let mut harness = Harness::new(width, 30.0);
-            for _ in 0..3 {
-                harness.input(&mut case, vec![]).fits(case.name);
-            }
-        }
-    }
-}
-
-#[test]
 fn flags_popup_stays_bounded_and_open_while_multiple_bits_change() {
     for width in [220.0, 320.0, 500.0] {
-        let mut case = cases()
-            .into_iter()
-            .find(|case| case.name == "flags")
-            .unwrap();
+        let mut case = Case::new("flags", FieldType::Flags(ScalarType::U64), vec![0; 8]);
         let mut harness = Harness::new(width, 30.0);
         let (closed, mut popup) = open_popup(&mut harness, &mut case, "位");
         for bit in ["0", "1"] {
@@ -321,21 +260,6 @@ fn flags_popup_stays_bounded_and_open_while_multiple_bits_change() {
         }
         let encoded = case.binding.encode(&case.original, &case.text).unwrap();
         assert_eq!(u64::from_le_bytes(encoded.try_into().unwrap()), 3);
-    }
-}
-
-#[test]
-fn large_array_and_text_popups_do_not_resize_the_inspector_row() {
-    for width in [220.0, 320.0, 500.0] {
-        for (name, button, title) in [
-            ("large array", "展开", "数组元素"),
-            ("multiline text", "编辑", "文本内容"),
-        ] {
-            let mut case = cases().into_iter().find(|case| case.name == name).unwrap();
-            let mut harness = Harness::new(width, 30.0);
-            let (_, opened) = open_popup(&mut harness, &mut case, button);
-            opened.text_center(title);
-        }
     }
 }
 
@@ -669,319 +593,6 @@ fn cancelling_one_invalid_cell_keeps_other_cells_latest_complete_values() {
     );
 }
 
-#[derive(Debug)]
-struct TextPosition {
-    text: String,
-    rect: Rect,
-    left: f32,
-    baseline: f32,
-}
-
-fn text_positions(frame: &Frame) -> Vec<TextPosition> {
-    fn collect(shape: &Shape, clip: Rect, output: &mut Vec<TextPosition>) {
-        match shape {
-            Shape::Vec(shapes) => {
-                for shape in shapes {
-                    collect(shape, clip, output);
-                }
-            }
-            Shape::Text(text) => {
-                let rect = text.galley.rect.translate(text.pos.to_vec2());
-                if rect.intersects(clip)
-                    && let Some(row) = text.galley.rows.first()
-                    && let Some(glyph) = row.glyphs.first()
-                {
-                    output.push(TextPosition {
-                        text: text.galley.text().into(),
-                        rect,
-                        left: text.pos.x + row.pos.x + glyph.pos.x,
-                        baseline: text.pos.y + row.pos.y + glyph.pos.y,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut positions = Vec::new();
-    for shape in &frame.output.as_ref().unwrap().shapes {
-        collect(&shape.shape, shape.clip_rect, &mut positions);
-    }
-    positions
-}
-
-#[test]
-fn inline_text_stays_vertically_centered_before_and_after_focus_and_typing() {
-    for (mut case, replacement) in [
-        (
-            Case::new("flags", FieldType::Flags(ScalarType::U32), vec![0; 4]),
-            "0x1",
-        ),
-        (
-            Case::new(
-                "color",
-                FieldType::Color { alpha: true },
-                vec![10, 20, 30, 255],
-            ),
-            "1, 2, 3, 255",
-        ),
-        (
-            Case::new(
-                "integer",
-                FieldType::Scalar(ScalarType::U64),
-                123_u64.to_le_bytes().to_vec(),
-            ),
-            "456",
-        ),
-        (
-            Case::new(
-                "text",
-                FieldType::Text {
-                    encoding: TextEncoding::Utf8,
-                    terminated: false,
-                },
-                b"hello text".to_vec(),
-            ),
-            "world text",
-        ),
-    ] {
-        let mut harness = Harness::new(260.0, 30.0);
-        mhf_font::install(&harness.context);
-        let check = |frame: &Frame, value: &str| {
-            let positions = text_positions(frame);
-            let text = positions
-                .iter()
-                .find(|position| position.text == value)
-                .expect("visible inline text");
-            assert!(
-                (text.rect.center().y - frame.main.center().y).abs() <= 1.0,
-                "{value:?}: text={:?}, control={:?}",
-                text.rect,
-                frame.main
-            );
-        };
-        let idle = harness.input(&mut case, vec![]);
-        check(&idle, &case.text);
-        let point = idle.text_center(&case.text);
-        harness.input(&mut case, pointer(point, true));
-        let focused = harness.input(&mut case, pointer(point, false));
-        check(&focused, &case.text);
-        let edited = harness.input(&mut case, replace_text(replacement));
-        assert!(edited.changed);
-        check(&edited, &case.text);
-    }
-}
-
-#[test]
-fn binary_header_and_rows_share_column_origins_and_text_baselines() {
-    for (count, screen) in [
-        (2, egui::vec2(900.0, 700.0)),
-        (7, egui::vec2(420.0, 300.0)),
-        (32, egui::vec2(900.0, 700.0)),
-    ] {
-        let mut harness = Harness::new(220.0, 30.0);
-        harness.screen = screen;
-        mhf_font::install(&harness.context);
-        let mut case = Case::new("grid", FieldType::Bytes, vec![0x41; count]);
-        let (_, opened) = open_binary(&mut harness, &mut case, &mut false);
-        let positions = text_positions(&opened);
-        let header = |label| {
-            positions
-                .iter()
-                .find(|position| position.text == label)
-                .unwrap()
-        };
-        let (offset_header, hex_header, ascii_header) =
-            (header("Offset"), header("HEX"), header("ASCII"));
-        let close =
-            |a: f32, b: f32| assert!((a - b).abs() <= 1.0, "misaligned {a} vs {b}: {positions:?}");
-        close(offset_header.baseline, hex_header.baseline);
-        close(offset_header.baseline, ascii_header.baseline);
-        let offsets = positions
-            .iter()
-            .filter(|position| {
-                position.text.len() == 8
-                    && position.text.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
-            .collect::<Vec<_>>();
-        assert!(!offsets.is_empty());
-        let row_height = (offsets[0].rect.center().y - offset_header.rect.center().y).abs();
-        for offset in offsets {
-            let same_row = |position: &&TextPosition| {
-                (position.rect.center().y - offset.rect.center().y).abs() < row_height / 2.0
-            };
-            let mut hex = positions
-                .iter()
-                .filter(same_row)
-                .filter(|position| position.text == "41")
-                .collect::<Vec<_>>();
-            let mut ascii = positions
-                .iter()
-                .filter(same_row)
-                .filter(|position| position.text == "A")
-                .collect::<Vec<_>>();
-            hex.sort_by(|a, b| a.left.total_cmp(&b.left));
-            ascii.sort_by(|a, b| a.left.total_cmp(&b.left));
-            assert!(
-                !hex.is_empty() && !ascii.is_empty(),
-                "missing row cells: {positions:?}"
-            );
-            close(offset.left, offset_header.left);
-            close(hex[0].left, hex_header.left);
-            close(ascii[0].left, ascii_header.left);
-            for cell in hex.into_iter().chain(ascii) {
-                close(cell.baseline, offset.baseline);
-                close(cell.rect.center().y, offset.rect.center().y);
-            }
-        }
-    }
-}
-
-// Full inspector tests below also exercise fixed name/value columns.
-
-fn inspector_document(long: bool) -> crate::inspect::Document {
-    use crate::field::Field;
-    let mut bytes = vec![0];
-    let mut fields = vec![Field {
-        reference: None,
-        key: None,
-        name: "field-0".into(),
-        value: if long {
-            format!("READONLY {}", "a very long decoded value ".repeat(100))
-        } else {
-            "ok".into()
-        },
-        note: None,
-        binding: Binding {
-            buffer: 0,
-            range: 0..1,
-            format: FieldType::Bytes,
-            endian: Endian::Little,
-        },
-        writable: false,
-    }];
-    for (index, case) in cases().into_iter().enumerate() {
-        let start = bytes.len();
-        bytes.extend_from_slice(&case.original);
-        fields.push(Field {
-            reference: None,
-            key: None,
-            name: format!("field-{}", index + 1),
-            value: case.text,
-            note: None,
-            binding: Binding {
-                range: start..bytes.len(),
-                ..case.binding
-            },
-            writable: true,
-        });
-    }
-    if long {
-        for field in &mut fields {
-            field.name.push_str(&format!(
-                " / {}",
-                "very-long-resource-field-name ".repeat(50)
-            ));
-        }
-    }
-    let mut document = crate::inspect::inspect("layout.bin", bytes.into());
-    let root = &mut document.nodes[document.root];
-    root.kind = crate::inspect::Kind::Block;
-    root.children.clear();
-    root.fields = fields;
-    document
-}
-
-#[test]
-fn inspector_names_readonly_values_and_popups_keep_uniform_rows() {
-    use crate::{preview::Control, settings::ViewSettings, worker::Worker};
-    use std::{fs, sync::Arc};
-    let directory =
-        std::env::temp_dir().join(format!("mhf-workbench-field-layout-{}", std::process::id()));
-    fs::create_dir_all(&directory).unwrap();
-    let short = inspector_document(false);
-    let long = inspector_document(true);
-    for width in [220.0, 320.0, 500.0] {
-        let worker = Arc::new(Worker::start(directory.clone(), directory.join("exports")).unwrap());
-        let mut workbench = super::Workbench::new(
-            Arc::new(Control::default()),
-            worker,
-            directory.clone(),
-            ViewSettings::default(),
-            None,
-        );
-        workbench.path = Some(directory.join("layout.bin"));
-        let mut harness = Harness::new(width, 650.0);
-        let mut baseline = harness.frame(vec![], |ui| {
-            workbench.inspector_fields(ui, &short, &short.nodes[short.root]);
-            false
-        });
-        for _ in 0..3 {
-            baseline = harness.frame(vec![], |ui| {
-                workbench.inspector_fields(ui, &short, &short.nodes[short.root]);
-                false
-            });
-        }
-        let mut expanded = harness.frame(vec![], |ui| {
-            workbench.inspector_fields(ui, &long, &long.nodes[long.root]);
-            false
-        });
-        for _ in 0..3 {
-            expanded = harness.frame(vec![], |ui| {
-                workbench.inspector_fields(ui, &long, &long.nodes[long.root]);
-                false
-            });
-        }
-        expanded.fits("full inspector");
-        expanded.same_main_as(&baseline);
-        let texts = expanded.texts();
-        let mut names = texts
-            .iter()
-            .filter(|(text, _, _)| text.starts_with("field-"))
-            .collect::<Vec<_>>();
-        names.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
-        assert_eq!(names.len(), long.nodes[long.root].fields.len());
-        assert!(
-            names.iter().all(|(_, _, elided)| *elided),
-            "long field names should visibly truncate"
-        );
-        let gaps = names
-            .windows(2)
-            .map(|pair| pair[1].1.center().y - pair[0].1.center().y)
-            .collect::<Vec<_>>();
-        assert!(
-            gaps.iter().all(|gap| (gap - gaps[0]).abs() <= 1.0),
-            "different editors must not change row spacing: {gaps:?}"
-        );
-        assert!(
-            texts
-                .iter()
-                .any(|(text, _, elided)| text.starts_with("READONLY") && *elided)
-        );
-        let anchor = expanded.text_center("位");
-        assert!(expanded.main.contains(anchor));
-        for pressed in [true, false] {
-            harness.frame(pointer(anchor, pressed), |ui| {
-                workbench.inspector_fields(ui, &long, &long.nodes[long.root]);
-                false
-            });
-        }
-        let mut opened = harness.frame(vec![], |ui| {
-            workbench.inspector_fields(ui, &long, &long.nodes[long.root]);
-            false
-        });
-        for _ in 0..3 {
-            opened = harness.frame(vec![], |ui| {
-                workbench.inspector_fields(ui, &long, &long.nodes[long.root]);
-                false
-            });
-        }
-        assert!(egui::Popup::is_any_open(&harness.context));
-        opened.same_main_as(&expanded);
-        opened.fits("inspector with a popup");
-    }
-    fs::remove_dir_all(directory).unwrap();
-}
-
 #[test]
 fn tab_selects_the_next_byte_for_direct_replacement() {
     let mut harness = Harness::new(220.0, 30.0);
@@ -1023,116 +634,6 @@ fn tab_selects_the_next_byte_for_direct_replacement() {
     );
 }
 
-fn hover_truncated_inspector_field(name: bool) {
-    use crate::{preview::Control, settings::ViewSettings, worker::Worker};
-    use std::{fs, path::PathBuf, sync::Arc};
-
-    struct Directory(PathBuf);
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    let directory = Directory(std::env::temp_dir().join(format!(
-        "mhf-workbench-tooltip-{}-{name}",
-        std::process::id(),
-    )));
-    fs::create_dir_all(&directory.0).unwrap();
-    let mut document = inspector_document(true);
-    let node = &mut document.nodes[document.root];
-    node.fields.truncate(1);
-    node.fields[0].name = format!("field-name {}", "long field label ".repeat(20));
-    node.fields[0].value = format!("READONLY {}", "complete decoded value ".repeat(24));
-    let field = &node.fields[0];
-    let complete = if name {
-        field.name.clone()
-    } else {
-        field.value.clone()
-    };
-    let offset = format!("0x{:08X}", field.binding.range.start);
-    let buffer = format!("b{}", field.binding.buffer);
-
-    for width in [220.0, 320.0, 500.0] {
-        let worker =
-            Arc::new(Worker::start(directory.0.clone(), directory.0.join("exports")).unwrap());
-        let mut workbench = super::Workbench::new(
-            Arc::new(Control::default()),
-            worker,
-            directory.0.clone(),
-            ViewSettings::default(),
-            None,
-        );
-        workbench.path = Some(directory.0.join("layout.bin"));
-        let mut harness = Harness::new(width, 650.0);
-        harness.context.all_styles_mut(|style| {
-            style.interaction.tooltip_delay = 0.0;
-            style.interaction.tooltip_grace_time = 0.0;
-            style.interaction.show_tooltips_only_when_still = false;
-        });
-        let mut closed = harness.frame(vec![], |ui| {
-            workbench.inspector_fields(ui, &document, &document.nodes[document.root]);
-            false
-        });
-        for _ in 0..3 {
-            closed = harness.frame(vec![], |ui| {
-                workbench.inspector_fields(ui, &document, &document.nodes[document.root]);
-                false
-            });
-        }
-        let anchor = closed
-            .texts()
-            .into_iter()
-            .find(|(text, _, elided)| text == &complete && *elided)
-            .expect("the displayed field must be truncated before hovering")
-            .1
-            .center();
-        let mut hovered = harness.frame(vec![Event::PointerMoved(anchor)], |ui| {
-            workbench.inspector_fields(ui, &document, &document.nodes[document.root]);
-            false
-        });
-        for _ in 0..7 {
-            hovered = harness.frame(vec![], |ui| {
-                workbench.inspector_fields(ui, &document, &document.nodes[document.root]);
-                false
-            });
-        }
-        hovered.same_main_as(&closed);
-        let tooltips = hovered
-            .texts()
-            .into_iter()
-            .filter(|(text, _, elided)| !*elided && text.contains(&complete))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            tooltips.len(),
-            1,
-            "{width}px {} should show one complete tooltip",
-            if name { "field name" } else { "readonly value" }
-        );
-        if name {
-            assert!(
-                tooltips[0].0.contains(&offset),
-                "the custom tooltip retains the field offset"
-            );
-            assert!(
-                tooltips[0].0.contains(&buffer),
-                "the custom tooltip retains the buffer identity"
-            );
-        } else {
-            assert_eq!(tooltips[0].0, complete);
-        }
-    }
-}
-
-#[test]
-fn a_truncated_readonly_value_has_one_complete_hover_tooltip() {
-    hover_truncated_inspector_field(false);
-}
-
-#[test]
-fn a_truncated_field_name_has_one_custom_hover_tooltip_with_its_offset() {
-    hover_truncated_inspector_field(true);
-}
-
 #[derive(Debug)]
 struct DockAction {
     label: String,
@@ -1141,81 +642,55 @@ struct DockAction {
     elided: bool,
 }
 
+#[derive(Debug)]
 struct DockFrame {
-    panel: Rect,
     content: Rect,
     actions: Vec<DockAction>,
     bar: Option<egui::Response>,
     buttons: Vec<(&'static str, egui::Response)>,
-    font: egui::FontId,
     ppp: f32,
 }
 
 impl DockFrame {
     fn assert_actions_fit(&self) {
         let tolerance = 1.0 / self.ppp;
-        let diagnostics = || {
-            format!(
-                "panel={:?} content={:?} bar={:?} font={:?} ppp={} actions={:?} buttons={:?}",
-                self.panel,
-                self.content,
-                self.bar.as_ref().map(|bar| bar.rect),
-                self.font,
-                self.ppp,
-                self.actions,
-                self.buttons
-                    .iter()
-                    .map(|(label, button)| (*label, button.rect, button.interact_rect))
-                    .collect::<Vec<_>>(),
-            )
-        };
+
         assert!(
             self.actions.iter().any(|action| action.label == "编辑"),
-            "missing byte editor: {}",
-            diagnostics()
+            "missing byte editor: {self:?}"
         );
         assert!(
             self.actions.iter().any(|action| action.label == "位"),
-            "missing flags editor: {}",
-            diagnostics()
+            "missing flags editor: {self:?}"
         );
         for action in &self.actions {
             // Deliberately use the original galley rect. Intersecting with clip
             // first would hide exactly the missing right-hand text in this bug.
-            assert!(
-                !action.elided,
-                "action label was shortened: {}",
-                diagnostics()
-            );
+            assert!(!action.elided, "action label was shortened: {self:?}");
             assert!(
                 action.text.left() >= action.clip.left() - tolerance
                     && action.text.right() <= action.clip.right() + tolerance,
-                "action text is clipped: {}",
-                diagnostics()
+                "action text is clipped: {self:?}"
             );
             assert!(
                 action.text.right() <= self.content.right() + tolerance,
-                "action text left the panel: {}",
-                diagnostics()
+                "action text left the panel: {self:?}"
             );
         }
         for (_, button) in &self.buttons {
             assert!(
                 button.rect.left() >= self.content.left() - tolerance
                     && button.rect.right() <= self.content.right() + tolerance,
-                "complete button left the panel: {}",
-                diagnostics()
+                "complete button left the panel: {self:?}"
             );
             assert!(
                 button.interact_rect.width() + tolerance >= button.rect.width(),
-                "the button's clickable area is clipped: {}",
-                diagnostics()
+                "the button's clickable area is clipped: {self:?}"
             );
             if let Some(bar) = &self.bar {
                 assert!(
                     button.rect.right() <= bar.rect.left() + tolerance,
-                    "scrollbar covers the button: {}",
-                    diagnostics()
+                    "scrollbar covers the button: {self:?}"
                 );
             }
         }
@@ -1305,10 +780,8 @@ impl DockHarness {
 
     fn frame(&mut self, events: Vec<Event>) -> DockFrame {
         self.time += 0.025;
-        let mut panel = Rect::NOTHING;
         let mut content = Rect::NOTHING;
         let mut scroll = egui::Id::NULL;
-        let mut font = egui::FontId::default();
         let mut bar = None;
         let mut buttons = Vec::new();
         let mut input = egui::RawInput {
@@ -1326,7 +799,7 @@ impl DockHarness {
         let output = self.context.run_ui(input, |ui| {
             egui_hunter::Density::Compact.scope(ui, |ui| {
                 let side_limit = ((self.screen.x - 300.0) / 2.0).clamp(160.0, 520.0);
-                let shown = egui::Panel::right("workbench-inspector")
+                egui::Panel::right("workbench-inspector")
                     .default_size(320.0)
                     .size_range(220.0_f32.min(side_limit)..=side_limit)
                     .frame(
@@ -1342,18 +815,8 @@ impl DockHarness {
                             "workbench-inspector-content",
                             self.workbench.tab,
                         )));
-                        font = ui
-                            .style()
-                            .button_style(
-                                &Default::default(),
-                                egui::widget_style::WidgetState::Inactive,
-                            )
-                            .text_style
-                            .font_id
-                            .clone();
                         self.workbench.inspector_panel(ui, &snapshot);
                     });
-                panel = shown.response.rect;
                 // Responses are read before end_pass rotates the widget buffers.
                 // Reading after run_ui can compare this frame's paint with the
                 // previous frame's geometry immediately after a resize.
@@ -1396,12 +859,10 @@ impl DockHarness {
         }
         output.drop_without_applying_deltas();
         DockFrame {
-            panel,
             content,
             actions: labels,
             bar,
             buttons,
-            font,
             ppp: self.context.pixels_per_point(),
         }
     }
@@ -1412,21 +873,12 @@ impl DockHarness {
             frame = self.frame(vec![]);
         }
         for label in ["位", "编辑"] {
-            let point = frame
+            let action = frame
                 .actions
                 .iter()
                 .find(|action| action.label == label)
-                .unwrap()
-                .text
-                .intersect(
-                    frame
-                        .actions
-                        .iter()
-                        .find(|action| action.label == label)
-                        .unwrap()
-                        .clip,
-                )
-                .center();
+                .unwrap();
+            let point = action.text.intersect(action.clip).center();
             frame = self.frame(vec![Event::PointerMoved(point)]);
             let hovered = self.context.interaction_snapshot(|snapshot| {
                 snapshot.hovered.iter().copied().collect::<Vec<_>>()

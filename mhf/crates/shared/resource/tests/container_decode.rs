@@ -1,8 +1,11 @@
+pub mod support;
+
 use mhf_resource::{
     container::{MhaArchive, SimpleArchive, StageArchive, open_layers},
     crypto::{Ecd, Exf, crc32},
     jkr::{HuffmanTable, Jkr},
 };
+use support::words;
 
 fn jkr(encoding: u16, size: u32, payload: &[u8]) -> Vec<u8> {
     let mut bytes = b"JKR\x1a\x08\x01".to_vec();
@@ -11,13 +14,6 @@ fn jkr(encoding: u16, size: u32, payload: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(&size.to_le_bytes());
     bytes.extend_from_slice(payload);
     bytes
-}
-
-fn words(values: &[u32]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
 }
 
 #[test]

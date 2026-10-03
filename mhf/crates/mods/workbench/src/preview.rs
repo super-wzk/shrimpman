@@ -142,19 +142,16 @@ impl ResourceRef {
         Some(Self::at_context(self.document.clone(), node, context))
     }
 
-    fn children(&self) -> Vec<Self> {
-        let Ok(payload) = resource_node(&self.document, self.node) else {
-            return Vec::new();
-        };
-        self.document.nodes[payload]
-            .children
-            .iter()
-            .map(|&node| {
-                let mut context = self.context.clone();
-                context.push(node);
-                Self::at_context(self.document.clone(), node, context)
-            })
-            .collect()
+    fn children(&self) -> impl DoubleEndedIterator<Item = Self> + '_ {
+        let children = resource_node(&self.document, self.node)
+            .ok()
+            .map(|payload| self.document.nodes[payload].children.as_slice())
+            .unwrap_or_default();
+        children.iter().map(|&node| {
+            let mut context = self.context.clone();
+            context.push(node);
+            Self::at_context(self.document.clone(), node, context)
+        })
     }
 
     /// Resolve a declared association in the current loading branch. A
@@ -301,7 +298,7 @@ impl ResourceRef {
             if is_loadable_resource(value.kind) {
                 resources.push(source);
             } else {
-                pending.extend(source.children().into_iter().rev());
+                pending.extend(source.children().rev());
             }
         }
         resources
@@ -312,7 +309,6 @@ impl ResourceRef {
             return vec![self.clone()];
         }
         self.children()
-            .into_iter()
             .map(|source| {
                 if self.document.nodes[source.node].range.is_empty() {
                     Self::white_texture()
@@ -426,12 +422,9 @@ impl ResourceRef {
     }
 
     pub fn kind(&self) -> Kind {
-        resource_kind(&self.document, self.node)
+        resource_node(&self.document, self.node)
+            .map_or(Kind::Unknown, |node| self.document.nodes[node].kind)
     }
-}
-
-pub(crate) fn resource_kind(document: &Document, node: usize) -> Kind {
-    resource_node(document, node).map_or(Kind::Unknown, |node| document.nodes[node].kind)
 }
 
 fn is_loadable_resource(kind: Kind) -> bool {
@@ -742,6 +735,18 @@ impl ViewportPixels {
     }
 }
 
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a.into_iter().zip(b).map(|(a, b)| a * b).sum()
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
 impl Camera {
     pub fn distance(self) -> f32 {
         self.eye
@@ -771,19 +776,9 @@ impl Camera {
 
     /// Row-major D3DX look-at and perspective matrices used by the native shader slots.
     pub fn matrices(self, near: f32, far: f32) -> ([f32; 16], [f32; 16]) {
-        fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-            a.into_iter().zip(b).map(|(a, b)| a * b).sum()
-        }
         fn normalize(v: [f32; 3]) -> [f32; 3] {
             let n = dot(v, v).sqrt();
             v.map(|v| v / n)
-        }
-        fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-            [
-                a[1] * b[2] - a[2] * b[1],
-                a[2] * b[0] - a[0] * b[2],
-                a[0] * b[1] - a[1] * b[0],
-            ]
         }
         let z = normalize(std::array::from_fn(|i| self.eye[i] - self.target[i]));
         let x = normalize(cross(self.up, z));
@@ -831,16 +826,6 @@ impl Camera {
     /// Match the native right-handed perspective camera, returning normalized
     /// screen coordinates so the overlay's DPI does not affect bone positions.
     pub fn project(self, position: [f32; 3]) -> Option<[f32; 2]> {
-        fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-            a.into_iter().zip(b).map(|(a, b)| a * b).sum()
-        }
-        fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-            [
-                a[1] * b[2] - a[2] * b[1],
-                a[2] * b[0] - a[0] * b[2],
-                a[0] * b[1] - a[1] * b[0],
-            ]
-        }
         fn normalize(value: [f32; 3]) -> Option<[f32; 3]> {
             let length = dot(value, value).sqrt();
             (length.is_finite() && length > f32::EPSILON).then(|| value.map(|v| v / length))
@@ -1086,51 +1071,36 @@ pub(crate) struct Control {
 }
 
 impl Control {
+    fn shared(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn set_preview_options(&self, options: PreviewOptions) {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .preview_options = options;
+        self.shared().preview_options = options;
     }
 
     pub fn preview_options(&self) -> PreviewOptions {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .preview_options
+        self.shared().preview_options
     }
 
     pub fn set_viewport(&self, viewport: Viewport) {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .viewport = viewport.clipped();
+        self.shared().viewport = viewport.clipped();
     }
 
     pub fn viewport(&self) -> Viewport {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .viewport
+        self.shared().viewport
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .snapshot
-            .clone()
+        self.shared().snapshot.clone()
     }
 
     pub fn closing(&self) -> bool {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .closing
+        self.shared().closing
     }
 
     pub fn send(&self, command: Command) -> Result<(), String> {
-        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shared = self.shared();
         if matches!(command, Command::Exit) {
             // Closing the window must work even while resource requests fill
             // the queue. Pending loads need not run before native cleanup.
@@ -1181,20 +1151,11 @@ impl Control {
     }
 
     pub fn commands(&self) -> Vec<Command> {
-        std::mem::take(
-            &mut self
-                .shared
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .commands,
-        )
+        std::mem::take(&mut self.shared().commands)
     }
 
     pub fn publish(&self, snapshot: Snapshot) {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .snapshot = snapshot;
+        self.shared().snapshot = snapshot;
     }
 }
 
@@ -1210,70 +1171,52 @@ mod tests {
     }
 
     #[test]
-    fn viewport_rounds_edges_and_reports_the_actual_render_rectangle() {
-        assert_eq!(
-            Viewport::default().pixels(1920, 1080),
-            Some(ViewportPixels {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            })
-        );
+    fn viewport_pixels_clip_original_edges_and_round_trip_rounded_rectangles() {
         let requested = Viewport {
             x: 0.25,
             y: 0.25,
             width: 0.5,
             height: 0.5,
         };
-        let pixels = requested.pixels(101, 99).unwrap();
-        assert_eq!(
-            pixels,
-            ViewportPixels {
-                x: 25,
-                y: 25,
-                width: 51,
-                height: 49,
-            }
-        );
-        let actual = pixels.normalized(101, 99);
-        assert_ne!(actual, requested);
-        assert_eq!(actual.pixels(101, 99), Some(pixels));
-        assert_eq!(pixels.aspect(), 51.0 / 49.0);
-    }
-
-    #[test]
-    fn viewport_intersection_does_not_enlarge_partially_offscreen_regions() {
         let left = Viewport {
             x: -0.2,
             y: 0.2,
             width: 0.5,
             height: 0.4,
         };
-        assert_eq!(
-            left.pixels(1000, 500),
-            Some(ViewportPixels {
-                x: 0,
-                y: 100,
-                width: 300,
-                height: 200,
-            })
-        );
-        let bottom_right = Viewport {
-            x: 0.9,
-            y: 0.9,
-            width: 0.5,
-            height: 0.5,
-        };
-        assert_eq!(
-            bottom_right.pixels(1000, 500),
-            Some(ViewportPixels {
-                x: 900,
-                y: 450,
-                width: 100,
-                height: 50,
-            })
-        );
+        for (viewport, (width, height), [x, y, w, h]) in [
+            (Viewport::default(), (1920, 1080), [0, 0, 1920, 1080]),
+            (requested, (101, 99), [25, 25, 51, 49]),
+            (left, (1000, 500), [0, 100, 300, 200]),
+            (
+                Viewport {
+                    x: 0.9,
+                    y: 0.9,
+                    width: 0.5,
+                    height: 0.5,
+                },
+                (1000, 500),
+                [900, 450, 100, 50],
+            ),
+        ] {
+            let pixels = viewport.pixels(width, height).unwrap();
+            assert_eq!(
+                pixels,
+                ViewportPixels {
+                    x,
+                    y,
+                    width: w,
+                    height: h
+                },
+                "{viewport:?}"
+            );
+            let actual = pixels.normalized(width, height);
+            assert_eq!(actual.pixels(width, height), Some(pixels));
+            if viewport == requested {
+                assert_ne!(actual, requested);
+                assert_eq!(pixels.aspect(), 51.0 / 49.0);
+            }
+        }
         for empty in [
             Viewport { x: 1.1, ..left },
             Viewport {

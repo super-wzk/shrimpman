@@ -37,25 +37,10 @@ pub(super) struct CredentialsForm {
 }
 
 impl CredentialsForm {
-    fn remembered(credentials: PasswordCredentials) -> Self {
-        Self {
-            username: credentials.username,
-            password: credentials.password,
-            remember_password: true,
-        }
-    }
-
     fn to_credentials(&self) -> PasswordCredentials {
         PasswordCredentials {
             username: self.username.trim().to_owned(),
             password: self.password.clone(),
-        }
-    }
-
-    fn into_credentials(self) -> PasswordCredentials {
-        PasswordCredentials {
-            username: self.username.trim().to_owned(),
-            password: self.password,
         }
     }
 }
@@ -108,17 +93,6 @@ impl Characters {
         self.pending_character_id().is_some() || self.sign_in.characters.len() < CHARACTER_LIMIT
     }
 
-    fn can_select(&self, selection: CharacterSelection) -> bool {
-        if !self.is_idle() {
-            return false;
-        }
-
-        match selection {
-            CharacterSelection::Existing(character_id) => self.has_existing_character(character_id),
-            CharacterSelection::New => self.has_new_slot(),
-        }
-    }
-
     fn can_delete(&self, character_id: CharacterId) -> bool {
         self.is_idle() && self.has_existing_character(character_id)
     }
@@ -168,7 +142,10 @@ impl Characters {
 
     fn into_launch_request(self, selected_character_id: CharacterId) -> LaunchRequest {
         LaunchRequest {
-            credentials: self.form.into_credentials(),
+            credentials: PasswordCredentials {
+                username: self.form.username.trim().to_owned(),
+                password: self.form.password,
+            },
             sign_in: self.sign_in,
             selected_character_id,
         }
@@ -224,7 +201,13 @@ impl Model {
 
     pub(super) fn sign_in(credentials: Option<PasswordCredentials>) -> Self {
         Self::SignIn(SignIn {
-            form: credentials.map_or_else(CredentialsForm::default, CredentialsForm::remembered),
+            form: credentials.map_or_else(CredentialsForm::default, |credentials| {
+                CredentialsForm {
+                    username: credentials.username,
+                    password: credentials.password,
+                    remember_password: true,
+                }
+            }),
             submitting: false,
         })
     }
@@ -302,10 +285,14 @@ impl Model {
                 }),
                 None,
             ),
-            (Self::Characters(mut state), Message::Select(selection)) => {
-                if state.can_select(selection) {
-                    state.selection = selection;
-                }
+            (Self::Characters(mut state), Message::Select(selection))
+                if state.is_idle()
+                    && match selection {
+                        CharacterSelection::Existing(id) => state.has_existing_character(id),
+                        CharacterSelection::New => state.has_new_slot(),
+                    } =>
+            {
+                state.selection = selection;
                 (Self::Characters(state), None)
             }
             (Self::Characters(mut state), Message::CharacterCreated(Ok(created))) => {
@@ -457,7 +444,7 @@ fn sign_error_message(error: &sign::Error) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::model::{IssuedSignSession, SignCharacter};
     use jiff::Timestamp;
@@ -492,72 +479,57 @@ mod tests {
     }
 
     #[test]
-    fn saved_credentials_prefill_the_sign_in_form() {
-        let model = Model::sign_in(Some(PasswordCredentials {
-            username: "hunter".to_owned(),
-            password: "secret".to_owned(),
-        }));
+    fn sign_in_and_launch_preserve_credentials_and_the_remember_password_choice() {
+        for remember in [false, true] {
+            let model = if remember {
+                Model::sign_in(Some(PasswordCredentials {
+                    username: "  hunter  ".into(),
+                    password: "secret".into(),
+                }))
+            } else {
+                sign_in_model()
+            };
+            let (model, effect) = model.update(Message::SignIn);
+            let Some(Effect::SignIn {
+                credentials,
+                remember_password,
+            }) = effect
+            else {
+                panic!("sign-in did not emit a Sign effect");
+            };
+            assert_eq!(credentials.username, "hunter");
+            assert_eq!(credentials.password, "secret");
+            assert_eq!(remember_password, remember);
+            let Model::SignIn(state) = model else {
+                panic!("sign-in request changed the page");
+            };
+            assert!(state.submitting);
+            assert_eq!(state.form.username, "  hunter  ");
+            assert_eq!(state.form.password, "secret");
+            assert_eq!(state.form.remember_password, remember);
 
-        let Model::SignIn(state) = model else {
-            panic!("saved credentials did not open the sign-in page");
-        };
-        assert_eq!(state.form.username, "hunter");
-        assert_eq!(state.form.password, "secret");
-        assert!(state.form.remember_password);
-    }
-
-    #[test]
-    fn sign_in_transitions_to_character_selection() {
-        let model = sign_in_model();
-        let (model, effect) = model.update(Message::SignIn);
-
-        let Some(Effect::SignIn {
-            credentials,
-            remember_password,
-        }) = effect
-        else {
-            panic!("sign-in did not emit a Sign effect");
-        };
-        assert_eq!(credentials.username, "hunter");
-        assert_eq!(credentials.password, "secret");
-        assert!(!remember_password);
-        let Model::SignIn(state) = model else {
-            panic!("sign-in request changed the page");
-        };
-        assert!(state.submitting);
-
-        let (model, effect) = Model::SignIn(state).update(Message::SignedIn {
-            result: Ok(sign_in_success()),
-            credential_error: None,
-        });
-        assert!(effect.is_none());
-        let Model::Characters(state) = model else {
-            panic!("successful sign-in did not open character selection");
-        };
-        assert_eq!(
-            state.selection,
-            CharacterSelection::Existing(CharacterId::from(7))
-        );
-        assert_eq!(state.form.username, "  hunter  ");
-    }
-
-    #[test]
-    fn sign_in_effect_preserves_the_remember_password_choice() {
-        let mut state = match sign_in_model() {
-            Model::SignIn(state) => state,
-            _ => unreachable!(),
-        };
-        state.form.remember_password = true;
-
-        let (_, effect) = Model::SignIn(state).update(Message::SignIn);
-
-        let Some(Effect::SignIn {
-            remember_password, ..
-        }) = effect
-        else {
-            panic!("sign-in did not emit a Sign effect");
-        };
-        assert!(remember_password);
+            let (model, effect) = Model::SignIn(state).update(Message::SignedIn {
+                result: Ok(sign_in_success()),
+                credential_error: None,
+            });
+            assert!(effect.is_none());
+            let Model::Characters(state) = model else {
+                panic!("successful sign-in did not open character selection");
+            };
+            assert_eq!(
+                state.selection,
+                CharacterSelection::Existing(CharacterId::from(7))
+            );
+            assert_eq!(state.form.username, "  hunter  ");
+            let (model, effect) = Model::Characters(state).update(Message::Launch);
+            assert!(matches!(model, Model::Closing));
+            let Some(Effect::Launch(request)) = effect else {
+                panic!("launch did not emit the final request");
+            };
+            assert_eq!(request.credentials.username, "hunter");
+            assert_eq!(request.credentials.password, "secret");
+            assert_eq!(request.selected_character_id, CharacterId::from(7));
+        }
     }
 
     #[test]
@@ -719,19 +691,6 @@ mod tests {
         assert_eq!(message, "登录会话已过期，请重新登录。");
     }
 
-    #[test]
-    fn launch_emits_the_final_request() {
-        let (model, effect) = Model::Characters(characters()).update(Message::Launch);
-
-        assert!(matches!(model, Model::Closing));
-        let Some(Effect::Launch(request)) = effect else {
-            panic!("launch did not emit the final request");
-        };
-        assert_eq!(request.credentials.username, "hunter");
-        assert_eq!(request.credentials.password, "secret");
-        assert_eq!(request.selected_character_id, CharacterId::from(7));
-    }
-
     fn sign_in_model() -> Model {
         Model::SignIn(SignIn {
             form: credentials_form(),
@@ -739,7 +698,7 @@ mod tests {
         })
     }
 
-    fn characters() -> Characters {
+    pub(in super::super) fn characters() -> Characters {
         Characters {
             form: credentials_form(),
             sign_in: sign_in_success(),

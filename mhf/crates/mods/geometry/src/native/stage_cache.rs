@@ -4,7 +4,8 @@ use super::{BASE, SLOT, State, abi, memory};
 use crate::{
     cache::{Buffer, Completion, Use},
     stage_cache::{
-        self, BUILD_CALLERS, DECODE_CALLERS, DECODED_GLOBAL, PATCHES, RAW_GLOBAL, reset_signatures,
+        self, BUILD_CALLERS, DECODE_CALLERS, DECODED_GLOBAL, ORIGINAL, PATCH_RVAS, RAW_GLOBAL,
+        reset_signatures,
     },
 };
 use mhf_hooks::HookSet;
@@ -33,8 +34,8 @@ pub(super) unsafe fn validate(base: usize) -> Result<(), String> {
     for (rva, bytes) in reset_signatures(base) {
         unsafe { memory::check(base + rva, &bytes) }?;
     }
-    for patch in PATCHES {
-        unsafe { memory::check(base + patch.rva, patch.original) }?;
+    for rva in PATCH_RVAS {
+        unsafe { memory::check(base + rva, &ORIGINAL) }?;
     }
     for caller in BUILD_CALLERS {
         let mut call = [0xe8, 0, 0, 0, 0];
@@ -126,22 +127,22 @@ impl Caches {
         FSKL_POINTER.store(guard.empty_address + 24, Ordering::Release);
         guard
             .reservations
-            .try_reserve_exact(PATCHES.len())
+            .try_reserve_exact(PATCH_RVAS.len())
             .map_err(|e| e.to_string())?;
-        for patch in PATCHES {
+        for rva in PATCH_RVAS {
             guard
                 .reservations
                 .push(mhf_hooks::PatchReservation::reserve(
                     "stage cache instruction",
-                    base + patch.rva,
-                    patch.original.len(),
+                    base + rva,
+                    ORIGINAL.len(),
                 )?);
             // Record before a write that may fail after copying bytes.
             unsafe {
                 memory::write(
                     base,
-                    patch.rva,
-                    &patch.replacement(&FSKL_POINTER as *const _ as usize),
+                    rva,
+                    &stage_cache::replacement(&FSKL_POINTER as *const _ as usize),
                 )
             }?;
         }
@@ -215,8 +216,8 @@ impl Caches {
     /// Restore only after all game callers and pending native jobs have stopped.
     pub(super) fn restore(&mut self) -> Result<(), String> {
         while !self.reservations.is_empty() {
-            let patch = &PATCHES[self.reservations.len() - 1];
-            unsafe { memory::write(self.base, patch.rva, patch.original) }?;
+            let rva = PATCH_RVAS[self.reservations.len() - 1];
+            unsafe { memory::write(self.base, rva, &ORIGINAL) }?;
             self.reservations
                 .pop()
                 .expect("stage patch owns its reservation")

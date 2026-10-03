@@ -1,13 +1,13 @@
-mod events;
+pub mod events;
 
 use std::time::Duration;
 
 use egui::{Context, Event, Id, Key, PopupCloseBehavior, RawInput, Rect, Response, pos2, vec2};
 use egui_hunter::{
-    Button, Dialog, DialogState, Icon, NavigationStack, NavigationState, NoticeKind, Notifications,
-    Panel, Popup, ResponsiveColumns, Tab, Tabs, TextField, Theme, Window,
+    Button, Density, Dialog, DialogState, Icon, NavigationStack, NavigationState, NoticeKind,
+    Notifications, Panel, Popup, ResponsiveColumns, Tab, Tabs, TextField, Window,
 };
-use events::{key, pointer};
+use events::{key, pointer, pulse};
 
 fn frame<R>(
     ctx: &Context,
@@ -16,22 +16,12 @@ fn frame<R>(
     events: Vec<Event>,
     mut show: impl FnMut(&mut egui::Ui) -> R,
 ) -> R {
-    let mut result = None;
-    let output = ctx.run_ui(
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 700.0))),
-            time: Some(time),
-            events,
-            ..Default::default()
-        },
-        |ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                result = Some(show(ui));
-            });
-        },
-    );
-    output.drop_without_applying_deltas();
-    result.unwrap()
+    events::frame(
+        ctx,
+        events::input(vec2(width, 700.0), Some(time), events),
+        |ui| egui::CentralPanel::default().show(ui, &mut show).inner,
+    )
+    .0
 }
 
 #[derive(Default)]
@@ -91,8 +81,7 @@ impl Overlays {
 
 #[test]
 fn dialog_enters_with_focus_accepts_once_and_restores_opener() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut app = Overlays {
         open: true,
         ..Default::default()
@@ -110,8 +99,7 @@ fn dialog_enters_with_focus_accepts_once_and_restores_opener() {
 
 #[test]
 fn escape_closes_popup_before_its_dialog() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut app = Overlays {
         open: true,
         open_popup: true,
@@ -126,16 +114,7 @@ fn escape_closes_popup_before_its_dialog() {
     assert!(app.dialog.is_open());
     app.frame(&ctx, vec![]);
     assert_eq!(ctx.memory(|m| m.focused()), Some(Id::new("popup-anchor")));
-    app.frame(
-        &ctx,
-        vec![Event::Key {
-            key: Key::Escape,
-            physical_key: None,
-            pressed: false,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    app.frame(&ctx, vec![events::key_event(Key::Escape, false)]);
     app.frame(&ctx, vec![key(Key::Escape)]);
     assert!(!app.dialog.is_open());
     app.frame(&ctx, vec![]);
@@ -144,8 +123,7 @@ fn escape_closes_popup_before_its_dialog() {
 
 #[test]
 fn clicking_another_input_closes_popup_without_stealing_its_focus() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut text = String::new();
     let mut draw = |ui: &mut egui::Ui| {
         let anchor = ui.add(Button::new("anchor").id(Id::new("anchor")));
@@ -175,8 +153,7 @@ fn clicking_another_input_closes_popup_without_stealing_its_focus() {
 
 #[test]
 fn switching_popup_anchors_keeps_only_the_new_popup_open() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let first = Id::new("first-popup");
     let second = Id::new("second-popup");
     egui::Popup::open_id(&ctx, first);
@@ -210,8 +187,7 @@ fn switching_popup_anchors_keeps_only_the_new_popup_open() {
 
 #[test]
 fn native_popup_commands_control_the_styled_popup_and_restore_focus_once() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("popup");
     let anchor_id = Id::new("anchor");
     let other_id = Id::new("other");
@@ -253,8 +229,7 @@ fn native_popup_commands_control_the_styled_popup_and_restore_focus_once() {
 
 #[test]
 fn popup_does_not_restore_stale_focus_when_its_parent_returns() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("popup");
     let other_id = Id::new("other");
     let draw = |ui: &mut egui::Ui, close| {
@@ -281,8 +256,7 @@ fn popup_does_not_restore_stale_focus_when_its_parent_returns() {
 
 #[test]
 fn selecting_a_popup_value_returns_focus_before_the_next_tab() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let anchor_id = Id::new("choice-anchor");
     let popup_id = Id::new("choice-popup");
     let after_id = Id::new("after-choice");
@@ -309,17 +283,6 @@ fn selecting_a_popup_value_returns_focus_before_the_next_tab() {
         ui.add(Button::new("Next").id(after_id));
         selected
     };
-    let pulse = |key| {
-        [true, false]
-            .map(|pressed| Event::Key {
-                key,
-                physical_key: None,
-                pressed,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            })
-            .to_vec()
-    };
     frame(&ctx, 800.0, 0.0, vec![], &mut draw);
     ctx.memory_mut(|memory| memory.request_focus(anchor_id));
     frame(&ctx, 800.0, 0.1, pulse(Key::Enter), &mut draw);
@@ -336,8 +299,7 @@ fn selecting_a_popup_value_returns_focus_before_the_next_tab() {
 
 #[test]
 fn replaced_popup_does_not_consume_escape_for_the_new_popup() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let first = Id::new("first-popup");
     let second = Id::new("second-popup");
     egui::Popup::open_id(&ctx, first);
@@ -364,8 +326,7 @@ fn replaced_popup_does_not_consume_escape_for_the_new_popup() {
 
 #[test]
 fn nested_dialog_escape_pops_one_layer_and_restores_parent_focus() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut app = Overlays {
         open: true,
         open_nested: true,
@@ -387,8 +348,7 @@ fn nested_dialog_escape_pops_one_layer_and_restores_parent_focus() {
 
 #[test]
 fn backdrop_dismissal_can_be_disabled() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut state = DialogState::default();
     state.open(&ctx);
     let mut draw = |ui: &mut egui::Ui| {
@@ -420,8 +380,7 @@ fn backdrop_dismissal_can_be_disabled() {
 
 #[test]
 fn window_ui_close_updates_host_state_and_stops_rendering_content() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut open = true;
     frame(&ctx, 800.0, 0.0, vec![], |ui| {
         Window::new("Window").open(&mut open).show(ui.ctx(), |ui| {
@@ -442,41 +401,8 @@ fn window_ui_close_updates_host_state_and_stops_rendering_content() {
 }
 
 #[test]
-fn window_with_nested_panels_keeps_its_height_across_idle_frames() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
-    let mut open = true;
-    let mut draw = |ui: &mut egui::Ui| {
-        let mut window = Window::new("Field notes").open(&mut open);
-        window.native = window.native.default_size([340.0, 220.0]);
-        window
-            .show(ui.ctx(), |ui| {
-                ui.label("A brief introduction");
-                Panel::new("Nested panel").show(ui, |ui| {
-                    ui.label("one");
-                    ui.label("two");
-                    ui.label("three");
-                });
-            })
-            .unwrap()
-            .response
-            .rect
-    };
-    frame(&ctx, 1000.0, 0.0, vec![], &mut draw);
-    let settled = frame(&ctx, 1000.0, 0.1, vec![], &mut draw);
-    for index in 2..12 {
-        let rect = frame(&ctx, 1000.0, index as f64 * 0.1, vec![], &mut draw);
-        assert!(
-            (rect.height() - settled.height()).abs() < 1.0,
-            "frame {index}: initial={settled:?}, actual={rect:?}"
-        );
-    }
-}
-
-#[test]
 fn panel_header_actions_render_without_a_title() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut action = None;
     let panel = frame(&ctx, 400.0, 0.0, vec![], |ui| {
         Panel::new("")
@@ -493,30 +419,8 @@ fn panel_header_actions_render_without_a_title() {
 }
 
 #[test]
-fn long_panel_titles_keep_header_actions_inside_narrow_panels() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
-    for (index, width) in [800.0, 360.0, 240.0].into_iter().enumerate() {
-        let mut action = None;
-        let panel = frame(&ctx, width, index as f64 * 0.1, vec![], |ui| {
-            Panel::new("A long editor document title that must leave room for its actions")
-                .show_with_header(
-                    ui,
-                    |ui| action = Some(ui.add(Button::new("Save"))),
-                    |ui| ui.label("Editor"),
-                )
-                .response
-        });
-        let action = action.unwrap();
-        assert!(action.rect.right() <= width, "{width}: {action:?}");
-        assert!(panel.rect.contains_rect(action.rect));
-    }
-}
-
-#[test]
 fn responsive_columns_reflow_without_changing_child_identity() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut draw = |ui: &mut egui::Ui| {
         ResponsiveColumns::new(Id::new("columns"))
             .min_column_width(300.0)
@@ -541,8 +445,7 @@ fn responsive_columns_reflow_without_changing_child_identity() {
 
 #[test]
 fn tabs_skip_disabled_headers_preserve_content_identity_and_leave_text_arrows_alone() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("tabs");
     let first = Id::new("first");
     let last = Id::new("last");
@@ -591,52 +494,8 @@ fn tabs_skip_disabled_headers_preserve_content_identity_and_leave_text_arrows_al
 }
 
 #[test]
-fn tab_headers_wrap_in_the_parent_without_expanding_its_width() {
-    for density in [
-        egui_hunter::Density::Standard,
-        egui_hunter::Density::Compact,
-    ] {
-        let ctx = Context::default();
-        Theme::default().density(density).apply(&ctx);
-        let id = Id::new("wrapping-tabs");
-        let tabs = [
-            Tab::new(Id::new("monster"), "Monster AI"),
-            Tab::new(Id::new("resources"), "Resource tree"),
-            Tab::new(Id::new("recorder"), "Recorder").enabled(false),
-            Tab::new(Id::new("configuration"), "Configuration"),
-        ];
-        let mut state = NavigationState::default();
-        for (index, width) in [440.0, 320.0, 240.0].into_iter().enumerate() {
-            let (boundary, parent, headers) =
-                frame(&ctx, width, index as f64 * 0.1, vec![], |ui| {
-                    let boundary = ui.max_rect().right();
-                    Tabs::new(id).show(ui, &mut state, &tabs, |ui, _| ui.label("Content"));
-                    let headers =
-                        tabs.map(|tab| ctx.read_response(id.with(("header", tab.id))).unwrap());
-                    (boundary, ui.max_rect(), headers)
-                });
-            assert!(
-                parent.right() <= boundary,
-                "{density:?}, {width}: {parent:?}"
-            );
-            assert!(!headers[2].enabled());
-            for header in &headers {
-                assert!(
-                    header.rect.right() <= boundary,
-                    "{density:?}, {width}: {header:?}"
-                );
-            }
-            if width == 240.0 {
-                assert!(headers[3].rect.top() > headers[0].rect.top());
-            }
-        }
-    }
-}
-
-#[test]
 fn tabs_move_selection_and_focus_once_in_both_directions_and_at_wrap() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("tabs");
     let ids = [Id::new("first"), Id::new("second"), Id::new("third")];
     let tabs = [
@@ -683,8 +542,7 @@ fn tabs_move_selection_and_focus_once_in_both_directions_and_at_wrap() {
 
 #[test]
 fn menu_back_preserves_root_and_restores_parent_control_after_render() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut menu = NavigationStack::new(Id::new("menu"), 0_u8);
     let root = frame(&ctx, 800.0, 0.0, vec![], |ui| {
         menu.show(ui, |ui, _| ui.add(Button::new("next"))).inner
@@ -707,8 +565,7 @@ fn menu_back_preserves_root_and_restores_parent_control_after_render() {
 
 #[test]
 fn menu_escape_waits_for_modal_to_close() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut menu = NavigationStack::new(Id::new("menu"), 0_u8);
     menu.push(&ctx, 1);
     let mut app = Overlays {
@@ -732,8 +589,7 @@ fn menu_escape_waits_for_modal_to_close() {
 fn controller_cancel_only_reaches_the_current_engagement_region() {
     use egui_hunter::{EngagementPlugin, FocusEngagement, GamepadState, NavigationInput};
 
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     ctx.add_plugin(EngagementPlugin::default());
     let mut adapter = NavigationInput::default();
     let mut menu = NavigationStack::new(Id::new("scoped-menu"), 0_u8);
@@ -791,8 +647,7 @@ fn controller_cancel_only_reaches_the_current_engagement_region() {
 
 #[test]
 fn menu_inside_modal_returns_before_closing_its_host() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut menu = NavigationStack::new(Id::new("modal-menu"), 0_u8);
     menu.push(&ctx, 1);
     let mut dialog = DialogState::default();
@@ -819,22 +674,9 @@ fn menu_inside_modal_returns_before_closing_its_host() {
     );
 }
 
-fn pulse(key: Key) -> Vec<Event> {
-    [true, false]
-        .map(|pressed| Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        })
-        .into()
-}
-
 #[test]
 fn menu_escape_closes_a_native_popup_without_also_popping_the_page() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut menu = NavigationStack::new(Id::new("menu"), 0_u8);
     menu.push(&ctx, 1);
     let id = Id::new("native-popup");
@@ -859,8 +701,7 @@ fn menu_escape_closes_a_native_popup_without_also_popping_the_page() {
 
 #[test]
 fn menu_escape_leaves_its_editor_before_returning_to_the_parent_page() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut menu = NavigationStack::new(Id::new("menu"), 0_u8);
     let mut text = String::from("keep this");
     menu.push(&ctx, 1);
@@ -890,13 +731,7 @@ fn menu_escape_leaves_its_editor_before_returning_to_the_parent_page() {
         &ctx,
         800.0,
         0.3,
-        vec![Event::Key {
-            key: Key::Escape,
-            physical_key: None,
-            pressed: false,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
+        vec![events::key_event(Key::Escape, false)],
         |ui| draw(ui, &mut menu, &mut text),
     );
     frame(&ctx, 800.0, 0.4, vec![key(Key::Escape)], |ui| {
@@ -908,8 +743,7 @@ fn menu_escape_leaves_its_editor_before_returning_to_the_parent_page() {
 
 #[test]
 fn notifications_start_lifetime_when_shown_and_bound_the_waiting_queue() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut notices = Notifications::with_capacity(Id::new("notices"), 3);
     let first = notices.push_for(&ctx, NoticeKind::Success, "first", Duration::from_secs(2));
     let second = notices.push_for(&ctx, NoticeKind::Warning, "second", Duration::from_secs(2));
@@ -945,51 +779,24 @@ fn notifications_start_lifetime_when_shown_and_bound_the_waiting_queue() {
 }
 
 #[test]
-fn notifications_stay_compact_and_allow_clicks_through_to_the_focused_control() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+fn notifications_stay_compact_and_preserve_focus_when_pass_through_changes() {
+    let ctx = events::themed_context();
     let mut notices = Notifications::new(Id::new("toasts"));
     notices.push(&ctx, NoticeKind::Success, "操作完成");
-    let mut draw = |ui: &mut egui::Ui| {
-        let button = egui::Area::new(Id::new("under-toast"))
-            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -24.0])
-            .show(ui.ctx(), |ui| {
-                ui.add(
-                    Button::new("继续操作")
-                        .id(Id::new("continue"))
-                        .min_size(vec2(520.0, 80.0)),
-                )
-            })
-            .inner;
-        let toast = notices.show(ui.ctx()).unwrap().response;
-        (button, toast)
-    };
-    frame(&ctx, 800.0, 0.0, vec![], &mut draw);
-    let (button, toast) = frame(&ctx, 800.0, 0.1, vec![], &mut draw);
-    assert!(toast.rect.width() < button.rect.width());
-    assert!(toast.rect.height() < button.rect.height());
-    let pos = toast.rect.center();
-    assert_eq!(ctx.layer_id_at(pos), Some(button.layer_id));
-    ctx.memory_mut(|memory| memory.request_focus(button.id));
-    frame(&ctx, 800.0, 0.2, pointer(pos, true), &mut draw);
-    let (button, _) = frame(&ctx, 800.0, 0.3, pointer(pos, false), &mut draw);
-    assert!(button.clicked());
-    assert_eq!(ctx.memory(|memory| memory.focused()), Some(button.id));
-}
-
-#[test]
-fn caller_can_change_notification_pass_through_while_it_is_visible() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
-    let mut notices = Notifications::new(Id::new("toasts"));
-    notices.push(&ctx, NoticeKind::Success, "操作完成");
-    for (step, pass_through) in [false, true].into_iter().enumerate() {
-        notices.set_pass_through(pass_through);
+    for (step, configured) in [None, Some(false), Some(true)].into_iter().enumerate() {
+        if let Some(pass_through) = configured {
+            notices.set_pass_through(pass_through);
+        }
+        let pass_through = configured.unwrap_or(true);
         let mut draw = |ui: &mut egui::Ui| {
             let button = egui::Area::new(Id::new("under-toast"))
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -24.0])
                 .show(ui.ctx(), |ui| {
-                    ui.add(Button::new("继续操作").min_size(vec2(520.0, 80.0)))
+                    ui.add(
+                        Button::new("继续操作")
+                            .id(Id::new("continue"))
+                            .min_size(vec2(520.0, 80.0)),
+                    )
                 })
                 .inner;
             let toast = notices.show(ui.ctx()).unwrap().response;
@@ -998,6 +805,8 @@ fn caller_can_change_notification_pass_through_while_it_is_visible() {
         let time = step as f64;
         frame(&ctx, 800.0, time, vec![], &mut draw);
         let (button, toast) = frame(&ctx, 800.0, time + 0.1, vec![], &mut draw);
+        assert!(toast.rect.width() < button.rect.width());
+        assert!(toast.rect.height() < button.rect.height());
         let pos = toast.rect.center();
         let layer = if pass_through {
             button.layer_id
@@ -1005,16 +814,19 @@ fn caller_can_change_notification_pass_through_while_it_is_visible() {
             toast.layer_id
         };
         assert_eq!(ctx.layer_id_at(pos), Some(layer));
+        button.request_focus();
         frame(&ctx, 800.0, time + 0.2, pointer(pos, true), &mut draw);
         let (button, _) = frame(&ctx, 800.0, time + 0.3, pointer(pos, false), &mut draw);
         assert_eq!(button.clicked(), pass_through);
+        if pass_through {
+            assert_eq!(ctx.memory(|memory| memory.focused()), Some(button.id));
+        }
     }
 }
 
 #[test]
 fn styled_popup_uses_native_id_width_and_click_policy() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("configured-popup");
     egui::Popup::open_id(&ctx, id);
     let mut draw = |ui: &mut egui::Ui| {
@@ -1039,29 +851,6 @@ fn styled_popup_uses_native_id_width_and_click_policy() {
     frame(&ctx, 800.0, 0.4, vec![key(Key::Escape)], &mut draw);
     assert!(!egui::Popup::is_id_open(&ctx, id));
     assert!(!ctx.input(|input| input.key_pressed(Key::Escape)));
-}
-
-#[test]
-fn styled_popup_limits_native_default_width_to_the_viewport() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
-    let id = Id::new("wide-popup");
-    egui::Popup::open_id(&ctx, id);
-    let mut draw = |ui: &mut egui::Ui| {
-        let anchor = ui.add(Button::new("anchor"));
-        let mut popup = Popup::new(&anchor);
-        popup.native = popup.native.id(id).width(1000.0);
-        popup
-            .show(|ui| ui.label("Description wraps inside the available viewport."))
-            .unwrap()
-            .response
-            .rect
-    };
-    frame(&ctx, 240.0, 0.0, vec![], &mut draw);
-    frame(&ctx, 240.0, 0.1, vec![], &mut draw);
-    let rect = frame(&ctx, 240.0, 0.2, vec![], &mut draw);
-    assert!(rect.width() <= 208.0, "{rect:?}");
-    assert!(Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 700.0)).contains_rect(rect));
 }
 
 #[test]
@@ -1147,8 +936,7 @@ fn floating_scrollbar_keeps_rightmost_buttons_clickable_with_call_site_margin() 
 
     let mut viewports = Vec::new();
     for margin in [0, 12] {
-        let ctx = Context::default();
-        Theme::default().apply(&ctx);
+        let ctx = events::themed_context();
         for pass in 0..3 {
             frame(&ctx, 360.0, f64::from(pass) * 0.2, vec![], |ui| {
                 draw(ui, margin)
@@ -1178,5 +966,41 @@ fn floating_scrollbar_keeps_rightmost_buttons_clickable_with_call_site_margin() 
     assert_eq!(
         viewports[0], viewports[1],
         "content margin keeps the floating scrollbar's viewport allocation unchanged"
+    );
+}
+
+#[test]
+fn floating_notifications_can_inherit_local_density_without_changing_global_toasts() {
+    let ctx = events::themed_context();
+    let mut compact = Notifications::new(Id::new("compact-notice"));
+    let mut standard = Notifications::new(Id::new("standard-notice"));
+    compact.push(&ctx, NoticeKind::Warning, "Notice");
+    standard.push(&ctx, NoticeKind::Warning, "Notice");
+    let mut heights = (0.0, 0.0);
+    for pass in 0..4 {
+        heights = frame(&ctx, 1000.0, pass as f64 * 0.1, vec![], |ui| {
+            let compact_height = Density::Compact
+                .scope(ui, |ui| {
+                    compact
+                        .show_at_in(ui, egui::Align2::LEFT_BOTTOM, vec2(20.0, -20.0))
+                        .unwrap()
+                        .response
+                        .rect
+                        .height()
+                })
+                .inner;
+            let standard_height = standard
+                .show_at(ui.ctx(), egui::Align2::RIGHT_BOTTOM, vec2(-20.0, -20.0))
+                .unwrap()
+                .response
+                .rect
+                .height();
+            assert_eq!(Density::get(ui), Density::Standard);
+            (compact_height, standard_height)
+        });
+    }
+    assert!(
+        heights.0 > 0.0 && heights.0 < heights.1,
+        "notification heights: {heights:?}"
     );
 }

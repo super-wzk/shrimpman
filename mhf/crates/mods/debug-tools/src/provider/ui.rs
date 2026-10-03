@@ -100,10 +100,10 @@ impl DebugPanel {
         let _ = self.control.send(command);
     }
     pub(crate) fn take_recording_save(&mut self) -> Option<String> {
-        self.ai.take_recording_save()
+        self.ai.debugger.take_recording_save()
     }
     pub(crate) fn recording_save_finished(&mut self, result: Result<bool, String>) {
-        self.ai.recording_save_finished(result);
+        self.ai.debugger.recording_save_finished(result);
     }
     pub(crate) fn show(
         &mut self,
@@ -230,8 +230,9 @@ impl DebugPanel {
                         }
                     });
             }
-            Page::Equipment => self.equipment(ui, snapshot),
-            Page::Transmog => self.transmog(ui, snapshot),
+            Page::Equipment | Page::Transmog => {
+                self.equipment_form(ui, snapshot, self.page == Page::Transmog)
+            }
             Page::Actions => self.actions(ui, snapshot),
             Page::MonsterAi => self.ai.show(ui, snapshot, &self.control),
             Page::MonsterManagement => self.ai.show_management(ui, snapshot, &self.control),
@@ -521,24 +522,17 @@ impl DebugPanel {
         ui.add_space(4.0);
     }
 
-    fn equipment(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
-        self.equipment_form(ui, snapshot, false);
-    }
-
-    fn transmog(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot) {
-        self.equipment_form(ui, snapshot, true);
-    }
-
     fn equipment_form(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, transmog: bool) {
         let fields = [
-            Field::new(egui::Id::new("debug-equipped-weapon")).label("武器"),
-            Field::new(egui::Id::new("debug-weapon-style")).label("秘传书"),
-            Field::new(egui::Id::new("debug-equipped-head")).label("头部"),
-            Field::new(egui::Id::new("debug-equipped-chest")).label("胸部"),
-            Field::new(egui::Id::new("debug-equipped-arms")).label("腕部"),
-            Field::new(egui::Id::new("debug-equipped-waist")).label("腰部"),
-            Field::new(egui::Id::new("debug-equipped-legs")).label("腿部"),
-        ];
+            ("debug-equipped-weapon", "武器"),
+            ("debug-weapon-style", "秘传书"),
+            ("debug-equipped-head", "头部"),
+            ("debug-equipped-chest", "胸部"),
+            ("debug-equipped-arms", "腕部"),
+            ("debug-equipped-waist", "腰部"),
+            ("debug-equipped-legs", "腿部"),
+        ]
+        .map(|(id, label)| Field::new(egui::Id::new(id)).label(label));
         egui::ScrollArea::vertical()
             .id_salt(("debug-equipment-form-scroll", transmog))
             .show(ui, |ui| {
@@ -908,7 +902,7 @@ impl DebugPanel {
 
     fn monsters(&mut self, ui: &mut egui::Ui, snapshot: &DebugSnapshot, input: &mut InputSettings) {
         filter_field(ui, "筛选怪物", &mut self.monster_filter, "怪物中文名或编号");
-        let mut species = input.species();
+        let mut species = input.species;
         let ids = ["debug-monster-species", "debug-monster-variant"].map(egui::Id::new);
         ui.vertical(|ui| {
             let width = ui.available_width();
@@ -936,7 +930,7 @@ impl DebugPanel {
                     }
                 });
                 input.select_species(species);
-                let mut variant = input.variant();
+                let mut variant = input.variant;
                 let monster = snapshot
                     .catalog
                     .monsters
@@ -1006,7 +1000,7 @@ impl DebugPanel {
             })
             .inner
         });
-        let variant = input.variant();
+        let variant = input.variant;
         filter_field(
             ui,
             "招式筛选",

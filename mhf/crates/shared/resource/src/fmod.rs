@@ -5,8 +5,6 @@
 //! stay in their file range (normally 0..255), and weights are not normalized.
 //! See `docs/model-formats.md` for the native evidence and unresolved fields.
 
-use std::io::{Cursor, Read};
-
 use crate::{Error, Result};
 
 pub const HEADER_SIZE: usize = 12;
@@ -276,6 +274,35 @@ impl<'a> IndexBlock<'a> {
     }
 }
 
+fn counted_records<'a, T>(
+    block: Block<'a>,
+    stride: usize,
+    count_mask: u32,
+    errors: (&str, &str),
+    mut parse: impl FnMut(usize, u32, &[u8]) -> T,
+) -> Result<(Vec<T>, &'a [u8])> {
+    // Every record has a count word, including empty groups and influences.
+    block.records(4)?;
+    let data = block.payload();
+    let mut position = 0;
+    let mut records = Vec::new();
+    for _ in 0..block.header.count {
+        let offset = block.offset + HEADER_SIZE + position;
+        let packed = data
+            .get(position..position + 4)
+            .ok_or_else(|| Error::new(offset, errors.0))?;
+        let packed = word(packed);
+        let count = (packed & count_mask) as usize;
+        let start = position + 4;
+        if count > (data.len() - start) / stride {
+            return Err(Error::new(offset, errors.1));
+        }
+        position = start + count * stride;
+        records.push(parse(offset, packed, &data[start..position]));
+    }
+    Ok((records, &data[position..]))
+}
+
 #[derive(Clone, Debug)]
 pub struct WordGroup {
     /// File offset of this group's count word, before its original u32 values.
@@ -294,36 +321,28 @@ pub struct WordGroupsBlock<'a> {
 
 impl<'a> WordGroupsBlock<'a> {
     fn parse(block: Block<'a>) -> Result<Self> {
-        // Each group needs at least its count word, including empty groups.
-        block.records(4)?;
-        let data = block.payload();
-        let mut cursor = Cursor::new(data);
-        let mut groups = Vec::new();
-        for _ in 0..block.header.count {
-            let offset = block.offset + HEADER_SIZE + cursor.position() as usize;
-            let mut count = [0; 4];
-            cursor
-                .read_exact(&mut count)
-                .map_err(|_| Error::new(offset, "truncated word-group count"))?;
-            let count = u32::from_le_bytes(count) as usize;
-            let start = cursor.position() as usize;
-            if count > (data.len() - start) / 4 {
-                return Err(Error::new(offset, "word-group count exceeds block payload"));
-            }
-            let end = start + count * 4;
-            let words = data[start..end]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|bytes| u32::from_le_bytes(*bytes))
-                .collect();
-            cursor.set_position(end as u64);
-            groups.push(WordGroup { offset, words });
-        }
+        let (groups, trailing) = counted_records(
+            block,
+            4,
+            u32::MAX,
+            (
+                "truncated word-group count",
+                "word-group count exceeds block payload",
+            ),
+            |offset, _, bytes| WordGroup {
+                offset,
+                words: bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| word(bytes))
+                    .collect(),
+            },
+        )?;
         Ok(Self {
             block,
             groups,
-            trailing: &data[cursor.position() as usize..],
+            trailing,
         })
     }
 }
@@ -375,41 +394,31 @@ pub struct WeightBlock<'a> {
 
 impl<'a> WeightBlock<'a> {
     fn parse(block: Block<'a>) -> Result<Self> {
-        // Every vertex has at least the count word, even with zero influences.
-        block.records(4)?;
-        let data = block.payload();
-        let mut cursor = Cursor::new(data);
-        let mut vertices = Vec::new();
-        for _ in 0..block.header.count {
-            let offset = block.offset + HEADER_SIZE + cursor.position() as usize;
-            let mut count_bytes = [0; 4];
-            cursor
-                .read_exact(&mut count_bytes)
-                .map_err(|_| Error::new(offset, "truncated skin influence count"))?;
-            let count = u32::from_le_bytes(count_bytes) as usize;
-            let start = cursor.position() as usize;
-            if count > (data.len() - start) / 8 {
-                return Err(Error::new(
-                    offset,
-                    "skin influence count exceeds block payload",
-                ));
-            }
-            let influences = data[start..start + count * 8]
-                .as_chunks::<8>()
-                .0
-                .iter()
-                .map(|v| SkinInfluence {
-                    bone_index: word(&v[..4]),
-                    weight: f32::from_bits(word(&v[4..])),
-                })
-                .collect();
-            vertices.push(VertexWeights { offset, influences });
-            cursor.set_position((start + count * 8) as u64);
-        }
+        let (vertices, trailing) = counted_records(
+            block,
+            8,
+            u32::MAX,
+            (
+                "truncated skin influence count",
+                "skin influence count exceeds block payload",
+            ),
+            |offset, _, bytes| VertexWeights {
+                offset,
+                influences: bytes
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|bytes| SkinInfluence {
+                        bone_index: word(&bytes[..4]),
+                        weight: f32::from_bits(word(&bytes[4..])),
+                    })
+                    .collect(),
+            },
+        )?;
         Ok(Self {
             block,
             vertices,
-            trailing: &data[cursor.position() as usize..],
+            trailing,
         })
     }
 }
@@ -437,43 +446,30 @@ pub struct StripBlock<'a> {
 
 impl<'a> StripBlock<'a> {
     fn parse(block: Block<'a>) -> Result<Self> {
-        block.records(4)?;
-        let data = block.payload();
-        let mut cursor = Cursor::new(data);
-        let mut strips = Vec::new();
-        for _ in 0..block.header.count {
-            let offset = block.offset + HEADER_SIZE + cursor.position() as usize;
-            let mut count_bytes = [0; 4];
-            cursor
-                .read_exact(&mut count_bytes)
-                .map_err(|_| Error::new(offset, "truncated triangle strip count"))?;
-            let packed_count = u32::from_le_bytes(count_bytes);
-            let count = (packed_count & 0x7fff_ffff) as usize;
-            let start = cursor.position() as usize;
-            if count > (data.len() - start) / 4 {
-                return Err(Error::new(
-                    offset,
-                    "strip index count exceeds block payload",
-                ));
-            }
+        let (strips, trailing) = counted_records(
+            block,
+            4,
+            0x7fff_ffff,
+            (
+                "truncated triangle strip count",
+                "strip index count exceeds block payload",
+            ),
             // Zero-length and degenerate strips are file data, not a parse error.
-            let indices = data[start..start + count * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|record| word(record))
-                .collect();
-            strips.push(TriangleStrip {
+            |offset, packed_count, bytes| TriangleStrip {
                 offset,
                 packed_count,
-                indices,
-            });
-            cursor.set_position((start + count * 4) as u64);
-        }
+                indices: bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| word(bytes))
+                    .collect(),
+            },
+        )?;
         Ok(Self {
             block,
             strips,
-            trailing: &data[cursor.position() as usize..],
+            trailing,
         })
     }
 }

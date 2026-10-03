@@ -467,17 +467,7 @@ fn attach(entry: &mut Resource, model: &mut Model, target: Target) -> Result<(),
             };
             let slot = definition.slot;
             model.effects.trigger(entry.binding.id, slot, model.frame)?;
-            model
-                .effects
-                .bindings
-                .iter_mut()
-                .find(|binding| binding.id == entry.binding.id)
-                .unwrap()
-                .entries
-                .iter_mut()
-                .find(|entry| entry.slot == slot)
-                .unwrap()
-                .started_at = Some(start + delta);
+            model.effects.entry_mut(entry.binding.id, slot)?.started_at = Some(start + delta);
         }
         refresh(model);
     }

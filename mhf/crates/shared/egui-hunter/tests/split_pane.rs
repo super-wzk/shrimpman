@@ -1,7 +1,7 @@
-mod events;
+pub mod events;
 
-use egui::{Context, Event, Id, Pos2, RawInput, Rect, Ui, Vec2, vec2};
-use egui_hunter::{Button, SplitPane, Theme};
+use egui::{Context, Event, Id, Rect, Ui, Vec2, vec2};
+use egui_hunter::{Button, SplitPane};
 
 fn frame<R>(
     ctx: &Context,
@@ -10,29 +10,19 @@ fn frame<R>(
     events: Vec<Event>,
     mut show: impl FnMut(&mut Ui) -> R,
 ) -> R {
-    let mut result = None;
-    ctx.run_ui(
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
-            time: Some(time),
-            events,
-            ..Default::default()
-        },
-        |ui| {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE)
-                .show(ui, |ui| result = Some(show(ui)));
-        },
-    )
-    .drop_without_applying_deltas();
-    result.unwrap()
+    events::frame(ctx, events::input(size, Some(time), events), |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ui, &mut show)
+            .inner
+    })
+    .0
 }
 
 #[test]
 fn both_axes_fill_the_parent_and_keep_stable_child_ids() {
     for horizontal in [true, false] {
-        let ctx = Context::default();
-        Theme::default().apply(&ctx);
+        let ctx = events::themed_context();
         let mut draw = |ui: &mut Ui| {
             let pane = if horizontal {
                 SplitPane::horizontal(Id::new("split"))
@@ -90,8 +80,7 @@ fn both_axes_fill_the_parent_and_keep_stable_child_ids() {
 #[test]
 fn dragging_remembers_the_ratio_and_double_click_restores_the_default() {
     for horizontal in [true, false] {
-        let ctx = Context::default();
-        Theme::default().apply(&ctx);
+        let ctx = events::themed_context();
         let size = vec2(800.0, 600.0);
         let mut draw = |ui: &mut Ui| {
             let pane = if horizontal {
@@ -144,8 +133,7 @@ fn dragging_remembers_the_ratio_and_double_click_restores_the_default() {
 
 #[test]
 fn narrow_parents_shrink_minimums_without_losing_the_preferred_ratio() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut draw = |ui: &mut Ui| {
         SplitPane::horizontal(Id::new("split"))
             .default_ratio(0.7)
@@ -167,8 +155,7 @@ fn narrow_parents_shrink_minimums_without_losing_the_preferred_ratio() {
 
 #[test]
 fn overflowing_content_cannot_paint_or_capture_input_in_the_other_pane() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let size = vec2(400.0, 200.0);
     let mut draw = |ui: &mut Ui| {
         SplitPane::horizontal(Id::new("split")).show(ui, |first, second| {
@@ -197,8 +184,7 @@ fn overflowing_content_cannot_paint_or_capture_input_in_the_other_pane() {
 
 #[test]
 fn nested_splits_keep_independent_state_and_inherit_clipping() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let mut draw = |ui: &mut Ui| {
         SplitPane::vertical(Id::new("outer"))
             .default_ratio(0.75)

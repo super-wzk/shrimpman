@@ -20,12 +20,32 @@ mod native {
                 FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog, SIGDN_FILESYSPATH,
             },
         },
-        core::{HRESULT, PCWSTR, w},
+        core::{HRESULT, w},
     };
 
     pub(crate) fn import_archive() -> Result<Option<PathBuf>, String> {
-        open_file(w!("导入 Mod 整合包"), w!("ZIP 整合包"), w!("*.zip"))
-            .map_err(|error| format!("无法选择整合包：{error}"))
+        let pick = || -> windows::core::Result<Option<PathBuf>> {
+            let _apartment = ComApartment::new()?;
+            unsafe {
+                let dialog: IFileOpenDialog =
+                    CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+                dialog.SetTitle(w!("导入 Mod 整合包"))?;
+                dialog.SetFileTypes(&[COMDLG_FILTERSPEC {
+                    pszName: w!("ZIP 整合包"),
+                    pszSpec: w!("*.zip"),
+                }])?;
+                dialog.SetOptions(
+                    dialog.GetOptions()?
+                        | FOS_FORCEFILESYSTEM
+                        | FOS_NOCHANGEDIR
+                        | FOS_FILEMUSTEXIST
+                        | FOS_PATHMUSTEXIST
+                        | FOS_STRICTFILETYPES,
+                )?;
+                selected_path(&dialog)
+            }
+        };
+        pick().map_err(|error| format!("无法选择整合包：{error}"))
     }
 
     pub(crate) fn export_archive() -> Result<Option<PathBuf>, String> {
@@ -53,33 +73,6 @@ mod native {
             }
         };
         pick().map_err(|error| format!("无法选择导出路径：{error}"))
-    }
-
-    fn open_file(
-        title: PCWSTR,
-        filter_name: PCWSTR,
-        pattern: PCWSTR,
-    ) -> windows::core::Result<Option<PathBuf>> {
-        let _apartment = ComApartment::new()?;
-        // Callers provide static UTF-16 strings, valid for the modal dialog's lifetime.
-        unsafe {
-            let dialog: IFileOpenDialog =
-                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-            dialog.SetTitle(title)?;
-            dialog.SetFileTypes(&[COMDLG_FILTERSPEC {
-                pszName: filter_name,
-                pszSpec: pattern,
-            }])?;
-            dialog.SetOptions(
-                dialog.GetOptions()?
-                    | FOS_FORCEFILESYSTEM
-                    | FOS_NOCHANGEDIR
-                    | FOS_FILEMUSTEXIST
-                    | FOS_PATHMUSTEXIST
-                    | FOS_STRICTFILETYPES,
-            )?;
-            selected_path(&dialog)
-        }
     }
 
     fn selected_path(dialog: &IFileDialog) -> windows::core::Result<Option<PathBuf>> {

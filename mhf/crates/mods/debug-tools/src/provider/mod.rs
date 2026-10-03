@@ -21,7 +21,7 @@ pub use module::DebugToolsMod;
 pub(crate) use native::{State, install};
 use overlay::create as overlay;
 pub use service::DebugService;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Action {
@@ -182,6 +182,26 @@ struct AiDebugSnapshot {
     debug_info: Arc<mhf_monster::ai::dsl::DebugInfo>,
 }
 
+impl AiDebugSnapshot {
+    fn breakpoint_mapping(
+        &self,
+        breakpoint: &mhf_ai_debug::Breakpoint,
+    ) -> Option<&mhf_monster::ai::dsl::SourceMapping> {
+        let mhf_ai_debug::BreakpointKind::Location(pc) = breakpoint.kind else {
+            return None;
+        };
+        if self
+            .state
+            .pc
+            .is_some_and(|current| current.revision != pc.revision)
+        {
+            return None;
+        }
+        self.debug_info
+            .lookup(pc.script as usize, pc.offset as usize)
+    }
+}
+
 #[derive(Clone)]
 struct MonsterStatus {
     target: AiTarget,
@@ -273,28 +293,26 @@ impl DebugControl {
         })
     }
 
+    fn shared(&self) -> MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn ui_settings(&self) -> UiSettings {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ui_settings
+        self.shared().ui_settings
     }
 
     fn set_ui_settings(&self, settings: UiSettings) {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ui_settings = settings;
+        self.shared().ui_settings = settings;
     }
 
     fn set_monster_input(&self, input: MonsterInput) {
-        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shared = self.shared();
         shared.monster_input = input;
         shared.input_at = Some(std::time::Instant::now());
     }
 
     fn monster_input(&self) -> MonsterInput {
-        let shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let shared = self.shared();
         if shared
             .input_at
             .is_some_and(|at| at.elapsed().as_millis() < 200)
@@ -306,14 +324,10 @@ impl DebugControl {
     }
 
     pub(crate) fn snapshot(&self) -> DebugSnapshot {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .snapshot
-            .clone()
+        self.shared().snapshot.clone()
     }
     fn send(&self, command: DebugCommand) -> Result<(), String> {
-        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shared = self.shared();
         if shared.commands.len() >= 16 {
             return Err("等待上一个调试操作完成".into());
         }
@@ -321,7 +335,7 @@ impl DebugControl {
         Ok(())
     }
     pub(crate) fn mod_snapshot(&self) -> crate::api::Snapshot {
-        let shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let shared = self.shared();
         let snapshot = &shared.snapshot;
         crate::api::Snapshot {
             ready: snapshot.ready,
@@ -349,18 +363,9 @@ impl DebugControl {
     }
 
     fn commands(&self) -> Vec<DebugCommand> {
-        std::mem::take(
-            &mut self
-                .shared
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .commands,
-        )
+        std::mem::take(&mut self.shared().commands)
     }
     fn publish(&self, snapshot: DebugSnapshot) {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .snapshot = snapshot;
+        self.shared().snapshot = snapshot;
     }
 }

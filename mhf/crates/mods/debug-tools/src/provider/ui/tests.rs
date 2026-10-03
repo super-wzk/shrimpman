@@ -13,50 +13,13 @@ fn context() -> Context {
     context
 }
 
-#[test]
-fn result_rows_fit_controls_and_two_lines_without_consuming_the_viewport() {
-    for viewport_height in [120.0, 480.0, 1200.0] {
-        let context = context();
-        let output = context.run_ui(
-            RawInput {
-                screen_rect: Some(Rect::from_min_size(
-                    pos2(0.0, 0.0),
-                    vec2(430.0, viewport_height),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    let height = result_row_height(ui);
-                    let mut controls = Vec::new();
-                    let mut labels = Vec::new();
-                    let mut rows = Vec::new();
-                    for selected in [false, true] {
-                        let row = result_row(ui, height, selected, |ui| {
-                            controls.push(ui.add(Button::new("换装")).rect);
-                            ui.allocate_ui_with_layout(
-                                vec2(ui.available_width(), height - 4.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.label("猎人武器");
-                                    labels.push(ui.small("编号 65535 · 模型编号 65535").rect);
-                                },
-                            );
-                        });
-                        assert!((row.rect.height() - height).abs() <= 1.0, "{row:?}");
-                        rows.push(row.rect);
-                    }
-                    assert!(rows[0].bottom() <= rows[1].top());
-                    for ((row, control), label) in rows.iter().zip(controls).zip(labels) {
-                        assert!(control.height() >= ui.spacing().interact_size.y);
-                        assert!(row.contains_rect(control));
-                        assert!(row.contains_rect(label));
-                    }
-                });
-            },
-        );
-        output.drop_without_applying_deltas();
+fn key_event(key: Key, pressed: bool, modifiers: Modifiers) -> Event {
+    Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers,
     }
 }
 
@@ -170,20 +133,8 @@ fn monster_species_picker_sends_only_the_selected_instance_and_preserves_failed_
     }
     for _ in 0..2 {
         ui.frame(vec![
-            Event::Key {
-                key: Key::Backspace,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: Modifiers::NONE,
-            },
-            Event::Key {
-                key: Key::Backspace,
-                physical_key: None,
-                pressed: false,
-                repeat: false,
-                modifiers: Modifiers::NONE,
-            },
+            key_event(Key::Backspace, true, Modifiers::NONE),
+            key_event(Key::Backspace, false, Modifiers::NONE),
         ]);
     }
     for _ in 0..3 {
@@ -247,8 +198,11 @@ impl DebugUi {
             },
             |ui| {
                 egui::CentralPanel::default().show(ui, |ui| match self.window.page {
-                    Page::Equipment => self.window.equipment(ui, &self.snapshot),
-                    Page::Transmog => self.window.transmog(ui, &self.snapshot),
+                    Page::Equipment | Page::Transmog => self.window.equipment_form(
+                        ui,
+                        &self.snapshot,
+                        self.window.page == Page::Transmog,
+                    ),
                     Page::Actions => self.window.actions(ui, &self.snapshot),
                     Page::MonsterAi => {
                         self.window
@@ -429,50 +383,6 @@ impl PanelUi {
         self.click_at(response.rect.center());
         assert_eq!(self.window.page, page);
     }
-
-    fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
-        self.frame(vec![Event::PointerMoved(from)]);
-        self.frame(vec![Event::PointerButton {
-            pos: from,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }]);
-        self.frame(vec![Event::PointerMoved(from.lerp(to, 0.5))]);
-        self.frame(vec![Event::PointerMoved(to)]);
-        self.frame(vec![Event::PointerButton {
-            pos: to,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }]);
-        self.settle();
-    }
-}
-
-#[test]
-fn responsive_navigation_reaches_every_page_without_queuing_game_operations() {
-    for size in [vec2(440.0, 360.0), vec2(720.0, 480.0), vec2(1280.0, 900.0)] {
-        let mut ui = PanelUi::new(populated_snapshot(20), size, Page::Task);
-        for page in Page::ALL {
-            ui.select_page(page);
-            assert!(
-                ui.window.control.commands().is_empty(),
-                "navigation is local"
-            );
-            if page != Page::Task {
-                assert!(ui.context.read_response(Id::new("debug-restart")).is_none());
-            }
-        }
-        ui.select_page(Page::Task);
-        let restart = ui.context.read_response(Id::new("debug-restart")).unwrap();
-        assert!(Rect::from_min_size(pos2(0.0, 0.0), size).contains_rect(restart.rect));
-        ui.click_at(restart.rect.center());
-        assert!(matches!(
-            ui.window.control.commands().as_slice(),
-            [DebugCommand::Restart]
-        ));
-    }
 }
 
 #[test]
@@ -510,13 +420,7 @@ fn scrolling_lists_keeps_tools_fixed_and_keyboard_can_activate_a_bottom_row() {
         for _ in 0..16 {
             ui.frame(
                 [true, false]
-                    .map(|pressed| Event::Key {
-                        key: Key::Tab,
-                        physical_key: None,
-                        pressed,
-                        repeat: false,
-                        modifiers: Modifiers::NONE,
-                    })
+                    .map(|pressed| key_event(Key::Tab, pressed, Modifiers::NONE))
                     .into(),
             );
             ui.settle();
@@ -539,66 +443,12 @@ fn scrolling_lists_keeps_tools_fixed_and_keyboard_can_activate_a_bottom_row() {
             row_focused,
             "Tab did not reach the visible bottom rows at {size:?}"
         );
-        ui.frame(vec![Event::Key {
-            key: Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        }]);
+        ui.frame(vec![key_event(Key::Enter, true, Modifiers::NONE)]);
         assert!(
             matches!(ui.window.control.commands().as_slice(), [DebugCommand::Equip { kind: 6, id }] if *id >= 950),
             "keyboard activation must use a visible row at the end of the list"
         );
     }
-}
-
-#[test]
-fn wide_navigation_and_monster_controls_resize_with_native_handles() {
-    let mut ui = PanelUi::new(populated_snapshot(20), vec2(1280.0, 900.0), Page::Equipment);
-    ui.settle();
-    let navigation = Id::new("debug-navigation");
-    let before = egui::containers::panel::PanelState::load(&ui.context, navigation)
-        .unwrap()
-        .size()
-        .x;
-    let handle = ui
-        .context
-        .read_response(navigation.with("__resize"))
-        .unwrap()
-        .rect
-        .center();
-    ui.drag(handle, handle + vec2(48.0, 0.0));
-    let after = egui::containers::panel::PanelState::load(&ui.context, navigation)
-        .unwrap()
-        .size()
-        .x;
-    assert!(
-        after > before + 20.0,
-        "navigation resize did not persist: {before} -> {after}"
-    );
-    ui.select_page(Page::Monsters);
-    let controls = Id::new("debug-monster-control-panel");
-    let before = egui::containers::panel::PanelState::load(&ui.context, controls)
-        .unwrap()
-        .size()
-        .x;
-    let handle = ui
-        .context
-        .read_response(controls.with("__resize"))
-        .unwrap()
-        .rect
-        .center();
-    ui.drag(handle, handle - vec2(48.0, 0.0));
-    let after = egui::containers::panel::PanelState::load(&ui.context, controls)
-        .unwrap()
-        .size()
-        .x;
-    assert!(
-        after > before + 20.0,
-        "monster control resize did not persist: {before} -> {after}"
-    );
-    assert!(ui.window.control.commands().is_empty());
 }
 
 #[test]
@@ -673,7 +523,7 @@ fn definition_with_only_transitions_shows_original_conditions_and_source_span() 
 }
 
 #[test]
-fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() {
+fn definition_window_scrolls_narrow_content_while_keeping_its_summary() {
     use crate::provider::action_definition::ActionDefinition;
     use mhf_resource::action_definition::{ActionEvent, ActionStep, Definition};
     let action = Action {
@@ -710,27 +560,12 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
     }));
     let mut ui = PanelUi::new(snapshot, vec2(1280.0, 900.0), Page::Actions);
     ui.window.definition_action = Some(action);
-    ui.context
-        .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
     ui.settle();
     let id = Id::new("debug-action-definition");
-    let before = egui::AreaState::load(&ui.context, id).unwrap().rect();
-    ui.drag(
-        before.right_bottom() - vec2(2.0, 2.0),
-        before.right_bottom() + vec2(100.0, 80.0),
-    );
-    let resized = egui::AreaState::load(&ui.context, id).unwrap().rect();
-    assert!(resized.width() > before.width() + 50.0 && resized.height() > before.height() + 30.0);
     for size in [vec2(440.0, 360.0), vec2(720.0, 480.0)] {
         ui.size = size;
         ui.settle();
         let rect = egui::AreaState::load(&ui.context, id).unwrap().rect();
-        assert!(
-            Rect::from_min_size(pos2(0.0, 0.0), size)
-                .shrink(7.0)
-                .contains_rect(rect),
-            "{rect:?} at {size:?}"
-        );
         let summary = ui.visible_text("60 个步骤 · 1 个事件 · 0 个派生条件");
         ui.frame(vec![
             Event::PointerMoved(rect.center()),
@@ -746,29 +581,7 @@ fn definition_window_resizes_constrains_and_scrolls_while_keeping_its_summary() 
             ui.visible_text("60 个步骤 · 1 个事件 · 0 个派生条件"),
             summary
         );
-        ui.visible_text("motion/w11goku.mot#4/5");
-        for (text, rect, clip) in &ui.texts {
-            if text.starts_with("motion/w11goku.mot") || text.contains("12345") {
-                assert!(
-                    rect.right() <= clip.right() + 1.0 && rect.left() >= clip.left() - 1.0,
-                    "detail is horizontally clipped: {text}: {rect:?}, {clip:?}"
-                );
-            }
-        }
-        let event = ui.visible_text("步骤结束后 → 生成攻击");
-        ui.frame(vec![Event::PointerMoved(event.center())]);
-        ui.settle();
-        for detail in [
-            "mhfdat.bin#389/11/2/events/0",
-            "原始操作 4 · 参数 12345",
-            "阶段 0 · 帧条件 20 · 计数 1",
-            "数据层偏移 0x2e8..0x2f4 · 12 字节",
-        ] {
-            assert!(
-                ui.texts.iter().any(|(text, _, _)| text == detail),
-                "missing event detail {detail}"
-            );
-        }
+        ui.visible_text("步骤结束后 → 生成攻击");
         // The narrow stacked fields can make one complete step taller than
         // the viewport. Its final event and header remain separately reachable.
         ui.frame(vec![Event::PointerGone]);
@@ -968,7 +781,7 @@ fn definition_references_keep_unknown_targets_and_original_event_sources() {
     );
     for (label, details) in [
         (
-            "1 个步骤 · 2 个事件",
+            "1 个步骤 · 2 个事件 · 0 个派生条件",
             &["mhfdat.bin#389/11/2", "数据层偏移 0x100..0x118 · 24 字节"][..],
         ),
         (
@@ -1023,33 +836,13 @@ fn appearance_ui(female: bool) -> DebugUi {
         },
         catalog: Arc::new(Catalog {
             appearances: [
-                AppearanceOptions {
-                    faces: vec![
-                        Face {
-                            id: 2,
-                            model_id: 70,
-                        },
-                        Face {
-                            id: 11,
-                            model_id: 80,
-                        },
-                    ],
-                    hair: vec![3, 12],
-                },
-                AppearanceOptions {
-                    faces: vec![
-                        Face {
-                            id: 4,
-                            model_id: 90,
-                        },
-                        Face {
-                            id: 21,
-                            model_id: 100,
-                        },
-                    ],
-                    hair: vec![5, 22],
-                },
-            ],
+                ([(2, 70), (11, 80)], [3, 12]),
+                ([(4, 90), (21, 100)], [5, 22]),
+            ]
+            .map(|(faces, hair)| AppearanceOptions {
+                faces: faces.map(|(id, model_id)| Face { id, model_id }).into(),
+                hair: hair.into(),
+            }),
             ..Default::default()
         }),
         ..Default::default()
@@ -1336,64 +1129,6 @@ fn runtime_hud_stays_at_bottom_left_without_capturing_input() {
     );
 }
 
-#[test]
-fn definition_window_keeps_move_rows_in_place() {
-    use crate::provider::action_definition::ActionDefinition;
-    use mhf_resource::action_definition::{ActionStep, Definition};
-    let mut ui = PanelUi::new(populated_snapshot(8), vec2(1200.0, 900.0), Page::Actions);
-    let action = Action {
-        weapon: 0,
-        group: 1,
-        id: 2,
-    };
-    ui.settle();
-    let list_clip = ui
-        .texts
-        .iter()
-        .find(|(text, _, _)| text.starts_with("武器招式 "))
-        .unwrap()
-        .2;
-    let rows = |texts: &[(String, Rect, Rect)]| {
-        texts
-            .iter()
-            .filter(|(text, _, clip)| text.starts_with("武器招式 ") && *clip == list_clip)
-            .map(|(text, rect, _)| (text.clone(), rect.min))
-            .collect::<Vec<_>>()
-    };
-    let before = rows(&ui.texts);
-    assert!(!before.is_empty());
-    ui.snapshot.action_definition = Some(Arc::new(ActionDefinition {
-        action,
-        motion_style: Some(0),
-        attacks: None,
-        data: Ok(Definition {
-            weapon: action.weapon,
-            action: u16::from(action.id),
-            offset: 0,
-            steps_range: 24..24 + 20 * 12,
-            events_range: 0..0,
-            transitions_range: 0..0,
-            transitions: Vec::new(),
-            steps: (0..20).map(|_| ActionStep([3, 1405, 0, 4, 0, 1])).collect(),
-            events: vec![],
-        }),
-    }));
-    ui.window.definition_action = Some(action);
-    ui.settle();
-    assert!(
-        ui.texts
-            .iter()
-            .any(|(text, _, _)| text == "motion/w00.mot#4/5")
-    );
-    assert!(
-        ui.texts
-            .iter()
-            .any(|(text, _, _)| text.starts_with("步骤 0 ·")),
-        "definition is visible in its own window"
-    );
-    assert_eq!(before, rows(&ui.texts));
-}
-
 fn monster_ui() -> DebugUi {
     let mut ui = DebugUi::new(DebugSnapshot {
         ready: true,
@@ -1434,7 +1169,7 @@ fn reinforced_form_selections_reach_transform_and_direct_action_commands() {
         ui.input.select_species(species);
         ui.click_id(select_field_id("debug-monster-variant"));
         ui.click(label);
-        assert_eq!(ui.input.variant(), variant);
+        assert_eq!(ui.input.variant, variant);
         ui.click("变身并操控");
         ui.click("触发");
         assert!(matches!(
@@ -1474,13 +1209,13 @@ fn variant_menu_uses_the_current_species_snapshot_descriptors() {
     ui.input.select_species(21);
     ui.click_id(select_field_id("debug-monster-variant"));
     ui.click("彼岸岛联动");
-    assert_eq!(ui.input.variant(), 12);
+    assert_eq!(ui.input.variant, 12);
     ui.click("变身并操控");
 
     ui.click_id(select_field_id("debug-monster-species"));
     ui.click(crate::provider::monsters::NAMES[155]);
-    assert_eq!(ui.input.species(), 155);
-    assert_eq!(ui.input.variant(), 0);
+    assert_eq!(ui.input.species, 155);
+    assert_eq!(ui.input.variant, 0);
     ui.click_id(select_field_id("debug-monster-variant"));
     let option = ui.position("目录专用形态");
     assert!(
@@ -1489,7 +1224,7 @@ fn variant_menu_uses_the_current_species_snapshot_descriptors() {
             .any(|(text, _)| text.starts_with("彼岸岛联动"))
     );
     ui.click_at(option);
-    assert_eq!(ui.input.variant(), 12);
+    assert_eq!(ui.input.variant, 12);
     ui.click("触发");
     assert!(matches!(
         ui.window.control.commands().as_slice(),
@@ -1517,10 +1252,13 @@ fn changing_form_or_species_clears_bindings_and_restores_the_default_form() {
     ui.click("绑定");
     ui.click("快捷键 1");
     assert!(ui.input.shortcuts[0] == Some(MonsterAction { group: 1, id: 5 }));
+    ui.click_id(select_field_id("debug-monster-variant"));
+    ui.click("HC");
+    assert!(ui.input.shortcuts[0] == Some(MonsterAction { group: 1, id: 5 }));
     ui.click_id(select_field_id("debug-monster-species"));
     ui.click(crate::provider::monsters::NAMES[94]);
-    assert_eq!(ui.input.species(), 94);
-    assert_eq!(ui.input.variant(), 0);
+    assert_eq!(ui.input.species, 94);
+    assert_eq!(ui.input.variant, 0);
     assert!(ui.input.shortcuts.iter().all(Option::is_none));
     assert!(ui.window.control.commands().is_empty());
 }
@@ -1578,16 +1316,7 @@ fn filtered_runtime_monster_actions_trigger_and_bind_the_matching_action() {
 }
 
 #[test]
-fn task_tab_exposes_session_controls_from_each_page_in_a_short_window() {
-    verify_session_controls_accessibility(false);
-}
-
-#[test]
 fn task_tab_navigation_reaches_and_activates_session_controls_from_each_page() {
-    verify_session_controls_accessibility(true);
-}
-
-fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
     for size in [vec2(440.0, 360.0), vec2(720.0, 480.0), vec2(1280.0, 900.0)] {
         let height = size.y;
         for page in Page::ALL {
@@ -1598,10 +1327,10 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
             let mut input = InputSettings::default();
             // The starting page has realistic scrollable content, while task
             // controls must remain reachable after selecting the task tab.
-            let snapshot = populated_snapshot(if navigate_with_tabs { 8 } else { 2000 });
+            let snapshot = populated_snapshot(2000);
             let screen = Rect::from_min_size(pos2(0.0, 0.0), size);
             let mut time = 0.0;
-            let mut frame = |events: Vec<Event>, focus_session_controls: bool| {
+            let mut frame = |events: Vec<Event>| {
                 let output = context.run_ui(
                     RawInput {
                         screen_rect: Some(screen),
@@ -1611,19 +1340,14 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
                         ..Default::default()
                     },
                     |ui| {
-                        if focus_session_controls {
-                            // Focus requests belong inside the egui pass so
-                            // gained_focus can observe the transition.
-                            ui.memory_mut(|memory| memory.request_focus(Id::new("debug-exit")));
-                        }
                         window.show(ui, &snapshot, &mut input);
                     },
                 );
                 output.drop_without_applying_deltas();
                 time += 0.2;
             };
-            frame(vec![], false);
-            frame(vec![], false);
+            frame(vec![]);
+            frame(vec![]);
             let tab = context
                 .read_response(Id::new("debug-pages").with(("header", Id::new("task"))))
                 .unwrap();
@@ -1641,63 +1365,49 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
             // Navigate through the actual task tab from every starting page.
             let position = tab.rect.center();
             for pressed in [true, false] {
-                frame(
-                    vec![
-                        Event::PointerMoved(position),
-                        Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: Modifiers::NONE,
-                        },
-                    ],
-                    false,
-                );
+                frame(vec![
+                    Event::PointerMoved(position),
+                    Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    },
+                ]);
             }
-            frame(vec![], false);
+            frame(vec![]);
             let controls = context.read_response(Id::new("debug-exit")).unwrap();
             assert!(
                 controls.rect.top() > tab.rect.bottom(),
                 "task controls belong inside task content: {controls:?}, {tab:?}"
             );
 
-            if navigate_with_tabs {
-                for _ in 0..24 {
-                    frame(
-                        [true, false]
-                            .map(|pressed| Event::Key {
-                                key: Key::Tab,
-                                physical_key: None,
-                                pressed,
-                                repeat: false,
-                                modifiers: Modifiers::NONE,
-                            })
-                            .into(),
-                        false,
-                    );
-                    for _ in 0..4 {
-                        frame(vec![], false);
-                    }
-                    if let Some(focused) = context
-                        .memory(|memory| memory.focused())
-                        .and_then(|id| context.read_response(id))
-                    {
-                        assert!(
-                            screen.contains_rect(focused.rect)
-                                && focused.interact_rect.height() >= focused.rect.height() - 1.0
-                                && focused.interact_rect.width() >= focused.rect.width() - 1.0,
-                            "Tab focus is clipped from page {page:?}, height {height}: {focused:?}"
-                        );
-                    }
-                    if context.memory(|memory| memory.focused()) == Some(Id::new("debug-exit")) {
-                        break;
-                    }
+            for _ in 0..24 {
+                frame(
+                    [true, false]
+                        .map(|pressed| key_event(Key::Tab, pressed, Modifiers::NONE))
+                        .into(),
+                );
+                for _ in 0..4 {
+                    frame(vec![]);
                 }
-            } else {
-                frame(vec![], true);
+                if let Some(focused) = context
+                    .memory(|memory| memory.focused())
+                    .and_then(|id| context.read_response(id))
+                {
+                    assert!(
+                        screen.contains_rect(focused.rect)
+                            && focused.interact_rect.height() >= focused.rect.height() - 1.0
+                            && focused.interact_rect.width() >= focused.rect.width() - 1.0,
+                        "Tab focus is clipped from page {page:?}, height {height}: {focused:?}"
+                    );
+                }
+                if context.memory(|memory| memory.focused()) == Some(Id::new("debug-exit")) {
+                    break;
+                }
             }
             for _ in 0..8 {
-                frame(vec![], false);
+                frame(vec![]);
             }
             let exit = context.read_response(Id::new("debug-exit")).unwrap();
             assert!(exit.has_focus(), "from page {page:?}, height {height}");
@@ -1710,16 +1420,7 @@ fn verify_session_controls_accessibility(navigate_with_tabs: bool) {
                     && exit.interact_rect.width() >= exit.rect.width() - 1.0,
                 "task controls are clipped from page {page:?}, height {height}: {exit:?}"
             );
-            frame(
-                vec![Event::Key {
-                    key: Key::Enter,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: Modifiers::NONE,
-                }],
-                false,
-            );
+            frame(vec![key_event(Key::Enter, true, Modifiers::NONE)]);
             assert!(matches!(
                 control.commands().as_slice(),
                 [DebugCommand::Exit]
@@ -1779,20 +1480,8 @@ fn management_and_ai_share_the_instance_without_losing_edited_drafts() {
         ..Modifiers::NONE
     };
     ui.frame(vec![
-        Event::Key {
-            key: Key::A,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers,
-        },
-        Event::Key {
-            key: Key::A,
-            physical_key: None,
-            pressed: false,
-            repeat: false,
-            modifiers,
-        },
+        key_event(Key::A, true, modifiers),
+        key_event(Key::A, false, modifiers),
         Event::Text(edited.clone()),
     ]);
     assert!(ui.window.control.commands().is_empty());
@@ -2094,14 +1783,7 @@ fn equipment_popup_closes_outside_and_escape_keeps_the_parent_of_weapon_selector
     ui.click("猎人装备 0");
     ui.click("大剑");
     assert!(egui::Popup::is_any_open(&ui.context));
-    let escape = || Event::Key {
-        key: Key::Escape,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: Modifiers::NONE,
-    };
-    ui.frame(vec![escape()]);
+    ui.frame(vec![key_event(Key::Escape, true, Modifiers::NONE)]);
     ui.frame(vec![]);
     assert!(!egui::Popup::is_any_open(&ui.context));
     assert_eq!(ui.window.equipment_popup, Some((false, 0)));

@@ -6,7 +6,7 @@ mod game;
 mod profile;
 pub mod runtime;
 
-pub use abi::MhfLaunchParams32;
+pub use abi::{MhfLaunchParams32, copy_c_string};
 pub use game::{GameExit, run};
 pub use profile::MhfLaunchProfile;
 pub use runtime::LaunchConfig;

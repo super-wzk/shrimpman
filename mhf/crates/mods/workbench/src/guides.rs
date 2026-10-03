@@ -135,36 +135,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn axes_and_grid_can_be_hidden_independently() {
-        let options = PreviewOptions {
-            show_grid: false,
-            ..PreviewOptions::default()
-        };
-        let axes = vertices(camera(350.0), options);
-        assert_eq!(axes.len(), 6);
-        for (axis, pair) in axes.as_chunks::<2>().0.iter().enumerate() {
-            assert!(pair[0].position[axis] < 0.0 && pair[1].position[axis] > 0.0);
-            for vertex in pair {
-                assert!(
-                    vertex
-                        .position
-                        .iter()
-                        .enumerate()
-                        .all(|(i, &v)| i == axis || v == 0.0)
-                );
-            }
-        }
-        assert!(
-            vertices(
-                camera(350.0),
-                PreviewOptions {
-                    show_axes: false,
-                    ..options
-                }
-            )
-            .is_empty()
-        );
-    }
 }

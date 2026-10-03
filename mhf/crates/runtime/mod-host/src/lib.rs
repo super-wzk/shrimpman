@@ -68,7 +68,6 @@ struct Entry {
     module: Option<Box<dyn Module>>,
     context: Box<Context>,
     status: ModStatus,
-    dependencies: BTreeSet<String>,
     participated: bool,
     stopped: bool,
     detach_called: bool,
@@ -152,7 +151,6 @@ impl ModHost {
                     phase: "created",
                     error: None,
                 },
-                dependencies: candidate.manifest.dependencies.keys().cloned().collect(),
                 participated: false,
                 stopped: false,
                 detach_called: false,
@@ -239,32 +237,13 @@ impl ModHost {
         }
         self.shutting_down = true;
         self.shared.set_phase(api::PHASE_STOP);
-        let mut errors = Vec::new();
-        let mut retained = BTreeSet::new();
-        for index in (0..self.entries.len()).rev() {
-            let entry = &mut self.entries[index];
-            if !entry.participated || entry.stopped || retained.contains(&entry.status.id) {
-                continue;
-            }
-            let module = entry
-                .module
-                .as_mut()
-                .expect("module remains owned during cleanup");
-            match with_owner(&entry.status.id, || module.stop(&entry.context)) {
-                Ok(()) => {
-                    entry.stopped = true;
-                    entry.status.succeeded("stopped");
-                }
-                Err(error) => {
-                    entry.status.failed("stop_failed", &error);
-                    errors.push(format!("{}: stop: {error}", entry.status.id));
-                    retained.extend(self.dependencies_of(index));
-                }
-            }
-        }
-        self.stopped = errors.is_empty();
-        self.failed_cleanup = !self.stopped;
-        errors_result(errors)
+        let result = self.run_cleanup(
+            ("stop", "stopped", "stop_failed"),
+            |entry| &mut entry.stopped,
+            |module, context| module.stop(context),
+        );
+        self.stopped = result.is_ok();
+        result
     }
 
     /// Detach consumers before providers. `builtin_order` breaks ties between
@@ -340,43 +319,58 @@ impl ModHost {
         if !self.detached {
             return Err("detach must complete before preparing game release".into());
         }
+        let result = self.run_cleanup(
+            ("prepare release", "release_prepared", "release_failed"),
+            |entry| &mut entry.release_prepared,
+            |module, context| module.prepare_release(context),
+        );
+        self.release_prepared = result.is_ok();
+        result
+    }
+
+    fn run_cleanup(
+        &mut self,
+        (operation, succeeded, failed): (&str, &'static str, &'static str),
+        completed: fn(&mut Entry) -> &mut bool,
+        call: impl Fn(&mut dyn Module, &Context) -> Result<()>,
+    ) -> Result<()> {
         let mut errors = Vec::new();
         let mut retained = BTreeSet::new();
         for index in (0..self.entries.len()).rev() {
             let entry = &mut self.entries[index];
-            if !entry.participated || entry.release_prepared || retained.contains(&entry.status.id)
-            {
+            if !entry.participated || *completed(entry) || retained.contains(&entry.status.id) {
                 continue;
             }
             let module = entry
                 .module
                 .as_mut()
                 .expect("module remains owned during cleanup");
-            match with_owner(&entry.status.id, || module.prepare_release(&entry.context)) {
+            match with_owner(&entry.status.id, || call(module.as_mut(), &entry.context)) {
                 Ok(()) => {
-                    entry.release_prepared = true;
-                    entry.status.succeeded("release_prepared");
+                    *completed(entry) = true;
+                    entry.status.succeeded(succeeded);
                 }
                 Err(error) => {
-                    entry.status.failed("release_failed", &error);
-                    errors.push(format!("{}: prepare release: {error}", entry.status.id));
+                    entry.status.failed(failed, &error);
+                    errors.push(format!("{}: {operation}: {error}", entry.status.id));
                     retained.extend(self.dependencies_of(index));
                 }
             }
         }
-        self.release_prepared = errors.is_empty();
-        self.failed_cleanup = !self.release_prepared;
+        self.failed_cleanup = !errors.is_empty();
         errors_result(errors)
     }
 
     fn dependencies_of(&self, index: usize) -> BTreeSet<String> {
         let mut dependencies = BTreeSet::new();
-        let mut pending: Vec<_> = self.entries[index].dependencies.iter().cloned().collect();
-        while let Some(id) = pending.pop() {
-            if dependencies.insert(id.clone())
-                && let Some(entry) = self.entries.iter().find(|entry| entry.status.id == id)
-            {
-                pending.extend(entry.dependencies.iter().cloned());
+        let mut pending = vec![index];
+        while let Some(index) = pending.pop() {
+            for id in self.entries[index].context.dependencies() {
+                if dependencies.insert(id.clone())
+                    && let Some(next) = self.entries.iter().position(|entry| entry.status.id == *id)
+                {
+                    pending.push(next);
+                }
             }
         }
         dependencies
@@ -397,7 +391,8 @@ impl ModHost {
                 .position(|index| {
                     !remaining.iter().any(|consumer| {
                         self.entries[*consumer]
-                            .dependencies
+                            .context
+                            .dependencies()
                             .contains(&self.entries[*index].status.id)
                     })
                 })

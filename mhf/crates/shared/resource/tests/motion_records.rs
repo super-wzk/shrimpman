@@ -1,13 +1,7 @@
-use mhf_resource::motion::{KeyEncoding, Keyframe, Motion, MotionArchive, ObservedMotionDirectory};
+pub mod support;
 
-fn block(kind: u32, count: u32, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for word in [kind, count, (12 + payload.len()) as u32] {
-        bytes.extend(word.to_le_bytes());
-    }
-    bytes.extend(payload);
-    bytes
-}
+use mhf_resource::motion::{KeyEncoding, Keyframe, Motion, MotionArchive, ObservedMotionDirectory};
+use support::block;
 
 fn motion(channels: &[Vec<u8>]) -> Vec<u8> {
     let empty_track = block(0x8000_0000, 0, &[]);

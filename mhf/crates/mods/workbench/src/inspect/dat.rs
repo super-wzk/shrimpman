@@ -21,13 +21,6 @@ fn layout(index: usize) -> Option<&'static TableLayout> {
         .nth(index)
 }
 
-fn source_text(bytes: &[u8]) -> String {
-    encoding_rs::SHIFT_JIS
-        .decode_without_bom_handling(bytes)
-        .0
-        .into_owned()
-}
-
 impl Builder {
     pub(super) fn inspect_dat(&mut self, node: usize, bytes: &[u8], base: usize) {
         let file = match Dat::parse(bytes) {
@@ -361,7 +354,10 @@ impl Builder {
         self.document.nodes[node].fields[index].key = Some(format!("{key}_offset"));
         match file.text(cell) {
             Ok(Some((offset, bytes))) => {
-                let text = source_text(bytes);
+                let text = encoding_rs::SHIFT_JIS
+                    .decode_without_bom_handling(bytes)
+                    .0
+                    .into_owned();
                 let index = self.document.nodes[node].fields.len();
                 self.field(
                     node,

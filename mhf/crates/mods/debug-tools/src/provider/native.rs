@@ -494,7 +494,7 @@ unsafe extern "C" fn dispatch() -> i32 {
         return unsafe { original() };
     };
     unsafe {
-        if session_started(state) {
+        if state.session.snapshot().hunter_initialized {
             let mut runtime = state.runtime.lock().unwrap_or_else(PoisonError::into_inner);
             initialize_catalog(state, &mut runtime);
             runtime.ai.observe(state.read::<u32>(monster::POOL));
@@ -748,7 +748,7 @@ unsafe extern "C" fn dispatch() -> i32 {
         }
         let original: unsafe extern "C" fn() -> i32 = transmute(state.dispatch);
         let result = original();
-        if session_started(state) {
+        if state.session.snapshot().hunter_initialized {
             let mut runtime = state.runtime.lock().unwrap_or_else(PoisonError::into_inner);
             initialize_catalog(state, &mut runtime);
             monster::after_frame(state, &mut runtime);
@@ -768,10 +768,6 @@ unsafe extern "C" fn dispatch() -> i32 {
         }
         result
     }
-}
-
-fn session_started(state: &State) -> bool {
-    state.session.snapshot().hunter_initialized
 }
 
 #[cfg(test)]

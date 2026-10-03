@@ -42,36 +42,37 @@ impl OverlayRegistry {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    fn for_each(&self, initialized_only: bool, mut call: impl FnMut(&mut Contribution)) {
+        for entry in self.snapshot() {
+            if let Some(contribution) = entry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+                .filter(|contribution| !initialized_only || contribution.initialized)
+            {
+                call(contribution);
+            }
+        }
+    }
 }
 
 impl Overlay for OverlayRegistry {
     fn initialize(&mut self, context: &egui::Context) {
-        for entry in self.snapshot() {
-            if let Some(contribution) = entry
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-            {
-                contribution.overlay.initialize(context);
-                contribution.initialized = true;
-            }
-        }
+        self.for_each(false, |contribution| {
+            contribution.overlay.initialize(context);
+            contribution.initialized = true;
+        });
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) {
-        for entry in self.snapshot() {
-            if let Some(contribution) = entry
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-            {
-                if !contribution.initialized {
-                    contribution.overlay.initialize(ui.ctx());
-                    contribution.initialized = true;
-                }
-                contribution.overlay.ui(ui);
+        self.for_each(false, |contribution| {
+            if !contribution.initialized {
+                contribution.overlay.initialize(ui.ctx());
+                contribution.initialized = true;
             }
-        }
+            contribution.overlay.ui(ui);
+        });
     }
 
     fn input_policy(&self, context: &egui::Context) -> InputPolicy {
@@ -79,32 +80,18 @@ impl Overlay for OverlayRegistry {
             pointer: InputCapture::PassThrough,
             keyboard: InputCapture::PassThrough,
         };
-        for entry in self.snapshot() {
-            if let Some(contribution) = entry
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .filter(|contribution| contribution.initialized)
-            {
-                let requested = contribution.overlay.input_policy(context);
-                policy.pointer = stronger_capture(policy.pointer, requested.pointer);
-                policy.keyboard = stronger_capture(policy.keyboard, requested.keyboard);
-            }
-        }
+        self.for_each(true, |contribution| {
+            let requested = contribution.overlay.input_policy(context);
+            policy.pointer = stronger_capture(policy.pointer, requested.pointer);
+            policy.keyboard = stronger_capture(policy.keyboard, requested.keyboard);
+        });
         policy
     }
 
     fn platform_output(&mut self, context: &egui::Context, output: &egui::PlatformOutput) {
-        for entry in self.snapshot() {
-            if let Some(contribution) = entry
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-                .filter(|contribution| contribution.initialized)
-            {
-                contribution.overlay.platform_output(context, output);
-            }
-        }
+        self.for_each(true, |contribution| {
+            contribution.overlay.platform_output(context, output);
+        });
     }
 }
 

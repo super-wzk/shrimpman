@@ -192,16 +192,17 @@ fn extract_archive(archive: &mut ZipArchive<File>, staging: &Path) -> Result<()>
         if name == "pack.toml" && !file.is_dir() {
             continue;
         }
-        let components = name.split('/').collect::<Vec<_>>();
-        if components[0] != "mods" || (!file.is_dir() && components.len() < 4) {
+        let mut components = name.split('/');
+        let [prefix, id, version, member] = std::array::from_fn(|_| components.next());
+        if prefix != Some("mods") || (!file.is_dir() && member.is_none()) {
             return Err(Error::new(format!(
                 "ZIP 包内路径必须采用 mods/id/version/file 格式：{name}"
             )));
         }
-        if let Some(id) = components.get(1) {
+        if let Some(id) = id {
             validate_id(id)?;
         }
-        if let Some(version) = components.get(2) {
+        if let Some(version) = version {
             Version::parse(version)
                 .map_err(|error| Error::new(format!("Mod 包目录中的版本号无效：{error}")))?;
         }

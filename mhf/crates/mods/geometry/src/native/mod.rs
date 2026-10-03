@@ -771,11 +771,12 @@ mod tests {
                 };
                 assert_eq!(actual, patch.replacement);
             }
-            for patch in crate::stage_cache::PATCHES {
-                let expected = patch.replacement(&stage_cache::FSKL_POINTER as *const _ as usize);
-                let actual = unsafe {
-                    slice::from_raw_parts((base + patch.rva) as *const u8, expected.len())
-                };
+            for rva in crate::stage_cache::PATCH_RVAS {
+                let expected = crate::stage_cache::replacement(
+                    &stage_cache::FSKL_POINTER as *const _ as usize,
+                );
+                let actual =
+                    unsafe { slice::from_raw_parts((base + rva) as *const u8, expected.len()) };
                 assert_eq!(actual, expected);
             }
             unsafe { verify_protected_texture_release(base) };

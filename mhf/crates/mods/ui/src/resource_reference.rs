@@ -185,7 +185,14 @@ impl<'a> ResourceReference<'a> {
             }
             _ => Cow::Borrowed(""),
         };
-        let span = self.source_range.as_ref().map(range_text);
+        let span = self.source_range.as_ref().map(|range| {
+            format!(
+                "数据层偏移 {:#x}..{:#x} · {} 字节",
+                range.start,
+                range.end,
+                range.end.saturating_sub(range.start)
+            )
+        });
         let interactive = self.activate && path.is_some() && self.editor.is_none();
         let mut copied = false;
         let row_height = ui.spacing().interact_size.y;
@@ -291,15 +298,6 @@ impl<'a> ResourceReference<'a> {
             activated,
         }
     }
-}
-
-fn range_text(range: &Range<usize>) -> String {
-    format!(
-        "数据层偏移 {:#x}..{:#x} · {} 字节",
-        range.start,
-        range.end,
-        range.end.saturating_sub(range.start)
-    )
 }
 
 fn query_text(target: &ResourceTarget<'_>) -> Option<String> {

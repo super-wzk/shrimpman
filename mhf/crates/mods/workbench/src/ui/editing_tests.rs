@@ -77,14 +77,11 @@ fn attack_resource_reference_uses_the_current_sdt_draft_and_keeps_the_numeric_ed
         let context = egui::Context::default();
         let draw = |workbench: &mut Workbench| {
             let document = workbench.document.clone().unwrap();
-            let output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(600.0, 240.0),
-                    )),
-                    ..Default::default()
-                },
+            let output = crate::ui::tests::test_frame(
+                &context,
+                egui::vec2(600.0, 240.0),
+                None,
+                vec![],
                 |ui| workbench.inspector_fields(ui, &document, &document.nodes[workbench.node]),
             );
             let texts = output
@@ -125,19 +122,15 @@ fn attack_resource_reference_uses_the_current_sdt_draft_and_keeps_the_numeric_ed
 #[test]
 fn resource_path_enter_copy_and_field_click_keep_the_address_and_inspector_in_sync() {
     with_workbench(|workbench, _| {
-        use egui::{Event, Key, Modifiers, Pos2, Shape};
+        use egui::{Event, Key, Modifiers, Shape};
         let context = egui::Context::default();
         context.all_styles_mut(|style| style.animation_time = 0.0);
         let draw = |workbench: &mut Workbench, events: Vec<Event>, fields: bool| {
-            let output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        Pos2::ZERO,
-                        egui::vec2(480.0, 240.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
+            let output = crate::ui::tests::test_frame(
+                &context,
+                egui::vec2(480.0, 240.0),
+                None,
+                events,
                 |ui| {
                     if fields {
                         let document = workbench.document.clone().unwrap();
@@ -305,18 +298,10 @@ fn resource_path_navigation_flushes_pending_inputs_and_retains_dirty_file_sessio
                 .iter()
                 .any(|entry| entry.path == other)
         );
-        let output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(500.0, 500.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
+        let output =
+            crate::ui::tests::test_frame(&context, egui::vec2(500.0, 500.0), None, vec![], |ui| {
                 workbench.resources(ui);
-            },
-        );
+            });
         let revealed = output.shapes.iter().any(|shape| {
             matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.text().contains("记录 00000"))
@@ -660,66 +645,44 @@ fn editing_again_does_not_clear_a_conflict_and_overwrite_other_field_changes() {
 }
 
 #[test]
-fn focused_draft_waits_for_commit() {
-    with_workbench(|workbench, _| {
-        let context = egui::Context::default();
-        let id = egui::Id::new("draft");
-        context.memory_mut(|memory| memory.request_focus(id));
-        let path = workbench.path.clone().unwrap();
-        let mut draft = input(workbench.document.as_ref().unwrap());
-        draft.text = "12".into();
-        draft.change();
-        draft.focused = Some(id);
-        workbench.editing.inputs.insert(path.clone(), vec![draft]);
-        workbench.flush_edits(&context);
-        assert!(!workbench.editing.busy);
-        assert!(workbench.editing.inputs[&path][0].pending);
-        assert!(workbench.editing.submitted.is_empty());
-        context.memory_mut(|memory| memory.surrender_focus(id));
-        workbench.flush_edits(&context);
-        assert!(workbench.editing.busy);
-        assert_eq!(workbench.editing.submitted.len(), 1);
-    });
-}
-
-#[test]
-fn packing_includes_a_focused_draft() {
-    with_workbench(|workbench, directory| {
-        let context = egui::Context::default();
-        let id = egui::Id::new("draft");
-        context.memory_mut(|memory| memory.request_focus(id));
-        let path = workbench.path.clone().unwrap();
-        let mut draft = input(workbench.document.as_ref().unwrap());
-        draft.text = "12".into();
-        draft.change();
-        draft.focused = Some(id);
-        workbench.editing.inputs.insert(path, vec![draft]);
-        workbench.editing.pack_after_edits = true;
-        workbench.flush_edits(&context);
-        Arc::get_mut(&mut workbench.worker).unwrap().stop();
-        assert_eq!(
-            fs::read(directory.join("redirect/value.bin")).unwrap(),
-            [12]
-        );
-    });
-}
-
-#[test]
-fn switching_documents_submits_a_focused_draft() {
-    with_workbench(|workbench, directory| {
-        let context = egui::Context::default();
-        let id = egui::Id::new("draft");
-        context.memory_mut(|memory| memory.request_focus(id));
-        let path = workbench.path.clone().unwrap();
-        let mut draft = input(workbench.document.as_ref().unwrap());
-        draft.text = "12".into();
-        draft.change();
-        draft.focused = Some(id);
-        workbench.editing.inputs.insert(path.clone(), vec![draft]);
-        workbench.open_document(directory.join("other.bin"));
-        workbench.flush_edits(&context);
-        assert!(workbench.editing.busy);
-        assert_eq!(workbench.path.as_ref(), Some(&path));
-        assert_eq!(workbench.editing.submitted.len(), 1);
-    });
+fn focused_drafts_commit_on_blur_pack_or_document_switch() {
+    for action in ["blur", "pack", "switch"] {
+        with_workbench(|workbench, directory| {
+            let context = egui::Context::default();
+            let id = egui::Id::new("draft");
+            context.memory_mut(|memory| memory.request_focus(id));
+            let path = workbench.path.clone().unwrap();
+            let mut draft = input(workbench.document.as_ref().unwrap());
+            draft.text = "12".into();
+            draft.change();
+            draft.focused = Some(id);
+            workbench.editing.inputs.insert(path.clone(), vec![draft]);
+            match action {
+                "blur" => {
+                    workbench.flush_edits(&context);
+                    assert!(!workbench.editing.busy);
+                    assert!(workbench.editing.inputs[&path][0].pending);
+                    assert!(workbench.editing.submitted.is_empty());
+                    context.memory_mut(|memory| memory.surrender_focus(id));
+                }
+                "pack" => workbench.editing.pack_after_edits = true,
+                "switch" => workbench.open_document(directory.join("other.bin")),
+                _ => unreachable!(),
+            }
+            workbench.flush_edits(&context);
+            if action == "pack" {
+                Arc::get_mut(&mut workbench.worker).unwrap().stop();
+                assert_eq!(
+                    fs::read(directory.join("redirect/value.bin")).unwrap(),
+                    [12]
+                );
+            } else {
+                assert!(workbench.editing.busy);
+                assert_eq!(workbench.editing.submitted.len(), 1);
+                if action == "switch" {
+                    assert_eq!(workbench.path.as_ref(), Some(&path));
+                }
+            }
+        });
+    }
 }

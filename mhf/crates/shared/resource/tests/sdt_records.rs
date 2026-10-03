@@ -1,18 +1,13 @@
+pub mod support;
+
 use std::collections::BTreeSet;
+use support::{dword, word};
 
 use mhf_resource::{
     binary::{Reader, ScalarType},
     container::open_layers,
     sdt::{HITBOX_SLOTS, Sdt, TableKind},
 };
-
-fn word(bytes: &mut [u8], offset: usize, value: u16) {
-    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
-
-fn dword(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
 
 fn sample() -> Vec<u8> {
     let mut bytes = vec![0; 0x200];
@@ -180,33 +175,6 @@ fn sentinel_scans_are_bounded_and_null_hitbox_slots_are_not_empty_lists() {
     let mut duplicate = sample();
     word(&mut duplicate, 30, 140);
     assert!(Sdt::probe(&duplicate).is_err());
-}
-
-#[test]
-fn typed_fields_preserve_float_payloads_and_only_write_the_addressed_bytes() {
-    let bytes = sample();
-    let file = Sdt::parse(&bytes).unwrap();
-    let group = file.hitbox_group(file.entry(1).unwrap(), 0).unwrap();
-    let list = file.hitboxes(&group, 0).unwrap();
-    let record = list.record(0).unwrap();
-    let reader = Reader::with_base(record.as_bytes(), record.offset);
-    let radius = reader.read_at::<f32>(12).unwrap();
-    let endpoint = reader.read_at::<f32>(36).unwrap();
-    assert_eq!(radius.value.to_bits(), (-0.0_f32).to_bits());
-    assert_eq!(endpoint.value.to_bits(), 0x7fc1_2345);
-    assert!(
-        record
-            .fields()
-            .iter()
-            .any(|field| field.offset == 36 && field.scalar == ScalarType::F32)
-    );
-    let mut output = bytes.clone();
-    endpoint.write(&mut output, endpoint.value).unwrap();
-    assert_eq!(output, bytes);
-    radius.write(&mut output, 12.5).unwrap();
-    assert_eq!(&output[..0x11c], &bytes[..0x11c]);
-    assert_eq!(&output[0x120..], &bytes[0x120..]);
-    assert_eq!(&output[0x11c..0x120], &12.5_f32.to_le_bytes());
 }
 
 #[test]

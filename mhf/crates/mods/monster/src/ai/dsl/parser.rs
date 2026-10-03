@@ -595,7 +595,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement(&mut self) -> Result<Statement> {
-        let token = self.current().clone();
+        let token = self.advance();
         let kind = self.parse_statement_kind(&token)?;
         Ok(Statement {
             source: self.source_location(&token),
@@ -607,15 +607,14 @@ impl<'a> Parser<'a> {
 
     fn parse_statement_kind(&mut self, token: &Token) -> Result<StatementKind> {
         let name = match &token.kind {
-            TokenKind::Word(word) => word.clone(),
+            TokenKind::Word(word) => word.as_str(),
             _ => {
                 return Err(token.error(
                     "expected a statement: a command call, transition, restart, or control-flow block",
                 ));
             }
         };
-        self.advance();
-        match name.as_str() {
+        match name {
             "context" => Err(token.error("context.query(id) is only valid as a match selector")),
             "handle" => {
                 let target = self.take_word("handler name")?;
@@ -908,8 +907,7 @@ impl<'a> Parser<'a> {
                     } else {
                         self.expect_keyword("query")?;
                         self.expect(&TokenKind::LeftParen, "'('")?;
-                        let (argument, at) = self.take_number("context query ID")?;
-                        let argument = byte(argument, &at, "context query ID")?;
+                        let argument = self.take_byte("context query ID")?;
                         self.expect(&TokenKind::RightParen, "')'")?;
                         Some(argument)
                     };
@@ -1128,20 +1126,15 @@ impl<'a> Parser<'a> {
                     ),
                     "increment_random_value" => StatementKind::IncrementRandomValue,
                     "action" => {
-                        let (group, token) = self.take_number("action group")?;
-                        let group = byte(group, &token, "action group")?;
+                        let group = self.take_byte("action group")?;
                         self.expect(&TokenKind::Colon, "':' between action group and ID")?;
-                        let (id, token) = self.take_number("action ID")?;
-                        let id = byte(id, &token, "action ID")?;
+                        let id = self.take_byte("action ID")?;
                         self.expect(&TokenKind::Comma, "',' between action ID and parameter")?;
-                        let (parameter, token) = self.take_number("action parameter")?;
-                        let parameter = byte(parameter, &token, "action parameter")?;
-                        self.expect(&TokenKind::RightParen, "')' after action arguments")?;
-                        self.expect(&TokenKind::Semicolon, "';'")?;
-                        return Ok(StatementKind::Call {
+                        let parameter = self.take_byte("action parameter")?;
+                        StatementKind::Call {
                             callee: Callee::Action { group, id },
                             args: vec![parameter],
-                        });
+                        }
                     }
                     _ => return Err(method.error(format!(
                         "unknown self method '{name}'; expected select_target_entity, select_target_point, select_target_area, bind_awareness_target, bind_current_target, bind_target_area, bind_target_ground_point, set_mode, resolve_target, replenish_recovery_meter, replenish_foraging_meter, init_area_change, try_change_area, bind_scanned_object, clear_undetected_player_tracking_timers, select_perception_profile or increment_random_value"
@@ -1155,7 +1148,7 @@ impl<'a> Parser<'a> {
                 Ok(kind)
             }
             _ => {
-                let name = self.qualified_name(name)?;
+                let name = self.qualified_name(name.into())?;
                 let args = self.parse_call_arguments()?;
                 self.expect(&TokenKind::Semicolon, "';'")?;
                 if name == "native" {
@@ -1182,8 +1175,7 @@ impl<'a> Parser<'a> {
             return Ok(args);
         }
         loop {
-            let (value, token) = self.take_number("argument")?;
-            args.push(byte(value, &token, "argument")?);
+            args.push(self.take_byte("argument")?);
             if self.consume(&TokenKind::RightParen) {
                 return Ok(args);
             }
@@ -1203,27 +1195,25 @@ impl<'a> Parser<'a> {
     }
 
     fn take_word(&mut self, description: &str) -> Result<Token> {
-        let token = self.current().clone();
+        let token = self.current();
         if !matches!(token.kind, TokenKind::Word(_)) {
             return Err(token.error(format!(
                 "expected {description}, found {}",
                 describe_token(&token.kind)
             )));
         }
-        self.position += 1;
-        Ok(token)
+        Ok(self.advance())
     }
 
     fn take_number(&mut self, description: &str) -> Result<(u32, Token)> {
-        let token = self.current().clone();
+        let token = self.current();
         let TokenKind::Number(value) = token.kind else {
             return Err(token.error(format!(
                 "expected {description}, found {}",
                 describe_token(&token.kind)
             )));
         };
-        self.position += 1;
-        Ok((value, token))
+        Ok((value, self.advance()))
     }
 
     fn take_byte(&mut self, description: &str) -> Result<u8> {
@@ -1285,7 +1275,13 @@ impl<'a> Parser<'a> {
     }
 
     fn advance(&mut self) -> Token {
-        let token = self.tokens[self.position].clone();
+        let token = &mut self.tokens[self.position];
+        // Retain source spans for source_location, but move the consumed text.
+        let kind = std::mem::replace(&mut token.kind, TokenKind::Eof);
+        let token = Token {
+            kind,
+            ..token.clone()
+        };
         self.position += 1;
         token
     }

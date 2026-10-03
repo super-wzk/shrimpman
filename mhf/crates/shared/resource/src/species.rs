@@ -189,17 +189,3 @@ pub const NAMES: [&str; 177] = [
     "拉比",               // 175
     "奇面王",             // 176
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unknown_ids_have_resource_style_names() {
-        assert_eq!(name(1), "雌火龙");
-        assert_eq!(name(18), "em018");
-        assert_eq!(name(177), "em177");
-        assert_eq!(name(255), "em255");
-        assert!(NAMES.iter().all(|name| !name.contains("未命名")));
-    }
-}

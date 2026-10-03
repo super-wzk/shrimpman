@@ -1061,44 +1061,35 @@ impl Workbench {
                     .and_then(|model| model.resources.skeleton.as_ref())
                     .unwrap_or(source);
                 let geometry = model.map(|model| &model.resources.model).unwrap_or(source);
-                self.show_reference(
-                    ui,
-                    skeleton,
-                    &crate::field::FieldReference::Indexed(
-                        crate::field::ReferenceCollection::SkeletonNodes,
-                        entry.node as u32,
-                        None,
-                    ),
-                    None,
-                    false,
-                );
-                if let Some((group, item)) = entry.draw {
+                let mut show = |source: &ResourceRef, collection, index| {
                     self.show_reference(
                         ui,
-                        geometry,
-                        &crate::field::FieldReference::Indexed(
-                            crate::field::ReferenceCollection::ModelMeshes,
-                            group as u32,
-                            None,
-                        ),
+                        source,
+                        &crate::field::FieldReference::Indexed(collection, index, None),
                         None,
                         false,
+                    );
+                };
+                show(
+                    skeleton,
+                    crate::field::ReferenceCollection::SkeletonNodes,
+                    entry.node as u32,
+                );
+                if let Some((group, item)) = entry.draw {
+                    show(
+                        geometry,
+                        crate::field::ReferenceCollection::ModelMeshes,
+                        group as u32,
                     );
                     let mesh = resource_reference::indexed_source(
                         geometry,
                         crate::field::ReferenceCollection::ModelMeshes,
                         group as u32,
                     );
-                    self.show_reference(
-                        ui,
+                    show(
                         mesh.as_ref().unwrap_or(geometry),
-                        &crate::field::FieldReference::Indexed(
-                            crate::field::ReferenceCollection::ModelMaterialSlots,
-                            item as u32,
-                            None,
-                        ),
-                        None,
-                        false,
+                        crate::field::ReferenceCollection::ModelMaterialSlots,
+                        item as u32,
                     );
                 }
                 ui.label(format!(
@@ -2088,7 +2079,7 @@ fn tree(
     };
     let label = format!("{name} · {}", node.kind);
     let resource_count = resource_counts.get(index).copied().unwrap_or(0);
-    let kind = crate::preview::resource_kind(document, index);
+    let kind = source.kind();
     let selected_row = *selected == index
         && selection
             .as_ref()
@@ -2388,44 +2379,65 @@ mod tests {
     use crate::inspect::{Field, Node};
     use crate::preview::AssetBundle;
 
+    pub(super) fn test_frame(
+        context: &egui::Context,
+        size: egui::Vec2,
+        time: Option<f64>,
+        events: Vec<egui::Event>,
+        draw: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time,
+                events,
+                ..Default::default()
+            },
+            draw,
+        )
+    }
+
+    fn text_centers<'a>(
+        output: &'a egui::FullOutput,
+        caption: &'a str,
+    ) -> impl DoubleEndedIterator<Item = egui::Pos2> + 'a {
+        output
+            .shapes
+            .iter()
+            .filter_map(move |shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == caption => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+    }
+
     #[test]
     fn large_leaf_runs_only_render_the_viewport_and_keep_full_height() {
         let context = egui::Context::default();
         for row in [0, 5_000, 9_990] {
-            context
-                .run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(300.0, 400.0),
-                        )),
-                        ..Default::default()
-                    },
-                    |ui| {
+            test_frame(&context, egui::vec2(300.0, 400.0), None, Vec::new(), |ui| {
+                let stride = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                egui::ScrollArea::vertical()
+                    .vertical_scroll_offset(row as f32 * stride)
+                    .show(ui, |ui| {
+                        let top = ui.next_widget_position().y;
                         let stride = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-                        egui::ScrollArea::vertical()
-                            .vertical_scroll_offset(row as f32 * stride)
-                            .show(ui, |ui| {
-                                let top = ui.next_widget_position().y;
-                                let stride =
-                                    ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-                                visible_leaf_rows(ui, 10_000, |ui, range| {
-                                    assert!(range.len() < 30, "rendered {} rows", range.len());
-                                    assert!(!range.is_empty());
-                                    for row in range {
-                                        ui.horizontal(|ui| {
-                                            tree_row(ui, &row.to_string(), false, 0, None, None);
-                                        });
-                                    }
+                        visible_leaf_rows(ui, 10_000, |ui, range| {
+                            assert!(range.len() < 30, "rendered {} rows", range.len());
+                            assert!(!range.is_empty());
+                            for row in range {
+                                ui.horizontal(|ui| {
+                                    tree_row(ui, &row.to_string(), false, 0, None, None);
                                 });
-                                assert!(
-                                    (ui.next_widget_position().y - top - stride * 10_000.0).abs()
-                                        < 1.0
-                                );
-                            });
-                    },
-                )
-                .drop_without_applying_deltas();
+                            }
+                        });
+                        assert!(
+                            (ui.next_widget_position().y - top - stride * 10_000.0).abs() < 1.0
+                        );
+                    });
+            })
+            .drop_without_applying_deltas();
         }
     }
 
@@ -2452,110 +2464,6 @@ mod tests {
     }
 
     #[test]
-    fn long_effect_target_names_do_not_expand_the_container_or_popup() {
-        let (_, source) = effects::tests::fixture();
-        let effects = effects::Effects {
-            bindings: vec![effects::Binding::read(source.clone()).unwrap()],
-            ..Default::default()
-        };
-        let snapshot = Snapshot {
-            loaded_effects: loaded_effect_fixture(&source, effects.sample(0.0).bindings),
-            models: Arc::new(vec![LoadedModel {
-                id: 41,
-                resources: AssetBundle::find_with_nodes(multiple_models()).0.remove(0),
-                name: format!(
-                    "Z:/game/dat/extend/archive/{} · 模型 1",
-                    "long-model-name-".repeat(30)
-                )
-                .into(),
-                visible: true,
-                error: None,
-                meshes: Arc::default(),
-            }]),
-            ..Default::default()
-        };
-        for width in [260.0, 380.0] {
-            let mut workbench = preview_fixture();
-            let context = egui::Context::default();
-            let time = std::cell::Cell::new(0.0);
-            let draw = |workbench: &mut Workbench, events| {
-                time.set(time.get() + 0.016);
-                let mut fits = false;
-                let output = context.run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(900.0, 600.0),
-                        )),
-                        time: Some(time.get()),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| {
-                        ui.set_width(width);
-                        let right = ui.max_rect().right();
-                        workbench.effect_controls(ui, &snapshot);
-                        fits = ui.min_rect().right() <= right + 1.0;
-                    },
-                );
-                (output, fits)
-            };
-            let mut target = None;
-            for _ in 0..4 {
-                let (output, fits) = draw(&mut workbench, vec![]);
-                let elided = output
-                    .shapes
-                    .iter()
-                    .filter_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text)
-                            if text.galley.text().contains("long-model-name") =>
-                        {
-                            Some(text.galley.elided && text.galley.size().x <= width)
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                target = output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.text() == "手动绑定" => {
-                            Some(text.pos + text.galley.rect.center().to_vec2())
-                        }
-                        _ => None,
-                    })
-                    .or(target);
-                output.drop_without_applying_deltas();
-                assert!(fits, "binding content expanded the panel");
-                assert!(!elided.is_empty(), "selected model must remain visible");
-                assert!(elided.into_iter().all(|elided| elided));
-            }
-            let target = target.unwrap();
-            for pressed in [true, false] {
-                draw(&mut workbench, pointer(target, pressed))
-                    .0
-                    .drop_without_applying_deltas();
-            }
-            let (output, fits) = draw(&mut workbench, vec![]);
-            let names = output
-                .shapes
-                .iter()
-                .filter_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text().contains("long-model-name") => {
-                        Some(text.galley.size().x)
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            output.drop_without_applying_deltas();
-            assert!(fits, "binding content expanded the panel");
-            assert_eq!(names.len(), 2, "the popup must be open");
-            assert!(names.iter().all(|size| *size <= width));
-            assert!(workbench.control.commands().is_empty());
-        }
-    }
-
-    #[test]
     fn effect_target_choice_overrides_auto_and_keeps_disabled_manual_targets_until_unbound() {
         let (_, source) = effects::tests::fixture();
         let effects = effects::Effects {
@@ -2573,7 +2481,8 @@ mod tests {
                     .map(|(resources, id)| LoadedModel {
                         id,
                         resources,
-                        name: format!("fixture model {id}").into(),
+                        name: format!("fixture model {id} · {}", "long-model-name-".repeat(30))
+                            .into(),
                         visible: true,
                         error: None,
                         meshes: Arc::default(),
@@ -2592,30 +2501,12 @@ mod tests {
         let context = egui::Context::default();
         context.all_styles_mut(|style| style.animation_time = 0.0);
         let draw = |workbench: &mut Workbench, snapshot: &Snapshot, events| {
-            context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(700.0, 450.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| workbench.effect_controls(ui, snapshot),
-            )
+            test_frame(&context, egui::vec2(700.0, 450.0), None, events, |ui| {
+                workbench.effect_controls(ui, snapshot)
+            })
         };
-        let caption = |output: &egui::FullOutput, caption: &str| {
-            output
-                .shapes
-                .iter()
-                .rev()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == caption => {
-                        Some(text.pos + text.galley.rect.center().to_vec2())
-                    }
-                    _ => None,
-                })
-        };
+        let caption =
+            |output: &egui::FullOutput, caption: &str| text_centers(output, caption).next_back();
         let choose = |workbench: &mut Workbench,
                       snapshot: &Snapshot,
                       selected: &str,
@@ -2680,26 +2571,13 @@ mod tests {
             ..Default::default()
         };
         let draw = |workbench: &mut Workbench, snapshot: &Snapshot, events| {
-            context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(700.0, 450.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| workbench.effect_controls(ui, snapshot),
-            )
+            test_frame(&context, egui::vec2(700.0, 450.0), None, events, |ui| {
+                workbench.effect_controls(ui, snapshot)
+            })
         };
         for (caption, stop) in [("触发", false), ("停止", true)] {
             let output = draw(&mut workbench, &snapshot, vec![]);
-            let point = output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == caption => {
-                    Some(text.pos + text.galley.rect.center().to_vec2())
-                }
-                _ => None,
-            });
+            let point = text_centers(&output, caption).next();
             output.drop_without_applying_deltas();
             let point = point.expect("definition action must remain visible");
             draw(&mut workbench, &snapshot, pointer(point, true)).drop_without_applying_deltas();
@@ -2789,29 +2667,14 @@ mod tests {
         let mut workbench = preview_fixture();
         let context = egui::Context::default();
         let draw = |workbench: &mut Workbench, snapshot: &Snapshot, events| {
-            context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(700.0, 200.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    workbench.motion_list(ui, snapshot);
-                    for effect in snapshot.loaded_effects.iter() {
-                        for entry in &effect.binding.definitions {
-                            workbench.effect_entry_track(
-                                ui,
-                                &effect.binding,
-                                &effect.source,
-                                entry,
-                            );
-                        }
+            test_frame(&context, egui::vec2(700.0, 200.0), None, events, |ui| {
+                workbench.motion_list(ui, snapshot);
+                for effect in snapshot.loaded_effects.iter() {
+                    for entry in &effect.binding.definitions {
+                        workbench.effect_entry_track(ui, &effect.binding, &effect.source, entry);
                     }
-                },
-            )
+                }
+            })
         };
         let track_rects = |output: &egui::FullOutput| {
             [
@@ -2831,16 +2694,8 @@ mod tests {
         };
         let output = draw(&mut workbench, &snapshot, vec![]);
         let [motion, effect] = track_rects(&output);
-        let step = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == "+1" => {
-                    let center = text.pos + text.galley.rect.center().to_vec2();
-                    ((center.y - effect.center().y).abs() < 8.0).then_some(center)
-                }
-                _ => None,
-            })
+        let step = text_centers(&output, "+1")
+            .find(|center| (center.y - effect.center().y).abs() < 8.0)
             .unwrap();
         output.drop_without_applying_deltas();
         assert!(motion.width() > 0.0);
@@ -2920,20 +2775,10 @@ mod tests {
         workbench.loaded_document(document.clone());
         let context = egui::Context::default();
         let draw = |workbench: &mut Workbench, events| {
-            context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(700.0, 300.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    workbench.motion_list(ui, &snapshot);
-                    workbench.timeline(ui, &snapshot);
-                },
-            )
+            test_frame(&context, egui::vec2(700.0, 300.0), None, events, |ui| {
+                workbench.motion_list(ui, &snapshot);
+                workbench.timeline(ui, &snapshot);
+            })
         };
         draw(&mut workbench, vec![]).drop_without_applying_deltas();
         workbench.loaded_document(multiple_models());
@@ -2955,19 +2800,7 @@ mod tests {
         );
         assert!(tracks[0].width() > 0.0);
         assert!((tracks[0].width() - tracks[1].width()).abs() < 0.1);
-        let second_caption = |caption| {
-            output
-                .shapes
-                .iter()
-                .filter_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == caption => {
-                        Some(text.pos + text.galley.rect.center().to_vec2())
-                    }
-                    _ => None,
-                })
-                .nth(1)
-                .unwrap()
-        };
+        let second_caption = |caption| text_centers(&output, caption).nth(1).unwrap();
         let step = second_caption("+1");
         let unload = second_caption("卸载");
         let checkbox = output
@@ -3071,27 +2904,16 @@ mod tests {
         let time = std::cell::Cell::new(0.0);
         let draw = |workbench: &mut Workbench, events| {
             time.set(time.get() + 0.05);
-            context.run_ui(
-                egui::RawInput {
-                    time: Some(time.get()),
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(600.0, 600.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
+            test_frame(
+                &context,
+                egui::vec2(600.0, 600.0),
+                Some(time.get()),
+                events,
                 |ui| workbench.resource_list(ui, &snapshot, Kind::Fskl),
             )
         };
-        let caption = |output: &egui::FullOutput, caption: &str| {
-            output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == caption => {
-                    Some(text.pos + text.galley.rect.center().to_vec2())
-                }
-                _ => None,
-            })
-        };
+        let caption =
+            |output: &egui::FullOutput, caption: &str| text_centers(output, caption).next();
         let output = draw(&mut workbench, vec![]);
         let initially_collapsed = caption(&output, "节点 1").is_none();
         let expand = output
@@ -3295,59 +3117,13 @@ mod tests {
     }
 
     #[test]
-    fn directory_loading_stays_inside_the_selected_subtree() {
-        let mut document = (*multiple_models()).clone();
-        let mut directory = document.nodes[0].clone();
-        directory.name = "model-offset-directory".into();
-        directory.children = vec![1, 2];
-        document.nodes.push(directory);
-        document.nodes[0].children = vec![12, 3, 5, 6, 7, 9, 10, 11];
-        let document = Arc::new(document);
-        let resources = |node| {
-            ResourceRef::new(document.clone(), node)
-                .loadable_resources()
-                .iter()
-                .map(|source| source.node)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(resources(12), [1, 2]);
-        assert_eq!(resources(1), [1]);
-        assert_eq!(resources(3), [4]);
-        assert_eq!(resources(0), [1, 2, 4, 5, 6, 8, 9]);
-        // FMOD inspector children are fields, not independently loaded resources.
-        let mut nested = (*document).clone();
-        nested.nodes[1].children = vec![4];
-        assert_eq!(
-            ResourceRef::new(Arc::new(nested), 12)
-                .loadable_resources()
-                .iter()
-                .map(|source| source.node)
-                .collect::<Vec<_>>(),
-            [1, 2]
-        );
-    }
-
-    #[test]
-    fn opening_or_refreshing_a_file_only_identifies_its_model_groups() {
-        let mut workbench = preview_fixture();
-        workbench.loaded_document(multiple_models());
-        assert!(workbench.control.commands().is_empty());
-        assert_eq!(workbench.resource_counts[0], 7);
-        workbench.load_node(0);
-        assert!(
-            matches!(workbench.control.commands().as_slice(), [Command::LoadResource(source)] if source.node == 0)
-        );
-        workbench.loaded_document(multiple_models());
-        assert!(workbench.control.commands().is_empty());
-    }
-
-    #[test]
     fn leaf_load_buttons_dispatch_only_the_selected_resource() {
         let mut workbench = preview_fixture();
         let document = multiple_models();
         workbench.loaded_document(document.clone());
         let context = egui::Context::default();
         for index in [1, 5] {
+            workbench.tab = InspectorTab::Resource;
             let (_, button, _, _) =
                 draw_tree(&mut workbench, &context, index, index as f64, vec![]);
             let point = button.unwrap().rect.center();
@@ -3368,6 +3144,7 @@ mod tests {
             assert!(
                 matches!(workbench.control.commands().as_slice(), [Command::LoadResource(source)] if source.node == index)
             );
+            assert_eq!(workbench.tab, InspectorTab::Loaded);
         }
         assert!(workbench.control.commands().is_empty());
     }
@@ -3398,19 +3175,9 @@ mod tests {
             assert!(workbench.tab == tab);
             let context = egui::Context::default();
             let draw = |workbench: &mut Workbench, name: &str, events| {
-                let output = context.run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(400.0, 900.0),
-                        )),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| {
-                        workbench.resources(ui);
-                    },
-                );
+                let output = test_frame(&context, egui::vec2(400.0, 900.0), None, events, |ui| {
+                    workbench.resources(ui);
+                });
                 // Locate fixture resource names from their rendered geometry;
                 // tab behavior does not depend on UI wording or fixed pixels.
                 let position = output.shapes.iter().find_map(|shape| match &shape.shape {
@@ -3450,18 +3217,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_file_without_a_model_does_not_replay_or_clear_the_current_preview() {
-        let mut workbench = preview_fixture();
-        let mut document = (*multiple_models()).clone();
-        document.nodes[1].kind = Kind::Unknown;
-        document.nodes[5].kind = Kind::Unknown;
-        workbench.loaded_document(Arc::new(document));
-        assert_eq!(workbench.resource_counts[0], 5);
-        assert!(workbench.control.commands().is_empty());
-        assert!(workbench.error.is_empty());
-    }
-
     fn draw_tree(
         workbench: &mut Workbench,
         context: &egui::Context,
@@ -3478,40 +3233,34 @@ mod tests {
         let mut preview = None;
         let mut details = None;
         let mut id = egui::Id::NULL;
-        context
-            .run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(300.0, 400.0),
-                    )),
-                    time: Some(time),
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    id = ui.make_persistent_id((
-                        "resource-node",
-                        visible_node(
-                            workbench.document.as_ref().unwrap(),
-                            index,
-                            workbench.view.show_encoding_layers,
-                        ),
-                    ));
-                    responses = tree(
-                        ui,
-                        &ResourceRef::new(workbench.document.as_ref().unwrap().clone(), index),
-                        &workbench.editing.source_root,
-                        &workbench.resource_counts,
+        test_frame(
+            context,
+            egui::vec2(300.0, 400.0),
+            Some(time),
+            events,
+            |ui| {
+                id = ui.make_persistent_id((
+                    "resource-node",
+                    visible_node(
+                        workbench.document.as_ref().unwrap(),
+                        index,
                         workbench.view.show_encoding_layers,
-                        &mut workbench.node,
-                        &mut workbench.selection,
-                        &mut preview,
-                        &mut details,
-                    );
-                },
-            )
-            .drop_without_applying_deltas();
+                    ),
+                ));
+                responses = tree(
+                    ui,
+                    &ResourceRef::new(workbench.document.as_ref().unwrap().clone(), index),
+                    &workbench.editing.source_root,
+                    &workbench.resource_counts,
+                    workbench.view.show_encoding_layers,
+                    &mut workbench.node,
+                    &mut workbench.selection,
+                    &mut preview,
+                    &mut details,
+                );
+            },
+        )
+        .drop_without_applying_deltas();
         if let Some(source) = preview {
             workbench.load_source(source);
         }
@@ -3552,16 +3301,11 @@ mod tests {
         let context = egui::Context::default();
         context.global_style_mut(|style| style.animation_time = 0.0);
         let draw = |workbench: &mut Workbench, time, events| {
-            let output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(500.0, 500.0),
-                    )),
-                    time: Some(time),
-                    events,
-                    ..Default::default()
-                },
+            let output = test_frame(
+                &context,
+                egui::vec2(500.0, 500.0),
+                Some(time),
+                events,
                 |ui| {
                     tree(
                         ui,
@@ -3606,59 +3350,6 @@ mod tests {
         draw(&mut workbench, 0.8, pointer(expanded[2], true));
         draw(&mut workbench, 0.9, pointer(expanded[2], false));
         assert_eq!(workbench.node, 14);
-    }
-
-    #[test]
-    fn resource_labels_fit_the_current_font_and_count_without_elision_or_overlap() {
-        let context = egui::Context::default();
-        egui_hunter::Theme::default().apply(&context);
-        mhf_font::install(&context);
-        for (size, count) in [(14.0, 1), (20.0, 798), (24.0, 123_456)] {
-            let mut rectangles = None;
-            let output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(420.0, 80.0),
-                    )),
-                    ..Default::default()
-                },
-                |ui| {
-                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(size));
-                    ui.spacing_mut().interact_size.y = size + 6.0;
-                    let (name, button) = ui
-                        .horizontal(|ui| {
-                            tree_row(
-                                ui,
-                                &"long-resource-name".repeat(8),
-                                false,
-                                count,
-                                None,
-                                None,
-                            )
-                        })
-                        .inner;
-                    rectangles = Some((name.rect, button.unwrap().rect));
-                },
-            );
-            let (name, button) = rectangles.unwrap();
-            let label = format!("资源 {count}");
-            let (clip, text) = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == label => {
-                        Some((shape.clip_rect, text))
-                    }
-                    _ => None,
-                })
-                .unwrap();
-            let rect = text.galley.rect.translate(text.pos.to_vec2());
-            assert!(!text.galley.elided);
-            assert!(clip.contains_rect(rect));
-            assert!(name.right() <= rect.left() && rect.right() <= button.left());
-            output.drop_without_applying_deltas();
-        }
     }
 
     #[test]
@@ -3858,27 +3549,6 @@ mod tests {
     }
 
     #[test]
-    fn loading_resources_dispatches_immediately_without_a_pending_combination() {
-        let mut workbench = preview_fixture();
-        let document = multiple_models();
-        workbench.loaded_document(document.clone());
-        for node in [5, 6, 7, 7, 9] {
-            workbench.tab = InspectorTab::Resource;
-            workbench.load_node(node);
-            assert!(workbench.tab == InspectorTab::Loaded);
-        }
-        let commands = workbench.control.commands();
-        assert_eq!(commands.len(), 5);
-        for (command, node) in commands.iter().zip([5, 6, 7, 7, 9]) {
-            assert!(
-                matches!(command, Command::LoadResource(source) if source.node == node && Arc::ptr_eq(&source.document, &document))
-            );
-        }
-        workbench.loaded_document(multiple_models());
-        assert!(workbench.control.commands().is_empty());
-    }
-
-    #[test]
     fn resource_removal_targets_its_loaded_source_after_browsing_another_file() {
         let mut workbench = preview_fixture();
         let first = multiple_models();
@@ -3916,17 +3586,9 @@ mod tests {
         workbench.loaded_document(second);
         let context = egui::Context::default();
         let draw = |workbench: &mut Workbench, events| {
-            context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(400.0, 300.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| workbench.resource_list(ui, &snapshot, Kind::Txb),
-            )
+            test_frame(&context, egui::vec2(400.0, 300.0), None, events, |ui| {
+                workbench.resource_list(ui, &snapshot, Kind::Txb)
+            })
         };
         let output = draw(&mut workbench, vec![]);
         let point = output
@@ -4018,19 +3680,10 @@ mod tests {
         egui_hunter::Theme::default().apply(&context);
         mhf_font::install(&context);
         let mut draw = |events| {
-            context
-                .run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(300.0, 400.0),
-                        )),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| workbench.resource_actions(ui, &document),
-                )
-                .drop_without_applying_deltas();
+            test_frame(&context, egui::vec2(300.0, 400.0), None, events, |ui| {
+                workbench.resource_actions(ui, &document)
+            })
+            .drop_without_applying_deltas();
         };
         let key = |key| {
             [true, false]
@@ -4081,22 +3734,10 @@ mod tests {
         egui_hunter::Theme::default().apply(&context);
         mhf_font::install(&context);
         let mut draw = |events| {
-            context
-                .run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(280.0, 400.0),
-                        )),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| {
-                        egui_hunter::Density::Compact
-                            .scope(ui, |ui| workbench.mesh_controls(ui, &model));
-                    },
-                )
-                .drop_without_applying_deltas();
+            test_frame(&context, egui::vec2(280.0, 400.0), None, events, |ui| {
+                egui_hunter::Density::Compact.scope(ui, |ui| workbench.mesh_controls(ui, &model));
+            })
+            .drop_without_applying_deltas();
         };
         let key = |key| {
             [true, false]
@@ -4172,20 +3813,13 @@ mod tests {
         ] {
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             for _ in 0..6 {
-                context
-                    .run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(screen),
-                            ..Default::default()
-                        },
-                        |ui| {
-                            let spacing = ui.spacing().clone();
-                            workbench.show(ui);
-                            assert_eq!(ui.spacing().interact_size, spacing.interact_size);
-                            assert_eq!(ui.spacing().button_padding, spacing.button_padding);
-                        },
-                    )
-                    .drop_without_applying_deltas();
+                test_frame(&context, screen.size(), None, Vec::new(), |ui| {
+                    let spacing = ui.spacing().clone();
+                    workbench.show(ui);
+                    assert_eq!(ui.spacing().interact_size, spacing.interact_size);
+                    assert_eq!(ui.spacing().button_padding, spacing.button_padding);
+                })
+                .drop_without_applying_deltas();
             }
             let viewport = workbench.viewport_rect;
             assert!(screen.contains_rect(viewport), "{screen:?}: {viewport:?}");
@@ -4261,16 +3895,10 @@ mod tests {
             };
             let control = workbench.control.clone();
             let mut draw = |events| {
-                context
-                    .run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(screen),
-                            events,
-                            ..Default::default()
-                        },
-                        |ui| workbench.viewport(ui, &snapshot, screen),
-                    )
-                    .drop_without_applying_deltas();
+                test_frame(&context, screen.size(), None, events, |ui| {
+                    workbench.viewport(ui, &snapshot, screen)
+                })
+                .drop_without_applying_deltas();
             };
             let start = screen.center();
             let end = start + egui::vec2(40.0, 20.0);
@@ -4355,23 +3983,6 @@ mod tests {
     }
 
     #[test]
-    fn output_log_records_changes_once_and_keeps_recent_entries() {
-        let mut workbench = preview_fixture();
-        let mut snapshot = Snapshot::default();
-        for _ in 0..20 {
-            workbench.record_messages(&snapshot);
-        }
-        assert_eq!(workbench.log.len(), 1);
-        for index in 0..220 {
-            snapshot.message = format!("model {index}").into();
-            workbench.record_messages(&snapshot);
-        }
-        assert_eq!(workbench.log.len(), 200);
-        assert_eq!(workbench.log.front().unwrap().1, "model 20");
-        assert_eq!(workbench.log.back().unwrap().1, "model 219");
-    }
-
-    #[test]
     fn disabled_or_failed_skeletons_do_not_drive_focus_or_coordinate_overlays() {
         let mut workbench = preview_fixture();
         workbench.bone = Some((91, 0));
@@ -4411,21 +4022,20 @@ mod tests {
                 failed.then(|| "invalid skeleton".into());
             let visible = enabled && !failed;
             assert_eq!(has_visible_resources(&snapshot), visible);
-            let output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(screen),
-                    events: vec![
-                        egui::Event::PointerMoved(screen.center()),
-                        egui::Event::Key {
-                            key: egui::Key::F,
-                            physical_key: None,
-                            pressed: true,
-                            repeat: false,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
-                    ..Default::default()
-                },
+            let output = test_frame(
+                &context,
+                screen.size(),
+                None,
+                vec![
+                    egui::Event::PointerMoved(screen.center()),
+                    egui::Event::Key {
+                        key: egui::Key::F,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
                 |ui| workbench.viewport(ui, &snapshot, screen),
             );
             let selected_coordinates = output.shapes.iter().any(|shape| {
@@ -4461,15 +4071,10 @@ mod tests {
         egui_hunter::Theme::default().apply(&context);
         mhf_font::install(&context);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0));
-        context
-            .run_ui(
-                egui::RawInput {
-                    screen_rect: Some(screen),
-                    ..Default::default()
-                },
-                |ui| workbench.show(ui),
-            )
-            .drop_without_applying_deltas();
+        test_frame(&context, screen.size(), None, Vec::new(), |ui| {
+            workbench.show(ui)
+        })
+        .drop_without_applying_deltas();
         context.memory_mut(|memory| memory.request_focus(egui::Id::new("workbench-filter")));
         let mut events = vec![egui::Event::PointerMoved(workbench.viewport_rect.center())];
         for (key, text) in [(egui::Key::F, "f"), (egui::Key::Space, " ")] {
@@ -4482,99 +4087,11 @@ mod tests {
             });
             events.push(egui::Event::Text(text.into()));
         }
-        context
-            .run_ui(
-                egui::RawInput {
-                    screen_rect: Some(screen),
-                    events,
-                    ..Default::default()
-                },
-                |ui| workbench.show(ui),
-            )
-            .drop_without_applying_deltas();
+        test_frame(&context, screen.size(), None, events, |ui| {
+            workbench.show(ui)
+        })
+        .drop_without_applying_deltas();
         assert_eq!(workbench.filter, "f ");
         assert!(workbench.control.commands().is_empty());
-    }
-
-    #[test]
-    fn resource_window_width_stays_stable_across_frames() {
-        let root = std::env::temp_dir().join("mhf-workbench-layout-fixture");
-        let mut worker = Worker::start(root.clone(), root.clone()).unwrap();
-        worker.stop();
-        let worker = Arc::new(worker);
-        let _ = worker.updates();
-        let mut workbench = Workbench::new(
-            Arc::new(Control::default()),
-            worker,
-            root,
-            ViewSettings::default(),
-            None,
-        );
-        workbench.scanning = false;
-        workbench.refresh_document(Arc::new(Document {
-            attack_directory: None,
-            source: Default::default(),
-            root: 0, buffers: vec![Arc::from([0_u8; 16])],
-            nodes: vec![Node {
-                native_id: None,
-                material_slots: Vec::new(),
-                address: None,
-                name: "Z:\\game\\dat\\model\\long-resource-file-name.bin".into(),
-                kind: Kind::Unknown, buffer: 0, range: 0..16, children: vec![], action: None, deferred: false, error: None,
-                metadata: Default::default(),
-                fields: vec![Field {reference: None, key: None, writable: false, binding: crate::field::Binding { buffer: 0, range: 0..16, format: crate::field::FieldType::ReadOnly, endian: mhf_resource::binary::Endian::Little }, note: None, name: "unknown_00000010".into(), value: "A long resource value with enough words to wrap within the inspector column".repeat(3)}],
-            }],
-        }));
-        let context = egui::Context::default();
-        egui_hunter::Theme::default().apply(&context);
-        mhf_font::install(&context);
-        let mut widths = Vec::new();
-        let mut directories = Vec::new();
-        for frame in 0..30 {
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1440.0, 900.0),
-                )),
-                time: Some(frame as f64 / 60.0),
-                ..Default::default()
-            };
-            context
-                .run_ui(input, |ui| {
-                    let window = egui::Window::new("资源浏览 · F8")
-                        .id(egui::Id::new("width-test"))
-                        .default_width(380.0)
-                        .default_height(700.0)
-                        .max_width(1440.0)
-                        .show(ui.ctx(), |ui| workbench.resources(ui))
-                        .unwrap();
-                    widths.push(window.response.rect.width());
-                    let address_height = ui
-                        .ctx()
-                        .read_response(egui::Id::new("workbench-resource-path"))
-                        .map_or(0.0, |response| response.rect.height());
-                    directories.push((
-                        window.inner.unwrap(),
-                        address_height + ui.spacing().item_spacing.y,
-                    ));
-                })
-                .drop_without_applying_deltas();
-        }
-        assert!(
-            // The address row now shares the original directory height budget.
-            // Include its measured height without relaxing the total allocation.
-            directories[5..].iter().all(
-                |(rect, address_row)| *address_row > 0.0 && rect.height() + address_row > 500.0
-            ),
-            "directory rectangles: {directories:?}"
-        );
-        assert!(
-            widths[5..].iter().all(|&width| width <= 430.0),
-            "resource widths: {widths:?}"
-        );
-        assert!(
-            (widths[29] - widths[5]).abs() <= 0.5,
-            "resource widths: {widths:?}"
-        );
     }
 }

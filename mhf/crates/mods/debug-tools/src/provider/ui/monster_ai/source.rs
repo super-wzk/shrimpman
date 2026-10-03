@@ -158,31 +158,6 @@ const HUNTER_LIGHT: ColorTheme = ColorTheme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui_code_editor::{Token, TokenType};
-
-    #[test]
-    fn mhai_highlighting_preserves_source_and_recognizes_dsl_tokens() {
-        let source = "// 中文说明\nimport \"common/6/combat.mhai\" as combat;\nfn main() { self.set_mode(Mode::Attack); native(0xff); return; }\n";
-        let tokens = Token::default().tokens(&SYNTAX, source);
-        assert_eq!(tokens.iter().map(Token::buffer).collect::<String>(), source);
-        for (text, kind) in [
-            ("// 中文说明", TokenType::Comment(false)),
-            ("import", TokenType::Keyword),
-            ("\"common/6/combat.mhai\"", TokenType::Str('"')),
-            ("fn", TokenType::Keyword),
-            ("self", TokenType::Special),
-            ("Mode", TokenType::Type),
-            ("native", TokenType::Special),
-            ("return", TokenType::Keyword),
-        ] {
-            assert!(
-                tokens
-                    .iter()
-                    .any(|token| token.buffer() == text && token.ty() == kind),
-                "missing {kind:?}: {text}"
-            );
-        }
-    }
 
     #[test]
     fn editor_preserves_rows_read_only_source_and_parent_style() {

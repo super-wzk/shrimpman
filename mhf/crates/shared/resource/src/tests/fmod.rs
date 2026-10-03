@@ -1,17 +1,5 @@
 use super::*;
-
-fn block(kind: u32, count: u32, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for word in [kind, count, (payload.len() + HEADER_SIZE) as u32] {
-        bytes.extend_from_slice(&word.to_le_bytes());
-    }
-    bytes.extend_from_slice(payload);
-    bytes
-}
-
-fn words(values: &[u32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
+use crate::test_support::{block, words};
 
 fn geometry_file() -> Vec<u8> {
     let positions = block(

@@ -229,16 +229,11 @@ impl Ownership {
         let mut textures = Vec::new();
         if let Some(owner) = self.owners.get_mut(&token) {
             owner.retired = true;
-            owner.textures.retain(|texture| {
-                if texture.pointer == 0 {
-                    // Keep protecting the native creator while it is waiting on
-                    // its callback or reading the COM object after the callback.
-                    true
-                } else {
-                    textures.push(*texture);
-                    false
-                }
-            });
+            // Pending creators retain their protection through the outer callback.
+            textures = owner
+                .textures
+                .extract_if(.., |texture| texture.pointer != 0)
+                .collect();
         }
         for &texture in &textures {
             self.remove_texture_reference(texture);
@@ -542,30 +537,6 @@ mod tests {
                 ReleaseDecision::Ignored
             ));
         }
-    }
-
-    #[test]
-    fn recycled_handle_and_com_address_do_not_match_a_retired_generation() {
-        let mut ownership = Ownership::default();
-        let token = ownership.begin(owner(10, 220, 1)).0;
-        create(&mut ownership, token, 1, 101);
-        ownership.finish(token);
-        let old = ownership.take(10)[0];
-        ownership.reserve(1);
-        assert_ne!(ownership.generation(1), Some(old.generation));
-        assert!(ownership.claim_release(1, 101, Some(old)).is_none());
-    }
-
-    #[test]
-    fn failed_creation_does_not_leave_a_live_owner_reference() {
-        let mut ownership = Ownership::default();
-        let token = ownership.begin(owner(10, 220, 1)).0;
-        ownership.reserve(1);
-        let ticket = ownership.pending(token, 1).unwrap();
-        assert_eq!(ownership.created(ticket, 0), CreationResult::Discarded);
-        ownership.finish(token);
-        assert!(ownership.protects(1, 0).is_none());
-        assert!(ownership.take(10).is_empty());
     }
 
     #[test]

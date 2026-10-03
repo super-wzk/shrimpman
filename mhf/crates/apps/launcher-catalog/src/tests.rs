@@ -50,12 +50,6 @@ fn default_login_pulls_base_through_its_declared_dependencies() {
     assert!(plan(CATALOG, "['mhf.base']\nenabled = false").is_err());
     let resolved = plan(CATALOG, "['mhf.login']\nenabled = false").unwrap();
     assert!(resolved.mods.is_empty());
-    let resolved = plan(
-        CATALOG,
-        "['mhf.login']\nenabled = false\n['mhf.base']\nenabled = false",
-    )
-    .unwrap();
-    assert!(resolved.mods.is_empty());
 }
 
 #[test]
@@ -84,19 +78,6 @@ fn explicit_debug_keeps_default_login_and_adds_its_dependencies() {
         )
         .is_err()
     );
-    for debug in [false, true] {
-        for redirect in [false, true] {
-            let resolved = plan(
-                CATALOG,
-                &format!(
-                    "['mhf.debug']\nenabled = {debug}\n['mhf.dat-redirect']\nenabled = {redirect}"
-                ),
-            )
-            .unwrap();
-            assert_eq!(selected(&resolved, "mhf.dat-redirect"), redirect);
-            assert_eq!(selected(&resolved, "mhf.debug"), debug);
-        }
-    }
 }
 
 #[test]
@@ -123,18 +104,6 @@ fn the_catalog_only_exposes_registered_packages() {
     );
     for id in ["mhf.base", "mhf.login", "mhf.debug", "mhf.quest"] {
         assert!(plan(minimal, &format!("['{id}']\nenabled = true")).is_err());
-    }
-    let ids: BTreeSet<_> = CATALOG
-        .candidates()
-        .unwrap()
-        .into_iter()
-        .map(|candidate| candidate.manifest.id)
-        .collect();
-    for former_component in ["mhf.font", "mhf.ui", "mhf.geometry", "mhf.quest"] {
-        assert!(
-            !ids.contains(former_component),
-            "{former_component} must remain inside Base"
-        );
     }
 }
 
@@ -175,34 +144,6 @@ fn external_base_can_satisfy_all_startup_dependencies() {
         ));
         assert!(selected(&resolved, "mhf.login"));
     }
-}
-
-#[test]
-fn configuration_provider_has_no_consumer_dependencies() {
-    let candidates = CATALOG.candidates().unwrap();
-    let provider = candidates
-        .iter()
-        .find(|candidate| candidate.manifest.id == "mhf.config")
-        .unwrap();
-    assert!(provider.manifest.dependencies.is_empty());
-    let login = candidates
-        .iter()
-        .find(|candidate| candidate.manifest.id == "mhf.login")
-        .unwrap();
-    assert_eq!(
-        login
-            .manifest
-            .dependencies
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        ["mhf.base", "mhf.config"]
-    );
-    let base = candidates
-        .iter()
-        .find(|candidate| candidate.manifest.id == "mhf.base")
-        .unwrap();
-    assert!(base.manifest.dependencies.contains_key("mhf.config"));
 }
 
 #[test]

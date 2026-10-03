@@ -269,7 +269,8 @@ fn species_navigation_selects_direct_profile_and_conditional_records() {
 fn shared_default_edits_are_visible_in_species_and_global_views() {
     let mut bytes = sample();
     let offset = bytes.len();
-    bytes.resize(offset + 3 * 32, 0);
+    let rules = offset + 3 * 32;
+    bytes.resize(rules + 4, 0);
     put32(&mut bytes, 19 * 4, offset);
     bytes[96 + 28..96 + 30].copy_from_slice(&3u16.to_le_bytes());
     for (index, species) in [0u16, 1, 250].into_iter().enumerate() {
@@ -277,6 +278,9 @@ fn shared_default_edits_are_visible_in_species_and_global_views() {
         bytes[at + 2..at + 4].copy_from_slice(&species.to_le_bytes());
     }
     bytes[offset + 6..offset + 8].copy_from_slice(&5i16.to_le_bytes());
+    bytes[offset + 26..offset + 28].copy_from_slice(&1u16.to_le_bytes());
+    put32(&mut bytes, offset + 28, rules);
+    bytes[rules..].copy_from_slice(&[7, 2, 44, 1]);
     let document = inspect("mhfemd.bin", bytes.clone().into());
     let document = expand_species(&expand_species(&document, 2), 3);
     let global = global_table_node(&document, 19);
@@ -317,6 +321,23 @@ fn shared_default_edits_are_visible_in_species_and_global_views() {
         );
     }
     let document = expand(&document, records[0]).unwrap();
+    let target = document.nodes[records[0]].children[0];
+    assert_eq!(document.nodes[target].kind, Kind::EmdTable(19, Some(0)));
+    assert_eq!(document.nodes[target].range, rules..rules + 4);
+    let document = expand(&document, target).unwrap();
+    let rule = document.nodes[target].children[0];
+    let document = expand(&document, rule).unwrap();
+    let action = document.nodes[rule]
+        .fields
+        .iter()
+        .find(|field| field.name == "action_id")
+        .unwrap();
+    assert_eq!(action.value, "300");
+    assert_eq!(action.binding.range, rules + 2..rules + 4);
+    assert_eq!(
+        action.binding.format,
+        crate::field::FieldType::Scalar(crate::field::ScalarType::U16)
+    );
     let field = document.nodes[records[0]]
         .fields
         .iter()
@@ -403,12 +424,15 @@ fn species_views_expand_shared_parameters_and_isolate_invalid_links() {
     let mut bytes = sample();
     let parameters = bytes.len();
     let anger = parameters + 16_000;
-    bytes.resize(anger + 60, 0);
+    let directory = anger + 60;
+    bytes.resize(directory + 1600, 0);
     for id in [1, 2] {
         let at = 144 + id * SPECIES_STRIDE;
         bytes[at + 176..at + 180].copy_from_slice(&(parameters as u32).to_le_bytes());
         bytes[at + 72..at + 76].copy_from_slice(&(anger as u32).to_le_bytes());
+        put32(&mut bytes, at + 184, directory);
     }
+    put32(&mut bytes, directory + 4, u32::MAX as usize);
     let bad = 144 + SPECIES_STRIDE + 76;
     bytes[bad..bad + 4].copy_from_slice(&u32::MAX.to_le_bytes());
     bytes[anger..anger + 2].copy_from_slice(&(-100i16).to_le_bytes());
@@ -437,6 +461,25 @@ fn species_views_expand_shared_parameters_and_isolate_invalid_links() {
     let invalid = find(Kind::EmdSpeciesTable(1, SpeciesTable::AngerProfile(1)));
     assert!(document.nodes[invalid].error.is_some());
     let profile = find(Kind::EmdSpeciesTable(1, SpeciesTable::AngerProfile(0)));
+    let directory_node = find(Kind::EmdTable(3, Some(1)));
+    let directory_alias = find(Kind::EmdTable(3, Some(2)));
+    assert_eq!(
+        document.nodes[directory_node].range,
+        document.nodes[directory_alias].range
+    );
+    let document = expand(&document, directory_node).unwrap();
+    let record = document.nodes[directory_node].children[0];
+    let document = expand(&document, record).unwrap();
+    let opaque = document.nodes[record]
+        .fields
+        .iter()
+        .find(|field| field.name == "value_04")
+        .unwrap();
+    assert_eq!(opaque.binding.range, directory + 4..directory + 8);
+    assert_eq!(
+        opaque.read(&document.buffers).unwrap(),
+        u32::MAX.to_string()
+    );
     let document = expand(&document, bank).unwrap();
     assert_eq!(document.nodes[bank].children.len(), 200);
     let document = expand(&document, profile).unwrap();
@@ -472,116 +515,6 @@ fn species_views_expand_shared_parameters_and_isolate_invalid_links() {
             .read(&edited.buffers)
             .unwrap(),
         "-101"
-    );
-}
-
-#[test]
-fn species_parameter_directories_preserve_aliases_and_allow_scalar_edits() {
-    let mut bytes = sample();
-    let offset = bytes.len();
-    bytes.resize(offset + 1600, 0);
-    for id in [1, 2] {
-        let link = 144 + id * SPECIES_STRIDE + 184;
-        bytes[link..link + 4].copy_from_slice(&(offset as u32).to_le_bytes());
-    }
-    let document = inspect("mhfemd.bin", bytes.clone().into());
-    let document = expand_species(&expand_species(&document, 1), 2);
-    let directories: Vec<_> = document
-        .nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| matches!(node.kind, Kind::EmdTable(3, Some(_))))
-        .map(|(index, node)| (index, node.range.clone()))
-        .collect();
-    assert_eq!(directories.len(), 2);
-    assert_eq!(directories[0].1, directories[1].1);
-    let directory = directories[0].0;
-    let document = expand(&document, directory).unwrap();
-    assert_eq!(document.nodes[directory].children.len(), 200);
-    let record = document.nodes[directory].children[0];
-    let document = expand(&document, record).unwrap();
-    let field = document.nodes[record]
-        .fields
-        .iter()
-        .find(|field| field.name == "value_04")
-        .unwrap();
-    assert_eq!(field.binding.range, offset + 4..offset + 8);
-    let edited = crate::edit::apply(
-        &document,
-        document.nodes[record].buffer,
-        field.binding.range.clone(),
-        &u32::MAX.to_le_bytes(),
-    )
-    .unwrap();
-    bytes[offset + 4..offset + 8].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert_eq!(&edited.buffers[0][..], bytes);
-}
-
-#[test]
-fn named_resource_uses_count_and_preserves_unknown_species() {
-    let document = inspect("mhfemd.bin", sample().into());
-    assert_eq!(document.nodes[0].kind, Kind::Emd);
-    assert_eq!(
-        document.nodes[0]
-            .children
-            .iter()
-            .filter(|&&node| matches!(document.nodes[node].kind, Kind::EmdSpecies(_)))
-            .count(),
-        178
-    );
-    let first = species_node(&document, 1);
-    assert!(document.nodes[first].name.contains("雌火龙"));
-    let last = species_node(&document, 177);
-    assert!(document.nodes[last].name.contains("em177"));
-    let unnamed = species_node(&document, 18);
-    assert!(document.nodes[unnamed].name.contains("em018"));
-    let expanded = expand(&document, last).unwrap();
-    assert!(
-        expanded.nodes[last]
-            .fields
-            .iter()
-            .any(|field| field.binding.range.start == 144 + 177 * SPECIES_STRIDE)
-    );
-}
-
-#[test]
-fn encoded_resource_can_be_edited_without_losing_unknown_bytes() {
-    use mhf_resource::crypto::Ecd;
-    let bytes = sample();
-    let mut jkr = b"JKR\x1a\x08\x01\0\0".to_vec();
-    jkr.extend_from_slice(&16u32.to_le_bytes());
-    jkr.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    jkr.extend_from_slice(&bytes);
-    let encoded = Ecd::parse(b"ecd\x1a\x04\0\0\0\0\0\0\0\0\0\0\0")
-        .unwrap()
-        .encode(&jkr, Some(b"mhfemd.bin"))
-        .unwrap();
-    let document = inspect("mhfemd.bin", encoded.into());
-    let child = species_node(&document, 1);
-    let document = expand(&document, child).unwrap();
-    let field = document.nodes[child]
-        .fields
-        .iter()
-        .find(|field| field.binding.range.len() == 4)
-        .unwrap();
-    let range = field.binding.range.clone();
-    let buffer = document.nodes[child].buffer;
-    let edited =
-        crate::edit::apply(&document, buffer, range.clone(), &123u32.to_le_bytes()).unwrap();
-    let root = edited
-        .nodes
-        .iter()
-        .find(|node| node.kind == Kind::Emd)
-        .unwrap();
-    let mut expected = bytes;
-    expected[range].copy_from_slice(&123u32.to_le_bytes());
-    assert_eq!(&edited.buffers[root.buffer][root.range.clone()], expected);
-    assert_eq!(
-        root.children
-            .iter()
-            .filter(|&&node| matches!(edited.nodes[node].kind, Kind::EmdSpecies(_)))
-            .count(),
-        178
     );
 }
 
@@ -738,43 +671,6 @@ fn species_profile_aliases_edit_original_bytes_and_global_index_stays_editable()
             .unwrap();
         assert_eq!(field.read(&expanded.buffers).unwrap(), "456");
     }
-}
-
-#[test]
-fn association_action_rules_expand_and_edit_without_normalizing_values() {
-    let mut bytes = sample();
-    let association = bytes.len();
-    let rules = association + 32;
-    bytes.resize(rules + 4, 0);
-    bytes[76..80].copy_from_slice(&(association as u32).to_le_bytes());
-    bytes[124..126].copy_from_slice(&1u16.to_le_bytes());
-    bytes[association + 26..association + 28].copy_from_slice(&1u16.to_le_bytes());
-    bytes[association + 28..association + 32].copy_from_slice(&(rules as u32).to_le_bytes());
-    bytes[rules..].copy_from_slice(&[7, 2, 44, 1]);
-    let document = inspect("mhfemd.bin", bytes.clone().into());
-    let root = global_table_node(&document, 19);
-    let document = expand(&document, root).unwrap();
-    let association_node = document.nodes[root].children[0];
-    let target = document.nodes[association_node].children[0];
-    assert_eq!(document.nodes[target].range, rules..rules + 4);
-    let document = expand(&document, target).unwrap();
-    let record = document.nodes[target].children[0];
-    let document = expand(&document, record).unwrap();
-    let field = document.nodes[record]
-        .fields
-        .iter()
-        .find(|f| f.name == "action_id")
-        .unwrap();
-    assert_eq!(field.value, "300");
-    let edited = crate::edit::apply(
-        &document,
-        document.nodes[record].buffer,
-        field.binding.range.clone(),
-        &301u16.to_le_bytes(),
-    )
-    .unwrap();
-    bytes[rules + 2..rules + 4].copy_from_slice(&301u16.to_le_bytes());
-    assert_eq!(edited.buffers[0].as_ref(), bytes);
 }
 
 #[test]

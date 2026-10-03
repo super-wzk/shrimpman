@@ -1,7 +1,7 @@
-mod events;
+pub mod events;
 
-use egui::{Context, Event, Id, Key, RawInput, Rect, Response, Shape, pos2, vec2};
-use egui_hunter::{Button, Panel, ScrollPanel, Theme};
+use egui::{Context, Event, Id, Key, RawInput, Rect, Response, Shape, vec2};
+use egui_hunter::{Button, Panel, ScrollPanel};
 
 struct Frame {
     panel: Response,
@@ -15,13 +15,13 @@ struct Frame {
 
 fn frame(ctx: &Context, events: Vec<Event>) -> Frame {
     let mut result = None;
-    let mut output = ctx.run_ui(
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 700.0))),
-            time: Some(ctx.cumulative_pass_nr() as f64 / 60.0),
+    let (_, output) = events::frame(
+        ctx,
+        events::input(
+            vec2(640.0, 700.0),
+            Some(ctx.cumulative_pass_nr() as f64 / 60.0),
             events,
-            ..Default::default()
-        },
+        ),
         |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 let outer = Panel::new("Outer").show(ui, |ui| {
@@ -59,7 +59,6 @@ fn frame(ctx: &Context, events: Vec<Event>) -> Frame {
             });
         },
     );
-    output.textures_delta.clear();
     let mut result = result.unwrap();
     let active = egui_hunter::Tokens::from_context(ctx).focus;
     for shape in output.shapes {
@@ -83,18 +82,7 @@ fn collect_focus_shapes(shape: &Shape, clip: Rect, active: egui::Color32, frame:
 }
 
 fn press(ctx: &Context, key: Key) -> Frame {
-    frame(
-        ctx,
-        [true, false]
-            .map(|pressed| Event::Key {
-                key,
-                physical_key: None,
-                pressed,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            })
-            .into(),
-    )
+    frame(ctx, events::pulse(key))
 }
 
 fn assert_highlight(frame: &Frame, target: Rect) {
@@ -111,8 +99,7 @@ fn assert_highlight(frame: &Frame, target: Rect) {
 
 #[test]
 fn only_the_active_list_row_is_highlighted_inside_decorative_panels() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let initial = frame(&ctx, vec![]);
     assert!(initial.highlights.is_empty());
     initial.list.request_focus();
@@ -139,8 +126,7 @@ fn only_the_active_list_row_is_highlighted_inside_decorative_panels() {
 
 #[test]
 fn keyboard_scrolling_highlights_the_viewport_without_recoloring_its_panel() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let draw = |ctx: &Context| {
         let mut response = None;
         let mut viewport = Rect::NOTHING;
@@ -191,11 +177,10 @@ fn keyboard_scrolling_highlights_the_viewport_without_recoloring_its_panel() {
 
 #[test]
 fn scrolling_focus_belongs_to_the_viewport_and_child_clicks_keep_their_target() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let draw = |events| {
-        let mut response = None;
-        let output = ctx.run_ui(
+        events::frame(
+            &ctx,
             RawInput {
                 events,
                 ..Default::default()
@@ -203,15 +188,14 @@ fn scrolling_focus_belongs_to_the_viewport_and_child_clicks_keep_their_target() 
             |ui| {
                 let mut panel = ScrollPanel::new(Id::new("scroll-pointer"), "Archive");
                 panel.scroll = panel.scroll.max_height(140.0);
-                response = Some(panel.show(ui, |ui| {
+                panel.show(ui, |ui| {
                     let child = ui.add(Button::new("Child"));
                     ui.add_space(400.0);
                     child
-                }));
+                })
             },
-        );
-        output.drop_without_applying_deltas();
-        response.unwrap()
+        )
+        .0
     };
     draw(vec![]);
     let initial = draw(vec![]);

@@ -136,7 +136,9 @@ impl Editor {
             }
             self.workspace_status(ui, snapshot);
         });
-        self.debugger.show_workspace_error(ui);
+        if !self.debugger.import_open {
+            self.debugger.show_error(ui);
+        }
         if !wide {
             let choices = [
                 (View::Source, "源码"),

@@ -247,77 +247,24 @@ impl Default for Gallery {
             item: 0,
             category: 0,
             items: [
-                Item {
-                    name: "回复药",
-                    detail: "恢复少量体力",
-                    icon: Icon::Potion,
-                    count: 10,
-                    recovery: true,
-                },
-                Item {
-                    name: "回复药·大",
-                    detail: "恢复大量体力",
-                    icon: Icon::Potion,
-                    count: 5,
-                    recovery: true,
-                },
-                Item {
-                    name: "药草",
-                    detail: "用于调合回复药",
-                    icon: Icon::Herb,
-                    count: 8,
-                    recovery: false,
-                },
-                Item {
-                    name: "龙骨",
-                    detail: "用于锻造装备",
-                    icon: Icon::Bone,
-                    count: 6,
-                    recovery: false,
-                },
-                Item {
-                    name: "铁矿石",
-                    detail: "用于强化武器",
-                    icon: Icon::Ore,
-                    count: 7,
-                    recovery: false,
-                },
-                Item {
-                    name: "麻痹陷阱",
-                    detail: "短时间限制怪物行动",
-                    icon: Icon::Trap,
-                    count: 1,
-                    recovery: false,
-                },
-                Item {
-                    name: "古龙骨",
-                    detail: "珍贵的锻造素材",
-                    icon: Icon::Bone,
-                    count: 2,
-                    recovery: false,
-                },
-                Item {
-                    name: "燕雀石",
-                    detail: "散发冷光的矿石",
-                    icon: Icon::Ore,
-                    count: 4,
-                    recovery: false,
-                },
-                Item {
-                    name: "解毒药",
-                    detail: "解除中毒状态",
-                    icon: Icon::Potion,
-                    count: 3,
-                    recovery: true,
-                },
-                Item {
-                    name: "落穴陷阱",
-                    detail: "让怪物陷入地面",
-                    icon: Icon::Trap,
-                    count: 1,
-                    recovery: false,
-                },
-            ],
+                ("回复药", "恢复少量体力", Icon::Potion, 10, true),
+                ("回复药·大", "恢复大量体力", Icon::Potion, 5, true),
+                ("药草", "用于调合回复药", Icon::Herb, 8, false),
+                ("龙骨", "用于锻造装备", Icon::Bone, 6, false),
+                ("铁矿石", "用于强化武器", Icon::Ore, 7, false),
+                ("麻痹陷阱", "短时间限制怪物行动", Icon::Trap, 1, false),
+                ("古龙骨", "珍贵的锻造素材", Icon::Bone, 2, false),
+                ("燕雀石", "散发冷光的矿石", Icon::Ore, 4, false),
+                ("解毒药", "解除中毒状态", Icon::Potion, 3, true),
+                ("落穴陷阱", "让怪物陷入地面", Icon::Trap, 1, false),
+            ]
+            .map(|(name, detail, icon, count, recovery)| Item {
+                name,
+                detail,
+                icon,
+                count,
+                recovery,
+            }),
             query: String::new(),
             tips: true,
             auto_sort: true,
@@ -1200,10 +1147,10 @@ impl Gallery {
                 }
                 ui.add_space(6.0);
                 let back = ui.add_enabled(can_back, Button::new("返回上一级"));
-                controls.push(back.clone());
                 if back.clicked() {
                     self.menu.back(ui.ctx());
                 }
+                controls.push(back);
                 key_hint(ui, "Esc", "返回上一级");
             });
         });
@@ -1260,19 +1207,18 @@ impl Gallery {
             Panel::new("03  窗口与浮层").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let journal = ui.add(Button::new("打开随行手记").icon(Icon::Quest));
-                    controls.push(journal.clone());
                     if journal.clicked() {
                         self.window_open = true;
                     }
+                    controls.push(journal);
                     let confirm = ui.add(Button::new("确认委托").kind(ButtonKind::Primary));
-                    controls.push(confirm.clone());
                     if confirm.clicked() {
                         self.dialog.open_from(&confirm);
                     }
+                    controls.push(confirm);
                 });
                 ui.add_space(6.0);
                 let anchor = ui.add(Button::new("营地行动").icon(Icon::Quest));
-                controls.push(anchor.clone());
                 let mut popup = Popup::new(&anchor).title("营地行动");
                 popup.native = popup.native.id(Id::new("gallery-popup"));
                 popup.show(|ui| {
@@ -1286,6 +1232,7 @@ impl Gallery {
                         }
                     }
                 });
+                controls.push(anchor);
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new("选择行动后收起菜单；点击空白处或按 Esc 关闭。")
@@ -1305,15 +1252,15 @@ impl Gallery {
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
                     let play = ui.add(Button::new("播放营地消息").kind(ButtonKind::Primary));
-                    controls.push(play.clone());
                     if play.clicked() {
                         self.play_notices(ui.ctx());
                     }
+                    controls.push(play);
                     let clear = ui.add_enabled(!self.notices.is_empty(), Button::new("清空消息"));
-                    controls.push(clear.clone());
                     if clear.clicked() {
                         self.notices.clear(ui.ctx());
                     }
+                    controls.push(clear);
                 });
                 ui.label(
                     RichText::new(format!("待展示消息：{}", self.notices.len()))

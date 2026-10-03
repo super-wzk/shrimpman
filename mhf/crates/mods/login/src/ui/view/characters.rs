@@ -239,15 +239,19 @@ fn character_row(
         Gender::Male => "男",
         Gender::Female => "女",
     };
+    let (icon, weapon_name) = weapon(character.weapon_type);
     let metadata = format!(
-        "{}  ·  HR {}  ·  GR {}  ·  {gender}",
-        weapon_name(character.weapon_type),
-        character.hr,
-        character.gr
+        "{weapon_name}  ·  HR {}  ·  GR {}  ·  {gender}",
+        character.hr, character.gr
     );
-    let date = character
-        .last_sign_in_at
-        .map(|timestamp| format!("最近登录 {}", format_local_date(timestamp)));
+    let date = character.last_sign_in_at.map(|timestamp| {
+        format!(
+            "最近登录 {}",
+            timestamp
+                .to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%Y-%m-%d")
+        )
+    });
     let wide = ui.available_width() >= 500.0;
     let height = if !wide && date.is_some() { 72.0 } else { 64.0 };
     ui.add_enabled_ui(state.is_idle(), |ui| {
@@ -283,7 +287,7 @@ fn character_row(
                     egui::StrokeKind::Inside,
                 );
             }
-            weapon_icon(character.weapon_type).paint(
+            icon.paint(
                 &painter,
                 egui::Rect::from_center_size(
                     egui::pos2(rect.left() + 26.0, rect.center().y),
@@ -354,22 +358,22 @@ fn row_text(
     painter.galley(at, galley, color);
 }
 
-fn weapon_icon(weapon_type: WeaponType) -> Icon {
+fn weapon(weapon_type: WeaponType) -> (Icon, &'static str) {
     match weapon_type {
-        WeaponType::SwordAndShield => Icon::SwordAndShield,
-        WeaponType::HeavyBowgun => Icon::HeavyBowgun,
-        WeaponType::Hammer => Icon::Hammer,
-        WeaponType::GreatSword => Icon::GreatSword,
-        WeaponType::Lance => Icon::Lance,
-        WeaponType::LightBowgun => Icon::LightBowgun,
-        WeaponType::LongSword => Icon::LongSword,
-        WeaponType::DualBlades => Icon::DualBlades,
-        WeaponType::HuntingHorn => Icon::HuntingHorn,
-        WeaponType::Gunlance => Icon::Gunlance,
-        WeaponType::Bow => Icon::Bow,
-        WeaponType::Tonfa => Icon::Tonfa,
-        WeaponType::SwitchAxe => Icon::SwitchAxe,
-        WeaponType::MagnetSpike => Icon::MagnetSpike,
+        WeaponType::SwordAndShield => (Icon::SwordAndShield, "片手剑"),
+        WeaponType::HeavyBowgun => (Icon::HeavyBowgun, "重弩"),
+        WeaponType::Hammer => (Icon::Hammer, "大锤"),
+        WeaponType::GreatSword => (Icon::GreatSword, "大剑"),
+        WeaponType::Lance => (Icon::Lance, "长枪"),
+        WeaponType::LightBowgun => (Icon::LightBowgun, "轻弩"),
+        WeaponType::LongSword => (Icon::LongSword, "太刀"),
+        WeaponType::DualBlades => (Icon::DualBlades, "双剑"),
+        WeaponType::HuntingHorn => (Icon::HuntingHorn, "狩猎笛"),
+        WeaponType::Gunlance => (Icon::Gunlance, "铳枪"),
+        WeaponType::Bow => (Icon::Bow, "弓"),
+        WeaponType::Tonfa => (Icon::Tonfa, "穿龙棍"),
+        WeaponType::SwitchAxe => (Icon::SwitchAxe, "斩斧 F"),
+        WeaponType::MagnetSpike => (Icon::MagnetSpike, "磁斩锤"),
     }
 }
 
@@ -419,32 +423,6 @@ fn adjacent_selection(state: &Characters, forward: bool) -> Option<CharacterSele
         (None, _) => 0,
     };
     selections().nth(index)
-}
-
-fn weapon_name(weapon_type: WeaponType) -> &'static str {
-    match weapon_type {
-        WeaponType::SwordAndShield => "片手剑",
-        WeaponType::HeavyBowgun => "重弩",
-        WeaponType::Hammer => "大锤",
-        WeaponType::GreatSword => "大剑",
-        WeaponType::Lance => "长枪",
-        WeaponType::LightBowgun => "轻弩",
-        WeaponType::LongSword => "太刀",
-        WeaponType::DualBlades => "双剑",
-        WeaponType::HuntingHorn => "狩猎笛",
-        WeaponType::Gunlance => "铳枪",
-        WeaponType::Bow => "弓",
-        WeaponType::Tonfa => "穿龙棍",
-        WeaponType::SwitchAxe => "斩斧 F",
-        WeaponType::MagnetSpike => "磁斩锤",
-    }
-}
-
-fn format_local_date(timestamp: Timestamp) -> String {
-    timestamp
-        .to_zoned(jiff::tz::TimeZone::system())
-        .strftime("%Y-%m-%d")
-        .to_string()
 }
 
 pub(super) fn character_name(character: &SignCharacter, encoding: SignEncoding) -> Cow<'_, str> {

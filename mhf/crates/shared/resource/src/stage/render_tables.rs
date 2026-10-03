@@ -74,28 +74,8 @@ impl<'a> RenderTables<'a> {
                 "stage render table versions before 2 have an unsupported layout",
             ));
         }
-        let mut offset = HEADER_SIZE;
-        let mut tables = Vec::with_capacity(TABLE_LAYOUT.len());
-        for (count_offset, record_size) in TABLE_LAYOUT {
-            let count = word(count_offset);
-            let size = usize::from(count)
-                .checked_mul(record_size)
-                .ok_or_else(|| Error::new(count_offset, "stage render table length overflow"))?;
-            let end = offset
-                .checked_add(size)
-                .ok_or_else(|| Error::new(count_offset, "stage render table range overflow"))?;
-            let records = source.get(offset..end).ok_or_else(|| {
-                Error::new(count_offset, "stage render table records exceed resource")
-            })?;
-            tables.push(RenderTable {
-                count_offset,
-                record_size,
-                count,
-                offset,
-                records,
-            });
-            offset = end;
-        }
+        let (tables, offset) =
+            read_tables(source, HEADER_SIZE, &TABLE_LAYOUT, "stage render table")?;
         Ok(Self {
             version,
             unknown_02: word(2),
@@ -128,6 +108,37 @@ impl<'a> RenderTables<'a> {
     pub const fn as_bytes(&self) -> &'a [u8] {
         self.source
     }
+}
+
+/// Callers validate their own headers before reading this fixed native layout.
+pub(super) fn read_tables<'a>(
+    source: &'a [u8],
+    mut offset: usize,
+    layout: &[(usize, usize)],
+    name: &str,
+) -> Result<(Vec<RenderTable<'a>>, usize)> {
+    let mut tables = Vec::with_capacity(layout.len());
+    for &(count_offset, record_size) in layout {
+        let count = u16::from_le_bytes([source[count_offset], source[count_offset + 1]]);
+        let size = usize::from(count)
+            .checked_mul(record_size)
+            .ok_or_else(|| Error::new(count_offset, format!("{name} length overflow")))?;
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| Error::new(count_offset, format!("{name} range overflow")))?;
+        let records = source
+            .get(offset..end)
+            .ok_or_else(|| Error::new(count_offset, format!("{name} records exceed resource")))?;
+        tables.push(RenderTable {
+            count_offset,
+            record_size,
+            count,
+            offset,
+            records,
+        });
+        offset = end;
+    }
+    Ok((tables, offset))
 }
 
 /// Twelve-byte record in the table whose count is at header +0x18.

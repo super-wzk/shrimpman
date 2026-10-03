@@ -36,10 +36,10 @@ DECODER = 0x108DF4B0
 def config():
     source = (Path(__file__).parents[1] / "src/stage_cache.rs").read_text()
     edits = []
-    for rva, original in re.findall(
-            r"Patch\s*\{\s*rva:\s*(0x[0-9a-f]+),\s*original:\s*&\[([^]]+)\]",
-            source):
-        old = bytes(int(value, 16) for value in re.findall(r"0x[0-9a-f]+", original))
+    rvas = re.search(r"const PATCH_RVAS:.*?=\s*\[([^]]+)\]", source).group(1)
+    original = re.search(r"const ORIGINAL:.*?=\s*\[([^]]+)\]", source).group(1)
+    old = bytes(int(value, 16) for value in re.findall(r"0x[0-9a-f]+", original))
+    for rva in re.findall(r"0x[0-9a-f]+", rvas):
         new = b"\x8b\x0d" + struct.pack("<I", FSKL_CELL)
         assert len(old) == len(new)
         edits.append((int(rva, 16), old, new))

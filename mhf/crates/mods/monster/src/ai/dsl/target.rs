@@ -46,22 +46,12 @@ impl EntityTarget {
         }
     }
 
-    pub fn opcode(self) -> u8 {
-        match self {
-            Self::CurrentOrLargeMonster
-            | Self::LargeMonster
-            | Self::OtherMonster
-            | Self::OtherLargeMonster => 0x06,
-            _ => self as u8,
-        }
-    }
-
     pub fn encode(self) -> Vec<u8> {
-        let opcode = self.opcode();
-        if opcode == 0x06 {
-            vec![opcode, 13, self as u8, 0]
+        let value = self as u8;
+        if value <= 3 {
+            vec![0x06, 13, value, 0]
         } else {
-            vec![opcode]
+            vec![value]
         }
     }
 

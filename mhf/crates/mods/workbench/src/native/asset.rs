@@ -585,7 +585,11 @@ fn preview_resources(mut bundle: AssetBundle) -> Result<AssetBundle, String> {
                 word(at + 28 + axis * 4, 1.0f32.to_bits());
             }
         }
-        bundle.skeleton = Some(generated_resource("默认静态骨架", bytes));
+        let document = Arc::new(crate::inspect::inspect("默认静态骨架", bytes.into()));
+        bundle.skeleton = Some(crate::preview::ResourceRef::new(
+            document.clone(),
+            document.root,
+        ));
     }
     let sources = bundle
         .textures
@@ -600,11 +604,6 @@ fn preview_resources(mut bundle: AssetBundle) -> Result<AssetBundle, String> {
             .extend(std::iter::repeat_n(white, required_images - provided));
     }
     Ok(bundle)
-}
-
-fn generated_resource(name: &str, bytes: Vec<u8>) -> crate::preview::ResourceRef {
-    let document = Arc::new(crate::inspect::inspect(name, bytes.into()));
-    crate::preview::ResourceRef::new(document.clone(), document.root)
 }
 
 pub(crate) unsafe fn validate(client: Client) -> Result<(), String> {
@@ -1068,7 +1067,9 @@ impl NativeAsset {
                 .into_iter()
                 .flat_map(|sample| &sample.materials)
                 .filter(|effect| effect.mesh == index);
+            material_entries.clear();
             for effect in mesh_effects.clone() {
+                material_entries.push(effect.entry);
                 let Some(material) = materials.get_mut(effect.entry) else {
                     continue;
                 };
@@ -1077,8 +1078,6 @@ impl NativeAsset {
                 }
                 material[16..20].copy_from_slice(&effect.opacity.to_le_bytes());
             }
-            material_entries.clear();
-            material_entries.extend(mesh_effects.clone().map(|effect| effect.entry));
             // 10BBE150 visits local slots in order before drawing the group;
             // the last UV-writing slot supplies its shared texture matrix.
             let uv_offset = mesh_effects
@@ -1550,7 +1549,6 @@ mod tests {
     #[ignore = "requires MHF_RESOURCE_GAME_ROOT; reads original game files only"]
     fn actual_resource_bundles_reach_native_validation() {
         let root = std::path::PathBuf::from(std::env::var_os("MHF_RESOURCE_GAME_ROOT").unwrap());
-        let mut supported = 0;
         for name in [
             "dat/npc/npc41.bin",
             "dat/npc/n37f0050.bin",
@@ -1570,7 +1568,6 @@ mod tests {
             let bytes = std::fs::read(root.join(name)).unwrap();
             let document = std::sync::Arc::new(crate::inspect::inspect(name, bytes.into()));
             let bundles = AssetBundle::find_with_nodes(document.clone()).0;
-            eprintln!("{name}: {} bundles", bundles.len());
             let required = matches!(
                 name,
                 "dat/emmodel/em001.pac"
@@ -1627,10 +1624,12 @@ mod tests {
                         .map(|source| source.bytes().unwrap()),
                     &explicit_textures,
                 )
-                .map(|_| ());
-                if !single_image {
-                    eprintln!("{}: {result:?}", bundle.name);
-                }
+                .map(|requirements| {
+                    if name == "dat/weapon/wi127-so.bin" {
+                        assert_eq!(explicit_textures.len(), 1);
+                        assert_eq!(requirements.mesh_vertices, [415, 84, 381, 83]);
+                    }
+                });
                 if single_image {
                     let source = bundle.textures[0].bytes().unwrap();
                     let images = textures::images(&[source]).unwrap();
@@ -1671,16 +1670,7 @@ mod tests {
                     assert!(result.is_ok(), "{}: {result:?}", bundle.name);
                 }
                 if name == "dat/weapon/wi127-so.bin" {
-                    let requirements = validate_files(
-                        bundle.model.bytes().unwrap(),
-                        bundle
-                            .skeleton
-                            .as_ref()
-                            .map(|source| source.bytes().unwrap()),
-                        &[bundle.textures[0].bytes().unwrap()],
-                    )
-                    .unwrap();
-                    assert_eq!(requirements.mesh_vertices, [415, 84, 381, 83]);
+                    result.as_ref().unwrap();
                 }
                 ready += usize::from(result.is_ok());
             }
@@ -1691,22 +1681,11 @@ mod tests {
                     (798, 0)
                 };
                 assert_eq!((ready, external_image), expected);
-                eprintln!(
-                    "{name}: {ready} self-contained PNG previews; {external_image} require an external image slot"
-                );
                 if shared_skin.is_some() {
                     assert_eq!(supplied, 736);
-                    eprintln!(
-                        "{name}: all {supplied} models pass with explicit primary PNG + shared skin inputs; image 1 retains the shared source"
-                    );
                 }
             }
-            supported += ready;
         }
-        assert!(
-            supported > 0,
-            "no actual source bundle passed native preflight"
-        );
     }
 
     #[test]

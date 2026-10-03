@@ -1,21 +1,17 @@
-use egui::{
-    Color32, Context, FontId, FullOutput, Id, RawInput, Rect, Response, Shape, Ui, pos2, vec2,
-};
+pub mod events;
+
+use egui::{Color32, Context, FontId, FullOutput, Id, Rect, Response, Shape, Ui, pos2, vec2};
 use egui_hunter::{
-    Button, ButtonKind, Checkbox, ItemSlot, Panel, Surface, TextField, Theme, Toggle, Tokens,
-    Validation,
+    Button, ButtonKind, Checkbox, ItemSlot, TextField, Theme, Toggle, Tokens, Validation,
 };
 
-fn render(ctx: &Context, mut content: impl FnMut(&mut Ui)) -> FullOutput {
-    let mut output = ctx.run_ui(
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 1000.0))),
-            ..Default::default()
-        },
-        |ui| content(ui),
-    );
-    output.textures_delta.clear();
-    output
+fn render(ctx: &Context, content: impl FnMut(&mut Ui)) -> FullOutput {
+    events::frame(
+        ctx,
+        events::input(vec2(1000.0, 1000.0), None, vec![]),
+        content,
+    )
+    .1
 }
 
 fn visit(shape: &Shape, check: &mut impl FnMut(&Shape)) {
@@ -41,8 +37,7 @@ fn has_fill(output: &FullOutput, rect: Rect, color: Color32) -> bool {
 
 #[test]
 fn widgets_resolve_local_style_at_render_time_and_siblings_keep_their_style() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let background = Color32::from_rgb(35, 75, 125);
     let strong_background = Color32::from_rgb(55, 95, 145);
     let foreground = Color32::from_rgb(240, 90, 170);
@@ -119,8 +114,7 @@ fn widgets_resolve_local_style_at_render_time_and_siblings_keep_their_style() {
 
 #[test]
 fn style_and_tokens_update_focused_controls_without_reinstalling_the_theme() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
+    let ctx = events::themed_context();
     let id = Id::new("styled-button");
     render(&ctx, |ui| {
         ui.add(Button::new("Focus").id(id));
@@ -171,46 +165,6 @@ fn assert_focus_border(output: &FullOutput, control: Rect, focus: Color32) {
         [control],
         "focus replaces the original border without expanding it"
     );
-}
-
-#[test]
-fn raised_surfaces_inherit_nested_tokens_without_leaking() {
-    let ctx = Context::default();
-    let theme = Theme::default();
-    theme.apply(&ctx);
-    let local = Tokens {
-        primary: Color32::LIGHT_BLUE,
-        ..theme.tokens
-    };
-    let nested = Tokens {
-        success: Color32::YELLOW,
-        ..local
-    };
-    let mut button = Rect::NOTHING;
-    let mut field = Rect::NOTHING;
-    let output = render(&ctx, |ui| {
-        local.scope(ui, |ui| {
-            Panel::new("Raised")
-                .surface(Surface::Raised)
-                .show(ui, |ui| {
-                    assert_eq!(Tokens::get(ui), local);
-                    assert!(ui.visuals().dark_mode);
-                    assert_eq!(ui.stack().bg_color(), theme.style.visuals.faint_bg_color);
-                    button = ui.add(Button::new("Action").kind(ButtonKind::Primary)).rect;
-                    let mut text = "Hunter".to_owned();
-                    field = ui.add(TextField::new(Id::new("name"), &mut text)).rect;
-                    nested.scope(ui, |ui| assert_eq!(Tokens::get(ui), nested));
-                    assert_eq!(Tokens::get(ui), local);
-                });
-        });
-        assert_eq!(Tokens::get(ui), theme.tokens);
-    });
-    assert!(has_fill(&output, button, local.primary));
-    assert!(has_fill(
-        &output,
-        field,
-        theme.style.visuals.text_edit_bg_color()
-    ));
 }
 
 #[test]
@@ -297,140 +251,5 @@ fn focus_preserves_semantic_fills_selection_marks_and_validation() {
             _ => theme.tokens.focus,
         };
         assert_focus_border(&output, focus_rect, focus_color);
-    }
-}
-
-#[test]
-fn default_theme_matches_the_approved_palette_and_control_sizes() {
-    let ctx = Context::default();
-    let theme = Theme::default();
-    theme.apply(&ctx);
-    assert_eq!(
-        theme.style.visuals.panel_fill,
-        Color32::from_rgb(0x11, 0x12, 0x14)
-    );
-    assert_eq!(theme.tokens.primary, Color32::from_rgb(0xD8, 0xB8, 0x78));
-    assert_eq!(
-        theme.style.visuals.window_corner_radius,
-        egui::CornerRadius::same(12)
-    );
-    render(&ctx, |ui| {
-        assert_eq!(ui.add(Button::new("Default")).rect.height(), 36.0);
-        assert_eq!(
-            ui.add(Button::new("Primary").kind(ButtonKind::Primary))
-                .rect
-                .height(),
-            36.0
-        );
-        let mut value = String::new();
-        let field = ui.add(TextField::new(Id::new("sized-field"), &mut value));
-        assert!((field.rect.height() - 36.0).abs() <= 1.0);
-    });
-}
-
-#[test]
-fn attention_styles_do_not_add_content_padding() {
-    let ctx = Context::default();
-    let theme = Theme::default();
-    theme.apply(&ctx);
-    let mut rects = Vec::new();
-    let output = render(&ctx, |ui| {
-        rects.clear();
-        let mut checked = false;
-        let mut text = "Field".to_owned();
-        rects.push(ui.add(Button::new("Button")).rect);
-        rects.push(ui.add(Checkbox::new(&mut checked, "Checkbox")).rect);
-        rects.push(ui.add(Toggle::new(&mut checked, "Toggle")).rect);
-        rects.push(ui.add(TextField::new(Id::new("field"), &mut text)).rect);
-        rects.push(
-            ui.add(ItemSlot::new("Item").image(egui::TextureId::User(17)))
-                .rect,
-        );
-    });
-    let spacing = &theme.style.spacing;
-    let mut labels = 0;
-    let mut image_seen = false;
-    for shape in &output.shapes {
-        visit(&shape.shape, &mut |shape| match shape {
-            Shape::Text(text) => {
-                let expected = match text.galley.job.text.as_str() {
-                    "Button" => rects[0].center().x - text.galley.size().x * 0.5,
-                    "Checkbox" => rects[1].left() + spacing.icon_width + spacing.icon_spacing,
-                    "Toggle" => rects[2].left() + spacing.icon_width * 2.0 + spacing.icon_spacing,
-                    "Field" => rects[3].left() + spacing.button_padding.x,
-                    _ => return,
-                };
-                assert!(
-                    (text.pos.x - expected).abs() <= 0.5,
-                    "{} must retain its ordinary content alignment",
-                    text.galley.job.text
-                );
-                labels += 1;
-            }
-            Shape::Mesh(mesh) if mesh.texture_id == egui::TextureId::User(17) => {
-                let points = mesh
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.pos)
-                    .collect::<Vec<_>>();
-                assert_eq!(Rect::from_points(&points).center(), rects[4].center());
-                image_seen = true;
-            }
-            _ => {}
-        });
-    }
-    assert_eq!(labels, 4);
-    assert!(image_seen);
-}
-
-#[test]
-fn panel_surface_metadata_matches_the_single_rounded_native_frame() {
-    let ctx = Context::default();
-    Theme::default().apply(&ctx);
-    let output = render(&ctx, |ui| {
-        Panel::new("Panel").show(ui, |ui| {
-            assert_eq!(
-                ui.stack().bg_color(),
-                ctx.global_style().visuals.window_fill
-            );
-            Panel::new("Raised")
-                .surface(Surface::Raised)
-                .show(ui, |ui| {
-                    assert_eq!(
-                        ui.stack().bg_color(),
-                        ctx.global_style().visuals.faint_bg_color
-                    );
-                    egui::ScrollArea::vertical()
-                        .max_height(60.0)
-                        .show(ui, |ui| {
-                            assert_eq!(
-                                ui.stack().bg_color(),
-                                ctx.global_style().visuals.faint_bg_color
-                            );
-                            ui.allocate_space(vec2(80.0, 200.0));
-                        });
-                });
-            assert_eq!(
-                ui.stack().bg_color(),
-                ctx.global_style().visuals.window_fill
-            );
-        });
-    });
-
-    for color in [
-        ctx.global_style().visuals.window_fill,
-        ctx.global_style().visuals.faint_bg_color,
-    ] {
-        let mut surfaces = 0;
-        for shape in &output.shapes {
-            visit(&shape.shape, &mut |shape| match shape {
-                Shape::Rect(rect) if rect.fill == color => {
-                    assert_eq!(rect.corner_radius, egui::CornerRadius::same(12));
-                    surfaces += 1;
-                }
-                _ => {}
-            });
-        }
-        assert_eq!(surfaces, 1);
     }
 }

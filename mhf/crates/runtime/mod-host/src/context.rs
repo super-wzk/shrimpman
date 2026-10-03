@@ -113,6 +113,9 @@ impl Context {
     pub fn id(&self) -> &str {
         &self.id
     }
+    pub(crate) fn dependencies(&self) -> &BTreeSet<String> {
+        &self.dependencies
+    }
     pub fn api(&self) -> &api::HostV2 {
         &self.api
     }

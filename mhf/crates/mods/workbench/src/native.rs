@@ -78,6 +78,32 @@ struct Runtime {
     last_frame: Option<Instant>,
 }
 
+impl Runtime {
+    fn motion_targets(&self) -> impl Iterator<Item = (MotionTarget, &Vec<BoundMotion>)> {
+        self.models
+            .iter()
+            .map(|model| (MotionTarget::Model(model.id), &model.motions))
+            .chain(
+                self.skeletons
+                    .iter()
+                    .map(|skeleton| (MotionTarget::Skeleton(skeleton.id), &skeleton.motions)),
+            )
+    }
+
+    fn motion_targets_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (MotionTarget, &mut Vec<BoundMotion>)> {
+        self.models
+            .iter_mut()
+            .map(|model| (MotionTarget::Model(model.id), &mut model.motions))
+            .chain(
+                self.skeletons
+                    .iter_mut()
+                    .map(|skeleton| (MotionTarget::Skeleton(skeleton.id), &mut skeleton.motions)),
+            )
+    }
+}
+
 struct Model {
     id: u64,
     identity: Option<crate::metadata::EquipmentModel>,
@@ -387,16 +413,7 @@ fn focus_all(runtime: &mut Runtime) -> Result<(), String> {
     if !found {
         return Err("没有可见的模型或骨架".into());
     }
-    runtime.center = std::array::from_fn(|axis| minimum[axis] * 0.5 + maximum[axis] * 0.5);
-    runtime.snapshot.distance = (minimum
-        .into_iter()
-        .zip(maximum)
-        .map(|(a, b)| (b * 0.5 - a * 0.5).powi(2))
-        .sum::<f32>()
-        .sqrt()
-        * 2.5)
-        .clamp(1.0, 100_000.0);
-    runtime.focus_bone = None;
+    focus_bounds(runtime, minimum, maximum);
     Ok(())
 }
 
@@ -421,6 +438,11 @@ fn focus_skeleton(runtime: &mut Runtime, id: u64) -> Result<(), String> {
             maximum[axis] = maximum[axis].max(bone.position[axis]);
         }
     }
+    focus_bounds(runtime, minimum, maximum);
+    Ok(())
+}
+
+fn focus_bounds(runtime: &mut Runtime, minimum: [f32; 3], maximum: [f32; 3]) {
     runtime.center = std::array::from_fn(|axis| minimum[axis] * 0.5 + maximum[axis] * 0.5);
     runtime.snapshot.distance = (minimum
         .into_iter()
@@ -431,7 +453,6 @@ fn focus_skeleton(runtime: &mut Runtime, id: u64) -> Result<(), String> {
         * 2.5)
         .clamp(1.0, 100_000.0);
     runtime.focus_bone = None;
-    Ok(())
 }
 
 fn edit_skeleton_binding(
@@ -471,7 +492,7 @@ fn edit_skeleton_binding(
         }
         asset.bone_bindings()
     };
-    let result = (|| {
+    let mut apply = |bindings: Arc<Vec<Option<usize>>>| {
         for model in &mut runtime.models {
             if model.uses_skeleton(&source)
                 && let Some(asset) = &mut model.asset
@@ -480,21 +501,12 @@ fn edit_skeleton_binding(
             }
         }
         if let Some(native) = &mut runtime.skeletons[index].native {
-            native.set_bindings(bindings.clone())?;
+            native.set_bindings(bindings)?;
         }
         Ok::<_, String>(())
-    })();
-    if let Err(error) = result {
-        for model in &mut runtime.models {
-            if model.uses_skeleton(&source)
-                && let Some(asset) = &mut model.asset
-            {
-                asset.set_bone_bindings(previous.clone())?;
-            }
-        }
-        if let Some(native) = &mut runtime.skeletons[index].native {
-            native.set_bindings(previous)?;
-        }
+    };
+    if let Err(error) = apply(bindings.clone()) {
+        apply(previous)?;
         return Err(error);
     }
     runtime.skeletons[index].bindings = bindings;
@@ -692,48 +704,8 @@ fn select_motion_bindings(mut candidates: Vec<MotionBinding>) -> (Vec<MotionBind
     (selected, stopped)
 }
 
-fn target_motions(runtime: &Runtime, target: MotionTarget) -> Result<&Vec<BoundMotion>, String> {
-    match target {
-        MotionTarget::Model(id) => runtime
-            .models
-            .iter()
-            .find(|model| model.id == id)
-            .map(|model| &model.motions),
-        MotionTarget::Skeleton(id) => runtime
-            .skeletons
-            .iter()
-            .find(|skeleton| skeleton.id == id)
-            .map(|skeleton| &skeleton.motions),
-    }
-    .ok_or_else(|| "动画目标已移除".into())
-}
-
-fn target_motions_mut(
-    runtime: &mut Runtime,
-    target: MotionTarget,
-) -> Result<&mut Vec<BoundMotion>, String> {
-    match target {
-        MotionTarget::Model(id) => runtime
-            .models
-            .iter_mut()
-            .find(|model| model.id == id)
-            .map(|model| &mut model.motions),
-        MotionTarget::Skeleton(id) => runtime
-            .skeletons
-            .iter_mut()
-            .find(|skeleton| skeleton.id == id)
-            .map(|skeleton| &mut skeleton.motions),
-    }
-    .ok_or_else(|| "动画目标已移除".into())
-}
-
 unsafe fn restore_motion_bindings(runtime: &Runtime) -> Result<(), String> {
-    for motions in runtime
-        .models
-        .iter()
-        .map(|model| &model.motions)
-        .chain(runtime.skeletons.iter().map(|skeleton| &skeleton.motions))
-    {
+    for (_, motions) in runtime.motion_targets() {
         for motion in motions {
             unsafe { motion.native.activate() }?;
         }
@@ -843,7 +815,10 @@ unsafe fn reconcile_motions(client: Client, runtime: &mut Runtime) -> Result<(),
             .find(|motion| motion.id == binding.resource)
             .ok_or("已加载动画记录失效")?
             .source;
-        if target_motions(runtime, binding.target)?
+        if runtime
+            .motion_targets()
+            .find_map(|(target, motions)| (target == binding.target).then_some(motions))
+            .ok_or("动画目标已移除")?
             .iter()
             .any(|motion| {
                 motion.resource == binding.resource
@@ -873,17 +848,7 @@ unsafe fn reconcile_motions(client: Client, runtime: &mut Runtime) -> Result<(),
             }
         }
     }
-    for (target, motions) in runtime
-        .models
-        .iter_mut()
-        .map(|model| (MotionTarget::Model(model.id), &mut model.motions))
-        .chain(
-            runtime
-                .skeletons
-                .iter_mut()
-                .map(|skeleton| (MotionTarget::Skeleton(skeleton.id), &mut skeleton.motions)),
-        )
-    {
+    for (target, motions) in runtime.motion_targets_mut() {
         let mut motion_index = 0;
         while let Some(motion) = motions.get_mut(motion_index) {
             if selected
@@ -901,7 +866,11 @@ unsafe fn reconcile_motions(client: Client, runtime: &mut Runtime) -> Result<(),
         }
     }
     for (target, motion) in prepared {
-        target_motions_mut(runtime, target)?.push(motion);
+        runtime
+            .motion_targets_mut()
+            .find_map(|(candidate, motions)| (candidate == target).then_some(motions))
+            .ok_or("动画目标已移除")?
+            .push(motion);
     }
     for motion in &mut runtime.motions {
         if stopped.contains(&motion.id) {
@@ -1403,17 +1372,7 @@ unsafe fn command(
                 Ok("已卸载所选动画".into())
             }
             Command::ClearMotions => {
-                for motions in runtime
-                    .models
-                    .iter_mut()
-                    .map(|model| &mut model.motions)
-                    .chain(
-                        runtime
-                            .skeletons
-                            .iter_mut()
-                            .map(|skeleton| &mut skeleton.motions),
-                    )
-                {
+                for (_, motions) in runtime.motion_targets_mut() {
                     release_motions(client, motions)?;
                 }
                 runtime.motions.clear();

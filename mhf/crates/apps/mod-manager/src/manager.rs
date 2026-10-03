@@ -96,7 +96,7 @@ impl Manager {
     #[cfg(feature = "gui")]
     pub fn save(
         &self,
-        baseline: &RuntimeConfig,
+        baseline: &BTreeMap<String, Selection>,
         edits: &BTreeMap<String, Selection>,
     ) -> Result<Snapshot> {
         let source = self.source()?;
@@ -105,7 +105,7 @@ impl Manager {
         let merged: BTreeMap<_, _> = edits
             .iter()
             .map(|(id, edited)| {
-                let before = baseline.modules.get(id);
+                let before = baseline.get(id);
                 let current = snapshot.config.modules.get(id);
                 let enabled = if edited.enabled != before.and_then(|settings| settings.enabled) {
                     edited.enabled

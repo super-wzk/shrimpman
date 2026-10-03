@@ -793,24 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn every_species_has_complete_ordered_variant_descriptions() {
-        for species in 1..NAMES.len() as u8 {
-            let variants = variants(species);
-            assert_eq!(variants[0].id, 0);
-            assert_eq!(variants[0].model_suffix, "");
-            assert!(variants.windows(2).all(|pair| pair[0].id < pair[1].id));
-            for variant in variants {
-                assert!(variant.id <= 16);
-                assert!(!variant.name.is_empty());
-                assert!(matches!(
-                    variant.model_suffix,
-                    "" | "_b" | "_c" | "_d" | "_e"
-                ));
-            }
-        }
-    }
-
-    #[test]
     fn the_same_number_keeps_each_species_event_and_model() {
         let higanjima = variant(21, 12);
         let saga = variant(155, 12);

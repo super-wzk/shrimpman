@@ -126,7 +126,7 @@ pub fn materialize(
     };
 
     let mut blocks = Blocks::default();
-    let descriptor = blocks.push(words, Vec::new());
+    let descriptor = blocks.push(words);
     let mut scripts = HashMap::new();
 
     if root.declares(MAIN_ROOT_INDEX) {
@@ -138,7 +138,7 @@ pub fn materialize(
         let Node::Table(declaration) = &program.nodes[node] else {
             return Err(Error::new("root[0] must reference a table"));
         };
-        let native = blocks.words()[descriptor][MAIN_ROOT_INDEX];
+        let native = blocks.words[descriptor][MAIN_ROOT_INDEX];
         if native == 0 {
             return Err(Error::new(
                 "the live descriptor has no state table, so declared states have nothing to overlay",
@@ -152,7 +152,7 @@ pub fn materialize(
             "state index",
             "state table",
         )?;
-        let block = blocks.push(words, Vec::new());
+        let block = blocks.push(words);
         for (slot, node) in entries {
             let target = script(&mut blocks, &mut scripts, program, node)?;
             blocks.link(block, slot, target);
@@ -164,9 +164,9 @@ pub fn materialize(
         if !root.declares(slot.root_index) {
             continue;
         }
-        let native = blocks.words()[descriptor][slot.root_index];
+        let native = blocks.words[descriptor][slot.root_index];
         let Some(node) = root.get(slot.root_index) else {
-            blocks.set(descriptor, slot.root_index, 0);
+            blocks.words[descriptor][slot.root_index] = 0;
             continue;
         };
         let Node::Table(declaration) = &program.nodes[node] else {
@@ -183,7 +183,7 @@ pub fn materialize(
             read_exact(memory, native, window, "event cell")?
         };
         let entries = layer(program, declaration, &mut words, "cell index", "event cell")?;
-        let block = blocks.push(words, Vec::new());
+        let block = blocks.push(words);
         for (slot, node) in entries {
             let target = script(&mut blocks, &mut scripts, program, node)?;
             blocks.link(block, slot, target);
@@ -197,7 +197,7 @@ pub fn materialize(
             let Node::Table(declaration) = &program.nodes[node] else {
                 return Err(Error::new("subscript binding must reference a table"));
             };
-            let native = blocks.words()[descriptor][index];
+            let native = blocks.words[descriptor][index];
             let mut words = if native == 0 {
                 vec![0; 256]
             } else {
@@ -210,7 +210,7 @@ pub fn materialize(
                 "subscript index",
                 "subscript table",
             )?;
-            let block = blocks.push(words, Vec::new());
+            let block = blocks.push(words);
             for (slot, node) in entries {
                 let target = script(&mut blocks, &mut scripts, program, node)?;
                 blocks.link(block, slot, target);
@@ -228,13 +228,13 @@ pub fn materialize(
     }
 
     let addresses = blocks
-        .words()
+        .words
         .iter()
         .map(|words| arena.allocate(words.len()))
         .collect::<Result<Vec<_>>>()?;
-    let mut words = blocks.words().to_vec();
-    for (block, links) in words.iter_mut().zip(blocks.links()) {
-        for &(slot, target) in links {
+    let mut words = blocks.words;
+    for (block, links) in words.iter_mut().zip(blocks.links) {
+        for (slot, target) in links {
             block[slot] = addresses[target];
         }
     }
@@ -414,12 +414,13 @@ fn script(
     else {
         return Err(Error::new(format!("node {node} is not a script")));
     };
-    let mut guarded = bytes.clone();
-    // A body that does not end on a terminator would otherwise run into the
-    // next block. `0x00` reaches the interpreter's switch default, which stops
-    // the script; native blocks are padded with the same byte.
-    guarded.resize(align4(guarded.len() + 1), 0);
-    let block = blocks.push(pack(&guarded), Vec::new());
+    // Always include a zero guard, even after an exact four-byte body. Native
+    // blocks use the same padding: 0x00 stops the interpreter's switch default.
+    let mut words = vec![0u32; bytes.len() / 4 + 1];
+    for (index, &byte) in bytes.iter().enumerate() {
+        words[index / 4] |= u32::from(byte) << (8 * (index % 4));
+    }
+    let block = blocks.push(words);
     scripts.insert(node, block);
     Ok(block)
 }
@@ -445,18 +446,6 @@ fn read_exact(
     Ok(read)
 }
 
-fn align4(value: usize) -> usize {
-    (value + 3) & !3
-}
-
-fn pack(bytes: &[u8]) -> Vec<u32> {
-    let mut words = vec![0u32; align4(bytes.len()) / 4];
-    for (index, byte) in bytes.iter().enumerate() {
-        words[index / 4] |= u32::from(*byte) << (8 * (index % 4));
-    }
-    words
-}
-
 /// Blocks in the order the arena has to allocate them.
 #[derive(Default)]
 struct Blocks {
@@ -465,27 +454,15 @@ struct Blocks {
 }
 
 impl Blocks {
-    fn push(&mut self, words: Vec<u32>, links: Vec<(usize, usize)>) -> usize {
+    fn push(&mut self, words: Vec<u32>) -> usize {
         self.words.push(words);
-        self.links.push(links);
+        self.links.push(Vec::new());
         self.words.len() - 1
-    }
-
-    fn words(&self) -> &[Vec<u32>] {
-        &self.words
-    }
-
-    fn links(&self) -> &[Vec<(usize, usize)>] {
-        &self.links
     }
 
     /// Remember that `slot` of `block` holds the address of `target`.
     fn link(&mut self, block: usize, slot: usize, target: usize) {
         self.links[block].push((slot, target));
-    }
-
-    fn set(&mut self, block: usize, slot: usize, value: u32) {
-        self.words[block][slot] = value;
     }
 }
 
@@ -631,8 +608,12 @@ mod tests {
         let descriptor = arena.block(0);
         let assert_script = |address, bytes: &[u8]| {
             // Materialized scripts include a zero guard after the bytecode.
-            let guarded = [bytes, &[0]].concat();
-            assert_eq!(at(address), super::pack(&guarded));
+            let raw: Vec<_> = at(address)
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect();
+            assert_eq!(&raw[..bytes.len()], bytes);
+            assert_eq!(&raw[bytes.len()..], &[0; 4][..4 - bytes.len() % 4]);
         };
         let states = at(descriptor[0]);
         assert_script(states[0], &[0x81, 0, 0x81, 5, 0xff, 0]);

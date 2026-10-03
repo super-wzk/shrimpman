@@ -159,11 +159,6 @@ impl Field {
         }
     }
 
-    pub fn read_only(mut self) -> Self {
-        self.writable = false;
-        self
-    }
-
     pub fn read(&self, buffers: &[Arc<[u8]>]) -> Result<String, String> {
         self.binding.read(buffers)
     }
@@ -678,7 +673,10 @@ mod tests {
                 .after,
             [0x80, 0, 0x7f, 0xff]
         );
-        let field = field.read_only();
+        let field = Field {
+            writable: false,
+            ..field
+        };
         assert_eq!(field.read(&buffers).unwrap(), "1, -2");
         assert!(field.write(&buffers, "2, -3").is_err());
     }
