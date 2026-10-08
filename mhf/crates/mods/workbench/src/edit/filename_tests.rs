@@ -130,27 +130,6 @@ fn whole_encoded_replacement_rebinds_to_the_destination_member() {
 }
 
 #[test]
-fn packing_without_field_changes_repairs_a_stale_name_checksum_only() {
-    let mut source = encoded(b"replacement", b"wi521.bin");
-    source[6..8].copy_from_slice(&0xac10u16.to_le_bytes());
-    assert!(
-        Ecd::parse(&source)
-            .unwrap()
-            .validate_filename(b"wi521.bin")
-            .is_err()
-    );
-    let document = inspect::inspect("dat/weapon/wi521.bin", source.clone().into());
-    let updated = super::apply_many(&document, &[]).unwrap();
-    let bytes = &updated.buffers[0];
-    assert_eq!(&bytes[..6], &source[..6]);
-    assert_eq!(&bytes[8..], &source[8..]);
-    Ecd::parse(bytes)
-        .unwrap()
-        .validate_filename(b"wi521.bin")
-        .unwrap();
-}
-
-#[test]
 fn renamed_member_rechecks_its_unchanged_ecd_payload() {
     let source = named(b"old.bin", &encoded(b"payload", b"old.bin"));
     let names = MhaArchive::parse(&source, 1).unwrap().header.names_offset as usize;

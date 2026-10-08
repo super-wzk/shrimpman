@@ -600,62 +600,44 @@ impl<'a> Object<'a> {
     }
 
     pub fn positions(&self) -> Option<&Vector3Block<'a>> {
-        self.components.iter().find_map(|c| {
-            if let Component::Positions(v) = c {
-                Some(v)
-            } else {
-                None
-            }
+        self.components.iter().find_map(|c| match c {
+            Component::Positions(v) => Some(v),
+            _ => None,
         })
     }
 
     pub fn normals(&self) -> Option<&Vector3Block<'a>> {
-        self.components.iter().find_map(|c| {
-            if let Component::Normals(v) = c {
-                Some(v)
-            } else {
-                None
-            }
+        self.components.iter().find_map(|c| match c {
+            Component::Normals(v) => Some(v),
+            _ => None,
         })
     }
 
     pub fn uvs(&self) -> Option<&UvBlock<'a>> {
-        self.components.iter().find_map(|c| {
-            if let Component::Uvs(v) = c {
-                Some(v)
-            } else {
-                None
-            }
+        self.components.iter().find_map(|c| match c {
+            Component::Uvs(v) => Some(v),
+            _ => None,
         })
     }
 
     pub fn colors(&self) -> Option<&Vector4Block<'a>> {
-        self.components.iter().find_map(|c| {
-            if let Component::Colors(v) = c {
-                Some(v)
-            } else {
-                None
-            }
+        self.components.iter().find_map(|c| match c {
+            Component::Colors(v) => Some(v),
+            _ => None,
         })
     }
 
     pub fn weights(&self) -> Option<&WeightBlock<'a>> {
-        self.components.iter().find_map(|c| {
-            if let Component::Weights(v) = c {
-                Some(v)
-            } else {
-                None
-            }
+        self.components.iter().find_map(|c| match c {
+            Component::Weights(v) => Some(v),
+            _ => None,
         })
     }
 
     pub fn faces(&self) -> Option<&Faces<'a>> {
-        self.components.iter().find_map(|c| {
-            if let Component::Faces(v) = c {
-                Some(v)
-            } else {
-                None
-            }
+        self.components.iter().find_map(|c| match c {
+            Component::Faces(v) => Some(v),
+            _ => None,
         })
     }
 
@@ -911,60 +893,42 @@ impl<'a> Fmod<'a> {
     pub fn objects(&self) -> impl Iterator<Item = &Object<'a>> {
         self.sections
             .iter()
-            .filter_map(|s| {
-                if let Section::Meshes(m) = s {
-                    Some(m)
-                } else {
-                    None
-                }
+            .filter_map(|s| match s {
+                Section::Meshes(m) => Some(m),
+                _ => None,
             })
             .flat_map(|m| &m.entries)
-            .filter_map(|e| {
-                if let ObjectEntry::Object(o) = e {
-                    Some(o)
-                } else {
-                    None
-                }
+            .filter_map(|e| match e {
+                ObjectEntry::Object(o) => Some(o),
+                _ => None,
             })
     }
 
     pub fn materials(&self) -> impl Iterator<Item = &Material<'a>> {
         self.sections
             .iter()
-            .filter_map(|s| {
-                if let Section::Materials(m) = s {
-                    Some(m)
-                } else {
-                    None
-                }
+            .filter_map(|s| match s {
+                Section::Materials(m) => Some(m),
+                _ => None,
             })
             .flat_map(|m| &m.records)
-            .filter_map(|e| {
-                if let MaterialEntry::Material(m) = e {
-                    Some(m)
-                } else {
-                    None
-                }
+            .filter_map(|e| match e {
+                MaterialEntry::Material(m) => Some(m),
+                _ => None,
             })
     }
 
     pub fn textures(&self) -> impl Iterator<Item = &Texture<'a>> {
         self.sections
             .iter()
-            .filter_map(|s| {
-                if let Section::Textures(t) = s {
-                    Some(t)
-                } else {
-                    None
-                }
+            .filter_map(|s| match s {
+                Section::Textures(t) => Some(t),
+                _ => None,
             })
             .flat_map(|t| &t.records)
-            .filter_map(|e| {
-                if let TextureEntry::Texture(t) = e {
-                    Some(t)
-                } else {
-                    None
-                }
+            .filter_map(|e| match e {
+                TextureEntry::Texture(t) => Some(t),
+                _ => None,
             })
     }
 
@@ -977,13 +941,13 @@ impl<'a> Fmod<'a> {
                 .block
                 .error(0, "object ordinal does not select an OBJECT block"));
         };
-        Ok(object.components.iter().find_map(|component| {
-            if let Component::Rendering(value) = component {
-                Some(value)
-            } else {
-                None
-            }
-        }))
+        Ok(object
+            .components
+            .iter()
+            .find_map(|component| match component {
+                Component::Rendering(value) => Some(value),
+                _ => None,
+            }))
     }
 
     /// Append one fixed-size `0xF0000` child to an OBJECT block. Existing
@@ -1049,12 +1013,9 @@ impl<'a> Fmod<'a> {
     fn main_section(&self) -> Result<&Meshes<'a>> {
         self.sections
             .iter()
-            .find_map(|section| {
-                if let Section::Meshes(value) = section {
-                    Some(value)
-                } else {
-                    None
-                }
+            .find_map(|section| match section {
+                Section::Meshes(value) => Some(value),
+                _ => None,
             })
             .ok_or_else(|| self.root.error(0, "FMOD has no MAIN block"))
     }

@@ -19,7 +19,7 @@ use std::{
     io,
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
@@ -101,6 +101,16 @@ struct Shared {
     stopped: AtomicBool,
 }
 
+impl Shared {
+    fn pending(&self) -> MutexGuard<'_, Pending> {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn updates(&self) -> MutexGuard<'_, Updates> {
+        self.updates.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 pub(crate) struct Worker {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
@@ -109,11 +119,7 @@ pub(crate) struct Worker {
 impl Worker {
     pub fn start(root: PathBuf, exports: PathBuf) -> io::Result<Self> {
         let shared = Arc::new(Shared::default());
-        shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .scan = true;
+        shared.pending().scan = true;
         let state = shared.clone();
         let thread = thread::Builder::new()
             .name("mhf-workbench-io".into())
@@ -121,8 +127,7 @@ impl Worker {
                 let mut attack_directories = HashMap::new();
                 loop {
                     let work = {
-                        let mut pending =
-                            state.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut pending = state.pending();
                         while pending.is_empty() && !state.stopped.load(Ordering::Acquire) {
                             pending = state
                                 .wake
@@ -143,11 +148,7 @@ impl Worker {
                         let catalog = Catalog::scan(&root, &state.stopped)
                             .map(Arc::new)
                             .map_err(|error| error.to_string());
-                        state
-                            .updates
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .catalog = Some(catalog);
+                        state.updates().catalog = Some(catalog);
                     }
                     if let Some((request, path, source_root)) = work.load
                         && !state.stopped.load(Ordering::Acquire)
@@ -170,11 +171,7 @@ impl Worker {
                             }
                             Arc::new(document)
                         });
-                        state
-                            .updates
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .loaded = Some(Loaded {
+                        state.updates().loaded = Some(Loaded {
                             request,
                             path,
                             document,
@@ -184,20 +181,12 @@ impl Worker {
                         && !state.stopped.load(Ordering::Acquire)
                     {
                         let document = inspect::expand(&document, node).map(Arc::new);
-                        state
-                            .updates
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .expanded = Some(Expanded { request, document });
+                        state.updates().expanded = Some(Expanded { request, document });
                     }
                     if let Some(export) = work.export {
                         let result =
                             export_bytes(&exports, &export).map_err(|error| error.to_string());
-                        state
-                            .updates
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .exported = Some(result);
+                        state.updates().exported = Some(result);
                     }
                     if let Some(edit) = work.edit
                         && !state.stopped.load(Ordering::Acquire)
@@ -213,11 +202,7 @@ impl Worker {
                             }
                         }
                         .map(Arc::new);
-                        state
-                            .updates
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .edited = Some(Expanded {
+                        state.updates().edited = Some(Expanded {
                             request: edit.request,
                             document,
                         });
@@ -235,11 +220,7 @@ impl Worker {
                                 Ok((path, Arc::new(document)))
                             },
                         );
-                        state
-                            .updates
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .packed = Some(Packed {
+                        state.updates().packed = Some(Packed {
                             source: pack.source,
                             requested: pack.document,
                             result,
@@ -254,21 +235,13 @@ impl Worker {
     }
 
     pub fn scan(&self) {
-        self.shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .scan = true;
+        self.shared.pending().scan = true;
         self.shared.wake.notify_one();
     }
 
     pub fn load(&self, request: u64, path: PathBuf, source_root: PathBuf) {
         // 新选择覆盖尚未执行的读取；已经开始的旧读取由界面按请求号丢弃。
-        let mut pending = self
-            .shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.shared.pending();
         pending.load = Some((request, path, source_root));
         pending.expand = None;
         drop(pending);
@@ -276,21 +249,13 @@ impl Worker {
     }
 
     pub fn expand(&self, request: u64, document: Arc<Document>, node: usize) {
-        self.shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .expand = Some((request, document, node));
+        self.shared.pending().expand = Some((request, document, node));
         self.shared.wake.notify_one();
     }
 
     pub fn export(&self, document: &Document, node: usize) -> Result<(), String> {
         let export = Export::from_node(document, node)?;
-        let mut pending = self
-            .shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.shared.pending();
         if pending.export.is_some() {
             return Err("请等待当前导出完成".into());
         }
@@ -322,11 +287,7 @@ impl Worker {
     }
 
     fn queue_edit(&self, request: u64, document: Arc<Document>, operation: EditOperation) {
-        let mut pending = self
-            .shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.shared.pending();
         // 编辑会改变节点布局，旧展开请求不能在编辑完成后继续发布。
         pending.expand = None;
         pending.edit = Some(Edit {
@@ -345,11 +306,7 @@ impl Worker {
         document: Arc<Document>,
         patches: Vec<Patch>,
     ) {
-        self.shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pack = Some(Pack {
+        self.shared.pending().pack = Some(Pack {
             source,
             source_root,
             root,
@@ -360,23 +317,13 @@ impl Worker {
     }
 
     pub fn updates(&self) -> Updates {
-        std::mem::take(
-            &mut *self
-                .shared
-                .updates
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.shared.updates())
     }
 
     pub fn stop(&mut self) {
         {
             // 停止标志与条件变量使用同一把锁，避免线程准备休眠时错过退出通知。
-            let _pending = self
-                .shared
-                .pending
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let _pending = self.shared.pending();
             self.shared.stopped.store(true, Ordering::Release);
         }
         self.shared.wake.notify_one();

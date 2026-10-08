@@ -234,14 +234,7 @@ fn end(offset: usize, size: usize, limit: usize, field: usize) -> Result<usize> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn set_word(source: &mut [u8], offset: usize, value: u16) {
-        source[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn set_dword(source: &mut [u8], offset: usize, value: u32) {
-        source[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
+    use crate::test_support::{dword as set_dword, word as set_word};
 
     fn fixture() -> Vec<u8> {
         let mut source = vec![0; 1692];

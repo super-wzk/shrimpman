@@ -222,18 +222,8 @@ fn nested_error(base: usize, source_len: usize, error: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn archive(entries: &[Vec<u8>]) -> Vec<u8> {
-        let mut bytes = vec![0; 4 + entries.len() * 8];
-        bytes[..4].copy_from_slice(&(entries.len() as u32).to_le_bytes());
-        for (index, payload) in entries.iter().enumerate() {
-            let offset = bytes.len() as u32;
-            bytes[4 + index * 8..8 + index * 8].copy_from_slice(&offset.to_le_bytes());
-            bytes[8 + index * 8..12 + index * 8]
-                .copy_from_slice(&(payload.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(payload);
-        }
-        bytes
-    }
+    use crate::test_support::simple_archive as archive;
+
     fn package(kinds: &[u8], payloads: &[Vec<u8>]) -> Vec<u8> {
         let mut index = vec![1, 0];
         index.extend_from_slice(&(kinds.len() as u16).to_le_bytes());

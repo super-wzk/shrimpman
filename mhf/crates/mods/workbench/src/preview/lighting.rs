@@ -70,19 +70,11 @@ impl LightingPreset {
             // Always specify all three native light slots so switching away
             // from a preset with fill light also clears that light.
             lights: [
-                DirectionalLight {
-                    color: key,
-                    direction: [-0.4, -0.7, -0.6],
-                },
-                DirectionalLight {
-                    color: fill,
-                    direction: [0.6, -0.2, 0.7745967],
-                },
-                DirectionalLight {
-                    color: [0.0; 3],
-                    direction: [-0.4, -0.7, -0.6],
-                },
-            ],
+                (key, [-0.4, -0.7, -0.6]),
+                (fill, [0.6, -0.2, 0.7745967]),
+                ([0.0; 3], [-0.4, -0.7, -0.6]),
+            ]
+            .map(|(color, direction)| DirectionalLight { color, direction }),
         }
     }
 }

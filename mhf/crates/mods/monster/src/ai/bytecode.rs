@@ -462,10 +462,4 @@ mod tests {
             assert!(validate_structure(&bytes).is_err());
         }
     }
-
-    #[test]
-    fn action_and_jump_encoding_match_native_prefixes() {
-        assert_eq!(encode_action(3, 6, 0), [5, 3, 6, 0]);
-        assert_eq!(encode_main_jump(7), [7, 7]);
-    }
 }

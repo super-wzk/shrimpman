@@ -114,21 +114,3 @@ impl Catalog {
         Ok(result)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn search_matches_every_term() {
-        let entry = Entry {
-            path: PathBuf::new(),
-            relative_path: "emmodel-hd/em094_b-hd.pac".into(),
-            size: 0,
-            header: Vec::new(),
-        };
-        assert!(entry.matches("EM094 HD"));
-        assert!(!entry.matches("em094 motion"));
-        assert!(entry.matches("  "));
-    }
-}

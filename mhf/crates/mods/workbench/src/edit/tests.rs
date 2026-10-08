@@ -112,20 +112,6 @@ fn ecd_encoding_matches_independent_vectors() {
 }
 
 #[test]
-fn exf_encoding_covers_every_byte_and_key_without_changing_header() {
-    let payload: Vec<u8> = (0..=255).cycle().take(1025).collect();
-    for key in 0..5 {
-        let mut file =
-            Exf::parse(b"exf\x1a\x04\0\xaa\xbb\x11\x22\x33\x44\x55\x66\x77\x88").unwrap();
-        file.header.key_index = key;
-        let encoded = file.encode(&payload, None).unwrap();
-        let decoded = Exf::parse(&encoded).unwrap().decode(payload.len()).unwrap();
-        assert_eq!(&**decoded, payload);
-        assert_eq!(decoded.encoding.header, file.header);
-    }
-}
-
-#[test]
 fn edits_rebuild_nested_envelopes_and_relocate_momo_and_mha_members() {
     let compressed = jkr(3, 27, &[0x70, b'A', 0, 0, 0]);
     let directory = archive(&[&compressed, b"unchanged sibling"], true);

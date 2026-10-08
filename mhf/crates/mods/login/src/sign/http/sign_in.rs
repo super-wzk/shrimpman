@@ -83,20 +83,14 @@ impl Response {
             last_character_id,
             rights: CourseRights::from_bits_retain(self.rights),
             return_expires_at: self.return_expires_at,
-            festa: self.festa.map(Festa::into_domain),
+            festa: self.festa.map(|festa| MezeportaFesta {
+                id: festa.id,
+                period: TimeRange::new(festa.starts_at, festa.expires_at),
+                solo_ticket_allowance: festa.solo_ticket_allowance,
+                group_ticket_allowance: festa.group_ticket_allowance,
+                stalls: festa.stalls,
+            }),
         })
-    }
-}
-
-impl Festa {
-    fn into_domain(self) -> MezeportaFesta {
-        MezeportaFesta {
-            id: self.id,
-            period: TimeRange::new(self.starts_at, self.expires_at),
-            solo_ticket_allowance: self.solo_ticket_allowance,
-            group_ticket_allowance: self.group_ticket_allowance,
-            stalls: self.stalls,
-        }
     }
 }
 

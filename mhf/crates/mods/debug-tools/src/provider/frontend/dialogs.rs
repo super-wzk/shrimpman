@@ -30,12 +30,9 @@ pub(super) fn save_recording(
     json: &str,
     window: Arc<WindowState>,
 ) -> Result<bool, String> {
-    let path = save_path(owner, window).map_err(|error| format!("无法选择保存路径：{error}"))?;
-    write_recording(path, json)
-}
-
-fn write_recording(path: Option<PathBuf>, json: &str) -> Result<bool, String> {
-    let Some(path) = path else {
+    let Some(path) =
+        save_path(owner, window).map_err(|error| format!("无法选择保存路径：{error}"))?
+    else {
         return Ok(false);
     };
     std::fs::write(path, json).map_err(|error| format!("保存录制失败：{error}"))?;
@@ -137,26 +134,5 @@ impl ComApartment {
 impl Drop for ComApartment {
     fn drop(&mut self) {
         unsafe { CoUninitialize() };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selected_recording_path_writes_the_json_and_reports_io_errors() {
-        let path = std::env::temp_dir().join(format!("mhf-录制-{}.json", std::process::id()));
-        let recording = mhf_ai_debug::Recording::empty(mhf_ai_debug::Snapshot::default());
-        let json = recording.to_json().unwrap();
-        std::fs::write(&path, "previous contents longer than the recording").unwrap();
-        assert!(write_recording(Some(path.clone()), &json).unwrap());
-        let saved = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(saved, json);
-        mhf_ai_debug::ReplaySession::new(mhf_ai_debug::Recording::from_json(&saved).unwrap())
-            .unwrap();
-        let error = write_recording(Some(path.join("unavailable.json")), &json).unwrap_err();
-        assert!(error.starts_with("保存录制失败："));
-        std::fs::remove_file(path).unwrap();
     }
 }

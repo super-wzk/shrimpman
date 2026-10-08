@@ -16,8 +16,8 @@ pub enum ErrorKind {
 /// A typed error. The private code preserves a provider's original failure for
 /// ABI forwarding without exposing numeric status codes to ordinary callers.
 pub struct Error {
-    pub(crate) raw_status: i32,
-    pub(crate) message: String,
+    raw_status: i32,
+    message: String,
 }
 
 impl Error {
@@ -29,14 +29,28 @@ impl Error {
     #[inline]
     pub fn with_kind(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
-            raw_status: status_for_kind(kind),
+            raw_status: match kind {
+                ErrorKind::OperationFailed => api::ERROR,
+                ErrorKind::BufferTooSmall => api::BUFFER_TOO_SMALL,
+                ErrorKind::NotFound => api::NOT_FOUND,
+                ErrorKind::InvalidState => api::INVALID_STATE,
+                ErrorKind::Conflict => api::CONFLICT,
+                ErrorKind::Other => -1,
+            },
             message: message.into(),
         }
     }
 
     #[inline]
     pub fn kind(&self) -> ErrorKind {
-        kind_for_status(self.raw_status)
+        match self.raw_status {
+            api::ERROR => ErrorKind::OperationFailed,
+            api::BUFFER_TOO_SMALL => ErrorKind::BufferTooSmall,
+            api::NOT_FOUND => ErrorKind::NotFound,
+            api::INVALID_STATE => ErrorKind::InvalidState,
+            api::CONFLICT => ErrorKind::Conflict,
+            _ => ErrorKind::Other,
+        }
     }
 }
 
@@ -57,30 +71,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-#[inline]
-pub(crate) fn status_for_kind(kind: ErrorKind) -> api::Status {
-    match kind {
-        ErrorKind::OperationFailed => api::ERROR,
-        ErrorKind::BufferTooSmall => api::BUFFER_TOO_SMALL,
-        ErrorKind::NotFound => api::NOT_FOUND,
-        ErrorKind::InvalidState => api::INVALID_STATE,
-        ErrorKind::Conflict => api::CONFLICT,
-        ErrorKind::Other => -1,
-    }
-}
-
-#[inline]
-pub(crate) fn kind_for_status(status: api::Status) -> ErrorKind {
-    match status {
-        api::ERROR => ErrorKind::OperationFailed,
-        api::BUFFER_TOO_SMALL => ErrorKind::BufferTooSmall,
-        api::NOT_FOUND => ErrorKind::NotFound,
-        api::INVALID_STATE => ErrorKind::InvalidState,
-        api::CONFLICT => ErrorKind::Conflict,
-        _ => ErrorKind::Other,
-    }
-}
 
 /// Translate a foreign failure without discarding an unknown provider code.
 /// A success status cannot construct a successful Error and becomes a failure.

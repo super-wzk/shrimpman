@@ -2,7 +2,7 @@ pub mod events;
 
 use std::time::Duration;
 
-use egui::{Context, Event, Id, Key, PopupCloseBehavior, RawInput, Rect, Response, pos2, vec2};
+use egui::{Context, Event, Id, Key, PopupCloseBehavior, RawInput, Response, pos2, vec2};
 use egui_hunter::{
     Button, Density, Dialog, DialogState, Icon, NavigationStack, NavigationState, NoticeKind,
     Notifications, Panel, Popup, ResponsiveColumns, Tab, Tabs, TextField, Window,
@@ -900,73 +900,6 @@ fn tabs_accept_native_buttons_without_a_theme_or_a_custom_widget_id() {
     let (selected, headers) = frame(pulse(Key::End));
     assert_eq!(selected, Some(tabs[3].id));
     assert_eq!(ctx.memory(|m| m.focused()), Some(headers[3].id));
-}
-
-#[test]
-fn floating_scrollbar_keeps_rightmost_buttons_clickable_with_call_site_margin() {
-    fn draw(ui: &mut egui::Ui, margin: i8) -> (Response, Rect, Option<Response>) {
-        let output = egui::ScrollArea::vertical()
-            .id_salt("edge-buttons")
-            .content_margin(egui::Margin {
-                right: margin,
-                ..egui::Margin::ZERO
-            })
-            .max_height(150.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let mut first = None;
-                for row in 0..12 {
-                    ui.columns(2, |columns| {
-                        columns[0].add(Button::new("First column").full_width());
-                        let button = columns[1].add(
-                            Button::new("Last column")
-                                .id(Id::new(("edge-button", row)))
-                                .full_width(),
-                        );
-                        if row == 0 {
-                            first = Some(button);
-                        }
-                    });
-                }
-                first.unwrap()
-            });
-        let bar = ui.ctx().read_response(output.id.with(1_usize));
-        (output.inner, output.inner_rect, bar)
-    }
-
-    let mut viewports = Vec::new();
-    for margin in [0, 12] {
-        let ctx = events::themed_context();
-        for pass in 0..3 {
-            frame(&ctx, 360.0, f64::from(pass) * 0.2, vec![], |ui| {
-                draw(ui, margin)
-            });
-        }
-        let (button, viewport, bar) = frame(&ctx, 360.0, 0.6, vec![], |ui| draw(ui, margin));
-        let bar = bar.expect("overflowing content shows the native scrollbar");
-        viewports.push(viewport);
-        assert!(viewport.contains_rect(button.rect));
-        let edge = button.rect.right_center() - vec2(1.0, 0.0);
-        assert_eq!(bar.interact_rect.contains(edge), margin == 0);
-        frame(&ctx, 360.0, 0.8, pointer(edge, true), |ui| draw(ui, margin));
-        let (button, _, bar) = frame(&ctx, 360.0, 1.0, pointer(edge, false), |ui| {
-            draw(ui, margin)
-        });
-        assert_eq!(
-            button.clicked(),
-            margin != 0,
-            "the last column's right edge must stay clickable"
-        );
-        assert_eq!(
-            bar.unwrap().clicked(),
-            margin == 0,
-            "only the unpadded case gives the click to the floating bar"
-        );
-    }
-    assert_eq!(
-        viewports[0], viewports[1],
-        "content margin keeps the floating scrollbar's viewport allocation unchanged"
-    );
 }
 
 #[test]

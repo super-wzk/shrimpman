@@ -1,19 +1,7 @@
-use mhf_resource::effect_archive::{EffectArchive, EffectBank, EffectResource};
+pub mod support;
 
-fn simple_archive(members: &[Vec<u8>]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend((members.len() as u32).to_le_bytes());
-    let mut offset = 4 + members.len() * 8;
-    for member in members {
-        bytes.extend((offset as u32).to_le_bytes());
-        bytes.extend((member.len() as u32).to_le_bytes());
-        offset += member.len();
-    }
-    for member in members {
-        bytes.extend(member);
-    }
-    bytes
-}
+use mhf_resource::effect_archive::{EffectArchive, EffectBank, EffectResource};
+use support::simple_archive;
 
 fn bank() -> Vec<u8> {
     let mut bytes = Vec::new();

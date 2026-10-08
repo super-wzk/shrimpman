@@ -23,22 +23,51 @@ pub struct Host<'host> {
 impl<'host> Host<'host> {
     #[inline]
     pub fn log(self, level: LogLevel, message: &str) {
-        log(self, level, message);
+        let level = match level {
+            LogLevel::Error => api::LOG_ERROR,
+            LogLevel::Warn => api::LOG_WARN,
+            LogLevel::Info => api::LOG_INFO,
+            LogLevel::Debug => api::LOG_DEBUG,
+            LogLevel::Trace => api::LOG_TRACE,
+        };
+        unsafe { (self.raw.log)(self.raw.context, level, api::Str::new(message)) }
     }
 
     #[inline]
     pub fn config(self) -> Result<String> {
-        config(self)
+        read_host_text(self, self.raw.config)
     }
 
     #[inline]
     pub fn resource_root(self) -> Result<PathBuf> {
-        resource_root(self)
+        read_host_text(self, self.raw.resource_root).map(PathBuf::from)
     }
 
     #[inline]
     pub fn game_info(self) -> Result<GameInfo> {
-        game_info(self)
+        let mut output = std::mem::MaybeUninit::uninit();
+        let status = unsafe { (self.raw.game_info)(self.raw.context, output.as_mut_ptr()) };
+        check(self, status)?;
+        let output: api::GameInfoV2 = unsafe { output.assume_init() };
+        let phase = match output.phase {
+            api::PHASE_PREPARE => Phase::Prepare,
+            api::PHASE_CHECK => Phase::Check,
+            api::PHASE_ATTACH => Phase::Attach,
+            api::PHASE_RUNNING => Phase::Running,
+            api::PHASE_STOP => Phase::Stop,
+            api::PHASE_DETACH => Phase::Detach,
+            api::PHASE_DESTROY => Phase::Destroy,
+            _ => {
+                return Err(Error::with_kind(
+                    ErrorKind::InvalidState,
+                    "host returned an unknown lifecycle phase",
+                ));
+            }
+        };
+        Ok(GameInfo {
+            module: unsafe { game_module_from_raw(output.module_base) },
+            phase,
+        })
     }
 
     #[inline]
@@ -134,54 +163,6 @@ pub unsafe fn register_interface(
         (host.raw.register_interface)(host.raw.context, api::Str::new(interface_id), table)
     };
     check(host, status)
-}
-
-#[inline]
-pub(crate) fn log(host: Host<'_>, level: LogLevel, message: &str) {
-    let level = match level {
-        LogLevel::Error => api::LOG_ERROR,
-        LogLevel::Warn => api::LOG_WARN,
-        LogLevel::Info => api::LOG_INFO,
-        LogLevel::Debug => api::LOG_DEBUG,
-        LogLevel::Trace => api::LOG_TRACE,
-    };
-    unsafe { (host.raw.log)(host.raw.context, level, api::Str::new(message)) }
-}
-
-#[inline]
-pub(crate) fn config(host: Host<'_>) -> Result<String> {
-    read_host_text(host, host.raw.config)
-}
-
-#[inline]
-pub(crate) fn resource_root(host: Host<'_>) -> Result<PathBuf> {
-    read_host_text(host, host.raw.resource_root).map(PathBuf::from)
-}
-
-pub(crate) fn game_info(host: Host<'_>) -> Result<GameInfo> {
-    let mut output = std::mem::MaybeUninit::uninit();
-    let status = unsafe { (host.raw.game_info)(host.raw.context, output.as_mut_ptr()) };
-    check(host, status)?;
-    let output: api::GameInfoV2 = unsafe { output.assume_init() };
-    let phase = match output.phase {
-        api::PHASE_PREPARE => Phase::Prepare,
-        api::PHASE_CHECK => Phase::Check,
-        api::PHASE_ATTACH => Phase::Attach,
-        api::PHASE_RUNNING => Phase::Running,
-        api::PHASE_STOP => Phase::Stop,
-        api::PHASE_DETACH => Phase::Detach,
-        api::PHASE_DESTROY => Phase::Destroy,
-        _ => {
-            return Err(Error::with_kind(
-                ErrorKind::InvalidState,
-                "host returned an unknown lifecycle phase",
-            ));
-        }
-    };
-    Ok(GameInfo {
-        module: unsafe { game_module_from_raw(output.module_base) },
-        phase,
-    })
 }
 
 pub(crate) fn check(host: Host<'_>, status: api::Status) -> Result<()> {

@@ -1,6 +1,5 @@
 //! Direct3D 9 hook installation and lifecycle.
 
-use std::any::Any;
 use std::ffi::c_void;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -218,9 +217,13 @@ impl Runtime {
             }
             Err(payload) => {
                 self.clear_capture();
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("non-string panic payload");
                 *last_error() = Some(Error::new(format!(
-                    "overlay render loop panicked: {}",
-                    panic_message(payload.as_ref())
+                    "overlay render loop panicked: {message}"
                 )));
                 self.rendering_disabled = true;
             }
@@ -463,14 +466,4 @@ fn device_window(device: &IDirect3DDevice9) -> Result<HWND> {
 
 fn last_error() -> MutexGuard<'static, Option<Error>> {
     LAST_ERROR.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn panic_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        (*message).to_owned()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "non-string panic payload".to_owned()
-    }
 }

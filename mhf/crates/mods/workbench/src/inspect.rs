@@ -703,6 +703,30 @@ impl Builder {
         self.field_with_note(node, name, value, offset, size, None);
     }
 
+    fn unclassified_fields(
+        &mut self,
+        node: usize,
+        bytes: &[u8],
+        base: usize,
+        covered: &[bool],
+        label: impl Fn(usize) -> String,
+    ) {
+        let mut start = 0;
+        for run in covered.chunk_by(|left, right| left == right) {
+            let end = start + run.len();
+            if !run[0] {
+                self.field(
+                    node,
+                    label(start),
+                    hex(&bytes[start..end]),
+                    base + start,
+                    run.len(),
+                );
+            }
+            start = end;
+        }
+    }
+
     fn archive_entry_fields(&mut self, node: usize, offset: u32, size: u32, base: usize) {
         self.field(
             node,
@@ -862,6 +886,17 @@ impl Builder {
 
     fn payload(&self, node: usize) -> usize {
         self.document.payload(node).unwrap_or(node)
+    }
+
+    fn ancestor(&self, node: usize, matches: impl Fn(Kind) -> bool) -> Option<usize> {
+        let mut parent = self.parents[node];
+        while let Some(index) = parent {
+            if matches(self.document.nodes[index].kind) {
+                return Some(index);
+            }
+            parent = self.parents[index];
+        }
+        None
     }
 
     fn has_model_package_prefix(&self, node: usize) -> bool {

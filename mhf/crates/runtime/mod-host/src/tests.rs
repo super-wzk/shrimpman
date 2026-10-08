@@ -185,14 +185,18 @@ fn launch_host(
     .unwrap()
 }
 
+fn launch_target(
+    params: &mut api::game::LaunchParams32,
+    global: &mut api::game::GlobalData32,
+) -> api::LaunchTargetV1 {
+    api::LaunchTargetV1 { params, global }
+}
+
 #[test]
 fn launch_requires_one_published_provider_before_invoking_any_callback() {
     let mut params = api::game::LaunchParams32::default();
     let mut global = api::game::GlobalData32::default();
-    let mut target = api::LaunchTargetV1 {
-        params: &mut params,
-        global: &mut global,
-    };
+    let mut target = launch_target(&mut params, &mut global);
     let events = Events::default();
     let mut missing = host(vec![candidate("ordinary", &[])], &BTreeMap::new(), &events);
     missing.prepare().unwrap();
@@ -232,10 +236,7 @@ fn launch_requires_one_published_provider_before_invoking_any_callback() {
 fn launch_prepares_host_storage_once_and_only_between_prepare_and_check() {
     let mut params = api::game::LaunchParams32::default();
     let mut global = api::game::GlobalData32::default();
-    let mut target = api::LaunchTargetV1 {
-        params: &mut params,
-        global: &mut global,
-    };
+    let mut target = launch_target(&mut params, &mut global);
     let events = Events::default();
     let mut host = launch_host(&["launch"], &[], "ready", &events);
     assert!(unsafe { host.launch(&mut target) }.is_err());
@@ -286,10 +287,7 @@ fn launch_overrides_fallbacks_independently_of_prepare_order() {
     ] {
         let mut params = api::game::LaunchParams32::default();
         let mut global = api::game::GlobalData32::default();
-        let mut target = api::LaunchTargetV1 {
-            params: &mut params,
-            global: &mut global,
-        };
+        let mut target = launch_target(&mut params, &mut global);
         let events = Events::default();
         let mut host = launch_host(ids, fallbacks, "ready", &events);
         host.prepare().unwrap();
@@ -306,10 +304,7 @@ fn launch_rejects_ambiguity_within_the_effective_tier() {
     ] {
         let mut params = api::game::LaunchParams32::default();
         let mut global = api::game::GlobalData32::default();
-        let mut target = api::LaunchTargetV1 {
-            params: &mut params,
-            global: &mut global,
-        };
+        let mut target = launch_target(&mut params, &mut global);
         let events = Events::default();
         let mut host = launch_host(ids, fallbacks, "ready", &events);
         host.prepare().unwrap();
@@ -324,10 +319,7 @@ fn launch_rejects_ambiguity_within_the_effective_tier() {
 fn cancelled_launch_shuts_down_normally_without_running_or_retaining_mods() {
     let mut params = api::game::LaunchParams32::default();
     let mut global = api::game::GlobalData32::default();
-    let mut target = api::LaunchTargetV1 {
-        params: &mut params,
-        global: &mut global,
-    };
+    let mut target = launch_target(&mut params, &mut global);
     let events = Events::default();
     let mut host = launch_host(&["launch"], &[], "cancel", &events);
     host.prepare().unwrap();
@@ -356,10 +348,7 @@ fn launch_errors_and_panics_report_provider_details_and_still_clean_up() {
     ] {
         let mut params = api::game::LaunchParams32::default();
         let mut global = api::game::GlobalData32::default();
-        let mut target = api::LaunchTargetV1 {
-            params: &mut params,
-            global: &mut global,
-        };
+        let mut target = launch_target(&mut params, &mut global);
         let events = Events::default();
         let mut host = launch_host(&["launch"], &[], outcome, &events);
         host.prepare().unwrap();

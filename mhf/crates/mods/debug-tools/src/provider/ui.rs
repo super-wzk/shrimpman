@@ -1264,12 +1264,8 @@ fn paint_weapon_label_icon(ui: &egui::Ui, response: &egui::Response, weapon: u8)
         ),
         egui::Vec2::splat(20.0),
     );
-    native_weapon_icon(weapon).paint(&ui.painter_at(response.rect), rect, egui::Color32::WHITE);
-}
-
-fn native_weapon_icon(weapon: u8) -> Icon {
     // Native DAT class order differs from the server's WeaponType order.
-    match weapon {
+    let icon = match weapon {
         0 => Icon::GreatSword,
         1 => Icon::HeavyBowgun,
         2 => Icon::Hammer,
@@ -1284,7 +1280,8 @@ fn native_weapon_icon(weapon: u8) -> Icon {
         11 => Icon::Tonfa,
         12 => Icon::SwitchAxe,
         _ => Icon::MagnetSpike,
-    }
+    };
+    icon.paint(&ui.painter_at(response.rect), rect, egui::Color32::WHITE);
 }
 
 fn menu_height(ui: &egui::Ui) -> f32 {

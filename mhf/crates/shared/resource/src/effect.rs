@@ -3,7 +3,10 @@
 //! These are file records, not relocated DAT pointers or running effect objects.
 //! Unknown bytes and float bit patterns survive parsing and serialization.
 
-use crate::{Error, Result};
+use crate::{
+    Error, Result,
+    binary::{BinaryValue, Endian},
+};
 
 mod attachment;
 pub use attachment::{
@@ -43,19 +46,12 @@ fn table<const N: usize, T>(bytes: &[u8], parse: fn(&[u8]) -> Result<T>) -> Resu
 }
 
 fn ids(bytes: &[u8]) -> [u16; 8] {
-    std::array::from_fn(|index| {
-        u16::from_le_bytes(
-            bytes[index * 2..index * 2 + 2]
-                .try_into()
-                .expect("fixed record"),
-        )
-    })
+    <[u16; 8]>::decode(bytes, Endian::Little).expect("fixed record")
 }
 
 fn write_ids(bytes: &mut [u8], offset: usize, ids: &[u16; 8]) {
-    for (index, id) in ids.iter().enumerate() {
-        bytes[offset + index * 2..offset + index * 2 + 2].copy_from_slice(&id.to_le_bytes());
-    }
+    ids.encode(&mut bytes[offset..offset + 16], Endian::Little)
+        .expect("fixed record");
 }
 
 fn active_ids(ids: &[u16; 8]) -> &[u16] {
@@ -137,17 +133,14 @@ impl ModelEffectBinding {
 
     pub fn to_bytes(&self) -> [u8; 24] {
         let mut bytes = [0; 24];
-        for (index, value) in [
+        [
             self.part_code,
             self.weapon_class,
             self.variant,
             self.model_id,
         ]
-        .into_iter()
-        .enumerate()
-        {
-            bytes[index * 2..index * 2 + 2].copy_from_slice(&value.to_le_bytes());
-        }
+        .encode(&mut bytes[..8], Endian::Little)
+        .expect("fixed record");
         write_ids(&mut bytes, 8, &self.definition_ids);
         bytes
     }

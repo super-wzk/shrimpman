@@ -2,15 +2,7 @@ pub mod support;
 
 use mhf_resource::binary::{Reader, ScalarType};
 use mhf_resource::dat::{self, Dat, RecordCount, RecordFormat, TableLayout};
-use support::dword as set_u32;
-
-fn image(size: usize) -> Vec<u8> {
-    let mut bytes = vec![0; size];
-    bytes[..4].copy_from_slice(dat::MAGIC);
-    set_u32(&mut bytes, 4, dat::VERSION);
-    set_u32(&mut bytes, 12, dat::HEADER_SIZE as u32);
-    bytes
-}
+use support::{dat_image as image, dword as set_u32};
 
 #[test]
 fn armor_records_keep_signed_values_unknown_bytes_and_short_terminator() {

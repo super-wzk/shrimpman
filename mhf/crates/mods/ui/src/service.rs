@@ -107,9 +107,7 @@ impl UiHostApi for UiHostState {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&id);
-            if let Some(mut registration) = registration {
-                registration.unregister();
-            }
+            drop(registration);
             api::OK
         })
     }

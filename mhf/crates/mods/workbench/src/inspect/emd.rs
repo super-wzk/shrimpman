@@ -351,14 +351,8 @@ impl Builder {
     }
 
     fn emd_root(&self, node: usize) -> Result<usize, String> {
-        let mut owner = self.parents[node];
-        while let Some(parent) = owner {
-            if self.document.nodes[parent].kind == Kind::Emd {
-                return Ok(parent);
-            }
-            owner = self.parents[parent];
-        }
-        Err("EMD 节点缺少所属资源".into())
+        self.ancestor(node, |kind| kind == Kind::Emd)
+            .ok_or_else(|| "EMD 节点缺少所属资源".into())
     }
 
     pub(super) fn emd_species_table_records(
@@ -413,25 +407,13 @@ impl Builder {
             self.read_scalar(node, &field.name, range.start + field.offset, field.scalar)?;
             covered[field.offset..end].fill(true);
         }
-        let mut offset = 0;
-        while offset < range.len() {
-            if covered[offset] {
-                offset += 1;
-                continue;
-            }
-            let start = offset;
-            while offset < range.len() && !covered[offset] {
-                offset += 1;
-            }
-            let at = range.start + start;
-            self.field(
-                node,
-                format!("raw_{start:02x}"),
-                hex(&buffer[at..range.start + offset]),
-                at,
-                offset - start,
-            );
-        }
+        self.unclassified_fields(
+            node,
+            &buffer[range.clone()],
+            range.start,
+            &covered,
+            |start| format!("raw_{start:02x}"),
+        );
         Ok(())
     }
 }

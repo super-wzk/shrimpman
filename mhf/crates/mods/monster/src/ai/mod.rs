@@ -384,125 +384,68 @@ mod tests {
     use super::{Base, Node, Program, Table};
 
     #[test]
-    fn validates_minimal_graph_and_aliases() {
-        let program = Program {
-            species: 6,
-            base: Base::Empty,
-            root: 0,
-            nodes: vec![
-                Node::Table(Table::from_entries([(0, Some(1))])),
-                Node::Table(Table::from_entries([(0, Some(2)), (1, Some(2))])),
-                Node::Script(vec![7, 0]),
-            ],
-            automatic_slots: Vec::new(),
-            relocations: Vec::new(),
-        };
-        program.validate_lossless().unwrap();
-        let Node::Table(main) = &program.nodes[1] else {
-            unreachable!("the test builds a table at node 1")
-        };
-        assert_eq!(main.get(0), Some(2));
-        assert_eq!(main.get(1), Some(2));
-    }
-
-    #[test]
-    fn rejects_non_script_main_target() {
-        let program = Program {
-            species: 6,
-            base: Base::Empty,
-            root: 0,
-            nodes: vec![
-                Node::Table(Table::from_entries([(0, Some(1))])),
-                Node::Table(Table::from_entries([(0, Some(0))])),
-            ],
-            automatic_slots: Vec::new(),
-            relocations: Vec::new(),
-        };
-        assert!(
-            program
-                .validate_lossless()
-                .unwrap_err()
-                .to_string()
-                .contains("entry 0")
-        );
-    }
-
-    /// A declaration is free to be partial: it only carries the indices it
-    /// writes, and the state table itself may wait for the native block.
-    #[test]
-    fn a_native_base_declaration_may_omit_the_state_table() {
-        let program = Program {
-            species: 6,
-            base: Base::Native,
-            root: 0,
-            nodes: vec![Node::Table(Table::from_entries([(14, None)]))],
-            automatic_slots: Vec::new(),
-            relocations: Vec::new(),
-        };
-        program.validate_lossless().unwrap();
-    }
-
-    /// An empty base has nothing to fall back on, so the two slots the client
-    /// always reads have to be there.
-    #[test]
-    fn an_empty_base_needs_a_main_table_with_an_entry_zero() {
-        let missing_table = Program {
-            species: 6,
-            base: Base::Empty,
-            root: 0,
-            nodes: vec![Node::Table(Table::from_entries([(14, Some(0))]))],
-            automatic_slots: Vec::new(),
-            relocations: Vec::new(),
-        };
-        assert!(
-            missing_table
-                .validate_lossless()
-                .unwrap_err()
-                .to_string()
-                .contains("no main-script table")
-        );
-
-        let empty_table = Program {
-            species: 6,
-            base: Base::Empty,
-            root: 0,
-            nodes: vec![
-                Node::Table(Table::from_entries([(0, Some(1))])),
-                Node::Table(Table::new()),
-            ],
-            automatic_slots: Vec::new(),
-            relocations: Vec::new(),
-        };
-        assert!(
-            empty_table
-                .validate_lossless()
-                .unwrap_err()
-                .to_string()
-                .contains("no entry 0")
-        );
-    }
-
-    /// `None` is the one thing an undeclared index cannot already mean.
-    #[test]
-    fn rejects_explicit_clears_in_a_graph_that_is_already_empty() {
-        let program = Program {
-            species: 6,
-            base: Base::Empty,
-            root: 0,
-            nodes: vec![
-                Node::Table(Table::from_entries([(0, Some(1)), (1, None)])),
-                Node::Table(Table::from_entries([(0, Some(2))])),
-                Node::Script(vec![0x92]),
-            ],
-            automatic_slots: Vec::new(),
-            relocations: Vec::new(),
-        };
-        assert!(
-            program
-                .validate_lossless()
-                .unwrap_err()
-                .to_string()
-                .contains("treats undeclared indices as empty")
-        );
+    fn graph_entries_keep_aliases_native_fallback_and_enterable_main_tables() {
+        for (base, nodes, error) in [
+            (
+                Base::Empty,
+                vec![
+                    Node::Table(Table::from_entries([(0, Some(1))])),
+                    Node::Table(Table::from_entries([(0, Some(2)), (1, Some(2))])),
+                    Node::Script(vec![7, 0]),
+                ],
+                None,
+            ),
+            (
+                Base::Native,
+                vec![Node::Table(Table::from_entries([(14, None)]))],
+                None,
+            ),
+            (
+                Base::Empty,
+                vec![
+                    Node::Table(Table::from_entries([(0, Some(1))])),
+                    Node::Table(Table::from_entries([(0, Some(0))])),
+                ],
+                Some("entry 0"),
+            ),
+            (
+                Base::Empty,
+                vec![Node::Table(Table::from_entries([(14, Some(0))]))],
+                Some("no main-script table"),
+            ),
+            (
+                Base::Empty,
+                vec![
+                    Node::Table(Table::from_entries([(0, Some(1))])),
+                    Node::Table(Table::new()),
+                ],
+                Some("no entry 0"),
+            ),
+            (
+                Base::Empty,
+                vec![
+                    Node::Table(Table::from_entries([(0, Some(1)), (1, None)])),
+                    Node::Table(Table::from_entries([(0, Some(2))])),
+                    Node::Script(vec![0x92]),
+                ],
+                Some("treats undeclared indices as empty"),
+            ),
+        ] {
+            let program = Program {
+                species: 6,
+                base,
+                root: 0,
+                nodes,
+                automatic_slots: Vec::new(),
+                relocations: Vec::new(),
+            };
+            match error {
+                Some(expected) => {
+                    let error = program.validate_lossless().unwrap_err().to_string();
+                    assert!(error.contains(expected), "{expected}: {error}");
+                }
+                None => program.validate_lossless().unwrap(),
+            }
+        }
     }
 }

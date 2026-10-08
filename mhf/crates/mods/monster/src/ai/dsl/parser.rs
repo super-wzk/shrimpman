@@ -547,37 +547,28 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
-    fn function_reference(&mut self) -> Result<Statement> {
-        let token = self.take_word("function reference")?;
-        let name = self.qualified_name(identifier(&token)?.into())?;
-        self.expect(
-            &TokenKind::Semicolon,
-            "';' after function reference (without parentheses)",
-        )?;
-        Ok(Statement {
-            source: self.source_location(&token),
-            kind: StatementKind::Call {
+    fn entry_reference(&mut self) -> Result<Statement> {
+        let token = self.current().clone();
+        let kind = if self.consume(&TokenKind::LeftBrace) {
+            StatementKind::EntryBody(self.parse_body()?)
+        } else {
+            let reference = self.take_word("function reference")?;
+            let name = self.qualified_name(identifier(&reference)?.into())?;
+            self.expect(
+                &TokenKind::Semicolon,
+                "';' after function reference (without parentheses)",
+            )?;
+            StatementKind::Call {
                 callee: Callee::Name(name),
                 args: Vec::new(),
-            },
+            }
+        };
+        Ok(Statement {
+            source: self.source_location(&token),
+            kind,
             line: token.line,
             column: token.column,
         })
-    }
-
-    fn entry_reference(&mut self) -> Result<Statement> {
-        let token = self.current().clone();
-        if self.consume(&TokenKind::LeftBrace) {
-            let body = self.parse_body()?;
-            Ok(Statement {
-                source: self.source_location(&token),
-                kind: StatementKind::EntryBody(body),
-                line: token.line,
-                column: token.column,
-            })
-        } else {
-            self.function_reference()
-        }
     }
 
     fn source_location(&self, start: &Token) -> SourceLocation {

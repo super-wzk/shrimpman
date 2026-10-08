@@ -274,16 +274,6 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
 
-    fn fixed_tail(version: u32) -> Vec<u8> {
-        let mut bytes = vec![0; 72 + 72 + if version == V34 { 52 } else { 44 } + 28 + 52 + 24 + 28];
-        bytes.push(2);
-        // Tone mapping's unaligned points must not be rounded to a DWORD.
-        for value in [0x8000_0000u32, 0x7fc0_1234, 2, 3, 0x8765_4321] {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        bytes
-    }
-
     fn fixture(version: u32) -> Vec<u8> {
         let mut bytes = version.to_le_bytes().to_vec();
         bytes.extend_from_slice(&[1, 1, 1, 1, 1, 0xfe, 0xfe, 0xfe]);
@@ -302,7 +292,15 @@ mod tests {
         bytes.extend_from_slice(&3u32.to_le_bytes());
         bytes.extend_from_slice(&1u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 16]);
-        bytes.extend_from_slice(&fixed_tail(version));
+        bytes.resize(
+            bytes.len() + 72 + 72 + if version == V34 { 52 } else { 44 } + 28 + 52 + 24 + 28,
+            0,
+        );
+        bytes.push(2);
+        // Tone mapping's unaligned points must not be rounded to a DWORD.
+        for value in [0x8000_0000u32, 0x7fc0_1234, 2, 3, 0x8765_4321] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
         bytes
     }
 

@@ -103,21 +103,15 @@ fn apply_global_sign_in(data: &mut GlobalData32, sign_in: &SignInSuccess) -> Res
             sign_in.notices.len()
         ));
     }
-    let notices = sign_in
-        .notices
-        .iter()
-        .enumerate()
-        .map(|(index, notice)| {
-            if notice.len() > notice_bytes {
-                return Err(format!(
-                    "sign-in notice {} is {} bytes; at most {notice_bytes} bytes are supported",
-                    index + 1,
-                    notice.len()
-                ));
-            }
-            Ok(notice.as_slice())
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    for (index, notice) in sign_in.notices.iter().enumerate() {
+        if notice.len() > notice_bytes {
+            return Err(format!(
+                "sign-in notice {} is {} bytes; at most {notice_bytes} bytes are supported",
+                index + 1,
+                notice.len()
+            ));
+        }
+    }
 
     let festa_stall_slots = data.festa_stalls.len();
     let festa = sign_in
@@ -146,7 +140,7 @@ fn apply_global_sign_in(data: &mut GlobalData32, sign_in: &SignInSuccess) -> Res
     for notice in &mut data.notices {
         notice.fill(0);
     }
-    for (index, notice) in notices.iter().enumerate() {
+    for (index, notice) in sign_in.notices.iter().enumerate() {
         data.notice_lengths[index] = notice.len() as u32;
         data.notices[index][..notice.len()].copy_from_slice(notice);
     }

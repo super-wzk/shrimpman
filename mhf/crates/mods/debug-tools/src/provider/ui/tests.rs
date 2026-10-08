@@ -1030,35 +1030,30 @@ fn equipment_and_transmog_preserve_independent_filters_and_slots() {
 }
 
 #[test]
-fn filtered_hunter_actions_trigger_the_matching_catalog_action() {
-    let mut ui = DebugUi::new(populated_snapshot(4));
-    ui.window.page = Page::Actions;
-    ui.window.action_filter = " 2 ".into();
-    ui.click("触发");
-    assert!(matches!(
-        ui.window.control.commands().as_slice(),
-        [DebugCommand::Action(Action {
-            group: 1,
-            id: 2,
-            weapon: 0,
-        })]
-    ));
-}
-
-#[test]
-fn inspecting_a_filtered_move_only_requests_its_definition() {
-    let mut ui = DebugUi::new(populated_snapshot(4));
-    ui.window.page = Page::Actions;
-    ui.window.action_filter = "2".into();
-    ui.click("定义");
-    assert!(matches!(
-        ui.window.control.commands().as_slice(),
-        [DebugCommand::InspectAction(Action {
-            weapon: 0,
-            group: 1,
-            id: 2
-        })]
-    ));
+fn filtered_hunter_actions_send_only_the_requested_operation() {
+    for (label, inspect) in [("触发", false), ("定义", true)] {
+        let mut ui = DebugUi::new(populated_snapshot(4));
+        ui.window.page = Page::Actions;
+        ui.window.action_filter = " 2 ".into();
+        ui.click(label);
+        let commands = ui.window.control.commands();
+        assert!(matches!(
+            commands.as_slice(),
+            [DebugCommand::Action(Action {
+                group: 1,
+                id: 2,
+                weapon: 0
+            }) | DebugCommand::InspectAction(Action {
+                group: 1,
+                id: 2,
+                weapon: 0
+            })]
+        ));
+        assert_eq!(
+            matches!(commands[0], DebugCommand::InspectAction(_)),
+            inspect
+        );
+    }
 }
 
 #[test]

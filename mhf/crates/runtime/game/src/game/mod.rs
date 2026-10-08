@@ -15,7 +15,7 @@ pub struct GameExit {
 
 struct GameSession {
     native: native::NativeGame,
-    mods: Option<ModHost>,
+    mods: ModHost,
 }
 
 /// Prepare Mods, invoke their startup provider and run the game with one
@@ -67,12 +67,9 @@ fn run_session(
     }
     let native = native::NativeGame::new(profile, &game_dir, prepared.params)?;
     let mods = ModHost::load(resolved, &configuration, builtin)?;
-    let mut session = GameSession {
-        native,
-        mods: Some(mods),
-    };
+    let mut session = GameSession { native, mods };
     let result = (|| {
-        let mods = session.mods.as_mut().expect("session host is present");
+        let mods = &mut session.mods;
         mods.prepare()?;
         if !session.native.launch(mods)? {
             return Ok(None);
@@ -95,8 +92,11 @@ fn run_session(
 }
 
 impl GameSession {
-    fn finish(mut self) -> Result<Vec<ModStatus>, String> {
-        let mut mods = self.mods.take().expect("session is only finished once");
+    fn finish(self) -> Result<Vec<ModStatus>, String> {
+        let Self {
+            mut native,
+            mut mods,
+        } = self;
         let cleanup = mods
             .stop()
             .and_then(|()| unsafe { mods.detach(&[]) })
@@ -104,11 +104,11 @@ impl GameSession {
         if let Err(error) = cleanup {
             // 清理失败意味着原生代码仍可能引用状态；保留整场会话，避免提前释放内存或 DLL。
             mods.retain();
-            std::mem::forget(self);
+            std::mem::forget(native);
             return Err(error);
         }
         // 额外 DLL 引用已归还；游戏 DllMain 卸载期间仍须保活退役状态和启动 ABI 内存。
-        self.native.unload();
+        native.unload();
         mods.set_game(std::ptr::null_mut());
         let statuses = mods.statuses();
         drop(mods);

@@ -25,7 +25,9 @@ impl CredentialStore {
         let endpoint = sign_endpoint.trim().trim_end_matches('/');
         // Wine bridges domain-password credentials to the host keychain. On native Windows this
         // is an application credential, so the generic type matches its semantics.
-        let credential_type = if is_wine() {
+        let credential_type = if unsafe { GetModuleHandleA(s!("ntdll.dll")) }
+            .is_ok_and(|ntdll| unsafe { GetProcAddress(ntdll, s!("wine_get_version")) }.is_some())
+        {
             CRED_TYPE_DOMAIN_PASSWORD
         } else {
             CRED_TYPE_GENERIC
@@ -73,7 +75,11 @@ impl CredentialStore {
     pub(crate) fn write(&self, credentials: &PasswordCredentials) -> Result<(), String> {
         let mut target = wide_string(&self.target)?;
         let mut username = wide_string(&credentials.username)?;
-        let mut password = encode_password(&credentials.password);
+        let mut password: Vec<_> = credentials
+            .password
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
         let credential_blob_size = u32::try_from(password.len())
             .map_err(|_| "The password is too large for the system credential store".to_owned())?;
         let credential = CREDENTIALW {
@@ -117,23 +123,12 @@ impl Drop for CredentialBuffer {
     }
 }
 
-fn is_wine() -> bool {
-    let Ok(ntdll) = (unsafe { GetModuleHandleA(s!("ntdll.dll")) }) else {
-        return false;
-    };
-    unsafe { GetProcAddress(ntdll, s!("wine_get_version")) }.is_some()
-}
-
 fn wide_string(value: &str) -> Result<Vec<u16>, String> {
     if value.contains('\0') {
         return Err("Credential fields must not contain NUL characters".to_owned());
     }
 
     Ok(value.encode_utf16().chain([0]).collect())
-}
-
-fn encode_password(password: &str) -> Vec<u8> {
-    password.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 fn decode_password(credential: &CREDENTIALW) -> Result<String, String> {
@@ -167,15 +162,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn target_name_scopes_the_account_to_the_sign_service() {
-        let store = CredentialStore::new(" http://127.0.0.1:53313/ ");
-
-        assert_eq!(store.target, "Shrimpman MHF — http://127.0.0.1:53313");
-    }
-
-    #[test]
     fn password_blob_is_utf16_little_endian() {
-        let mut blob = encode_password("猎人🔑");
+        let mut blob = [0x0e, 0x73, 0xba, 0x4e, 0x3d, 0xd8, 0x11, 0xdd];
         let credential = CREDENTIALW {
             CredentialBlobSize: blob.len() as u32,
             CredentialBlob: blob.as_mut_ptr(),

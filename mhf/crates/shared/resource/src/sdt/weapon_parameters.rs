@@ -60,9 +60,8 @@ fn in_bank_range(bank: &[u8], selector: usize, index: usize) -> bool {
 
 fn status_fields(index: usize) -> Option<&'static [FieldLayout]> {
     match index {
-        11 | 14 | 15 => Some(ELEMENT_STATUS_THRESHOLDS),
+        11 | 13 | 14 | 15 => Some(ELEMENT_STATUS_THRESHOLDS),
         12 => Some(ELEMENT_STATUS_RECOVERY),
-        13 => Some(ELEMENT_STATUS_TIMERS),
         17 => Some(PERIODIC_STATUS),
         18 => Some(PERIODIC_STATUS_COST),
         19 | 22 => Some(SEVERE_ELEMENT_STATUS),
@@ -279,13 +278,6 @@ const ELEMENT_STATUS_RECOVERY: &[FieldLayout] = fields![
     0x04 => "field_04", "强弱异常分界抗性" : F32,
     0x08 => "field_08", "弱异常数值恢复倍率" : F32,
     0x0c => "field_0c", "强异常数值恢复倍率" : F32,
-    0x10 => "field_10", "强异常初始计数" : I32,
-    0x14 => "field_14", "弱异常初始计数" : I32,
-];
-
-const ELEMENT_STATUS_TIMERS: &[FieldLayout] = fields![
-    0x00 => "field_00", "异常抗性阈值" : F32,
-    0x04 => "field_04", "强弱异常分界抗性" : F32,
     0x10 => "field_10", "强异常初始计数" : I32,
     0x14 => "field_14", "弱异常初始计数" : I32,
 ];

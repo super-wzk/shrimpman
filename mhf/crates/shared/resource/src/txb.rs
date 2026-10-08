@@ -60,20 +60,15 @@ impl<'a> Txb<'a> {
         for &entry in &archive.entries {
             let bytes = entry.payload(source)?;
             let image = if bytes.starts_with(&crate::png::MAGIC) {
-                Image::Png(
-                    Png::parse(bytes)
-                        .map_err(|e| Error::new(entry.offset as usize + e.offset, e.message))?,
-                )
+                Png::parse(bytes).map(Image::Png)
             } else if bytes.starts_with(&crate::dds::MAGIC) {
-                Image::Dds(
-                    Dds::parse(bytes)
-                        .map_err(|e| Error::new(entry.offset as usize + e.offset, e.message))?,
-                )
+                Dds::parse(bytes).map(Image::Dds)
             } else if bytes.is_empty() {
-                Image::Empty
+                Ok(Image::Empty)
             } else {
-                Image::Unknown(bytes)
-            };
+                Ok(Image::Unknown(bytes))
+            }
+            .map_err(|error| Error::new(entry.offset as usize + error.offset, error.message))?;
             textures.push(Texture { entry, image });
         }
         Ok(Self { archive, textures })

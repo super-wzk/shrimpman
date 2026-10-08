@@ -124,8 +124,7 @@ impl QuestLaunchApi for QuestState {
             if selection.sealed || selection.session.is_some() {
                 return Err("local quest selection is already closed".into());
             }
-            let session = Session::new(&quest)?;
-            selection.session = Some(session);
+            selection.session = Some(Session::new(&quest)?);
             Ok(())
         })
     }
@@ -242,8 +241,10 @@ mod tests {
     fn local_selection_copies_valid_data_and_failed_parsing_does_not_consume_it() {
         let service = QuestService::default();
         let launch = unsafe { crate::api::bind_launch(service.launch_api()) };
-        assert!(launch.prepare_local(b"invalid quest").is_err());
-        assert_eq!(service.api().snapshot(), Snapshot::default());
+        for invalid in [b"invalid quest".as_slice(), &[]] {
+            assert!(launch.prepare_local(invalid).is_err());
+            assert_eq!(service.api().snapshot(), Snapshot::default());
+        }
 
         let mut bytes = super::super::fixtures::quest_bytes();
         let expected = Session::new(&bytes).unwrap();
@@ -262,33 +263,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_data_is_rejected_and_attachment_or_stop_closes_selection() {
-        let service = QuestService::default();
-        let launch = unsafe { crate::api::bind_launch(service.launch_api()) };
-        assert!(launch.prepare_local(&[]).is_err());
-        assert_eq!(service.api().snapshot(), Snapshot::default());
-        launch
-            .prepare_local(&super::super::fixtures::quest_bytes())
-            .unwrap();
-        assert_eq!(
-            service.api().snapshot().quest_id,
-            Session::new(&super::super::fixtures::quest_bytes())
-                .unwrap()
-                .quest_id()
-        );
-        assert!(service.session_for_attach().is_some());
-        assert!(launch.prepare_local(&[]).is_err());
-
+    fn attachment_or_stop_closes_idle_selection() {
+        let quest = super::super::fixtures::quest_bytes();
         let idle = QuestService::default();
         assert!(idle.session_for_attach().is_none());
         assert_eq!(
-            idle.launch_api().prepare_local((&[][..]).into()),
+            idle.launch_api().prepare_local(quest.as_slice().into()),
             api::ERROR
         );
         let stopped = QuestService::default();
         stopped.seal();
         assert_eq!(
-            stopped.launch_api().prepare_local((&[][..]).into()),
+            stopped.launch_api().prepare_local(quest.as_slice().into()),
             api::ERROR
         );
         assert_eq!(stopped.api().snapshot(), Snapshot::default());

@@ -1,13 +1,12 @@
+pub mod support;
+
 use mhf_resource::{
     container::{SimpleArchive, open_layers},
     effect_archive::{
         CurveKind, CurveReference, Definition56, EffectArchive, EffectBank, EffectResource,
     },
 };
-
-fn short(bytes: &mut [u8], offset: usize, value: u16) {
-    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
+use support::word as short;
 
 fn definition() -> [u8; Definition56::SIZE] {
     let mut bytes = std::array::from_fn(|index| (index as u8).wrapping_mul(37));

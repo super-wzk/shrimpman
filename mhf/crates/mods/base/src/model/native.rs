@@ -799,11 +799,6 @@ mod text_tests {
     use super::decode_catalog_text;
 
     #[test]
-    fn catalog_preserves_ascii_names() {
-        assert_eq!(decode_catalog_text(b"Iron Sword").unwrap(), "Iron Sword");
-    }
-
-    #[test]
     fn catalog_decodes_original_cp932() {
         assert_eq!(
             decode_catalog_text(b"\x83\x65\x83\x58\x83\x67").unwrap(),

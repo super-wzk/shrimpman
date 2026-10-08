@@ -282,23 +282,6 @@ mod tests {
     }
 
     #[test]
-    fn scope_values_borrow_the_document_independently_of_the_path() {
-        let mut document = document();
-        document.nodes[1].metadata.insert(7_u32);
-        let resolved = {
-            let path = vec![0, 1, 3];
-            let scope = Scope::new(&document, &path);
-            assert_eq!(scope.origins(), document.metadata().origins(3));
-            scope.get::<u32>().unwrap()
-        };
-        assert_eq!((*resolved.value, resolved.source), (7, 1));
-        assert!(std::ptr::eq(
-            resolved.value,
-            document.metadata().resolve::<u32>(3).unwrap().value
-        ));
-    }
-
-    #[test]
     fn types_inherit_independently_and_nearest_values_override_atomically() {
         let mut document = document();
         document.nodes[0].metadata.insert(Model {
@@ -311,7 +294,11 @@ mod tests {
             variant: None,
         });
         let scopes = document.metadata();
-        let model = scopes.resolve::<Model>(3).unwrap();
+        // The resolved value also outlives this temporary scope and path.
+        let model = {
+            let path = scopes.path(3).unwrap();
+            Scope::new(&document, &path).get::<Model>().unwrap()
+        };
         assert_eq!(
             model.value,
             &Model {

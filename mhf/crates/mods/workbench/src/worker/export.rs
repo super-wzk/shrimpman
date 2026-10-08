@@ -30,10 +30,19 @@ impl Export {
             .unwrap_or_default()
             .to_owned();
         if !original {
-            let extension = if node.error.is_none() {
-                resource_extension(node.kind)
-            } else {
-                None
+            // 只有完整、可独立解释的资源才使用格式后缀。
+            let extension = match node.kind {
+                _ if node.error.is_some() => None,
+                Kind::Momo => Some("momo"),
+                Kind::Mha => Some("mha"),
+                Kind::Txb => Some("txb"),
+                Kind::Fmod => Some("fmod"),
+                Kind::Fskl => Some("fskl"),
+                Kind::Motion | Kind::MotionArchive => Some("mot"),
+                Kind::Png => Some("png"),
+                Kind::Dds => Some("dds"),
+                Kind::Ogg => Some("ogg"),
+                _ => None,
             };
             if let Some(extension) = extension {
                 let mut path = PathBuf::from(name);
@@ -54,22 +63,6 @@ impl Export {
             bytes: bytes.clone(),
             range: node.range.clone(),
         })
-    }
-}
-
-/// 只有完整、可独立解释的资源才使用格式后缀；普通偏移目录仍依赖原始文件名。
-fn resource_extension(kind: Kind) -> Option<&'static str> {
-    match kind {
-        Kind::Momo => Some("momo"),
-        Kind::Mha => Some("mha"),
-        Kind::Txb => Some("txb"),
-        Kind::Fmod => Some("fmod"),
-        Kind::Fskl => Some("fskl"),
-        Kind::Motion | Kind::MotionArchive => Some("mot"),
-        Kind::Png => Some("png"),
-        Kind::Dds => Some("dds"),
-        Kind::Ogg => Some("ogg"),
-        _ => None,
     }
 }
 

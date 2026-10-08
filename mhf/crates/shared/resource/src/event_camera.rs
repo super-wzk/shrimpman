@@ -119,21 +119,15 @@ impl<'a> EventCamera<'a> {
         if index >= self.frame_count as usize {
             return Err(Error::new(12, "event-camera frame index out of range"));
         }
+        let word = |array: usize, component| {
+            let offset = index * Self::STRIDES[array] + component * 4;
+            u32::from_le_bytes(self.arrays[array][offset..offset + 4].try_into().unwrap())
+        };
         Ok(CameraFrame {
-            field_of_view_bits: u32::from_le_bytes(
-                self.arrays[0][index * 4..index * 4 + 4].try_into().unwrap(),
-            ),
-            position_bits: std::array::from_fn(|component| {
-                let offset = index * 12 + component * 4;
-                u32::from_le_bytes(self.arrays[1][offset..offset + 4].try_into().unwrap())
-            }),
-            roll_bits: u32::from_le_bytes(
-                self.arrays[2][index * 4..index * 4 + 4].try_into().unwrap(),
-            ),
-            target_bits: std::array::from_fn(|component| {
-                let offset = index * 12 + component * 4;
-                u32::from_le_bytes(self.arrays[3][offset..offset + 4].try_into().unwrap())
-            }),
+            field_of_view_bits: word(0, 0),
+            position_bits: std::array::from_fn(|component| word(1, component)),
+            roll_bits: word(2, 0),
+            target_bits: std::array::from_fn(|component| word(3, component)),
         })
     }
 }

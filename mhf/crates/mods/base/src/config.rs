@@ -53,18 +53,6 @@ pub enum ScreenMode {
     Fullscreen = 1,
 }
 
-impl TryFrom<u32> for ScreenMode {
-    type Error = String;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Windowed),
-            1 => Ok(Self::Fullscreen),
-            _ => Err(format!("unsupported screen mode {value}")),
-        }
-    }
-}
-
 impl From<ScreenMode> for u32 {
     fn from(value: ScreenMode) -> Self {
         value as Self
@@ -87,18 +75,6 @@ pub enum GraphicsVersion {
     Standard = 0,
     #[default]
     HighDefinition = 1,
-}
-
-impl TryFrom<u32> for GraphicsVersion {
-    type Error = String;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Standard),
-            1 => Ok(Self::HighDefinition),
-            _ => Err(format!("unsupported graphics version {value}")),
-        }
-    }
 }
 
 impl From<GraphicsVersion> for u32 {
@@ -135,20 +111,6 @@ pub enum Language {
     TraditionalChinese = 7,
 }
 
-impl TryFrom<u32> for Language {
-    type Error = String;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Japanese),
-            1 => Ok(Self::English),
-            6 => Ok(Self::Korean),
-            7 => Ok(Self::TraditionalChinese),
-            _ => Err(format!("unsupported language code {value}")),
-        }
-    }
-}
-
 impl From<Language> for u32 {
     fn from(value: Language) -> Self {
         value as Self
@@ -175,23 +137,6 @@ pub enum FontQuality {
     Antialiased = 4,
     ClearType = 5,
     ClearTypeNatural = 6,
-}
-
-impl TryFrom<u32> for FontQuality {
-    type Error = String;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Default),
-            1 => Ok(Self::Draft),
-            2 => Ok(Self::Proof),
-            3 => Ok(Self::NonAntialiased),
-            4 => Ok(Self::Antialiased),
-            5 => Ok(Self::ClearType),
-            6 => Ok(Self::ClearTypeNatural),
-            _ => Err(format!("unsupported font quality {value}")),
-        }
-    }
 }
 
 impl From<FontQuality> for u32 {

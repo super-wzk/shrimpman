@@ -404,13 +404,9 @@ impl TraceBuffer {
             .clone()
             .ok_or_else(|| invalid("no instructions recorded"))?;
         let mut recording = Recording {
-            version: RECORDING_VERSION,
-            capability: ReplayCapability::Observation,
-            initial,
             dropped: self.dropped,
             entries: self.entries.iter().cloned().collect(),
-            scripts: Vec::new(),
-            checkpoints: Vec::new(),
+            ..Recording::empty(initial)
         };
         recording.checkpoints = recording.validated_checkpoints()?;
         Ok(recording)
@@ -508,12 +504,7 @@ impl Debugger {
         }) {
             return Err(invalid("too many, duplicate, or invalid breakpoints"));
         }
-        self.next_breakpoint = breakpoints
-            .iter()
-            .map(|breakpoint| breakpoint.id)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+        self.next_breakpoint = ids.last().copied().unwrap_or(0).saturating_add(1);
         self.breakpoints = breakpoints;
         Ok(())
     }

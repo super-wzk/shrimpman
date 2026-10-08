@@ -7,15 +7,7 @@ use mhf_resource::{
         motion_events::{ChoiceEvent, CommandEvent, Directory, EventKind, WeightedChoice},
     },
 };
-use support::{dword as set_u32, word as set_u16};
-
-fn image(size: usize) -> Vec<u8> {
-    let mut bytes = vec![0; size];
-    bytes[..4].copy_from_slice(dat::MAGIC);
-    set_u32(&mut bytes, 4, dat::VERSION);
-    set_u32(&mut bytes, 12, dat::HEADER_SIZE as u32);
-    bytes
-}
+use support::{dat_image as image, dword as set_u32, word as set_u16};
 
 fn fixture(kind: EventKind, base: u32) -> Vec<u8> {
     let mut bytes = image(3500);

@@ -160,10 +160,11 @@ impl Inspector<'_, '_> {
         // The public report has one inspected candidate per Mod. Never attach another
         // version's dependency edges to a candidate that already has diagnostics.
         if !diagnostic.issues.is_empty()
-            && diagnostic
-                .candidate
-                .as_ref()
-                .is_some_and(|current| !same_candidate(current, candidate))
+            && diagnostic.candidate.as_ref().is_some_and(|current| {
+                current.manifest.id != candidate.manifest.id
+                    || current.manifest.version != candidate.manifest.version
+                    || current.source != candidate.source
+            })
         {
             return;
         }
@@ -343,12 +344,6 @@ impl Inspector<'_, '_> {
             }
         }
     }
-}
-
-fn same_candidate(left: &Candidate, right: &Candidate) -> bool {
-    left.manifest.id == right.manifest.id
-        && left.manifest.version == right.manifest.version
-        && left.source == right.source
 }
 
 fn push_issue(diagnostic: &mut ModDiagnostic, issue: DependencyIssue) {

@@ -161,15 +161,13 @@ impl ResourceRef {
         // Tree traversal already knows the direct edge. Preserve its context
         // without rebuilding the document's physical parent index per row.
         for (prefix, &ancestor) in self.context.iter().enumerate().rev() {
-            let context = if ancestor == node {
-                self.context[..=prefix].to_vec()
-            } else if self.document.nodes[ancestor].children.contains(&node) {
-                let mut context = self.context[..=prefix].to_vec();
-                context.push(node);
-                context
-            } else {
+            if ancestor != node && !self.document.nodes[ancestor].children.contains(&node) {
                 continue;
-            };
+            }
+            let mut context = self.context[..=prefix].to_vec();
+            if ancestor != node {
+                context.push(node);
+            }
             return Some(Self::at_context(self.document.clone(), node, context));
         }
         self.related_in(node, &self.document.metadata())

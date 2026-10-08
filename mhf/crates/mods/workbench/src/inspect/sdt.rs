@@ -89,7 +89,7 @@ impl Builder {
 
     fn sdt_source(&self, node: usize) -> Result<SdtSource, String> {
         let owner = self
-            .sdt_ancestor(node, |kind| kind == Kind::Sdt)
+            .ancestor(node, |kind| kind == Kind::Sdt)
             .ok_or("SDT 数据缺少所属文件")?;
         let root = &self.document.nodes[owner];
         Ok(SdtSource {
@@ -99,20 +99,9 @@ impl Builder {
         })
     }
 
-    fn sdt_ancestor(&self, node: usize, matches: impl Fn(Kind) -> bool) -> Option<usize> {
-        let mut parent = self.parents[node];
-        while let Some(index) = parent {
-            if matches(self.document.nodes[index].kind) {
-                return Some(index);
-            }
-            parent = self.parents[index];
-        }
-        None
-    }
-
     fn sdt_entry_index(&self, node: usize) -> Result<usize, String> {
         let entry = self
-            .sdt_ancestor(node, |kind| matches!(kind, Kind::SdtEntry(_)))
+            .ancestor(node, |kind| matches!(kind, Kind::SdtEntry(_)))
             .ok_or("SDT 数据缺少所属目录项")?;
         let Kind::SdtEntry(index) = self.document.nodes[entry].kind else {
             unreachable!()
@@ -281,10 +270,10 @@ impl Builder {
             }
             Kind::SdtCollision => {
                 let group_node = self
-                    .sdt_ancestor(node, |kind| matches!(kind, Kind::SdtCollisionGroup(_)))
+                    .ancestor(node, |kind| matches!(kind, Kind::SdtCollisionGroup(_)))
                     .ok_or("SDT 判定记录缺少所属组")?;
                 let list_node = self
-                    .sdt_ancestor(node, |kind| matches!(kind, Kind::SdtCollisionList(_)))
+                    .ancestor(node, |kind| matches!(kind, Kind::SdtCollisionList(_)))
                     .ok_or("SDT 判定记录缺少所属表")?;
                 let Kind::SdtCollisionGroup(group_index) = self.document.nodes[group_node].kind
                 else {
@@ -334,24 +323,9 @@ impl Builder {
             self.read_scalar(node, field.name, base + start, field.scalar)?;
             self.document.nodes[node].fields[index].key = Some(field.key.into());
         }
-        let mut offset = 0;
-        while offset < covered.len() {
-            if covered[offset] {
-                offset += 1;
-                continue;
-            }
-            let start = offset;
-            while offset < covered.len() && !covered[offset] {
-                offset += 1;
-            }
-            self.field(
-                node,
-                format!("未定义字段 {start:#04X}"),
-                hex(&bytes[start..offset]),
-                base + start,
-                offset - start,
-            );
-        }
+        self.unclassified_fields(node, bytes, base, &covered, |start| {
+            format!("未定义字段 {start:#04X}")
+        });
         Ok(())
     }
 
@@ -438,7 +412,7 @@ impl Builder {
         let source = self.sdt_source(node)?;
         let index = self.sdt_entry_index(node)?;
         let group_node = self
-            .sdt_ancestor(node, |kind| matches!(kind, Kind::SdtCollisionGroup(_)))
+            .ancestor(node, |kind| matches!(kind, Kind::SdtCollisionGroup(_)))
             .ok_or("SDT 判定表缺少所属组")?;
         let Kind::SdtCollisionGroup(group_index) = self.document.nodes[group_node].kind else {
             unreachable!()

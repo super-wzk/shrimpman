@@ -1065,6 +1065,12 @@ mod tests {
         image
     }
 
+    fn decompile_main(bytes: &[u8], species: u8) -> Decompiled {
+        let mut image = main_image();
+        image.put(0x300, bytes);
+        decompile(&image, 0x100, species, 0, None).unwrap()
+    }
+
     impl Memory for Image {
         fn bytes(&self, address: u32, length: usize) -> Result<Vec<u8>> {
             (0..length)
@@ -1223,14 +1229,12 @@ mod tests {
     #[test]
     fn request_dispatch_recovers_only_with_a_complete_case_count() {
         for (count, recovered) in [(2u8, true), (7, false)] {
-            let mut image = main_image();
-            image.put(
-                0x300,
+            let result = decompile_main(
                 &[
                     0x1d, 0, count, 0x1d, 1, 1, 0x92, 0x1d, 1, 2, 0x92, 0x1d, 3, 0xff, 0,
                 ],
+                6,
             );
-            let result = decompile(&image, 0x100, 6, 0, None).unwrap();
             assert_eq!(
                 result.source.contains("match self.request {"),
                 recovered,
@@ -1248,9 +1252,7 @@ mod tests {
 
     #[test]
     fn target_strategies_decompile_and_recompile_losslessly() {
-        let mut image = main_image();
-        image.put(0x300, &[0x52, 0x53, 0x5f, 0x7e, 0x12, 0x58, 0xff, 0]);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&[0x52, 0x53, 0x5f, 0x7e, 0x12, 0x58, 0xff, 0], 6);
         for name in [
             "SameArea",
             "SameAreaGroundGroup",
@@ -1400,15 +1402,13 @@ mod tests {
 
     #[test]
     fn mode_target_and_random_methods_round_trip() {
-        let mut image = main_image();
-        image.put(
-            0x300,
+        let result = decompile_main(
             &[
                 0x11, 0x13, 0x40, 0, 0x40, 1, 0x4d, 0x18, 0x2e, 1, 0x2d, 0x84, 0x7b, 0x40, 2, 0xff,
                 0,
             ],
+            6,
         );
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         for method in [
             "self.bind_awareness_target();",
             "self.bind_current_target();",
@@ -1437,15 +1437,13 @@ mod tests {
 
     #[test]
     fn weighted_choices_round_trip_nested_blocks_and_preserve_unusual_weights() {
-        let mut image = main_image();
-        image.put(
-            0x300,
+        let result = decompile_main(
             &[
                 0x35, 0, 0x80, 0, 2, 0x80, 1, 16, 0x80, 0, 1, 0x80, 1, 32, 0x92, 0x80, 0xff, 0x80,
                 2, 16, 0x39, 0, 0xff, 0xf7, 0x39, 2, 0x80, 0xff, 0x35, 2, 0xff, 0,
             ],
+            6,
         );
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
         assert_eq!(
             result.source.matches("random {").count(),
             2,
@@ -1454,8 +1452,7 @@ mod tests {
         );
         assert!(result.source.contains("32 => nop();"));
         assert!(result.source.contains("end forget_target;"));
-        image.put(0x300, &[0x80, 0, 1, 0x80, 1, 31, 0x92, 0x80, 0xff, 0xff, 0]);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&[0x80, 0, 1, 0x80, 1, 31, 0x92, 0x80, 0xff, 0xff, 0], 6);
         assert!(!result.source.contains("random {"));
         assert!(result.source.contains("native(0x80"));
     }
@@ -1534,7 +1531,6 @@ mod tests {
 
     #[test]
     fn area_and_monster_targets_round_trip() {
-        let mut image = main_image();
         let mut bytes = vec![6, 3, 0, 1, 70, 6, 3, 0, 255, 255, 6, 10, 0, 0];
         for subtype in 0..4 {
             bytes.extend_from_slice(&[6, 13, subtype, 0]);
@@ -1543,8 +1539,7 @@ mod tests {
         bytes.extend_from_slice(&[
             6, 3, 1, 0, 1, 6, 10, 1, 0, 6, 10, 0, 1, 6, 13, 2, 1, 6, 13, 4, 0, 0xff, 0,
         ]);
-        image.put(0x300, &bytes);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&bytes, 6);
         assert!(result.warnings.is_empty());
         for text in [
             "self.select_target_area(326);",
@@ -1586,12 +1581,7 @@ mod tests {
 
     #[test]
     fn waypoint_selection_round_trips_without_reinterpreting_other_target_types() {
-        let mut image = main_image();
-        image.put(
-            0x300,
-            &[6, 2, 1, 0, 0x4d, 6, 2, 1, 255, 6, 2, 2, 0, 0xff, 0],
-        );
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&[6, 2, 1, 0, 0x4d, 6, 2, 1, 255, 6, 2, 2, 0, 0xff, 0], 6);
         assert!(result.source.contains("self.select_target_point(0);"));
         assert!(result.source.contains("self.select_target_point(255);"));
         assert!(result.source.contains("native(0x06, 0x02, 0x02, 0x00);"));
@@ -1650,14 +1640,12 @@ mod tests {
 
     #[test]
     fn player_slots_round_trip_without_reinterpreting_other_target_groups() {
-        let mut image = main_image();
         let mut body = Vec::new();
         for slot in 0..=255 {
             body.extend_from_slice(&[6, 1, 0, slot]);
         }
         body.extend_from_slice(&[6, 1, 1, 3, 0x4d, 0xff, 0]);
-        image.put(0x300, &body);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&body, 6);
         assert!(result.warnings.is_empty());
         for slot in 0..=255 {
             assert!(
@@ -1673,7 +1661,6 @@ mod tests {
 
     #[test]
     fn relative_target_points_round_trip_and_preserve_other_encodings() {
-        let mut image = main_image();
         let mut body = Vec::new();
         // Exercise all direction selectors, including the second distance band,
         // and nonzero trailing operands that must remain byte-preserving escapes.
@@ -1683,8 +1670,7 @@ mod tests {
             }
         }
         body.extend_from_slice(&[0x4d, 0xff, 0]);
-        image.put(0x300, &body);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&body, 6);
         assert!(result.warnings.is_empty());
         for name in [
             "Forward500",
@@ -1710,9 +1696,7 @@ mod tests {
 
     #[test]
     fn active_conditions_decompile_and_recompile_losslessly() {
-        let mut image = main_image();
-        image.put(0x300, &[0x08, 0, 0x92, 0x08, 1, 0x4d, 0x08, 2, 0xff, 0]);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&[0x08, 0, 0x92, 0x08, 1, 0x4d, 0x08, 2, 0xff, 0], 6);
         assert!(result.source.contains("if self.active {"));
         assert!(!result.source.contains("native(0x08"));
     }
@@ -1811,14 +1795,12 @@ mod tests {
     #[test]
     fn zero_weight_random_branches_round_trip_at_every_position() {
         for weights in [[0, 16, 16], [16, 0, 16], [16, 16, 0]] {
-            let mut image = main_image();
             let mut bytes = vec![0x80, 0, 3];
             for (index, weight) in weights.into_iter().enumerate() {
                 bytes.extend_from_slice(&[0x80, index as u8 + 1, weight, 0x92]);
             }
             bytes.extend_from_slice(&[0x80, 0xff, 0xff, 0]);
-            image.put(0x300, &bytes);
-            let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+            let result = decompile_main(&bytes, 6);
             assert!(result.source.contains("0 => nop();"));
             assert!(!result.source.contains("native(0x80"));
         }
@@ -1826,9 +1808,7 @@ mod tests {
 
     #[test]
     fn target_forgetting_reset_round_trips_as_control_flow() {
-        let mut image = main_image();
-        image.put(0x300, &[0xff, 0xf7]);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&[0xff, 0xf7], 6);
         assert!(result.source.contains("end forget_target;"));
         assert!(!result.source.contains("native(0xff, 0xf7)"));
     }
@@ -2323,9 +2303,7 @@ mod tests {
         let bytes = [
             0x2c, 0, 3, 0x2c, 1, 42, 0x92, 0x2c, 1, 1, 0x2c, 1, 42, 0x48, 2, 0x2c, 3, 0xff, 0,
         ];
-        let mut image = main_image();
-        image.put(0x300, &bytes);
-        let result = decompile(&image, 0x100, 1, 0, None).unwrap();
+        let result = decompile_main(&bytes, 1);
         assert!(result.source.contains("match self.species_group"));
         assert!(result.source.contains("42 =>"));
         assert!(result.source.contains("1 =>"));
@@ -2354,9 +2332,7 @@ mod tests {
             0x57, 0, 2, 0x57, 1, 0, 0, 0x57, 0, 1, 0x57, 1, 0, 255, 0x92, 0x57, 2, 0x57, 3, 0x57,
             1, 0, 255, 0x57, 2, 0x57, 3, 0xff, 0,
         ];
-        let mut image = main_image();
-        image.put(0x300, &bytes);
-        let result = decompile(&image, 0x100, 1, 0, None).unwrap();
+        let result = decompile_main(&bytes, 1);
         assert_eq!(
             result
                 .source
@@ -2391,9 +2367,7 @@ mod tests {
             1, 255, 0x35, 0, 0x92, 0x35, 2, 0x79, 2, 0x92, 0x79, 3, 0xff, 0,
         ];
         for species in [11, 14, 110] {
-            let mut image = main_image();
-            image.put(0x300, &bytes);
-            let result = decompile(&image, 0x100, species, 0, None).unwrap();
+            let result = decompile_main(&bytes, species);
             assert_eq!(result.source.matches("context.query").count(), 2);
             assert!(!result.source.contains("zenith"));
             assert!(!result.source.contains("native(0x79"));
@@ -2403,14 +2377,12 @@ mod tests {
 
     #[test]
     fn context_query_decompiles_and_round_trips() {
-        let mut image = main_image();
-        image.put(
-            0x300,
+        let result = decompile_main(
             &[
                 0x79, 0, 1, 4, 0x79, 1, 1, 0x92, 0x79, 2, 0xff, 0, 0x79, 3, 0xff, 0,
             ],
+            11,
         );
-        let result = decompile(&image, 0x100, 11, 0, None).unwrap();
         assert!(result.source.contains("match context.query(4) {"));
         assert!(result.source.contains("else => {\n            end;"));
         assert!(!result.source.contains("native(0x79"));
@@ -2883,9 +2855,7 @@ mod tests {
 
     #[test]
     fn contents_calls_are_not_main_state_references() {
-        let mut image = main_image();
-        image.put(0x300, &[0x81, 200, 4]);
-        let result = decompile(&image, 0x100, 6, 0, None).unwrap();
+        let result = decompile_main(&[0x81, 200, 4], 6);
         assert_eq!(result.warnings.len(), 1);
         assert!(result.source.contains("fn main()"));
         assert!(!result.source.contains("state_200"));

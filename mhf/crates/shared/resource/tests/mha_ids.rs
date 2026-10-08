@@ -1,11 +1,10 @@
+pub mod support;
+
 use mhf_resource::{
     binary::Reader,
     container::{MhaArchive, MhaHeader},
 };
-
-fn word(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
+use support::dword as word;
 
 fn archive(first_id: i16, id_count: u16, records: &[(u32, &[u8])]) -> Vec<u8> {
     let names: Vec<_> = (0..records.len()).map(|id| format!("{id}.bin\0")).collect();

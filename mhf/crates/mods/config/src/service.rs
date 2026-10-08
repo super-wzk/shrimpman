@@ -257,11 +257,7 @@ impl Store {
 
     fn reserved_section(&self, name: &str) -> bool {
         self.registrations.iter().any(|(section, registration)| {
-            section.eq_ignore_ascii_case(name)
-                || registration
-                    .ini
-                    .as_ref()
-                    .is_some_and(|ini| ini.name.eq_ignore_ascii_case(name))
+            section_aliases(section, registration).any(|alias| alias.eq_ignore_ascii_case(name))
         })
     }
 
@@ -366,37 +362,34 @@ fn validate_types(values: &Table, defaults: &Table, section: &str) -> Result<()>
 }
 
 fn validate_registration(registration: &Registration) -> Result<()> {
-    let Some(ini) = &registration.ini else {
-        let mut values = registration.defaults.clone();
-        merge(&mut values, &registration.fixed);
-        return validate_types(&values, &registration.defaults, "defaults");
-    };
-    valid_name(&ini.name, "INI section")?;
-    let mut keys = BTreeSet::new();
-    let mut paths = BTreeSet::new();
-    for field in &ini.fields {
-        valid_name(&field.key, "INI key")?;
-        if !keys.insert(field.key.to_ascii_lowercase()) {
-            return Err(format!("duplicate INI key {}", field.key));
-        }
-        if field.path.is_empty() || !paths.insert(field.path.clone()) {
-            return Err(format!("invalid or duplicate INI path for {}", field.key));
-        }
-        for part in &field.path {
-            valid_name(part, "INI field path")?;
-        }
-        if let IniKind::Integer { min, max } = &field.kind
-            && min > max
-        {
-            return Err(format!("INI integer {} has an invalid range", field.key));
-        }
-        if let IniKind::Enum { values } = &field.kind {
-            let unique: BTreeSet<_> = values.values().collect();
-            if values.is_empty() || unique.len() != values.len() {
-                return Err(format!(
-                    "INI enum {} must have unique numeric values",
-                    field.key
-                ));
+    if let Some(ini) = &registration.ini {
+        valid_name(&ini.name, "INI section")?;
+        let mut keys = BTreeSet::new();
+        let mut paths = BTreeSet::new();
+        for field in &ini.fields {
+            valid_name(&field.key, "INI key")?;
+            if !keys.insert(field.key.to_ascii_lowercase()) {
+                return Err(format!("duplicate INI key {}", field.key));
+            }
+            if field.path.is_empty() || !paths.insert(field.path.clone()) {
+                return Err(format!("invalid or duplicate INI path for {}", field.key));
+            }
+            for part in &field.path {
+                valid_name(part, "INI field path")?;
+            }
+            if let IniKind::Integer { min, max } = &field.kind
+                && min > max
+            {
+                return Err(format!("INI integer {} has an invalid range", field.key));
+            }
+            if let IniKind::Enum { values } = &field.kind {
+                let unique: BTreeSet<_> = values.values().collect();
+                if values.is_empty() || unique.len() != values.len() {
+                    return Err(format!(
+                        "INI enum {} must have unique numeric values",
+                        field.key
+                    ));
+                }
             }
         }
     }

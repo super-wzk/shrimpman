@@ -80,10 +80,6 @@ impl<'a> Lexer<'a> {
             };
 
             let kind = match byte {
-                b'@' => {
-                    self.bump();
-                    TokenKind::At
-                }
                 b'"' => {
                     self.bump();
                     let start = self.offset;
@@ -104,30 +100,6 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     TokenKind::FatArrow
                 }
-                b'[' => {
-                    self.bump();
-                    TokenKind::LeftBracket
-                }
-                b']' => {
-                    self.bump();
-                    TokenKind::RightBracket
-                }
-                b'(' => {
-                    self.bump();
-                    TokenKind::LeftParen
-                }
-                b')' => {
-                    self.bump();
-                    TokenKind::RightParen
-                }
-                b'{' => {
-                    self.bump();
-                    TokenKind::LeftBrace
-                }
-                b'}' => {
-                    self.bump();
-                    TokenKind::RightBrace
-                }
                 b':' => {
                     self.bump();
                     if self.peek() == Some(b':') {
@@ -137,27 +109,12 @@ impl<'a> Lexer<'a> {
                         TokenKind::Colon
                     }
                 }
-                b'=' => {
-                    self.bump();
-                    TokenKind::Equals
-                }
-                b',' => {
-                    self.bump();
-                    TokenKind::Comma
-                }
-                b';' => {
-                    self.bump();
-                    TokenKind::Semicolon
-                }
-                b'.' => {
-                    self.bump();
-                    TokenKind::Dot
-                }
                 byte if byte.is_ascii_digit() => self.lex_number(line, column)?,
-                byte if is_word_start(byte) => {
+                byte if byte.is_ascii_alphabetic() || byte == b'_' => {
                     let start = self.offset;
-                    while self.peek().is_some_and(is_word_byte)
-                        && !(self.peek() == Some(b'-') && self.peek_next() == Some(b'>'))
+                    while self.peek().is_some_and(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                    }) && !(self.peek() == Some(b'-') && self.peek_next() == Some(b'>'))
                     {
                         self.bump();
                     }
@@ -167,11 +124,29 @@ impl<'a> Lexer<'a> {
                     TokenKind::Word(word)
                 }
                 _ => {
-                    return Err(Error::at(
-                        line,
-                        column,
-                        format!("unexpected character {}", describe_byte(byte)),
-                    ));
+                    let kind = match byte {
+                        b'@' => TokenKind::At,
+                        b'[' => TokenKind::LeftBracket,
+                        b']' => TokenKind::RightBracket,
+                        b'(' => TokenKind::LeftParen,
+                        b')' => TokenKind::RightParen,
+                        b'{' => TokenKind::LeftBrace,
+                        b'}' => TokenKind::RightBrace,
+                        b'=' => TokenKind::Equals,
+                        b',' => TokenKind::Comma,
+                        b';' => TokenKind::Semicolon,
+                        b'.' => TokenKind::Dot,
+                        _ => {
+                            let message = if byte.is_ascii_graphic() || byte == b' ' {
+                                format!("unexpected character '{}'", char::from(byte))
+                            } else {
+                                format!("unexpected character byte 0x{byte:02x}")
+                            };
+                            return Err(Error::at(line, column, message));
+                        }
+                    };
+                    self.bump();
+                    kind
                 }
             };
             tokens.push(Token {
@@ -240,19 +215,12 @@ impl<'a> Lexer<'a> {
                 self.bump();
             }
             if self.peek() == Some(b'/') && self.peek_next() == Some(b'/') {
-                self.skip_comment();
+                while self.peek().is_some_and(|byte| byte != b'\n') {
+                    self.bump();
+                }
             } else {
                 return;
             }
-        }
-    }
-
-    fn skip_comment(&mut self) {
-        for _ in 0..2 {
-            self.bump();
-        }
-        while self.peek().is_some_and(|byte| byte != b'\n') {
-            self.bump();
         }
     }
 
@@ -273,21 +241,5 @@ impl<'a> Lexer<'a> {
         } else {
             self.column += 1;
         }
-    }
-}
-
-fn is_word_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
-}
-
-fn is_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
-}
-
-fn describe_byte(byte: u8) -> String {
-    if byte.is_ascii_graphic() || byte == b' ' {
-        format!("'{0}'", char::from(byte))
-    } else {
-        format!("byte 0x{byte:02x}")
     }
 }

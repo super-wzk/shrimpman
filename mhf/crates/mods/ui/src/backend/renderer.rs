@@ -135,17 +135,29 @@ impl Renderer {
         }
 
         self.ensure_device_objects(device, self.vertices.len(), self.indices.len())?;
-        upload_vertex_buffer(
-            self.vertex_buffer
-                .as_ref()
-                .expect("vertex buffer must exist after allocation"),
+        let vertex_buffer = self
+            .vertex_buffer
+            .as_ref()
+            .expect("vertex buffer must exist after allocation");
+        upload_buffer(
             &self.vertices,
+            |bytes, destination| unsafe {
+                vertex_buffer.Lock(0, bytes, destination, D3DLOCK_DISCARD as u32)
+            },
+            || unsafe { vertex_buffer.Unlock() },
+            "vertex buffer",
         )?;
-        upload_index_buffer(
-            self.index_buffer
-                .as_ref()
-                .expect("index buffer must exist after allocation"),
+        let index_buffer = self
+            .index_buffer
+            .as_ref()
+            .expect("index buffer must exist after allocation");
+        upload_buffer(
             &self.indices,
+            |bytes, destination| unsafe {
+                index_buffer.Lock(0, bytes, destination, D3DLOCK_DISCARD as u32)
+            },
+            || unsafe { index_buffer.Unlock() },
+            "index buffer",
         )?;
 
         let mut backup = StateBackup::capture(device)?;
@@ -507,24 +519,6 @@ fn create_texture(device: &IDirect3DDevice9, size: [usize; 2]) -> Result<IDirect
     texture.ok_or_else(|| Error::new("D3D9 returned a null texture"))
 }
 
-fn upload_vertex_buffer(buffer: &IDirect3DVertexBuffer9, vertices: &[Vertex]) -> Result<()> {
-    upload_buffer(
-        vertices,
-        |bytes, destination| unsafe { buffer.Lock(0, bytes, destination, D3DLOCK_DISCARD as u32) },
-        || unsafe { buffer.Unlock() },
-        "vertex buffer",
-    )
-}
-
-fn upload_index_buffer(buffer: &IDirect3DIndexBuffer9, indices: &[u32]) -> Result<()> {
-    upload_buffer(
-        indices,
-        |bytes, destination| unsafe { buffer.Lock(0, bytes, destination, D3DLOCK_DISCARD as u32) },
-        || unsafe { buffer.Unlock() },
-        "index buffer",
-    )
-}
-
 fn upload_buffer<T: Copy>(
     values: &[T],
     lock: impl FnOnce(u32, *mut *mut c_void) -> windows::core::Result<()>,
@@ -684,22 +678,23 @@ unsafe fn setup_render_state(
             (D3DRS_COLORWRITEENABLE, u32::MAX),
             (D3DRS_SRGBWRITEENABLE, 0),
         ] {
-            set_render_state(device, state, value)?;
+            device
+                .SetRenderState(state, value)
+                .map_err(|error| d3d_error("IDirect3DDevice9::SetRenderState", error))?;
         }
 
-        for (state, value) in [
-            (D3DTSS_COLOROP, D3DTOP_MODULATE.0 as u32),
-            (D3DTSS_COLORARG1, D3DTA_TEXTURE),
-            (D3DTSS_COLORARG2, D3DTA_DIFFUSE),
-            (D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32),
-            (D3DTSS_ALPHAARG1, D3DTA_TEXTURE),
-            (D3DTSS_ALPHAARG2, D3DTA_DIFFUSE),
+        for (stage, state, value) in [
+            (0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as u32),
+            (0, D3DTSS_COLORARG1, D3DTA_TEXTURE),
+            (0, D3DTSS_COLORARG2, D3DTA_DIFFUSE),
+            (0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32),
+            (0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE),
+            (0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE),
+            (1, D3DTSS_COLOROP, D3DTOP_DISABLE.0 as u32),
+            (1, D3DTSS_ALPHAOP, D3DTOP_DISABLE.0 as u32),
         ] {
-            set_texture_stage_state(device, state, value)?;
-        }
-        for state in [D3DTSS_COLOROP, D3DTSS_ALPHAOP] {
             device
-                .SetTextureStageState(1, state, D3DTOP_DISABLE.0 as u32)
+                .SetTextureStageState(stage, state, value)
                 .map_err(|error| d3d_error("IDirect3DDevice9::SetTextureStageState", error))?;
         }
     }
@@ -723,14 +718,12 @@ unsafe fn set_sampler_state(
             (D3DSAMP_MAGFILTER, magnification.0 as u32),
             (D3DSAMP_MINFILTER, minification.0 as u32),
             (D3DSAMP_MIPFILTER, D3DTEXF_NONE.0 as u32),
+            (D3DSAMP_ADDRESSU, address.0 as u32),
+            (D3DSAMP_ADDRESSV, address.0 as u32),
+            (D3DSAMP_ADDRESSW, address.0 as u32),
         ] {
             device
                 .SetSamplerState(0, state, value)
-                .map_err(|error| d3d_error("IDirect3DDevice9::SetSamplerState", error))?;
-        }
-        for state in [D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_ADDRESSW] {
-            device
-                .SetSamplerState(0, state, address.0 as u32)
                 .map_err(|error| d3d_error("IDirect3DDevice9::SetSamplerState", error))?;
         }
     }
@@ -744,24 +737,6 @@ fn texture_filter(
         TextureFilter::Nearest => D3DTEXF_POINT,
         TextureFilter::Linear => D3DTEXF_LINEAR,
     }
-}
-
-unsafe fn set_render_state(
-    device: &IDirect3DDevice9,
-    state: windows::Win32::Graphics::Direct3D9::D3DRENDERSTATETYPE,
-    value: u32,
-) -> Result<()> {
-    unsafe { device.SetRenderState(state, value) }
-        .map_err(|error| d3d_error("IDirect3DDevice9::SetRenderState", error))
-}
-
-unsafe fn set_texture_stage_state(
-    device: &IDirect3DDevice9,
-    state: windows::Win32::Graphics::Direct3D9::D3DTEXTURESTAGESTATETYPE,
-    value: u32,
-) -> Result<()> {
-    unsafe { device.SetTextureStageState(0, state, value) }
-        .map_err(|error| d3d_error("IDirect3DDevice9::SetTextureStageState", error))
 }
 
 struct StateBackup<'a> {

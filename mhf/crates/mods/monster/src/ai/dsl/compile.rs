@@ -144,7 +144,7 @@ impl Compiler<'_> {
             .or_else(|| ending.filter(|_| matches!(scope, Scope::Events)));
         self.relocations.clear();
         let mut bytes = Vec::new();
-        let terminated = self.encode_body(body, scope, &mut bytes)?;
+        let terminated = self.encode_sequence(body.iter(), scope, &mut bytes)?;
         if !terminated && let Some(ending) = ending {
             let start = bytes.len();
             finish(&mut bytes, ending, slot)?;
@@ -243,10 +243,6 @@ impl Compiler<'_> {
             )));
         }
         Ok(())
-    }
-
-    fn encode_body(&mut self, body: &[Statement], scope: Scope, out: &mut Vec<u8>) -> Result<bool> {
-        self.encode_sequence(body.iter(), scope, out)
     }
 
     fn encode_sequence<'s>(
@@ -388,7 +384,7 @@ impl Compiler<'_> {
         }
         match &statement.kind {
             StatementKind::EntryBody(body) => {
-                self.encode_body(body, scope, out)?;
+                self.encode_sequence(body.iter(), scope, out)?;
             }
             StatementKind::Handle { handler, then_body } => {
                 out.extend_from_slice(&[0x1b, 0, 1, 0x0c, 4, 1]);
@@ -648,7 +644,7 @@ impl Compiler<'_> {
                 out.extend_from_slice(encoding.end);
             }
             StatementKind::Return | StatementKind::Pass => {
-                unreachable!("handled by encode_body")
+                unreachable!("handled by encode_sequence")
             }
             StatementKind::Call { callee, args } => match callee {
                 Callee::Action { group, id } => {

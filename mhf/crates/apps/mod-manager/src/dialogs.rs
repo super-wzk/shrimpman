@@ -1,9 +1,6 @@
 #[cfg(windows)]
 pub(crate) use native::{export_archive, import_archive};
 
-#[cfg(not(windows))]
-pub(crate) use unsupported::{export_archive, import_archive};
-
 #[cfg(windows)]
 mod native {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
@@ -112,14 +109,11 @@ mod native {
 }
 
 #[cfg(not(windows))]
-mod unsupported {
-    use std::path::PathBuf;
+pub(crate) fn import_archive() -> Result<Option<std::path::PathBuf>, String> {
+    Err("当前平台不支持原生文件选择器，请输入整合包路径。".to_owned())
+}
 
-    pub(crate) fn import_archive() -> Result<Option<PathBuf>, String> {
-        Err("当前平台不支持原生文件选择器，请输入整合包路径。".to_owned())
-    }
-
-    pub(crate) fn export_archive() -> Result<Option<PathBuf>, String> {
-        Err("当前平台不支持原生文件选择器，请输入导出路径。".to_owned())
-    }
+#[cfg(not(windows))]
+pub(crate) fn export_archive() -> Result<Option<std::path::PathBuf>, String> {
+    Err("当前平台不支持原生文件选择器，请输入导出路径。".to_owned())
 }

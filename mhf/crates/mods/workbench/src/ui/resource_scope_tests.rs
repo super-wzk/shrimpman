@@ -90,18 +90,8 @@ struct Harness {
 
 impl Harness {
     fn new(show_encoding_layers: bool) -> Self {
-        let root = std::env::temp_dir();
-        let worker = Arc::new(Worker::start(root.clone(), root.join("exports")).unwrap());
-        let mut workbench = Workbench::new(
-            Arc::new(Control::default()),
-            worker,
-            root,
-            ViewSettings {
-                show_encoding_layers,
-                ..ViewSettings::default()
-            },
-            None,
-        );
+        let mut workbench = tests::preview_fixture();
+        workbench.view.show_encoding_layers = show_encoding_layers;
         workbench.loaded_document(document(0));
         let context = egui::Context::default();
         context.all_styles_mut(|style| style.animation_time = 0.0);
@@ -169,18 +159,7 @@ impl Harness {
 
     fn click(&mut self, inspector: bool, position: Pos2) {
         for pressed in [true, false] {
-            self.frame(
-                inspector,
-                vec![
-                    Event::PointerMoved(position),
-                    Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
+            self.frame(inspector, tests::pointer(position, pressed));
         }
     }
 
@@ -275,29 +254,22 @@ fn reference_selection_survives_resource_type_changes_and_inspection_errors() {
 
 #[test]
 fn shared_package_rows_keep_independent_expansion_state_in_each_branch() {
+    let models = |frame: &Frame| {
+        frame
+            .0
+            .iter()
+            .filter(|(text, _)| text.starts_with("encoded-model ·"))
+            .count()
+    };
     let mut harness = Harness::new(false);
     harness.open_caller_model();
     let frame = harness.frame(false, vec![]);
     harness.click(false, frame.label("owner ·"));
     let frame = harness.frame(false, vec![]);
-    assert_eq!(
-        frame
-            .0
-            .iter()
-            .filter(|(text, _)| text.starts_with("encoded-model ·"))
-            .count(),
-        1
-    );
+    assert_eq!(models(&frame), 1);
     harness.click(false, frame.label("payload ·"));
     let frame = harness.frame(false, vec![]);
-    assert_eq!(
-        frame
-            .0
-            .iter()
-            .filter(|(text, _)| text.starts_with("encoded-model ·"))
-            .count(),
-        2
-    );
+    assert_eq!(models(&frame), 2);
     let caller_package = frame
         .0
         .iter()
@@ -308,12 +280,5 @@ fn shared_package_rows_keep_independent_expansion_state_in_each_branch() {
         .center();
     harness.click(false, caller_package);
     let frame = harness.frame(false, vec![]);
-    assert_eq!(
-        frame
-            .0
-            .iter()
-            .filter(|(text, _)| text.starts_with("encoded-model ·"))
-            .count(),
-        1
-    );
+    assert_eq!(models(&frame), 1);
 }

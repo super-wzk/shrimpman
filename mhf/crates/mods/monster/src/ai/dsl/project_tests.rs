@@ -216,6 +216,7 @@ fn recovery_meter_replenishment_requires_the_supported_u8_priority() {
         "self.replenish_recovery_meter;",
         "if self.replenish_recovery_meter(0x50) {}",
         "context.replenish_recovery_meter(0x50);",
+        "self.extend_recovery_cooldown(80);",
     ]);
     for priority in ["0", "0x4e", "0x40", "0x60", "255"] {
         let error = parse(&format!(
@@ -241,11 +242,6 @@ fn recovery_meter_replenishment_requires_the_supported_u8_priority() {
             "{error}"
         );
     }
-}
-
-#[test]
-fn recovery_cooldown_method_name_is_rejected() {
-    rejects(["self.extend_recovery_cooldown(80);"]);
 }
 
 #[test]
@@ -306,19 +302,15 @@ fn area_change_initialization_works_in_entries_and_imported_conditionals() {
 
 #[test]
 fn area_change_initialization_requires_four_u8_arguments_and_statement_context() {
-    for args in ["", "0", "0, 2", "0, 2, 1", "0, 2, 1, 0, 0", "0 2, 1, 0"] {
-        let source = format!("mhf_ai 1; species 6; fn main() {{ self.init_area_change({args}); }}");
-        assert!(parse(&source).is_err(), "{source}");
-    }
+    rejects(
+        ["", "0", "0, 2", "0, 2, 1", "0, 2, 1, 0, 0", "0 2, 1, 0"]
+            .map(|args| format!("self.init_area_change({args});")),
+    );
     for index in 0..4 {
         for invalid in ["-1", "256", "1.5", "true"] {
             let mut args = ["0", "2", "1", "0"];
             args[index] = invalid;
-            let source = format!(
-                "mhf_ai 1; species 6; fn main() {{ self.init_area_change({}); }}",
-                args.join(", ")
-            );
-            assert!(parse(&source).is_err(), "{source}");
+            rejects([format!("self.init_area_change({});", args.join(", "))]);
         }
     }
     rejects([
@@ -1025,16 +1017,13 @@ fn landing_and_departure_points_encode_in_entries_and_nested_imports() {
 #[test]
 fn landing_and_departure_points_require_one_u8_index_after_the_point_kind() {
     for kind in ["Landing", "Departure"] {
-        for arguments in ["", ",", ", 256", ", -1", ", 1.5", ", true", ", 0, 1"] {
-            let source = format!(
-                "mhf_ai 1; species 6; fn main() {{ self.select_target_point(PointTarget::{kind}{arguments}); }}"
-            );
-            assert!(parse(&source).is_err(), "{source}");
-        }
-        let source = format!(
-            "mhf_ai 1; species 6; fn main() {{ if self.select_target_point(PointTarget::{kind}, 0) {{}} }}"
+        rejects(
+            ["", ",", ", 256", ", -1", ", 1.5", ", true", ", 0, 1"]
+                .map(|args| format!("self.select_target_point(PointTarget::{kind}{args});")),
         );
-        assert!(parse(&source).is_err(), "{source}");
+        rejects([format!(
+            "if self.select_target_point(PointTarget::{kind}, 0) {{}}"
+        )]);
     }
     rejects([
         "self.select_target_point(PointTarget::Unknown, 0);",
@@ -1101,12 +1090,7 @@ fn active_condition_encodes_nested_branches_and_validates_property_syntax() {
             0x08, 0, 0x08, 0, 0x92, 0x08, 1, 0x4d, 0x08, 2, 0x08, 1, 0xff, 0, 0x08, 2, 0xff, 0
         ]
     );
-    for body in ["if self.active() {}", "self.active;", "self.active = 1;"] {
-        assert!(
-            parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err(),
-            "{body}"
-        );
-    }
+    rejects(["if self.active() {}", "self.active;", "self.active = 1;"]);
 }
 
 #[test]
@@ -1124,9 +1108,7 @@ fn enraged_conditions_work_in_states_events_and_mixed_branches() {
         &[0x35, 0, 0x92, 0x35, 2],
         &[(EVENT_SLOTS[4].root_index, EVENT_SLOTS[4].ending)],
     );
-    for body in ["self.enraged = 1;", "if self.enraged() {}"] {
-        assert!(parse(&format!("mhf_ai 1; species 6; fn main() {{ {body} }}")).is_err());
-    }
+    rejects(["self.enraged = 1;", "if self.enraged() {}"]);
 }
 
 #[test]
@@ -2406,17 +2388,8 @@ fn handle_keeps_the_slot_call_level_and_the_handler_tail() {
     );
     assert_eq!(script(&compiled.program, 1, 0), [0x82, 0, 7, 0xff, 1]);
     // leaf is table 15, so a pass inside it returns with that level's ending.
-    let Node::Table(root) = &compiled.program.nodes[compiled.program.root] else {
-        panic!()
-    };
-    let Node::Table(table) = &compiled.program.nodes[root.get(15).unwrap()] else {
-        panic!()
-    };
-    let Node::Script(leaf) = &compiled.program.nodes[table.get(7).unwrap()] else {
-        panic!()
-    };
     assert_eq!(
-        leaf,
+        script(&compiled.program, 15, 7),
         &[0x35, 0, 0x0d, 0x04, 0xff, 2, 0x35, 2, 0x1e, 0xff, 2]
     );
 }

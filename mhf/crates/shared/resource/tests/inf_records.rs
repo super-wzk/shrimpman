@@ -1,7 +1,10 @@
+pub mod support;
+
 use mhf_resource::{
     binary::Reader,
     inf::{self, Inf, QuestLayout},
 };
+use support::{dword as word, word as short};
 
 const LAYOUT: QuestLayout = QuestLayout {
     root_field: 20,
@@ -13,14 +16,6 @@ const LAYOUT: QuestLayout = QuestLayout {
     record_id_field: 46,
     parts: 8,
 };
-
-fn word(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-fn short(bytes: &mut [u8], offset: usize, value: u16) {
-    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
 
 fn sample() -> Vec<u8> {
     let mut bytes = vec![0xa5; 640];

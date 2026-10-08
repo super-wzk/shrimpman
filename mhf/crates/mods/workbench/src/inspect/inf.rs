@@ -68,14 +68,8 @@ impl Builder {
     }
 
     fn inf_owner(&self, node: usize) -> Result<usize, String> {
-        let mut parent = self.parents[node];
-        while let Some(index) = parent {
-            if self.document.nodes[index].kind == Kind::Inf {
-                return Ok(index);
-            }
-            parent = self.parents[index];
-        }
-        Err("INF 记录缺少所属数据文件".into())
+        self.ancestor(node, |kind| kind == Kind::Inf)
+            .ok_or_else(|| "INF 记录缺少所属数据文件".into())
     }
 
     pub(super) fn inf_category_records(&mut self, node: usize, index: usize) -> Result<(), String> {

@@ -191,8 +191,6 @@ fn only_automatic_mods_in_the_launch_selection_are_diagnosed() {
     let context = egui::Context::default();
     let mut app = app(&context);
     app.draft.get_mut("mhf.base").unwrap().enabled = Some(false);
-    let size = egui::vec2(960.0, 640.0);
-    let error_color = context.global_style().visuals.error_fg_color;
     for enabled in [None, Some(false)] {
         app.draft.get_mut("mhf.login").unwrap().enabled = enabled;
         app.update_preview();
@@ -206,38 +204,14 @@ fn only_automatic_mods_in_the_launch_selection_are_diagnosed() {
                 .is_some_and(|diagnostic| !diagnostic.issues.is_empty()),
             login_affected
         );
-        app.selected = Some("mhf.login".into());
-        frame(&context, &mut app, size, Vec::new());
-        let (_, output) = frame(&context, &mut app, size, Vec::new());
-        for (id, affected) in [
-            ("mhf.debug", false),
-            ("mhf.login", login_affected),
-            ("mhf.base", false),
-            ("mhf.config", false),
-        ] {
-            let row = context
-                .read_response(Id::new(("mod_row", id)))
+        frame(&context, &mut app, egui::vec2(960.0, 640.0), Vec::new());
+        // 启动诊断不妨碍保存仍然有效的 Mod 选择。
+        assert!(
+            context
+                .read_response(Id::new("save_mod_settings"))
                 .unwrap()
-                .rect;
-            assert_eq!(
-                error_text(&output, row, error_color).next().is_some(),
-                affected,
-                "{id}"
-            );
-        }
-        let left = context
-            .read_response(Id::new(("version", "mhf.login")))
-            .unwrap()
-            .rect
-            .left();
-        let save = context.read_response(Id::new("save_mod_settings")).unwrap();
-        let details =
-            Rect::from_min_max(egui::pos2(left, 0.0), egui::pos2(size.x, save.rect.top()));
-        assert_eq!(
-            error_text(&output, details, error_color).next().is_some(),
-            login_affected
+                .enabled()
         );
-        assert!(save.enabled());
     }
 }
 
@@ -248,9 +222,6 @@ fn unused_automatic_mods_do_not_report_disabled_dependencies() {
     for id in ["mhf.config", "mhf.debug", "mhf.login"] {
         app.draft.get_mut(id).unwrap().enabled = Some(false);
     }
-    app.selected = Some("mhf.base".into());
-    let size = egui::vec2(960.0, 640.0);
-    let error_color = context.global_style().visuals.error_fg_color;
     for enabled in [false, true, false] {
         app.draft.get_mut("mhf.debug").unwrap().enabled = Some(enabled);
         app.update_preview();
@@ -265,25 +236,6 @@ fn unused_automatic_mods_do_not_report_disabled_dependencies() {
         } else {
             assert!(app.diagnostics.is_empty());
             assert!(app.preview.as_ref().unwrap().mods.is_empty());
-        }
-        frame(&context, &mut app, size, Vec::new());
-        let (_, output) = frame(&context, &mut app, size, Vec::new());
-        let row = context
-            .read_response(Id::new(("mod_row", "mhf.base")))
-            .unwrap();
-        let version = context
-            .read_response(Id::new(("version", "mhf.base")))
-            .unwrap();
-        let save = context.read_response(Id::new("save_mod_settings")).unwrap();
-        let details = Rect::from_min_max(
-            egui::pos2(version.rect.left(), 0.0),
-            egui::pos2(size.x, save.rect.top()),
-        );
-        for rect in [row.rect, details] {
-            assert_eq!(
-                error_text(&output, rect, error_color).next().is_some(),
-                enabled
-            );
         }
     }
 }

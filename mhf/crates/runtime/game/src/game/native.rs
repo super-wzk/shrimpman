@@ -10,7 +10,7 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HGLOBAL, HINSTANCE, HMODULE},
+        Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HGLOBAL, HMODULE},
         System::{
             LibraryLoader::{GetModuleHandleA, GetProcAddress, LoadLibraryA},
             Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock},
@@ -40,7 +40,9 @@ impl NativeGame {
         game_dir: &str,
         params: MhfLaunchParams32,
     ) -> Result<Self, String> {
-        let host_message_buffer = set_host_message(profile.host_message)?;
+        let host_message_buffer = CString::new(profile.host_message)
+            .map_err(|_| "host message must not contain NUL".to_owned())?;
+        HOST_MESSAGE.store(host_message_buffer.as_ptr().cast_mut(), Ordering::Relaxed);
 
         let process_id = unsafe { GetCurrentProcessId() };
         let mutex_name_text = format!("{} {process_id}", profile.instance_mutex_prefix);
@@ -64,7 +66,11 @@ impl NativeGame {
             function32(host_message as *const ()),
         );
         data.params = MhfLaunchParams32 {
-            module_instance: ptr32(module_handle()?.0),
+            module_instance: ptr32(
+                unsafe { GetModuleHandleA(PCSTR::null()) }
+                    .map_err(|error| format!("GetModuleHandleA failed: {error}"))?
+                    .0,
+            ),
             mhf_mutex_number: 0,
             instance_mutex: ptr32((*instance_mutex).0),
             master_ready_mutex: ptr32((*ready_mutex).0),
@@ -74,14 +80,41 @@ impl NativeGame {
             host_services: ptr32(&mut data.host_services),
             ..params
         };
-        fill_launcher_fields(&mut data.params, profile, game_dir, &mutex_name_text)?;
+        copy_c_string(
+            "game directory",
+            &mut data.params.game_dir,
+            game_dir.as_bytes(),
+        )?;
+        copy_c_string(
+            "launcher directory",
+            &mut data.params.launcher_dir,
+            game_dir.as_bytes(),
+        )?;
+        copy_c_string(
+            "mutex name",
+            &mut data.params.mutex_name,
+            mutex_name_text.as_bytes(),
+        )?;
+        copy_c_string(
+            "INI name",
+            &mut data.params.ini_name,
+            profile.ini_name.as_bytes(),
+        )?;
         copy_c_string(
             "ready mutex name",
             &mut data.ready_mutex_name,
             ready_name_text.as_bytes(),
         )?;
 
-        let game_global_alloc = allocate_global()?;
+        let game_global_alloc = unsafe {
+            Owned::new(
+                GlobalAlloc(
+                    GMEM_MOVEABLE | GMEM_ZEROINIT,
+                    std::mem::size_of::<MhfGlobalData32>(),
+                )
+                .map_err(|error| format!("GlobalAlloc failed: {error}"))?,
+            )
+        };
         data.params.global_alloc = ptr32((*game_global_alloc).0);
 
         Ok(Self {
@@ -135,39 +168,6 @@ impl NativeGame {
     }
 }
 
-fn fill_launcher_fields(
-    params: &mut MhfLaunchParams32,
-    profile: &MhfLaunchProfile<'_>,
-    game_dir: &str,
-    mutex_name: &str,
-) -> Result<(), String> {
-    copy_c_string("game directory", &mut params.game_dir, game_dir.as_bytes())?;
-    copy_c_string(
-        "launcher directory",
-        &mut params.launcher_dir,
-        game_dir.as_bytes(),
-    )?;
-    copy_c_string("mutex name", &mut params.mutex_name, mutex_name.as_bytes())?;
-    copy_c_string(
-        "INI name",
-        &mut params.ini_name,
-        profile.ini_name.as_bytes(),
-    )
-}
-
-fn set_host_message(message: &str) -> Result<CString, String> {
-    let message =
-        CString::new(message).map_err(|_| "host message must not contain NUL".to_owned())?;
-    HOST_MESSAGE.store(message.as_ptr().cast_mut(), Ordering::Relaxed);
-    Ok(message)
-}
-
-fn module_handle() -> Result<HINSTANCE, String> {
-    let handle = unsafe { GetModuleHandleA(PCSTR::null()) }
-        .map_err(|error| format!("GetModuleHandleA failed: {error}"))?;
-    Ok(handle.into())
-}
-
 fn pcstr(value: &CStr) -> PCSTR {
     PCSTR(value.as_ptr().cast())
 }
@@ -207,17 +207,6 @@ fn create_unique_mutex(name: &CStr) -> Result<Owned<HANDLE>, String> {
     } else {
         Ok(handle)
     }
-}
-
-fn allocate_global() -> Result<Owned<HGLOBAL>, String> {
-    let handle = unsafe {
-        GlobalAlloc(
-            GMEM_MOVEABLE | GMEM_ZEROINIT,
-            std::mem::size_of::<MhfGlobalData32>(),
-        )
-    }
-    .map_err(|error| format!("GlobalAlloc failed: {error}"))?;
-    Ok(unsafe { Owned::new(handle) })
 }
 
 extern "C" fn guard_release(_context: *mut c_void) -> u32 {

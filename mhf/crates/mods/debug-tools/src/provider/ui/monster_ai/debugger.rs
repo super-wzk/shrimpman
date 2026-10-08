@@ -273,39 +273,30 @@ impl DebuggerUi {
         let attached = debug.is_some_and(|debug| debug.attached);
         let paused = debug.is_some_and(|debug| debug.paused);
         let mut operation = None;
-        for (id, requested) in [
+        let attachment = if attached {
+            (Icon::Detach, "分离调试器", AiDebugOperation::Detach)
+        } else {
+            (Icon::Attach, "附加调试器", AiDebugOperation::Attach)
+        };
+        let playback = if paused {
+            (Icon::Play, "继续", AiDebugOperation::Continue)
+        } else {
+            (Icon::Pause, "暂停", AiDebugOperation::Pause)
+        };
+        for (id, enabled, (icon, label, requested)) in [
+            ("ai-attach", active, attachment),
+            ("ai-pause", active && attached, playback),
             (
-                "ai-attach",
-                if attached {
-                    AiDebugOperation::Detach
-                } else {
-                    AiDebugOperation::Attach
-                },
+                "ai-step",
+                active && attached && paused,
+                (Icon::Step, "单步", AiDebugOperation::StepInstruction),
             ),
             (
-                "ai-pause",
-                if paused {
-                    AiDebugOperation::Continue
-                } else {
-                    AiDebugOperation::Pause
-                },
+                "ai-run-yield",
+                active && attached && paused,
+                (Icon::StepOut, "至让出", AiDebugOperation::RunUntilYield),
             ),
-            ("ai-step", AiDebugOperation::StepInstruction),
-            ("ai-run-yield", AiDebugOperation::RunUntilYield),
         ] {
-            let (icon, label, enabled) = match requested {
-                AiDebugOperation::Attach => (Icon::Attach, "附加调试器", active),
-                AiDebugOperation::Detach => (Icon::Detach, "分离调试器", active),
-                AiDebugOperation::Pause => (Icon::Pause, "暂停", active && attached),
-                AiDebugOperation::Continue => (Icon::Play, "继续", active && attached),
-                AiDebugOperation::StepInstruction => {
-                    (Icon::Step, "单步", active && attached && paused)
-                }
-                AiDebugOperation::RunUntilYield => {
-                    (Icon::StepOut, "至让出", active && attached && paused)
-                }
-                _ => unreachable!("only live controls appear in this toolbar"),
-            };
             let mut button = IconButton::new(icon, label).id(egui::Id::new(id));
             if id == "ai-attach" {
                 button = button.selected(attached);

@@ -74,12 +74,6 @@ pub(crate) fn install(paths: Paths) -> Result<HookGuard<State>, String> {
 
 struct Opening(bool);
 
-impl Opening {
-    fn enter() -> Self {
-        Self(OPENING.replace(true))
-    }
-}
-
 impl Drop for Opening {
     fn drop(&mut self) {
         OPENING.set(self.0);
@@ -127,7 +121,7 @@ impl Request {
         let entry_error = unsafe { GetLastError() };
         let mut error = LastError(entry_error);
         let invocation = STATE.enter();
-        let opening = Opening::enter();
+        let opening = Opening(OPENING.replace(true));
         if let Some(state) = invocation.state().filter(|_| !opening.0 && self.is_read())
             && let Some(path) = path()
             && let Some(handle) = unsafe { self.replacement(state, &path, &mut error) }

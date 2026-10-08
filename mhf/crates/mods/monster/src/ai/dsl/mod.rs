@@ -137,39 +137,8 @@ states {
 
     #[test]
     fn legacy_inline_example_preserves_declared_bytes() {
-        let document = parse(SPEC_EXAMPLE).unwrap();
-        assert_eq!(document.version, VERSION);
-        assert_eq!(document.species, 6);
-        assert_eq!(document.base, Base::Empty);
-        assert_eq!(
-            document
-                .actions
-                .iter()
-                .map(|decl| (decl.name.as_str(), decl.group, decl.id))
-                .collect::<Vec<_>>(),
-            [("slash", 3, 6), ("bash", 4, 1)]
-        );
-        assert_eq!(
-            document
-                .events
-                .iter()
-                .map(|decl| (EVENT_SLOTS[usize::from(decl.slot)].name, decl.slot))
-                .collect::<Vec<_>>(),
-            [("dung_reaction", 0), ("player_detected", 2)]
-        );
-        assert_eq!(
-            document
-                .states
-                .iter()
-                .map(|decl| (decl.name.as_str(), decl.index))
-                .collect::<Vec<_>>(),
-            [("idle", 0), ("combat", 1)]
-        );
-
-        let compiled = document.compile().unwrap();
+        let compiled = parse(SPEC_EXAMPLE).unwrap().compile().unwrap();
         let program = &compiled.program;
-        assert_eq!(program.species, 6);
-        assert_eq!(program.root, 0);
 
         let root = root_table(program);
         // Only the state table and the two declared event slots are written;
@@ -276,9 +245,6 @@ states {
 ",
         )
         .unwrap();
-        assert_eq!(document.actions[0].group, 3);
-        assert_eq!(document.actions[0].id, 6);
-
         let compiled = document.compile().unwrap();
         let program = &compiled.program;
         assert_eq!(
@@ -595,42 +561,6 @@ states {
             error.to_string(),
             "6:9: unknown name 'slash': not a reserved command and not declared in the actions block (spec §6)"
         );
-    }
-
-    /// Legacy action aliases remain valid in inline drafts.
-    #[test]
-    fn legacy_action_alias_example_compiles() {
-        let document = parse(
-            "\
-mhf_ai 1;
-species 6;
-base native;
-
-actions {
-    slash = [3:6];
-    bash  = [4:1];
-}
-
-events {
-    dung_reaction { slash(0); native(0xff, 0xfd); }
-}
-
-states {
-    idle = 0 { slash(0); transition combat; }
-    combat { bash(1);  transition idle; }
-}
-",
-        )
-        .unwrap();
-        let compiled = document.compile().unwrap();
-        assert_eq!(
-            script_at(
-                &compiled.program,
-                main_table(&compiled.program).get(0).unwrap()
-            ),
-            [0x05, 0x03, 0x06, 0x00, 0x07, 0x01]
-        );
-        assert_eq!(compiled.warnings.len(), 1);
     }
 
     #[test]

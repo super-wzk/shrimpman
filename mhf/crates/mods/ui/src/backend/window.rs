@@ -329,7 +329,8 @@ unsafe extern "system" fn overlay_window_proc(
 }
 
 fn detach_window(hwnd: HWND, original: WindowProc, state: &Arc<WindowState>) {
-    unsafe { restore_window_proc(hwnd, original) };
+    let original = original as *const () as usize as WindowLong;
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original) };
     state.capture.reset();
     let mut route = window_route();
     if route
@@ -347,13 +348,6 @@ unsafe fn replace_window_proc(hwnd: HWND) -> Option<WindowProc> {
         None
     } else {
         Some(unsafe { mem::transmute::<WindowLong, WindowProc>(previous) })
-    }
-}
-
-unsafe fn restore_window_proc(hwnd: HWND, original: WindowProc) {
-    let original = original as *const () as usize as WindowLong;
-    unsafe {
-        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original);
     }
 }
 

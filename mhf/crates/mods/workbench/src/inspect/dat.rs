@@ -199,14 +199,8 @@ impl Builder {
     }
 
     fn dat_owner(&self, node: usize) -> Result<usize, String> {
-        let mut parent = self.parents[node];
-        while let Some(index) = parent {
-            if self.document.nodes[index].kind == Kind::Dat {
-                return Ok(index);
-            }
-            parent = self.parents[index];
-        }
-        Err("DAT 记录缺少所属数据文件".into())
+        self.ancestor(node, |kind| kind == Kind::Dat)
+            .ok_or_else(|| "DAT 记录缺少所属数据文件".into())
     }
 
     pub(super) fn dat_table_records(&mut self, node: usize, index: usize) -> Result<(), String> {
@@ -307,24 +301,9 @@ impl Builder {
         }
         // Retain all unclassified bytes, including padding and non-text data
         // in the text catalog's mixed records. No zero-filled gaps are dropped.
-        let mut offset = 0;
-        while offset < bytes.len() {
-            if covered[offset] {
-                offset += 1;
-                continue;
-            }
-            let start = offset;
-            while offset < bytes.len() && !covered[offset] {
-                offset += 1;
-            }
-            self.field(
-                node,
-                format!("未定义字段 {start:#04X}"),
-                hex(&bytes[start..offset]),
-                range.start + start,
-                offset - start,
-            );
-        }
+        self.unclassified_fields(node, bytes, range.start, &covered, |start| {
+            format!("未定义字段 {start:#04X}")
+        });
         Ok(())
     }
 

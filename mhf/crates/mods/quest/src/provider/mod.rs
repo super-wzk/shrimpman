@@ -36,17 +36,13 @@ struct SessionData {
 impl Session {
     /// Read an original Japanese BIN/JKR quest file, retaining its CP932 text.
     pub fn new(bytes: &[u8]) -> Result<Self, String> {
-        Ok(Self::from_quest(binary::Quest::parse(bytes)?))
-    }
-
-    fn from_quest(quest: binary::Quest) -> Self {
-        Self {
+        Ok(Self {
             inner: Arc::new(SessionData {
-                quest,
+                quest: binary::Quest::parse(bytes)?,
                 quest_override: Mutex::new(None),
                 started: AtomicBool::new(false),
             }),
-        }
+        })
     }
 
     pub(crate) fn quest_id(&self) -> u16 {

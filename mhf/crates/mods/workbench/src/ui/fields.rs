@@ -362,13 +362,15 @@ fn scalar_input(
     focused: &mut Option<egui::Id>,
 ) -> bool {
     macro_rules! drag {
-        ($ty:ty, $range:expr) => {{
-            if let Ok(mut value) = text.parse::<$ty>() {
+        ($ty:ty, $speed:expr $(, $range:expr)?) => {{
+            if let Ok(mut value) = text.parse::<$ty>()
+                && f64::from(value).is_finite()
+            {
                 let response = ui.add_sized(
                     ui.available_size(),
                     egui::DragValue::new(&mut value)
-                        .range($range)
-                        .speed(1.0)
+                        $(.range($range))?
+                        .speed($speed)
                         .update_while_editing(true),
                 );
                 track_focus(&response, focused);
@@ -382,33 +384,14 @@ fn scalar_input(
         }};
     }
     match scalar {
-        ScalarType::U8 => drag!(u8, u8::MIN..=u8::MAX),
-        ScalarType::U16 => drag!(u16, u16::MIN..=u16::MAX),
-        ScalarType::U32 => drag!(u32, u32::MIN..=u32::MAX),
-        ScalarType::U64 => single_line(ui, text, focused).changed(),
-        ScalarType::I8 => drag!(i8, i8::MIN..=i8::MAX),
-        ScalarType::I16 => drag!(i16, i16::MIN..=i16::MAX),
-        ScalarType::I32 => drag!(i32, i32::MIN..=i32::MAX),
-        ScalarType::I64 => single_line(ui, text, focused).changed(),
-        ScalarType::F32 | ScalarType::F64 => {
-            if let Ok(mut value) = text.parse::<f64>()
-                && value.is_finite()
-            {
-                let response = ui.add_sized(
-                    ui.available_size(),
-                    egui::DragValue::new(&mut value)
-                        .speed(0.01)
-                        .update_while_editing(true),
-                );
-                track_focus(&response, focused);
-                if response.changed() {
-                    *text = value.to_string();
-                }
-                response.changed()
-            } else {
-                single_line(ui, text, focused).changed()
-            }
-        }
+        ScalarType::U8 => drag!(u8, 1.0, u8::MIN..=u8::MAX),
+        ScalarType::U16 => drag!(u16, 1.0, u16::MIN..=u16::MAX),
+        ScalarType::U32 => drag!(u32, 1.0, u32::MIN..=u32::MAX),
+        ScalarType::I8 => drag!(i8, 1.0, i8::MIN..=i8::MAX),
+        ScalarType::I16 => drag!(i16, 1.0, i16::MIN..=i16::MAX),
+        ScalarType::I32 => drag!(i32, 1.0, i32::MIN..=i32::MAX),
+        ScalarType::U64 | ScalarType::I64 => single_line(ui, text, focused).changed(),
+        ScalarType::F32 | ScalarType::F64 => drag!(f64, 0.01),
     }
 }
 
