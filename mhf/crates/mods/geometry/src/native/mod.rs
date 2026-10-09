@@ -43,7 +43,6 @@ static SLOT: HookSlot<State> = HookSlot::new();
 
 struct State {
     module: ModuleReference,
-    load_original: usize,
     construct_alternate_original: usize,
     cache_dispatch_original: usize,
     cache_completion_originals: equipment_cache::CompletionOriginals,
@@ -162,7 +161,7 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
     unsafe { weapon_textures::validate(base) }?;
     unsafe { stage_cache::validate(base) }?;
     let retained = unsafe { ModuleReference::acquire(module) }?;
-    let load_original = unsafe {
+    unsafe {
         hooks.create(
             "32-bit FMOD indices",
             (base + LOAD) as _,
@@ -221,7 +220,6 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
     let hooks = unsafe {
         hooks.install(State {
             module: retained,
-            load_original: load_original as usize,
             construct_alternate_original: construct_alternate_original as usize,
             cache_dispatch_original: cache_dispatch_original as usize,
             cache_completion_originals,
@@ -304,7 +302,7 @@ unsafe extern "C" fn load(registers: *mut abi::Registers) {
         return;
     };
     registers.eax = match catch_unwind(AssertUnwindSafe(|| unsafe {
-        load_indices(state, index, source, root)
+        load_source(state, index, source, root)
     })) {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => {
@@ -312,7 +310,7 @@ unsafe extern "C" fn load(registers: *mut abi::Registers) {
             0
         }
         Err(_) => {
-            eprintln!("geometry object {index}: index conversion panicked");
+            eprintln!("geometry object {index}: source conversion panicked");
             0
         }
     };
@@ -343,7 +341,7 @@ unsafe extern "C" fn construct_alternate(registers: *mut abi::Registers) {
     };
 }
 
-unsafe fn load_indices(
+unsafe fn load_source(
     state: &State,
     index: u32,
     source: *mut Source,
@@ -354,31 +352,38 @@ unsafe fn load_indices(
     }
     let size = unsafe { get::<u32>(root as usize + 8) };
     mesh::byte_size(size as usize, 1)?;
-    // The verified converter only reads the FMOD input and writes separate CRT
-    // buffers. Borrowed index bytes remain valid through the encoding below.
-    let geometry = fmod::read(unsafe { slice::from_raw_parts(root, size as usize) }, index)?;
-    // The widest existing native vertex conversion uses 72 bytes per vertex.
-    // Check before calling it, so its 32-bit allocation multiplication cannot wrap.
-    mesh::byte_size(geometry.vertex_count as usize, 72)?;
-    // Retain the native vertex, colour, tangent and skin-weight conversions.
-    // Their temporary WORD indices are replaced before any consumer sees them.
-    if unsafe { abi::load_original(state.load_original, index, source, root) } == 0 {
-        return Ok(0);
-    }
-    let source = unsafe { &mut *source };
-    if source.vertex_count != geometry.vertex_count
-        || source.strip_count as usize != geometry.strips.len()
-    {
-        return Err("FMOD selection disagrees with the native converter".into());
-    }
-    let bytes = geometry.encoded_size(source.flags)?;
-    let allocation = unsafe { state.allocate(bytes) }?;
-    geometry.encode_into(source.flags, unsafe {
-        slice::from_raw_parts_mut(allocation.pointer.cast(), bytes as usize / 4)
+    let parsed = fmod::read_source(unsafe { slice::from_raw_parts(root, size as usize) }, index)?;
+    let index_bytes = parsed.geometry.encoded_size(parsed.flags)?;
+    let indices = unsafe { state.allocate(index_bytes) }?;
+    let vertices = unsafe { state.allocate(parsed.vertices.byte_size) }?;
+    parsed.geometry.encode_into(parsed.flags, unsafe {
+        slice::from_raw_parts_mut(indices.pointer.cast(), index_bytes as usize / 4)
     });
-    unsafe { state.free(source.indices) };
-    source.indices = allocation.into_raw();
-    source.index_bytes = bytes;
+    parsed.vertices.encode_into(unsafe {
+        slice::from_raw_parts_mut(
+            vertices.pointer.cast(),
+            parsed.vertices.byte_size as usize / 4,
+        )
+    })?;
+    // Publish together only after conversion succeeds. The native constructor
+    // owns both CRT allocations from this point and frees them after building.
+    unsafe {
+        ptr::write(
+            source,
+            Source {
+                flags: parsed.flags,
+                strip_count: parsed.geometry.strips.len() as u32,
+                indices: indices.into_raw(),
+                vertex_format: parsed.vertices.format,
+                vertices: vertices.into_raw(),
+                vertex_count: parsed.geometry.vertex_count,
+                vertex_bytes: parsed.vertices.byte_size,
+                index_bytes,
+                material_count: parsed.material_count,
+                reserved: 0,
+            },
+        );
+    }
     Ok(1)
 }
 
@@ -722,6 +727,79 @@ mod tests {
 
     static UNEXPECTED_TEXTURE_RELEASES: AtomicUsize = AtomicUsize::new(0);
 
+    #[derive(Debug, PartialEq)]
+    struct SourceSnapshot {
+        metadata: [u32; 6],
+        vertices: Vec<u8>,
+    }
+
+    unsafe fn source_snapshot(base: usize, file: &[u8], wide: bool) -> (SourceSnapshot, Vec<u32>) {
+        let mut source: Source = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { abi::load_original(base + LOAD, 0, &mut source, file.as_ptr()) },
+            1
+        );
+        let stride = match source.vertex_format {
+            0x25 => 28,
+            0x35 => 36,
+            0x4135 => 60,
+            format => panic!("unexpected test vertex format {format:#x}"),
+        };
+        let snapshot = SourceSnapshot {
+            metadata: [
+                source.flags,
+                source.strip_count,
+                source.vertex_format,
+                source.vertex_count,
+                source.vertex_bytes,
+                u32::from(source.material_count),
+            ],
+            // Original untextured sources have an uninitialized allocation tail.
+            vertices: unsafe {
+                slice::from_raw_parts(source.vertices, source.vertex_count as usize * stride)
+            }
+            .to_vec(),
+        };
+        let indices = if wide {
+            unsafe {
+                slice::from_raw_parts(
+                    source.indices.cast::<u32>(),
+                    source.index_bytes as usize / 4,
+                )
+            }
+            .to_vec()
+        } else {
+            Vec::new()
+        };
+        let free: unsafe extern "C" fn(*mut u8) = unsafe { transmute(base + 0x015ab644) };
+        unsafe {
+            free(source.vertices);
+            free(source.indices);
+        }
+        (snapshot, indices)
+    }
+
+    unsafe fn verify_source_failures(base: usize) {
+        let mut bad_weights = crate::tests::source_resource(3, true, true, false);
+        let offset = bad_weights
+            .windows(4)
+            .rposition(|bytes| bytes == 0xc0000u32.to_le_bytes())
+            .unwrap();
+        bad_weights[offset + 12..offset + 16].copy_from_slice(&5u32.to_le_bytes());
+        for file in [
+            bad_weights,
+            crate::tests::source_resource(3, false, false, true),
+        ] {
+            let mut source: Source = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { abi::load_original(base + LOAD, 0, &mut source, file.as_ptr()) },
+                0
+            );
+            assert!(source.indices.is_null());
+            assert!(source.vertices.is_null());
+        }
+    }
+
     unsafe extern "system" fn unexpected_texture_release(_texture: *mut c_void) -> u32 {
         UNEXPECTED_TEXTURE_RELEASES.fetch_add(1, Ordering::Relaxed);
         1
@@ -784,6 +862,19 @@ mod tests {
                 .expect("load game DLL and its adjacent dependencies");
         let _module = unsafe { ModuleReference::from_owned(module) };
         let base = module.0 as usize;
+        let mut sources = Vec::new();
+        for count in [3, 70_001] {
+            for (uv, skinned, attribute) in [
+                (false, false, false),
+                (true, false, false),
+                (true, true, false),
+                (true, true, true),
+            ] {
+                let file = crate::tests::source_resource(count, uv, skinned, attribute);
+                let expected = unsafe { source_snapshot(base, &file, false) }.0;
+                sources.push((file, expected));
+            }
+        }
         let stage_globals = [
             crate::stage_cache::RAW_GLOBAL,
             crate::stage_cache::DECODED_GLOBAL,
@@ -810,6 +901,13 @@ mod tests {
                 assert_eq!(actual, expected);
             }
             unsafe { verify_protected_texture_release(base) };
+            for (file, expected) in &sources {
+                let (actual, indices) = unsafe { source_snapshot(base, file, true) };
+                assert_eq!(&actual, expected);
+                let parsed = fmod::read(file, 0).unwrap();
+                assert_eq!(indices, parsed.encode(actual.metadata[0]).unwrap());
+            }
+            unsafe { verify_source_failures(base) };
             unsafe { equipment_cache::verify_reclamation(base) };
             unsafe { stage_cache::verify_dynamic_buffers(base) };
             hooks.uninstall().expect("restore geometry hooks");

@@ -20,6 +20,8 @@ mod patches;
 #[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
 mod stage_cache;
 #[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
+mod vertex;
+#[cfg(any(test, all(feature = "provider", windows, target_arch = "x86")))]
 mod weapon_textures;
 
 #[cfg(all(feature = "provider", windows, target_arch = "x86"))]

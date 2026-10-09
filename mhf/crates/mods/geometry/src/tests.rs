@@ -38,6 +38,161 @@ fn resource(vertex_count: u32, strips: &[(bool, Vec<u32>)]) -> Vec<u8> {
     block(1, 1, block(2, 1, object))
 }
 
+pub(crate) fn source_resource(count: u32, uv: bool, skinned: bool, attribute: bool) -> Vec<u8> {
+    let indices = [0, if count > 65_536 { 65_536 } else { 1 }, count - 1];
+    let groups = [(0x30000, 3), (0x40000, 0x8000_0003)]
+        .into_iter()
+        .flat_map(|(kind, header)| {
+            block(
+                kind,
+                1,
+                [header]
+                    .into_iter()
+                    .chain(indices)
+                    .flat_map(u32::to_le_bytes)
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut children = vec![
+        block(5, 2, groups),
+        block(0x50000, 3, vec![0; 12]),
+        block(
+            0x60000,
+            2,
+            [1u32, 2].into_iter().flat_map(u32::to_le_bytes).collect(),
+        ),
+        block(0x70000, count, positions(count)),
+        block(
+            0x80000,
+            count,
+            [0.0f32, 1.0, 0.0]
+                .map(f32::to_le_bytes)
+                .as_flattened()
+                .repeat(count as usize),
+        ),
+        block(
+            0xb0000,
+            count,
+            [11.25f32, 128.9, 255.0, 64.5]
+                .map(f32::to_le_bytes)
+                .as_flattened()
+                .repeat(count as usize),
+        ),
+    ];
+    if uv {
+        children.push(block(
+            0xa0000,
+            count,
+            [0.25f32, 0.75]
+                .map(f32::to_le_bytes)
+                .as_flattened()
+                .repeat(count as usize),
+        ));
+    }
+    if attribute {
+        children.push(block(
+            0x120000,
+            count,
+            [1.0f32, -2.0, 3.0, -4.0]
+                .map(f32::to_le_bytes)
+                .as_flattened()
+                .repeat(count as usize),
+        ));
+    }
+    if skinned {
+        let mut weights = Vec::new();
+        for i in 0..count {
+            let influences: &[(u32, f32)] = match i % 3 {
+                0 => &[(17, 100.0)],
+                1 => &[(1, 0.0), (2, 100.0)],
+                _ => &[(1, 25.0), (2, 25.0), (3, 25.0), (4, 25.0)],
+            };
+            weights.extend((influences.len() as u32).to_le_bytes());
+            for &(bone, weight) in influences {
+                weights.extend(bone.to_le_bytes());
+                weights.extend(weight.to_le_bytes());
+            }
+        }
+        children.push(block(0xc0000, count, weights));
+    }
+    block(
+        1,
+        1,
+        block(2, 1, block(4, children.len() as u32, children.concat())),
+    )
+}
+
+#[test]
+fn source_packing_preserves_native_layout_and_initializes_the_allocation() {
+    use std::mem::MaybeUninit;
+    for (uv, skinned, attribute) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let mut file = vec![0];
+        file.extend(source_resource(3, uv, skinned, attribute));
+        let source = fmod::read_source(&file[1..], 0).unwrap();
+        assert_eq!(source.material_count, 3);
+        assert_eq!(source.flags, 0x121000 | if skinned { VARIANT } else { 0 });
+        assert_eq!(source.geometry.vertex_count, 3);
+        assert_eq!(
+            source.vertices.format,
+            if skinned {
+                0x4135
+            } else if uv {
+                0x35
+            } else {
+                0x25
+            }
+        );
+        let words = source.vertices.byte_size as usize / 4;
+        let mut storage = vec![MaybeUninit::new(0xdead_beef); words + 2];
+        source
+            .vertices
+            .encode_into(&mut storage[1..words + 1])
+            .unwrap();
+        // Successful encoding initializes the complete allocation, including its
+        // untextured tail; surrounding sentinel words are outside that slice.
+        let storage: Vec<_> = storage
+            .into_iter()
+            .map(|v| unsafe { v.assume_init() })
+            .collect();
+        assert_eq!(storage[0], 0xdead_beef);
+        assert_eq!(storage[words + 1], 0xdead_beef);
+        let stride = if skinned {
+            15
+        } else if uv {
+            9
+        } else {
+            7
+        };
+        for (i, vertex) in storage[1..1 + 3 * stride].chunks_exact(stride).enumerate() {
+            assert_eq!(vertex[0], (i as f32).to_bits());
+            assert_eq!(vertex[4], 1.0f32.to_bits());
+            assert_eq!(vertex[6], 0x400b_80ff);
+            if uv {
+                assert_eq!(&vertex[7..9], &[0.25f32.to_bits(), 0.75f32.to_bits()]);
+            }
+            if skinned {
+                assert_eq!(
+                    &vertex[9..13],
+                    if attribute {
+                        [1.0f32, -2.0, 3.0, -4.0].map(f32::to_bits)
+                    } else {
+                        [0; 4]
+                    }
+                );
+                assert_eq!(vertex[13], [0x1100_0000, 0x0202_0000, 0x0102_0304][i]);
+                assert_eq!(vertex[14], [0xff00_0000, 0xff00_0000, 0x3f3f_3f42][i]);
+            }
+        }
+        assert!(storage[1 + 3 * stride..1 + words].iter().all(|&v| v == 0));
+    }
+}
+
 fn compile(geometry: &Geometry<'_>, flags: u32) -> mesh::CompiledMesh {
     let bytes = positions(geometry.vertex_count);
     mesh::compile(

@@ -1,6 +1,9 @@
 //! Checked views of the recursive FMOD blocks consumed by 10002AF0.
 
-use crate::mesh::{self, MATERIAL, VARIANT};
+use crate::{
+    mesh::{self, MATERIAL, VARIANT},
+    vertex,
+};
 use std::{cell::RefCell, ops::Range};
 
 const HEADER: usize = 12;
@@ -15,6 +18,13 @@ struct Block<'a> {
 pub(crate) struct Geometry<'a> {
     pub vertex_count: u32,
     pub strips: Vec<Strip<'a>>,
+}
+
+pub(crate) struct Source<'a> {
+    pub geometry: Geometry<'a>,
+    pub vertices: vertex::Vertices<'a>,
+    pub flags: u32,
+    pub material_count: u16,
 }
 
 pub(crate) struct Strip<'a> {
@@ -32,6 +42,10 @@ pub(crate) fn word(bytes: &[u8], offset: usize) -> Result<u32, String> {
 }
 
 impl<'a> Block<'a> {
+    fn payload(self) -> &'a [u8] {
+        &self.bytes[HEADER..]
+    }
+
     fn read(bytes: &'a [u8]) -> Result<Self, String> {
         let kind = word(bytes, 0)?;
         let count = word(bytes, 4)?;
@@ -143,7 +157,7 @@ thread_local! {
 /// Nested constructions get their own cache; return/unwind releases it.
 ///
 /// # Safety
-/// Every FMOD passed to `read` must remain alive and unchanged throughout this
+/// Every FMOD parsed in this scope must remain alive and unchanged throughout this
 /// call, including between reads. Each construction needs its own scope even
 /// when it reuses the previous construction's source address and size.
 /// The cache stores offsets, never borrowed or dereferenceable native pointers.
@@ -158,9 +172,7 @@ pub(crate) unsafe fn with_cached_objects<T>(construct: impl FnOnce() -> T) -> T 
     construct()
 }
 
-/// Read the same MAIN/OBJECT selection as the native FMOD loader. Indices and
-/// strip counts in the file are 32-bit, including for unmodified game assets.
-pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry<'_>, String> {
+fn object(bytes: &[u8], object_index: u32) -> Result<Block<'_>, String> {
     let object = OBJECTS.with(|cache| {
         if let Some(cache) = cache.borrow_mut().as_mut() {
             return cache.object(bytes, object_index);
@@ -182,89 +194,158 @@ pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry<'_>, Stri
     if object.kind != 4 {
         return Err("FMOD child is not an OBJECT block".into());
     }
-    let mut vertices = None;
-    let mut face = None;
-    let mut materials = None;
-    object.visit_children(|child| {
-        match child.kind {
-            0x70000 if vertices.is_none() => vertices = Some(child),
-            5 if face.is_none() => face = Some(child),
-            0x60000 if materials.is_none() => materials = Some(child),
-            _ => {}
-        }
-        Ok(())
-    })?;
-    let vertices = vertices.ok_or("FMOD object has no vertex block")?;
-    if vertices.count as usize > (vertices.bytes.len() - HEADER) / 12 {
-        return Err("truncated FMOD vertex array".into());
-    }
-    let face = face.ok_or("FMOD object has no face block")?;
-    let mut strips = Vec::new();
-    face.visit_children(|group| {
-        let variant = match group.kind {
-            0x30000 => 0,
-            0x40000 => 1,
-            _ => return Err(format!("unsupported FMOD strip block {:#x}", group.kind)),
-        };
-        let mut cursor = HEADER;
-        if group.count as usize > (group.bytes.len() - HEADER) / 16 {
-            return Err("FMOD strip count exceeds block size".into());
-        }
-        strips
-            .try_reserve(group.count as usize)
-            .map_err(|e| e.to_string())?;
-        for _ in 0..group.count {
-            let packed = word(group.bytes, cursor)?;
-            let count = (packed & 0x7fff_ffff) as usize;
-            cursor += 4;
-            if count < 3 || count > (group.bytes.len() - cursor) / 4 {
-                return Err("invalid FMOD triangle strip length".into());
-            }
-            let material = if let Some(map) = materials {
-                if strips.len() >= map.count as usize {
-                    return Err("FMOD material map is shorter than its strip array".into());
-                }
-                word(map.bytes, HEADER + 4 * strips.len())?
-            } else {
-                0
+    Ok(object)
+}
+
+#[derive(Default)]
+struct ObjectBlocks<'a> {
+    face: Option<Block<'a>>,
+    material_list: Option<Block<'a>>,
+    materials: Option<Block<'a>>,
+    positions: Option<Block<'a>>,
+    normals: Option<Block<'a>>,
+    uvs: Option<Block<'a>>,
+    colors: Option<Block<'a>>,
+    weights: Option<Block<'a>>,
+    attribute: Option<Block<'a>>,
+}
+
+impl<'a> ObjectBlocks<'a> {
+    fn read(bytes: &'a [u8], index: u32) -> Result<Self, String> {
+        let mut blocks = Self::default();
+        object(bytes, index)?.visit_children(|child| {
+            let slot = match child.kind {
+                5 => &mut blocks.face,
+                0x50000 => &mut blocks.material_list,
+                0x60000 => &mut blocks.materials,
+                0x70000 => &mut blocks.positions,
+                0x80000 => &mut blocks.normals,
+                0xa0000 => &mut blocks.uvs,
+                0xb0000 => &mut blocks.colors,
+                0xc0000 => &mut blocks.weights,
+                0x120000 => &mut blocks.attribute,
+                _ => return Ok(()),
             };
-            // Native material tables remain WORD-addressed. This extension
-            // changes geometry counts, not the material-table ABI.
-            if material > u16::MAX as u32 {
-                return Err("FMOD material identifier exceeds the native material table".into());
+            if slot.is_none() {
+                *slot = Some(child);
             }
-            let indices = &group.bytes[cursor..cursor + count * 4];
-            for bytes in indices.as_chunks::<4>().0 {
-                let index = u32::from_le_bytes(*bytes);
-                if index >= vertices.count {
-                    return Err(format!(
-                        "FMOD vertex index {index} exceeds vertex count {}",
-                        vertices.count
-                    ));
-                }
-            }
-            cursor += indices.len();
-            strips.push(Strip {
-                reversed: packed & 0x8000_0000 != 0,
-                material,
-                variant,
-                indices,
-            });
-        }
-        Ok(())
-    })?;
-    if strips.is_empty() || vertices.count == 0 {
-        return Err("FMOD object has no drawable geometry".into());
+            Ok(())
+        })?;
+        Ok(blocks)
     }
-    Ok(Geometry {
-        vertex_count: vertices.count,
-        strips,
+
+    fn geometry(&self) -> Result<Geometry<'a>, String> {
+        let vertices = self.positions.ok_or("FMOD object has no vertex block")?;
+        if vertices.count as usize > (vertices.bytes.len() - HEADER) / 12 {
+            return Err("truncated FMOD vertex array".into());
+        }
+        let face = self.face.ok_or("FMOD object has no face block")?;
+        let mut strips = Vec::new();
+        face.visit_children(|group| {
+            let variant = match group.kind {
+                0x30000 => 0,
+                0x40000 => 1,
+                _ => return Err(format!("unsupported FMOD strip block {:#x}", group.kind)),
+            };
+            let mut cursor = HEADER;
+            if group.count as usize > (group.bytes.len() - HEADER) / 16 {
+                return Err("FMOD strip count exceeds block size".into());
+            }
+            strips
+                .try_reserve(group.count as usize)
+                .map_err(|e| e.to_string())?;
+            for _ in 0..group.count {
+                let packed = word(group.bytes, cursor)?;
+                let count = (packed & 0x7fff_ffff) as usize;
+                cursor += 4;
+                if count < 3 || count > (group.bytes.len() - cursor) / 4 {
+                    return Err("invalid FMOD triangle strip length".into());
+                }
+                let material = if let Some(map) = self.materials {
+                    if strips.len() >= map.count as usize {
+                        return Err("FMOD material map is shorter than its strip array".into());
+                    }
+                    word(map.bytes, HEADER + 4 * strips.len())?
+                } else {
+                    0
+                };
+                // Native material tables remain WORD-addressed. This extension
+                // changes geometry counts, not the material-table ABI.
+                if material > u16::MAX as u32 {
+                    return Err("FMOD material identifier exceeds the native material table".into());
+                }
+                let indices = &group.bytes[cursor..cursor + count * 4];
+                for bytes in indices.as_chunks::<4>().0 {
+                    let index = u32::from_le_bytes(*bytes);
+                    if index >= vertices.count {
+                        return Err(format!(
+                            "FMOD vertex index {index} exceeds vertex count {}",
+                            vertices.count
+                        ));
+                    }
+                }
+                cursor += indices.len();
+                strips.push(Strip {
+                    reversed: packed & 0x8000_0000 != 0,
+                    material,
+                    variant,
+                    indices,
+                });
+            }
+            Ok(())
+        })?;
+        if strips.is_empty() || vertices.count == 0 {
+            return Err("FMOD object has no drawable geometry".into());
+        }
+        Ok(Geometry {
+            vertex_count: vertices.count,
+            strips,
+        })
+    }
+}
+
+/// Read indices independently for topology tests; production reads all source
+/// attributes from the same validated object directory in `read_source`.
+#[cfg(test)]
+pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry<'_>, String> {
+    ObjectBlocks::read(bytes, object_index)?.geometry()
+}
+
+pub(crate) fn read_source(bytes: &[u8], index: u32) -> Result<Source<'_>, String> {
+    let blocks = ObjectBlocks::read(bytes, index)?;
+    let geometry = blocks.geometry()?;
+    let vertices = vertex::Vertices::new(
+        geometry.vertex_count,
+        blocks.positions.unwrap().payload(),
+        blocks.normals.map(Block::payload),
+        blocks.colors.map(Block::payload),
+        blocks.uvs.map(Block::payload),
+        blocks.weights.map(Block::payload),
+        blocks.attribute.map(Block::payload),
+    )?;
+    let material = geometry.strips[0].material;
+    let mut flags = 0x21000;
+    if geometry
+        .strips
+        .iter()
+        .any(|strip| strip.material != material)
+    {
+        flags |= MATERIAL;
+    }
+    if vertices.skinned() {
+        flags |= VARIANT;
+    }
+    Ok(Source {
+        geometry,
+        vertices,
+        flags,
+        // The native loader stores the 0x50000 header count as a WORD.
+        material_count: blocks.material_list.map_or(0, |block| block.count as u16),
     })
 }
 
 impl Geometry<'_> {
-    /// Replace the temporary packed WORD stream produced by the native loader.
-    /// Lengths no longer share the 14-bit field used by that intermediate format.
+    /// Size the DWORD strip stream without the native WORD format's 14-bit limit.
     pub(crate) fn encoded_size(&self, flags: u32) -> Result<u32, String> {
         let extra = mesh::descriptor_stride(flags);
         let mut length = 0usize;
