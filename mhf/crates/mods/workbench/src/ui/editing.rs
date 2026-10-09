@@ -2,8 +2,6 @@
 //! once per batch, and only completed revisions replace the preview document.
 
 use super::Workbench;
-
-mod file_picker;
 use crate::{
     action::NodeAction,
     edit::{self, NodeKey},
@@ -163,7 +161,7 @@ pub(super) struct Editing {
     raw_offset: usize,
     raw_length: usize,
     replacement: String,
-    file_picker: Option<std::thread::JoinHandle<Result<Option<PathBuf>, String>>>,
+    file_picker: Option<std::thread::JoinHandle<Option<PathBuf>>>,
     error: String,
 }
 
@@ -848,11 +846,8 @@ impl Workbench {
             .is_some_and(|picker| picker.is_finished())
         {
             match self.editing.file_picker.take().unwrap().join() {
-                Ok(Ok(Some(path))) => {
-                    self.editing.replacement = path.to_string_lossy().into_owned()
-                }
-                Ok(Ok(None)) => {}
-                Ok(Err(error)) => self.editing.error = error,
+                Ok(Some(path)) => self.editing.replacement = path.to_string_lossy().into_owned(),
+                Ok(None) => {}
                 Err(_) => self.editing.error = "文件选择器线程异常退出".into(),
             }
         }
@@ -872,8 +867,11 @@ impl Workbench {
             {
                 match std::thread::Builder::new()
                     .name("resource-file-picker".into())
-                    .spawn(file_picker::open)
-                {
+                    .spawn(|| {
+                        rfd::FileDialog::new()
+                            .set_title("选择替换资源文件")
+                            .pick_file()
+                    }) {
                     Ok(picker) => self.editing.file_picker = Some(picker),
                     Err(error) => self.editing.error = format!("无法打开文件选择器：{error}"),
                 }

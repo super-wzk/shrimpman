@@ -6,8 +6,6 @@ use std::{path::PathBuf, process::ExitCode};
 
 mod cli;
 #[cfg(feature = "gui")]
-mod dialogs;
-#[cfg(feature = "gui")]
 mod gui;
 mod manager;
 

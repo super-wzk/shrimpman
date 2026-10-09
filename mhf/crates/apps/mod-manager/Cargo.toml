@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = ["gui", "login", "debug", "workbench"]
-gui = ["dep:eframe", "dep:egui", "dep:egui-hunter", "dep:mhf-font"]
+gui = ["dep:rfd", "dep:eframe", "dep:egui", "dep:egui-hunter", "dep:mhf-font"]
 base = []
 login = ["base"]
 debug = ["base"]
@@ -17,6 +17,7 @@ name = "mhf-mods"
 path = "src/main.rs"
 
 [dependencies]
+rfd = { workspace = true, optional = true }
 mhf-launcher-catalog = { path = "../launcher-catalog" }
 mhf-mod-package = { path = "../../runtime/mod-package" }
 clap = { version = "4", features = ["derive"] }
@@ -31,10 +32,7 @@ mhf-font = { path = "../../mods/font", features = ["provider"], optional = true 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
-    "Win32_System_Com",
     "Win32_System_Console",
-    "Win32_UI_Shell",
-    "Win32_UI_Shell_Common",
 ] }
 
 [build-dependencies]

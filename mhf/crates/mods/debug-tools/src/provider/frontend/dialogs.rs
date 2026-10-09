@@ -1,97 +1,60 @@
 use super::WindowState;
 use std::{
     cell::RefCell,
-    ffi::OsString,
-    os::windows::ffi::OsStringExt,
-    path::PathBuf,
     sync::{Arc, atomic::Ordering},
 };
-use windows::{
-    Win32::{
-        Foundation::{ERROR_CANCELLED, HWND},
-        System::Com::{
-            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-            CoTaskMemFree, CoUninitialize,
-        },
-        UI::{
-            Shell::{
-                Common::COMDLG_FILTERSPEC, FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR,
-                FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FOS_STRICTFILETYPES, FileSaveDialog,
-                IFileSaveDialog, SIGDN_FILESYSPATH,
-            },
-            WindowsAndMessaging::{KillTimer, SetTimer},
-        },
+use windows::Win32::{
+    Foundation::{HWND, LPARAM, WPARAM},
+    UI::WindowsAndMessaging::{
+        GA_ROOTOWNER, GetAncestor, GetClassNameW, GetLastActivePopup, IDCANCEL, KillTimer,
+        PostMessageW, SetTimer, WM_COMMAND,
     },
-    core::{HRESULT, w},
 };
 
 pub(super) fn save_recording(
+    parent: &eframe::Frame,
     owner: HWND,
     json: &str,
-    window: Arc<WindowState>,
+    window: &Arc<WindowState>,
 ) -> Result<bool, String> {
-    let Some(path) =
-        save_path(owner, window).map_err(|error| format!("无法选择保存路径：{error}"))?
+    // Keep the dialog on the desktop UI thread and owned by its window, so it
+    // never blocks the game window or holds a DebugControl lock.
+    let _cancel_timer = CancelTimer::new(owner, Arc::clone(window))?;
+    let Some(path) = rfd::FileDialog::new()
+        .set_parent(parent)
+        .set_title("保存 AI 录制")
+        .add_filter("AI 录制 (*.json)", &["json"])
+        .set_file_name("mhf-ai-recording.json")
+        .save_file()
     else {
         return Ok(false);
     };
+    if window.stopping.load(Ordering::Acquire) || !window.visible.load(Ordering::Acquire) {
+        return Ok(false);
+    }
     std::fs::write(path, json).map_err(|error| format!("保存录制失败：{error}"))?;
     Ok(true)
 }
 
-fn save_path(owner: HWND, window: Arc<WindowState>) -> windows::core::Result<Option<PathBuf>> {
-    let _apartment = ComApartment::new()?;
-    // This modal dialog belongs to the independent desktop UI thread. It never
-    // owns the game window or holds a DebugControl lock while the user chooses.
-    unsafe {
-        let dialog: IFileSaveDialog =
-            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
-        dialog.SetTitle(w!("保存 AI 录制"))?;
-        dialog.SetFileTypes(&[COMDLG_FILTERSPEC {
-            pszName: w!("AI 录制 (*.json)"),
-            pszSpec: w!("*.json"),
-        }])?;
-        dialog.SetDefaultExtension(w!("json"))?;
-        dialog.SetFileName(w!("mhf-ai-recording.json"))?;
-        dialog.SetOptions(
-            dialog.GetOptions()?
-                | FOS_OVERWRITEPROMPT
-                | FOS_FORCEFILESYSTEM
-                | FOS_NOCHANGEDIR
-                | FOS_PATHMUSTEXIST
-                | FOS_STRICTFILETYPES,
-        )?;
-        let _cancel_timer = CancelTimer::new(dialog.clone(), window)?;
-        match dialog.Show(Some(owner)) {
-            Ok(()) => {}
-            Err(error) if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        }
-        let item = dialog.GetResult()?;
-        let raw_path = item.GetDisplayName(SIGDN_FILESYSPATH)?;
-        let path = PathBuf::from(OsString::from_wide(raw_path.as_wide()));
-        CoTaskMemFree(Some(raw_path.0.cast()));
-        Ok(Some(path))
-    }
-}
-
 thread_local! {
-    static ACTIVE_DIALOG: RefCell<Option<(IFileSaveDialog, Arc<WindowState>)>> = const { RefCell::new(None) };
+    static ACTIVE_DIALOG: RefCell<Option<(HWND, Arc<WindowState>)>> = const { RefCell::new(None) };
 }
 
 struct CancelTimer(usize);
 
 impl CancelTimer {
-    fn new(dialog: IFileSaveDialog, window: Arc<WindowState>) -> windows::core::Result<Self> {
-        // The modal message loop continues dispatching this UI-thread timer,
-        // so F7 and shutdown can cancel through the COM dialog's own API.
+    fn new(owner: HWND, window: Arc<WindowState>) -> Result<Self, String> {
+        // rfd exposes no cancellation handle. Its modal message loop still
+        // dispatches this UI-thread timer, allowing F7 and shutdown to close
+        // only the native dialog owned by this desktop window.
         let timer = unsafe { SetTimer(None, 0, 33, Some(cancel_hidden_dialog)) };
         if timer == 0 {
-            return Err(windows::core::Error::from_thread());
+            return Err(format!(
+                "无法监控保存对话框：{}",
+                windows::core::Error::from_thread()
+            ));
         }
-        ACTIVE_DIALOG.with_borrow_mut(|active| *active = Some((dialog, window)));
+        ACTIVE_DIALOG.with_borrow_mut(|active| *active = Some((owner, window)));
         Ok(Self(timer))
     }
 }
@@ -109,30 +72,29 @@ unsafe extern "system" fn cancel_hidden_dialog(
     _id: usize,
     _time: u32,
 ) {
-    let dialog = ACTIVE_DIALOG.with_borrow(|active| {
-        active.as_ref().and_then(|(dialog, window)| {
+    let owner = ACTIVE_DIALOG.with_borrow(|active| {
+        active.as_ref().and_then(|(owner, window)| {
             (window.stopping.load(Ordering::Acquire) || !window.visible.load(Ordering::Acquire))
-                .then(|| dialog.clone())
+                .then_some(*owner)
         })
     });
-    if let Some(dialog) = dialog {
-        // Release the TLS borrow before invoking COM, which can dispatch messages.
-        let _ = unsafe { dialog.Close(HRESULT::from_win32(ERROR_CANCELLED.0)) };
-    }
-}
-
-struct ComApartment;
-
-impl ComApartment {
-    fn new() -> windows::core::Result<Self> {
-        // Both S_OK and S_FALSE need a matching CoUninitialize on this thread.
-        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
-        Ok(Self)
-    }
-}
-
-impl Drop for ComApartment {
-    fn drop(&mut self) {
-        unsafe { CoUninitialize() };
+    if let Some(owner) = owner {
+        let mut class = [0_u16; 16];
+        unsafe {
+            let popup = GetLastActivePopup(owner);
+            let length = GetClassNameW(popup, &mut class) as usize;
+            if popup != owner
+                && class[..length] == *windows::core::w!("#32770").as_wide()
+                && GetAncestor(popup, GA_ROOTOWNER) == owner
+            {
+                // IDCANCEL follows the same path as the dialog's Cancel button.
+                let _ = PostMessageW(
+                    Some(popup),
+                    WM_COMMAND,
+                    WPARAM(IDCANCEL.0 as usize),
+                    LPARAM(0),
+                );
+            }
+        }
     }
 }

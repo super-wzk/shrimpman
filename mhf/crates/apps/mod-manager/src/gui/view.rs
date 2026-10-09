@@ -1,5 +1,4 @@
 use super::*;
-use crate::dialogs;
 use egui::{Align, Id, Layout, RichText};
 use egui_hunter::{
     Button, ButtonKind, Dialog, Field, FormLayout, Panel, SelectField, TextField, Tokens,
@@ -515,16 +514,19 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     if ui.add(Button::new("浏览…")).clicked() {
-                        match match self.archive_action {
-                            ArchiveAction::Import => dialogs::import_archive(),
-                            ArchiveAction::Export => dialogs::export_archive(),
-                        } {
-                            Ok(Some(path)) => {
-                                self.archive_path = path.display().to_string();
-                                self.archive_error = None;
+                        let dialog = rfd::FileDialog::new().add_filter("ZIP 整合包", &["zip"]);
+                        let path = match self.archive_action {
+                            ArchiveAction::Import => {
+                                dialog.set_title("导入 Mod 整合包").pick_file()
                             }
-                            Ok(None) => {}
-                            Err(error) => self.archive_error = Some(error),
+                            ArchiveAction::Export => dialog
+                                .set_title("导出 Mod 整合包（请使用新文件名）")
+                                .set_file_name("mods.zip")
+                                .save_file(),
+                        };
+                        if let Some(path) = path {
+                            self.archive_path = path.display().to_string();
+                            self.archive_error = None;
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

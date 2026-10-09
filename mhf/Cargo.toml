@@ -12,3 +12,4 @@ safer-ffi = { version = "0.1.13", default-features = false, features = ["headers
 egui = { version = "=0.36.1", default-features = false }
 minhook = "=0.9.0"
 windows = "=0.62.2"
+rfd = "=0.17.2"

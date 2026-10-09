@@ -201,7 +201,7 @@ impl eframe::App for DebugApp {
             && let Some(owner) = owner
             && let Some(json) = self.panel.take_recording_save()
         {
-            let result = dialogs::save_recording(owner, &json, self.window.clone());
+            let result = dialogs::save_recording(frame, owner, &json, &self.window);
             self.panel.recording_save_finished(result);
         }
     }

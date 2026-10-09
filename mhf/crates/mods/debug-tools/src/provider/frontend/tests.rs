@@ -481,6 +481,15 @@ fn native_desktop_can_hide_reopen_and_stop_without_a_game_dll() {
     click_native_widget(&context, owner, egui::Id::new("ai-recording-save"));
     wait_until(|| file_dialog_is_open(owner));
     assert!(!desktop.thread.as_ref().unwrap().is_finished());
+    // Hiding through the same state transition as F7 also cancels the picker.
+    window.toggle();
+    wait_until(|| !file_dialog_is_open(owner));
+    assert!(!desktop.thread.as_ref().unwrap().is_finished());
+    let hidden_frame = context.cumulative_frame_nr();
+    window.toggle();
+    wait_until(|| context.cumulative_frame_nr() > hidden_frame);
+    click_native_widget(&context, owner, egui::Id::new("ai-recording-save"));
+    wait_until(|| file_dialog_is_open(owner));
     // Teardown must dismiss the native picker instead of waiting for a user.
     desktop.stop().expect("native window shutdown");
     assert!(desktop.thread.is_none());
