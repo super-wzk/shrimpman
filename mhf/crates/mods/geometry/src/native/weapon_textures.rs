@@ -199,8 +199,12 @@ pub(super) unsafe extern "C" fn construct(registers: *mut abi::Registers) {
     let _scope = Scope::enter(token);
     {
         let _stage_completion = unsafe { super::stage_cache::construction(state, registers) };
-        registers.eax =
-            unsafe { call_construct(state.weapon_texture_originals.construct, registers) } as u32;
+        registers.eax = unsafe {
+            // This constructor keeps its FMOD unchanged through the object loop.
+            crate::fmod::with_cached_objects(|| {
+                call_construct(state.weapon_texture_originals.construct, registers)
+            })
+        } as u32;
     }
     if catch_unwind(AssertUnwindSafe(|| unsafe {
         if let Some(token) = token {

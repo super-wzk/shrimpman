@@ -34,6 +34,7 @@ use windows::{
 
 const LOAD: usize = 0x2af0;
 const BUILD: usize = 0x7b60;
+const CONSTRUCT_ALTERNATE: usize = 0x006018b0;
 const DEVICE: usize = 0x0e811a3c;
 const CAPS: usize = 0x01b7fcf0;
 const REGISTRY: usize = 0x01aa3dd8;
@@ -43,6 +44,7 @@ static SLOT: HookSlot<State> = HookSlot::new();
 struct State {
     module: ModuleReference,
     load_original: usize,
+    construct_alternate_original: usize,
     cache_dispatch_original: usize,
     cache_completion_originals: equipment_cache::CompletionOriginals,
     equipment_caches: Arc<Mutex<equipment_cache::Caches>>,
@@ -167,6 +169,13 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
             abi::load_detour as *mut c_void,
         )
     }?;
+    let construct_alternate_original = unsafe {
+        hooks.create(
+            "alternate FMOD object index scope",
+            (base + CONSTRUCT_ALTERNATE) as _,
+            abi::construct_alternate_detour as *mut c_void,
+        )
+    }?;
     unsafe {
         hooks.create(
             "32-bit model buffers and batches",
@@ -213,6 +222,7 @@ pub unsafe fn install(module: HMODULE) -> Result<GeometryHooks, String> {
         hooks.install(State {
             module: retained,
             load_original: load_original as usize,
+            construct_alternate_original: construct_alternate_original as usize,
             cache_dispatch_original: cache_dispatch_original as usize,
             cache_completion_originals,
             equipment_caches: Arc::clone(&equipment_caches),
@@ -308,6 +318,31 @@ unsafe extern "C" fn load(registers: *mut abi::Registers) {
     };
 }
 
+// The other direct caller of LOAD decodes its FMOD inside the constructor.
+// Start an empty scope here; the first LOAD builds its directory lazily, after
+// decoding. The native object loop does not modify or replace that source.
+unsafe extern "C" fn construct_alternate(registers: *mut abi::Registers) {
+    let registers = unsafe { &mut *registers };
+    let invocation = SLOT.enter();
+    let target = invocation.state().map_or(
+        BASE.load(Ordering::Acquire) + CONSTRUCT_ALTERNATE,
+        |state| state.construct_alternate_original,
+    );
+    registers.eax = unsafe {
+        fmod::with_cached_objects(|| {
+            abi::construct_alternate_original(
+                target,
+                registers.ecx,
+                registers.edx,
+                registers.argument(0),
+                registers.argument(1),
+                registers.argument(2),
+                registers.argument(3),
+            )
+        })
+    };
+}
+
 unsafe fn load_indices(
     state: &State,
     index: u32,
@@ -336,16 +371,11 @@ unsafe fn load_indices(
     {
         return Err("FMOD selection disagrees with the native converter".into());
     }
-    let stream = geometry.encode(source.flags)?;
-    let bytes = mesh::byte_size(stream.len(), 4)?;
+    let bytes = geometry.encoded_size(source.flags)?;
     let allocation = unsafe { state.allocate(bytes) }?;
-    unsafe {
-        ptr::copy_nonoverlapping(
-            stream.as_ptr().cast::<u8>(),
-            allocation.pointer,
-            bytes as usize,
-        )
-    };
+    geometry.encode_into(source.flags, unsafe {
+        slice::from_raw_parts_mut(allocation.pointer.cast(), bytes as usize / 4)
+    });
     unsafe { state.free(source.indices) };
     source.indices = allocation.into_raw();
     source.index_bytes = bytes;

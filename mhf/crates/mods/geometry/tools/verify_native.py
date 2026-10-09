@@ -194,6 +194,7 @@ def coff_functions(path):
         "weapon_texture_constructor_detour", "build_resource_original",
         "stage_hd_load_detour", "stage_load_detour", "stage_decode_detour",
         "decode_stage_pair",
+        "construct_alternate_detour", "construct_alternate_original",
     )
     data = path.read_bytes()
     machine, count, _, table, symbols, optional, _ = struct.unpack_from("<HHIIIHH", data)
@@ -239,6 +240,8 @@ def verify_abi(path):
             arguments = [0x12345678, 0x22334455]
             if name == "weapon_texture_constructor_detour":
                 arguments = resource_arguments
+            elif name == "construct_alternate_detour":
+                arguments = resource_arguments[:4]
             elif name == "stage_decode_detour":
                 arguments = []
                 for register, value in [
@@ -261,6 +264,8 @@ def verify_abi(path):
             arguments = [STUB, DATA + 0x2000, DATA + 0x3000]
         elif name == "build_resource_original":
             arguments = [STUB, DATA + 0x2000, DATA + 0x3000, *resource_arguments]
+        elif name == "construct_alternate_original":
+            arguments = [STUB, DATA + 0x2000, DATA + 0x3000, *resource_arguments[:4]]
         elif name == "decode_stage_pair":
             arguments = [STUB, DATA + 0x2000, DATA + 0x3000, DATA + 0x4000]
         else:
@@ -281,7 +286,7 @@ def verify_abi(path):
                 assert u32(emu.mem_read(saved_sp + 4, 4)) == STOP
                 assert [u32(emu.mem_read(saved_sp + 8 + 4 * i, 4))
                         for i in range(len(arguments))] == arguments
-                if name == "weapon_texture_constructor_detour":
+                if name in ("weapon_texture_constructor_detour", "construct_alternate_detour"):
                     assert u32(emu.mem_read(frame + 24, 4)) == DATA + 0x800  # ECX
                     assert u32(emu.mem_read(frame + 20, 4)) == DATA + 0x800  # EDX
                 elif name == "stage_decode_detour":
@@ -308,6 +313,9 @@ def verify_abi(path):
             elif name == "build_resource_original":
                 assert [emu.reg_read(r) for r in [reg.UC_X86_REG_ECX, reg.UC_X86_REG_EDX]] == arguments[1:3]
                 assert [stack(i) for i in range(7)] == arguments[3:]
+            elif name == "construct_alternate_original":
+                assert [emu.reg_read(r) for r in [reg.UC_X86_REG_ECX, reg.UC_X86_REG_EDX]] == arguments[1:3]
+                assert [stack(i) for i in range(4)] == arguments[3:]
             elif name == "decode_stage_pair":
                 assert [emu.reg_read(r) for r in [reg.UC_X86_REG_EAX, reg.UC_X86_REG_EDI, reg.UC_X86_REG_ESI]] == arguments[1:]
             emu.reg_write(reg.UC_X86_REG_EAX, 0x76543210)
@@ -324,7 +332,7 @@ def verify_abi(path):
             assert uc.reg_read(r) == value, (name, r)
         if name.endswith("detour"):
             assert uc.reg_read(reg.UC_X86_REG_EFLAGS) == 0x202
-    print("PASS: 17 compiled x86 adapters preserve the native argument, register and stack ABI")
+    print("PASS: 19 compiled x86 adapters preserve the native argument, register and stack ABI")
 
 
 def block(kind, count, payload):

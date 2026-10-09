@@ -1,6 +1,7 @@
 //! Checked views of the recursive FMOD blocks consumed by 10002AF0.
 
 use crate::mesh::{self, MATERIAL, VARIANT};
+use std::{cell::RefCell, ops::Range};
 
 const HEADER: usize = 12;
 
@@ -45,59 +46,161 @@ impl<'a> Block<'a> {
         })
     }
 
-    fn children(self) -> Result<impl Iterator<Item = Self>, String> {
+    fn visit_children(
+        self,
+        mut visit: impl FnMut(Self) -> Result<(), String>,
+    ) -> Result<(), String> {
         let mut bytes = &self.bytes[HEADER..];
         if self.count as usize > bytes.len() / HEADER {
             return Err("FMOD child count exceeds block size".into());
         }
-        // Validate every declared sibling before callers select a matching block.
-        // Early iterator termination must not hide malformed later siblings.
+        let mut result = Ok(());
         for _ in 0..self.count {
             let block = Self::read(bytes)?;
             bytes = &bytes[block.bytes.len()..];
+            // Finish validating siblings even after a visitor error. As before,
+            // malformed later headers take precedence over payload errors.
+            if result.is_ok() {
+                result = visit(block);
+            }
         }
-        bytes = &self.bytes[HEADER..];
-        Ok((0..self.count).map(move |_| {
-            let block = Self::read(bytes).expect("FMOD children were validated");
-            bytes = &bytes[block.bytes.len()..];
-            block
-        }))
+        result
     }
+
+    fn main(self) -> Result<Self, String> {
+        let mut main = None;
+        self.visit_children(|block| {
+            if main.is_none() && block.kind == 2 {
+                main = Some(block);
+            }
+            Ok(())
+        })?;
+        main.ok_or_else(|| "FMOD has no MAIN block".into())
+    }
+}
+
+struct Object {
+    kind: u32,
+    count: u32,
+    range: Range<usize>,
+}
+
+#[derive(Default)]
+struct ObjectCache {
+    source: (usize, usize),
+    objects: Vec<Object>,
+}
+
+impl ObjectCache {
+    fn new(bytes: &[u8]) -> Result<Self, String> {
+        let main = Block::read(bytes)?.main()?;
+        // Bound the reservation before trusting the declared count.
+        if main.count as usize > (main.bytes.len() - HEADER) / HEADER {
+            return Err("FMOD child count exceeds block size".into());
+        }
+        let mut objects = Vec::new();
+        objects
+            .try_reserve_exact(main.count as usize)
+            .map_err(|e| e.to_string())?;
+        main.visit_children(|block| {
+            let start = block.bytes.as_ptr() as usize - bytes.as_ptr() as usize;
+            objects.push(Object {
+                kind: block.kind,
+                count: block.count,
+                range: start..start + block.bytes.len(),
+            });
+            Ok(())
+        })?;
+        Ok(Self {
+            source: (bytes.as_ptr() as usize, bytes.len()),
+            objects,
+        })
+    }
+
+    fn object<'a>(&mut self, bytes: &'a [u8], index: u32) -> Result<Block<'a>, String> {
+        if self.source != (bytes.as_ptr() as usize, bytes.len()) {
+            *self = Self::new(bytes)?;
+        }
+        let object = self
+            .objects
+            .get(index as usize)
+            .ok_or("FMOD object index out of range")?;
+        Ok(Block {
+            kind: object.kind,
+            count: object.count,
+            bytes: bytes
+                .get(object.range.clone())
+                .ok_or("truncated FMOD block")?,
+        })
+    }
+}
+
+thread_local! {
+    static OBJECTS: RefCell<Option<ObjectCache>> = const { RefCell::new(None) };
+}
+
+/// Reuse object headers only during one synchronous native construction.
+/// Nested constructions get their own cache; return/unwind releases it.
+///
+/// # Safety
+/// Every FMOD passed to `read` must remain alive and unchanged throughout this
+/// call, including between reads. Each construction needs its own scope even
+/// when it reuses the previous construction's source address and size.
+/// The cache stores offsets, never borrowed or dereferenceable native pointers.
+pub(crate) unsafe fn with_cached_objects<T>(construct: impl FnOnce() -> T) -> T {
+    struct Scope(Option<ObjectCache>);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            OBJECTS.with(|current| *current.borrow_mut() = self.0.take());
+        }
+    }
+    let _scope = Scope(OBJECTS.with(|current| current.replace(Some(ObjectCache::default()))));
+    construct()
 }
 
 /// Read the same MAIN/OBJECT selection as the native FMOD loader. Indices and
 /// strip counts in the file are 32-bit, including for unmodified game assets.
 pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry<'_>, String> {
-    let root = Block::read(bytes)?;
-    let main = root
-        .children()?
-        .find(|b| b.kind == 2)
-        .ok_or("FMOD has no MAIN block")?;
-    let object = main
-        .children()?
-        .nth(object_index as usize)
-        .ok_or("FMOD object index out of range")?;
+    let object = OBJECTS.with(|cache| {
+        if let Some(cache) = cache.borrow_mut().as_mut() {
+            return cache.object(bytes, object_index);
+        }
+        // Direct callers outside a resource construction still validate the
+        // complete directory, without retaining source identity across calls.
+        let main = Block::read(bytes)?.main()?;
+        let mut object = None;
+        let mut index = 0;
+        main.visit_children(|block| {
+            if index == object_index {
+                object = Some(block);
+            }
+            index += 1;
+            Ok(())
+        })?;
+        object.ok_or_else(|| "FMOD object index out of range".to_owned())
+    })?;
     if object.kind != 4 {
         return Err("FMOD child is not an OBJECT block".into());
     }
     let mut vertices = None;
     let mut face = None;
     let mut materials = None;
-    for child in object.children()? {
+    object.visit_children(|child| {
         match child.kind {
             0x70000 if vertices.is_none() => vertices = Some(child),
             5 if face.is_none() => face = Some(child),
             0x60000 if materials.is_none() => materials = Some(child),
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     let vertices = vertices.ok_or("FMOD object has no vertex block")?;
     if vertices.count as usize > (vertices.bytes.len() - HEADER) / 12 {
         return Err("truncated FMOD vertex array".into());
     }
     let face = face.ok_or("FMOD object has no face block")?;
     let mut strips = Vec::new();
-    for group in face.children()? {
+    face.visit_children(|group| {
         let variant = match group.kind {
             0x30000 => 0,
             0x40000 => 1,
@@ -148,7 +251,8 @@ pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry<'_>, Stri
                 indices,
             });
         }
-    }
+        Ok(())
+    })?;
     if strips.is_empty() || vertices.count == 0 {
         return Err("FMOD object has no drawable geometry".into());
     }
@@ -161,7 +265,7 @@ pub(crate) fn read(bytes: &[u8], object_index: u32) -> Result<Geometry<'_>, Stri
 impl Geometry<'_> {
     /// Replace the temporary packed WORD stream produced by the native loader.
     /// Lengths no longer share the 14-bit field used by that intermediate format.
-    pub(crate) fn encode(&self, flags: u32) -> Result<Vec<u32>, String> {
+    pub(crate) fn encoded_size(&self, flags: u32) -> Result<u32, String> {
         let extra = mesh::descriptor_stride(flags);
         let mut length = 0usize;
         for strip in &self.strips {
@@ -170,22 +274,38 @@ impl Geometry<'_> {
                 .and_then(|n| n.checked_add(strip.indices.len() / 4))
                 .ok_or("32-bit geometry size overflow")?;
         }
-        mesh::byte_size(length, 4)?;
-        let mut stream = Vec::new();
-        stream
-            .try_reserve_exact(length)
-            .map_err(|e| e.to_string())?;
+        mesh::byte_size(length, 4)
+    }
+
+    /// Initialize the destination sized by `encoded_size` without a staging copy.
+    pub(crate) fn encode_into(&self, flags: u32, mut stream: &mut [std::mem::MaybeUninit<u32>]) {
         for strip in &self.strips {
             let indices = strip.indices.as_chunks::<4>().0;
-            stream.push(indices.len() as u32 | if strip.reversed { 0x8000_0000 } else { 0 });
+            let (header, rest) = stream.split_at_mut(mesh::descriptor_stride(flags));
+            header[0].write(indices.len() as u32 | if strip.reversed { 0x8000_0000 } else { 0 });
+            let mut slot = 1;
             if flags & MATERIAL != 0 {
-                stream.push(strip.material);
+                header[slot].write(strip.material);
+                slot += 1;
             }
             if flags & VARIANT != 0 {
-                stream.push(strip.variant);
+                header[slot].write(strip.variant);
             }
-            stream.extend(indices.iter().copied().map(u32::from_le_bytes));
+            let (output, rest) = rest.split_at_mut(indices.len());
+            for (output, index) in output.iter_mut().zip(indices) {
+                output.write(u32::from_le_bytes(*index));
+            }
+            stream = rest;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn encode(&self, flags: u32) -> Result<Vec<u32>, String> {
+        let length = self.encoded_size(flags)? as usize / 4;
+        let mut stream = Vec::with_capacity(length);
+        self.encode_into(flags, &mut stream.spare_capacity_mut()[..length]);
+        // encode_into initializes every word of the exact-sized destination.
+        unsafe { stream.set_len(length) };
         Ok(stream)
     }
 }

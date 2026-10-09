@@ -314,12 +314,123 @@ fn malformed_siblings_are_checked_after_matching_blocks() {
         ),
     ];
     for (selection, file) in files {
-        assert_eq!(
-            fmod::read(&file, 0).err().as_deref(),
-            Some("truncated FMOD block"),
-            "sibling after {selection}",
-        );
+        let check = || {
+            assert_eq!(
+                fmod::read(&file, 0).err().as_deref(),
+                Some("truncated FMOD block"),
+                "sibling after {selection}",
+            );
+        };
+        check();
+        unsafe { fmod::with_cached_objects(check) };
     }
+}
+
+#[test]
+fn cached_objects_keep_native_order_and_first_main_selection() {
+    let body = (3..6)
+        .flat_map(|count| resource(count, &[(false, vec![0, 1, count - 1])])[24..].to_vec())
+        .collect();
+    let file = block(1, 2, [block(2, 3, body), block(2, 0, Vec::new())].concat());
+    unsafe {
+        fmod::with_cached_objects(|| {
+            for index in [2, 0, 1, 2] {
+                let geometry = fmod::read(&file, index).unwrap();
+                assert_eq!(geometry.vertex_count, index + 3);
+                assert_eq!(geometry.encode(0).unwrap(), [3, 0, 1, index + 2]);
+            }
+            assert_eq!(
+                fmod::read(&file, 3).err().as_deref(),
+                Some("FMOD object index out of range")
+            );
+        });
+    }
+}
+
+#[test]
+fn construction_scope_expires_before_source_address_is_reused() {
+    let main = resource(3, &[(false, vec![0, 1, 2])])[12..].to_vec();
+    let other = block(99, 0, vec![0; 16]);
+    let original = block(1, 2, [main.clone(), other.clone()].concat());
+    let mut file = original.clone();
+    let replacement = block(1, 2, [other, main].concat());
+    let address = file.as_ptr();
+    for (scoped, next) in [
+        (true, &replacement),
+        (true, &original),
+        (false, &replacement),
+    ] {
+        let check = || {
+            assert_eq!(
+                fmod::read(&file, 0).unwrap().encode(0).unwrap(),
+                [3, 0, 1, 2]
+            );
+        };
+        if scoped {
+            unsafe { fmod::with_cached_objects(check) };
+        } else {
+            check();
+        }
+        file.copy_from_slice(next);
+        assert_eq!(file.as_ptr(), address);
+    }
+}
+
+#[test]
+fn nested_and_unwinding_constructions_restore_the_outer_scope() {
+    let outer = resource(3, &[(false, vec![0, 1, 2])]);
+    let mut inner = resource(4, &[(true, vec![1, 2, 3])]);
+    unsafe {
+        fmod::with_cached_objects(|| {
+            assert_eq!(fmod::read(&outer, 0).unwrap().vertex_count, 3);
+            let result = std::panic::catch_unwind(|| {
+                fmod::with_cached_objects(|| {
+                    assert_eq!(fmod::read(&inner, 0).unwrap().vertex_count, 4);
+                    panic!("construction failed");
+                });
+            });
+            assert!(result.is_err());
+            assert_eq!(
+                fmod::read(&outer, 0).unwrap().encode(0).unwrap(),
+                [3, 0, 1, 2]
+            );
+        });
+    }
+    // Once the failed construction has returned, the same allocation may be
+    // overwritten. No thread-local cache may keep its former block headers.
+    inner[24..28].copy_from_slice(&99u32.to_le_bytes());
+    assert_eq!(
+        fmod::read(&inner, 0).err().as_deref(),
+        Some("FMOD child is not an OBJECT block")
+    );
+}
+
+#[test]
+fn later_header_errors_still_precede_earlier_strip_errors() {
+    let bad_strip = block(0x30000, 1, vec![0; 16]);
+    let mut truncated = block(0x30000, 0, Vec::new());
+    truncated[8..12].copy_from_slice(&24u32.to_le_bytes());
+    let file = block(
+        1,
+        1,
+        block(
+            2,
+            1,
+            block(
+                4,
+                2,
+                [
+                    block(0x70000, 3, positions(3)),
+                    block(5, 2, [bad_strip, truncated].concat()),
+                ]
+                .concat(),
+            ),
+        ),
+    );
+    assert_eq!(
+        fmod::read(&file, 0).err().as_deref(),
+        Some("truncated FMOD block")
+    );
 }
 
 #[test]

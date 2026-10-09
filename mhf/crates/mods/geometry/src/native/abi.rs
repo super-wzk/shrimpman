@@ -40,6 +40,42 @@ pub(super) unsafe extern "C" fn build_detour() {
 }
 
 #[unsafe(naked)]
+pub(super) unsafe extern "C" fn construct_alternate_detour() {
+    core::arch::naked_asm!(
+        "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",
+        "popad", "popfd", "ret",
+        dispatch = sym super::construct_alternate,
+    );
+}
+
+/// 106018B0 receives ECX/EDX plus four caller-owned stack arguments.
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn construct_alternate_original(
+    _target: usize,
+    _ecx: u32,
+    _edx: u32,
+    _a0: u32,
+    _a1: u32,
+    _a2: u32,
+    _a3: u32,
+) -> u32 {
+    core::arch::naked_asm!(
+        "push ebp",
+        "mov ebp, esp",
+        "mov ecx, [ebp + 12]",
+        "mov edx, [ebp + 16]",
+        "push dword ptr [ebp + 32]",
+        "push dword ptr [ebp + 28]",
+        "push dword ptr [ebp + 24]",
+        "push dword ptr [ebp + 20]",
+        "call dword ptr [ebp + 8]",
+        "add esp, 16",
+        "pop ebp",
+        "ret",
+    );
+}
+
+#[unsafe(naked)]
 pub(super) unsafe extern "C" fn weapon_texture_release_detour() {
     core::arch::naked_asm!(
         "pushfd", "pushad", "push esp", "call {dispatch}", "add esp, 4",

@@ -63,6 +63,7 @@ impl Vertices<'_> {
         size
     }
 
+    #[inline(always)]
     fn get(&self, index: u32, stride: usize) -> Result<&[u8], String> {
         if index >= self.count {
             return Err(format!("vertex index {index} is out of range"));
@@ -147,6 +148,7 @@ impl Extents {
         }
     }
 
+    #[inline(always)]
     fn include(&mut self, vertex: &[u8], skinned: bool) -> Result<(), String> {
         for axis in 0..3 {
             let value = f32::from_le_bytes(vertex[4 * axis..4 * axis + 4].try_into().unwrap());
